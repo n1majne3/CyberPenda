@@ -335,8 +335,22 @@ func NewServer(config Config) (*Server, error) {
 	cancelChallengeRecovery()
 	// Import baseline uses the same resolved projection as the editor seed
 	// and merged preview (issue #226: client cannot supply the baseline).
-	profiles.SetImportBaseline(func(profile runtimeprofile.Profile) (string, error) {
-		return runner.StructuredProjectedConfigTextWith(profile.Provider, profile, server.previewProjectionRequest())
+	// The provenance list names the credential-generated paths so import
+	// enforces placeholder integrity without guessing from a sentinel.
+	profiles.SetImportBaselineProvenance(func(profile runtimeprofile.Profile) (string, []string, error) {
+		req := server.previewProjectionRequest()
+		text, err := runner.StructuredProjectedConfigTextWith(profile.Provider, profile, req)
+		if err != nil {
+			return "", nil, err
+		}
+		var generated []string
+		for _, name := range req.CredentialEnvNames {
+			generated = append(generated, "env."+name)
+		}
+		for _, name := range runner.InlineAPIKeyEnvNames(profile) {
+			generated = append(generated, "env."+name)
+		}
+		return text, generated, nil
 	})
 	server.routes()
 	server.reconcileValidatedBlackboardConclusionApplies()

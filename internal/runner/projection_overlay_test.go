@@ -9,6 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"pentest/internal/modelprovider"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 )
@@ -391,5 +392,74 @@ func TestProjectedConfigTextHermesReopenSinglePluginsBlock(t *testing.T) {
 	}
 	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
 		t.Fatalf("reopen must show harness + operator plugins, got %#v\n%s", joined, text)
+	}
+}
+
+// Reopen ordering: a remainder root key must stay at TOML root even when the
+// generated seed ends with tables.
+func TestProjectedConfigTextTOMLRootKeyStaysAtRoot(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex}
+	profile.Fields.Endpoint = "https://api.example.test/v1"
+	profile.Fields.CustomConfigFile = "\ncustom_setting = true\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderCodex, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	settingIdx := strings.Index(text, "custom_setting = true")
+	tableIdx := strings.Index(text, "[model_providers.")
+	if settingIdx == -1 || tableIdx == -1 {
+		t.Fatalf("reopen must contain both the root key and the table:\n%s", text)
+	}
+	if settingIdx > tableIdx {
+		t.Fatalf("remainder root key must precede generated tables (TOML scoping):\n%s", text)
+	}
+}
+
+// Reopen survival: a remainder root scalar survives alongside a colliding
+// plugins block.
+func TestProjectedConfigTextYAMLRootScalarSurvivesMerge(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "custom_setting: true\nplugins:\n  enabled:\n    - my-custom-plugin\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	if !strings.Contains(text, "custom_setting: true") {
+		t.Fatalf("reopen must keep the remainder root scalar:\n%s", text)
+	}
+	if strings.Count(text, "plugins:") != 1 {
+		t.Fatalf("reopen must contain exactly one plugins block:\n%s", text)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+	if doc["custom_setting"] != true {
+		t.Fatalf("root scalar must parse at document root: %#v", doc)
+	}
+}
+
+// Story 2/16: inline API keys and Model Provider API-key envs render as
+// redacted placeholder keys in the Claude preview.
+func TestProjectedConfigTextClaudePreviewShowsCredentialChannels(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode}
+	profile.Fields.APIKeys = map[string]string{"ANTHROPIC_API_KEY": "«redacted:sk-…»"}
+	req := runner.ProjectionRequest{
+		DaemonAddr: "127.0.0.1:8787",
+		ModelSnapshot: &modelprovider.Snapshot{
+			APIKeyEnv: "MIMO_API_KEY",
+		},
+	}
+	text, err := runner.ProjectedConfigTextWith(runtimeprofile.ProviderClaudeCode, profile, req)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	for _, key := range []string{"ANTHROPIC_API_KEY", "MIMO_API_KEY"} {
+		if !strings.Contains(text, `"`+key+`"`) {
+			t.Fatalf("preview must show credential-channel env key %q:\n%s", key, text)
+		}
+	}
+	if strings.Contains(text, "«redacted:sk-…»") {
+		t.Fatalf("preview leaked an inline API key value:\n%s", text)
 	}
 }

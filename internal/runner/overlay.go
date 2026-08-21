@@ -179,6 +179,17 @@ func spliceProjectedRemainder(provider runtimeprofile.Provider, seed, remainder 
 	format := overlayFormat(provider)
 
 	consumed := map[string]bool{}
+	appendRemainderOnly := func() string {
+		// Remainder keys absent from the seed keep their verbatim block.
+		tail := ""
+		for _, key := range sortedRemainderKeysNonConsumed(blocks, consumed) {
+			if key == "" {
+				continue
+			}
+			tail += "\n" + blocks[key]
+		}
+		return tail
+	}
 	if format == "yaml" {
 		currentKey := ""
 		var currentSpan []string
@@ -211,11 +222,13 @@ func spliceProjectedRemainder(provider runtimeprofile.Provider, seed, remainder 
 		}
 		flush()
 		result := strings.Join(mergedParts, "\n")
-		for key, block := range blocks {
-			if !consumed[key] && !seedHasTopLevelKey(provider, seed, key) {
-				result += "\n" + block
-			}
+		// Root-level scalar lines from the remainder (no trailing colon)
+		// and unconsumed blocks append at the document root.
+		if commentBlock, ok := blocks[""]; ok {
+			result += "\n" + commentBlock
+			consumed[""] = true
 		}
+		result += appendRemainderOnly()
 		return result
 	}
 
@@ -257,6 +270,17 @@ func spliceProjectedRemainder(provider runtimeprofile.Provider, seed, remainder 
 		}
 		out = append(out, line)
 	}
+	// Remainder root keys must land BEFORE any generated table: TOML bare
+	// keys after a [table] header belong to that table.
+	for _, key := range sortedRemainderKeys(blocks) {
+		if key == "" {
+			continue
+		}
+		if !strings.Contains(blocks[key], "[") && remainderKeys[key] && !seedHasTopLevelKey(provider, seed, key) && isRootKeyValue(blocks[key]) {
+			out = append(out, blocks[key])
+			delete(blocks, key)
+		}
+	}
 	seenTables := map[string]bool{}
 	for _, table := range tableOrder {
 		if seenTables[table] {
@@ -292,6 +316,26 @@ func sortedRemainderKeys(blocks map[string]string) []string {
 	return keys
 }
 
+// isRootKeyValue reports whether a TOML block is a single "key = value" line
+// rather than a [table].
+func isRootKeyValue(block string) bool {
+	trimmed := strings.TrimSpace(block)
+	return trimmed != "" && !strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, "=")
+}
+
+// sortedRemainderKeysNonConsumed lists remainder keys that the seed merge did
+// not consume, so they append at the document root.
+func sortedRemainderKeysNonConsumed(blocks map[string]string, consumed map[string]bool) []string {
+	keys := make([]string, 0, len(blocks))
+	for key := range blocks {
+		if !consumed[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // topLevelBlocks splits a document into verbatim text blocks keyed by their
 // root-level key. YAML blocks span the header plus its indented subtree; TOML
 // blocks are either a "key = ..." line or a full [table].
@@ -315,6 +359,16 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]str
 				flush()
 				currentKey = strings.TrimSuffix(trimmed, ":")
 				current = []string{line}
+				continue
+			}
+			if atRoot {
+				// A root-level "scalar_key: value" line is its own block.
+				flush()
+				if key, _, found := strings.Cut(trimmed, ":"); found {
+					currentKey = strings.TrimSpace(key)
+					blocks[currentKey] = line
+					currentKey = ""
+				}
 				continue
 			}
 			if currentKey != "" {
@@ -428,6 +482,20 @@ func indentLines(text, indent string) string {
 	return strings.Join(split, "\n")
 }
 
+// InlineAPIKeyEnvNames lists the env var names the profile's inline API keys
+// project under at launch. Metadata only — never secret values.
+func InlineAPIKeyEnvNames(profile runtimeprofile.Profile) []string {
+	keys := runtimeprofile.MaterializedAPIKeys(profile)
+	names := make([]string, 0, len(keys))
+	for key := range keys {
+		if key = strings.TrimSpace(key); key != "" {
+			names = append(names, key)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 // topLevelKeys lists the root-level keys of a provider-native document.
 func topLevelKeys(provider runtimeprofile.Provider, raw string) map[string]bool {
 	keys := map[string]bool{}
@@ -499,6 +567,16 @@ func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile
 		var env map[string]string
 		if preview {
 			env = claudeStructuredEnv(profile)
+			// Every credential channel the launch materializes renders as
+			// a redacted placeholder key: inline API keys, the resolved
+			// Model Provider API-key env, and global bindings.
+			for _, name := range InlineAPIKeyEnvNames(profile) {
+				env[name] = "[REDACTED]"
+			}
+			if req.ModelSnapshot != nil && strings.TrimSpace(req.ModelSnapshot.APIKeyEnv) != "" {
+				env[req.ModelSnapshot.APIKeyEnv] = "[REDACTED]"
+				env["ANTHROPIC_API_KEY"] = "[REDACTED]"
+			}
 			for _, name := range req.CredentialEnvNames {
 				env[name] = "[REDACTED]"
 			}

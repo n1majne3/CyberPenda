@@ -155,6 +155,18 @@ func (s *Service) SetImportBaseline(projector func(Profile) (string, error)) {
 	s.importBaseline = projector
 }
 
+// SetImportBaselineProvenance injects the daemon-side projector together with
+// the config paths the daemon itself generated — credential-derived env keys
+// rendered as placeholders. Import treats those paths as credential-channel
+// output instead of guessing provenance from a sentinel value.
+func (s *Service) SetImportBaselineProvenance(projector func(Profile) (string, []string, error)) {
+	s.importBaselineProvenance = projector
+	s.importBaseline = func(profile Profile) (string, error) {
+		text, _, err := projector(profile)
+		return text, err
+	}
+}
+
 // SetKnownInstallRefs injects the resolver that reports the install refs
 // the runtime extension catalog currently offers, so imports map known
 // plugins back into the structured Runtime Extensions field instead of the
@@ -231,7 +243,7 @@ func (s *Service) ImportConfig(id string, request ImportConfigRequest) (ImportCo
 		doc = map[string]any{}
 	}
 
-	baseline, err := s.importBaselineText(existing, format)
+	baseline, generatedPaths, err := s.importBaselineWithProvenance(existing, format)
 	if err != nil {
 		return ImportConfigResult{}, &ImportConfigError{
 			Provider: existing.Provider,
@@ -241,11 +253,11 @@ func (s *Service) ImportConfig(id string, request ImportConfigRequest) (ImportCo
 			}},
 		}
 	}
-	if refusal := s.refuseImportProblems(existing, doc, baseline); refusal != nil {
+	if refusal := s.refuseImportProblems(existing, doc, baseline, generatedPaths); refusal != nil {
 		return ImportConfigResult{}, refusal
 	}
 
-	fields, remainder, mapped := s.mapImportConfigDocument(existing, doc, request.ConfigText, s.managedKeys[existing.Provider], baseline)
+	fields, remainder, mapped := s.mapImportConfigDocument(existing, doc, request.ConfigText, s.managedKeys[existing.Provider], baseline, generatedPaths)
 	fields.CustomConfigFile = remainder
 	normalized, err := normalizeFields(existing.Provider, fields)
 	if err != nil {
@@ -271,7 +283,7 @@ func (s *Service) ImportConfig(id string, request ImportConfigRequest) (ImportCo
 // refuseImportProblems collects managed-key *changes* and secret-shaped
 // values from the parsed document. Unchanged managed keys matching the
 // projected baseline are not a change. Nil means the document is importable.
-func (s *Service) refuseImportProblems(profile Profile, doc, baseline map[string]any) *ImportConfigError {
+func (s *Service) refuseImportProblems(profile Profile, doc, baseline map[string]any, generatedPaths []string) *ImportConfigError {
 	var problems []ImportConfigKeyError
 	managed := s.managedKeys[profile.Provider]
 	resolved := strings.TrimSpace(profile.Fields.ModelProviderID) != ""
@@ -295,15 +307,29 @@ func (s *Service) refuseImportProblems(profile Profile, doc, baseline map[string
 					}
 					continue
 				}
-				if text, ok := value.(string); ok && isGeneratedRedaction(baseline, path, text) {
-					// The daemon itself rendered this placeholder from a
-					// credential channel. Unchanged placeholders are not
-					// operator input; any other value is a credential change.
-					if text != generatedRedactionPlaceholder {
+				// Credential-generated paths carry daemon provenance: the value
+				// must stay the placeholder. Replacement or deletion is a
+				// credential-channel change, never operator env data.
+				if slices.Contains(generatedPaths, path) {
+					text, isText := value.(string)
+					if !isText || text != generatedRedactionPlaceholder {
 						problems = append(problems, ImportConfigKeyError{
 							Key:     path,
 							Field:   "credentials",
-							Message: "value replaces a credential-channel placeholder; change the credential binding instead",
+							Message: "credential-generated value must stay redacted; change the credential binding instead",
+						})
+					}
+					continue
+				}
+				// MCP config sections are out of scope for the Custom Config
+				// File. The generated section may be stripped silently; any
+				// drift must go through the structured MCPServers field.
+				if key == "mcp_servers" && prefix == "" {
+					if !managedValueUnchanged(baseline, "mcp_servers", value) {
+						problems = append(problems, ImportConfigKeyError{
+							Key:     "mcp_servers",
+							Field:   "mcp_servers",
+							Message: "MCP config is harness-generated; change the structured MCP servers field instead",
 						})
 					}
 					continue
@@ -367,6 +393,18 @@ func (s *Service) refuseImportProblems(profile Profile, doc, baseline map[string
 	// missing from the edited document is a change, too.
 	walkBaseline("", baseline)
 
+	// Credential-generated paths must survive the edit: deleting one is a
+	// credential-channel change, not an env cleanup.
+	for _, path := range generatedPaths {
+		if _, present := lookupPath(doc, path); !present {
+			problems = append(problems, ImportConfigKeyError{
+				Key:     path,
+				Field:   "credentials",
+				Message: "credential-generated value must stay redacted; change the credential binding instead",
+			})
+		}
+	}
+
 	if len(problems) == 0 {
 		return nil
 	}
@@ -409,6 +447,25 @@ func isGeneratedRedaction(baseline map[string]any, path, value string) bool {
 	}
 	text, ok := current.(string)
 	return ok && text == generatedRedactionPlaceholder
+}
+
+// importBaselineWithProvenance derives the Managed Config Key baseline plus
+// the config paths the daemon itself generated (credential-derived env keys
+// rendered as placeholders).
+func (s *Service) importBaselineWithProvenance(profile Profile, format string) (map[string]any, []string, error) {
+	if s.importBaselineProvenance != nil {
+		projected, generated, err := s.importBaselineProvenance(profile)
+		if err != nil {
+			return nil, nil, err
+		}
+		baseline, err := parseConfigDocument(format, projected)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse projected baseline: %w", err)
+		}
+		return baseline, generated, nil
+	}
+	baseline, err := s.importBaselineText(profile, format)
+	return baseline, nil, err
 }
 
 func parseConfigDocument(format, raw string) (map[string]any, error) {
@@ -608,7 +665,7 @@ func managedPathCovers(managed, path string) bool {
 
 // mapImportConfigDocument syncs structured-expressible keys into the profile
 // fields and renders the remainder back as provider-native text.
-func (s *Service) mapImportConfigDocument(profile Profile, doc map[string]any, rawText string, declarations []managedKeyDeclaration, baseline map[string]any) (Fields, string, []string) {
+func (s *Service) mapImportConfigDocument(profile Profile, doc map[string]any, rawText string, declarations []managedKeyDeclaration, baseline map[string]any, generatedPaths []string) (Fields, string, []string) {
 	fields := profile.Fields
 	var mapped []string
 
@@ -630,7 +687,9 @@ func (s *Service) mapImportConfigDocument(profile Profile, doc map[string]any, r
 				if !ok {
 					continue
 				}
-				if text == generatedRedactionPlaceholder && isGeneratedRedaction(baseline, "env."+envKey, text) {
+				// Credential-generated paths are daemon output; they drop
+				// out of the structured env regardless of their value.
+				if slices.Contains(generatedPaths, "env."+envKey) {
 					continue
 				}
 				fields.Env[envKey] = text

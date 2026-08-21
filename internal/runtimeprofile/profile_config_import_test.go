@@ -704,13 +704,14 @@ func TestImportProfileConfigHermesRemainderProjectsBothPlugins(t *testing.T) {
 	}
 }
 
-// Generated redactions round-trip: the daemon's own [REDACTED] placeholder
-// imports cleanly, never persists into Fields.Env, and any other value is
-// refused as a credential-channel change.
+// Generated redactions round-trip via provenance: credential-generated paths
+// import cleanly and never persist into Fields.Env.
 func TestImportProfileConfigCredentialPlaceholderProvenance(t *testing.T) {
 	service := newTestService(t)
 	baseline := "{\n  \"env\": {\"GITHUB_TOKEN\": \"[REDACTED]\", \"MY_CRED\": \"[REDACTED]\"}\n}"
-	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
+	service.SetImportBaselineProvenance(func(runtimeprofile.Profile) (string, []string, error) {
+		return baseline, []string{"env.GITHUB_TOKEN", "env.MY_CRED"}, nil
+	})
 	created, err := service.Create("Cred Provenance", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -798,10 +799,12 @@ func TestImportProfileConfigManagedSubtreeLeavesRawText(t *testing.T) {
 	}
 }
 
-// MCP config sections are out of scope for the Custom Config File: they are
-// harness-generated and must never persist into the remainder.
+// MCP config sections are out of scope for the Custom Config File: with no
+// baseline section, operator-added mcp_servers is refused (the structured
+// MCPServers field owns MCP config).
 func TestImportProfileConfigStripsMCPServersFromRemainder(t *testing.T) {
 	service := newTestService(t)
+	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return "", nil })
 	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderCodex, runtimeprofile.ProviderHermes} {
 		created, err := service.Create("MCP "+string(provider), provider, runtimeprofile.Fields{})
 		if err != nil {
@@ -813,12 +816,96 @@ func TestImportProfileConfigStripsMCPServersFromRemainder(t *testing.T) {
 		} else {
 			text = "mcp_servers:\n  pentest:\n    url: http://127.0.0.1:8787/mcp\n"
 		}
-		result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: text})
-		if err != nil {
-			t.Fatalf("%s import: %v", provider, err)
+		if _, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: text}); err == nil {
+			t.Fatalf("%s operator-added mcp_servers must be refused", provider)
 		}
-		if strings.Contains(result.Profile.Fields.CustomConfigFile, "mcp_servers") || strings.Contains(result.Profile.Fields.CustomConfigFile, "pentest") {
-			t.Fatalf("%s mcp_servers must not persist into the remainder, got:\n%s", provider, result.Profile.Fields.CustomConfigFile)
-		}
+	}
+}
+
+// Provenance-based placeholder enforcement: the daemon reports which paths
+// are credential-generated. Replacing or deleting them is refused; a literal
+// [REDACTED] value on a NON-generated path is ordinary data.
+func TestImportProfileConfigProvenanceRefusesNonSecretReplacement(t *testing.T) {
+	service := newTestService(t)
+	service.SetImportBaselineProvenance(func(runtimeprofile.Profile) (string, []string, error) {
+		return "{\n  \"env\": {\"MY_CRED\": \"[REDACTED]\", \"FOO\": \"[REDACTED]\"}\n}",
+			[]string{"env.MY_CRED"}, nil
+	})
+	created, err := service.Create("Provenance", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	replaced, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "{\n  \"env\": {\"MY_CRED\": \"hello\", \"FOO\": \"[REDACTED]\"}\n}",
+	})
+	if err == nil {
+		t.Fatalf("replacing a generated placeholder with plain text must be refused, got %#v", replaced.Profile.Fields.Env)
+	}
+	if !strings.Contains(err.Error(), "credential") {
+		t.Fatalf("refusal must point at the credential channel, got %v", err)
+	}
+
+	unchanged, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "{\n  \"env\": {\"MY_CRED\": \"[REDACTED]\", \"FOO\": \"[REDACTED]\"}\n}",
+	})
+	if err != nil {
+		t.Fatalf("unchanged import must succeed: %v", err)
+	}
+	if _, present := unchanged.Profile.Fields.Env["MY_CRED"]; present {
+		t.Fatalf("generated placeholder must not persist into Env, got %#v", unchanged.Profile.Fields.Env)
+	}
+	// A literal [REDACTED] on a non-generated path is ordinary operator data.
+	if unchanged.Profile.Fields.Env["FOO"] != "[REDACTED]" {
+		t.Fatalf("non-generated literal placeholder must survive in Env, got %#v", unchanged.Profile.Fields.Env)
+	}
+
+	deleted, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "{\n  \"env\": {\"FOO\": \"[REDACTED]\"}\n}",
+	})
+	if err == nil {
+		t.Fatalf("deleting a generated placeholder must be refused, got %#v", deleted.Profile.Fields.Env)
+	}
+	if !strings.Contains(err.Error(), "credential") {
+		t.Fatalf("deletion refusal must point at the credential channel, got %v", err)
+	}
+}
+
+// Modified MCP sections are refused: the structured MCPServers field owns MCP
+// config, the Custom Config File never carries it.
+func TestImportProfileConfigRefusesModifiedMCPServers(t *testing.T) {
+	service := newTestService(t)
+	baseline := "mcp_servers:\n  pentest:\n    url: http://127.0.0.1:8787/mcp\n"
+	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
+	created, err := service.Create("MCP Guard", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "mcp_servers:\n  pentest:\n    url: http://evil.example.com/mcp\n",
+	})
+	if err == nil {
+		t.Fatal("modified MCP section must be refused")
+	}
+	if !strings.Contains(err.Error(), "mcp_servers") {
+		t.Fatalf("refusal must name mcp_servers, got %v", err)
+	}
+
+	unchanged, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: baseline,
+	})
+	if err != nil {
+		t.Fatalf("unchanged MCP section must import cleanly: %v", err)
+	}
+	if strings.Contains(unchanged.Profile.Fields.CustomConfigFile, "mcp_servers") {
+		t.Fatalf("unchanged MCP section must not persist into remainder: %q", unchanged.Profile.Fields.CustomConfigFile)
+	}
+
+	added, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "skills:\n  autoload: false\nmcp_servers:\n  extra:\n    url: http://x.example.com\n",
+	})
+	if err == nil {
+		t.Fatalf("operator-added MCP section must be refused, got remainder %q", added.Profile.Fields.CustomConfigFile)
 	}
 }
