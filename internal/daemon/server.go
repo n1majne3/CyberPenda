@@ -1346,14 +1346,38 @@ func (server *Server) previewProjectionRequest() runner.ProjectionRequest {
 	if err != nil {
 		snapshot = runner.CloneGlobalModelProviderSnapshot(nil)
 	}
+	// Story 3: the daemon operator token must never reach editor text, so
+	// the preview request carries no AuthToken and no credential values.
+	// Credential-derived env keys render as redacted placeholders derived
+	// from binding metadata only.
 	return runner.ProjectionRequest{
 		ModelProviders:              server.modelProviders,
 		RuntimePlugins:              server.runtimePlugins,
-		Credentials:                 server.creds,
 		GlobalModelProviderSnapshot: snapshot,
 		DaemonAddr:                  server.listenAddr,
-		AuthToken:                   server.authToken,
+		CredentialEnvNames:          server.credentialEnvNames(),
 	}
+}
+
+// credentialEnvNames lists the env var names global credential bindings
+// project under. Metadata only — never secret values.
+func (server *Server) credentialEnvNames() []string {
+	bindings, err := server.creds.ListGlobal()
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.Disabled {
+			continue
+		}
+		envName, err := credential.DestinationEnv(binding.Source)
+		if err != nil || envName == "" {
+			continue
+		}
+		names = append(names, envName)
+	}
+	return names
 }
 
 // handleMergedConfigPreview answers the final merged result the runtime

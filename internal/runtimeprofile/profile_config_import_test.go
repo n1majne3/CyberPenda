@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
+	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 )
 
@@ -570,5 +573,133 @@ func TestImportProfileConfigKnownPluginDisableAndNoRemainderDuplicate(t *testing
 		if ref.Config["install_ref"] == "frontend-design@claude-plugins-official" {
 			t.Fatalf("omitting the plugin must drop it from Runtime Extensions, got %#v", removed.Profile.Fields.RuntimeExtensions)
 		}
+	}
+}
+
+// Story 8/21: the stored remainder must stay valid YAML — dropping the
+// managed list entry must not remove the enabled: container line.
+func TestImportProfileConfigHermesRemainderStaysValidYAML(t *testing.T) {
+	service := newTestService(t)
+	service.SetManagedKeyDeclarations(map[runtimeprofile.Provider][]runtimeprofile.ManagedKeyDeclaration{
+		runtimeprofile.ProviderHermes: {{
+			Key:   "plugins.enabled",
+			Field: "runtime extensions",
+		}},
+	})
+	baseline := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n"
+	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
+	created, err := service.Create("Hermes YAML Shape", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	edited := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n    - my-custom-plugin\n"
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(result.Profile.Fields.CustomConfigFile), &doc); err != nil {
+		t.Fatalf("stored remainder must parse as YAML: %v\n%s", err, result.Profile.Fields.CustomConfigFile)
+	}
+	plugins, ok := doc["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("plugins must stay an object, got %#v\n%s", doc["plugins"], result.Profile.Fields.CustomConfigFile)
+	}
+	enabled, ok := plugins["enabled"].([]any)
+	if !ok {
+		t.Fatalf("plugins.enabled must stay a list, got %#v\n%s", plugins["enabled"], result.Profile.Fields.CustomConfigFile)
+	}
+	if len(enabled) != 1 || enabled[0] != "my-custom-plugin" {
+		t.Fatalf("remainder must keep exactly the operator plugin, got %#v", enabled)
+	}
+}
+
+// Story 6: without a Model Provider, ANTHROPIC_MODEL / ANTHROPIC_BASE_URL are
+// projections of the structured Model / Endpoint fields. Import consumes them
+// back instead of freezing them into Fields.Env.
+func TestImportProfileConfigClaudeLegacyModelEndpointRoundTrip(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Claude Legacy", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		Model:    "claude-a",
+		Endpoint: "https://a.example.test",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: `{"env":{"ANTHROPIC_MODEL":"claude-a","ANTHROPIC_BASE_URL":"https://a.example.test"}}`,
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if result.Profile.Fields.Model != "claude-a" {
+		t.Fatalf("structured model must survive, got %q", result.Profile.Fields.Model)
+	}
+	if result.Profile.Fields.Endpoint != "https://a.example.test" {
+		t.Fatalf("structured endpoint must survive, got %q", result.Profile.Fields.Endpoint)
+	}
+	if _, present := result.Profile.Fields.Env["ANTHROPIC_MODEL"]; present {
+		t.Fatalf("ANTHROPIC_MODEL must be consumed into the structured field, got %#v", result.Profile.Fields.Env)
+	}
+	if _, present := result.Profile.Fields.Env["ANTHROPIC_BASE_URL"]; present {
+		t.Fatalf("ANTHROPIC_BASE_URL must be consumed into the structured field, got %#v", result.Profile.Fields.Env)
+	}
+
+	changed, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: `{"env":{"ANTHROPIC_MODEL":"claude-b","ANTHROPIC_BASE_URL":"https://a.example.test"}}`,
+	})
+	if err != nil {
+		t.Fatalf("change import: %v", err)
+	}
+	if changed.Profile.Fields.Model != "claude-b" {
+		t.Fatalf("edited model must update the structured field, got %q", changed.Profile.Fields.Model)
+	}
+
+	cleared, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: `{"env":{"ANTHROPIC_BASE_URL":"https://a.example.test"}}`,
+	})
+	if err != nil {
+		t.Fatalf("delete import: %v", err)
+	}
+	if cleared.Profile.Fields.Model != "" {
+		t.Fatalf("removing ANTHROPIC_MODEL must clear the structured model, got %q", cleared.Profile.Fields.Model)
+	}
+}
+
+// Full semantic round-trip: the stored remainder must re-merge so the final
+// projection keeps both the harness plugin and the operator plugin.
+func TestImportProfileConfigHermesRemainderProjectsBothPlugins(t *testing.T) {
+	service := newTestService(t)
+	service.SetManagedKeyDeclarations(map[runtimeprofile.Provider][]runtimeprofile.ManagedKeyDeclaration{
+		runtimeprofile.ProviderHermes: {{
+			Key:   "plugins.enabled",
+			Field: "runtime extensions",
+		}},
+	})
+	baseline := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n"
+	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
+	created, err := service.Create("Hermes Round Trip", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	edited := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n    - my-custom-plugin\n"
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	merged, err := runner.MergedProjectedConfig(runtimeprofile.ProviderHermes, result.Profile)
+	if err != nil {
+		t.Fatalf("merged config: %v", err)
+	}
+	plugins, _ := merged["plugins"].(map[string]any)
+	enabled, _ := plugins["enabled"].([]any)
+	joined := make([]string, 0, len(enabled))
+	for _, item := range enabled {
+		if text, ok := item.(string); ok {
+			joined = append(joined, text)
+		}
+	}
+	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
+		t.Fatalf("final plugins.enabled must contain harness + operator entries, got %#v", joined)
 	}
 }

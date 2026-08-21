@@ -603,6 +603,31 @@ func (s *Service) mapImportConfigDocument(profile Profile, doc map[string]any, r
 			fields.Env = nil
 			mapped = append(mapped, "env")
 		}
+		// Without a Model Provider, ANTHROPIC_MODEL / ANTHROPIC_BASE_URL are
+		// projections of the structured Model / Endpoint fields. Consume them
+		// back so one open→import cycle does not freeze derived values into
+		// Fields.Env and dethrone the structured form (Story 6). With a Model
+		// Provider they stay Managed Keys and refuse above.
+		if profile.Provider == ProviderClaudeCode && strings.TrimSpace(profile.Fields.ModelProviderID) == "" {
+			// Absence of the key clears the structured field so deletion
+			// round-trips, mirroring the Codex model mapping.
+			if value, present := fields.Env["ANTHROPIC_MODEL"]; present {
+				fields.Model = value
+				mapped = append(mapped, "env.ANTHROPIC_MODEL")
+			} else if strings.TrimSpace(fields.Model) != "" {
+				fields.Model = ""
+				mapped = append(mapped, "env.ANTHROPIC_MODEL")
+			}
+			delete(fields.Env, "ANTHROPIC_MODEL")
+			if value, present := fields.Env["ANTHROPIC_BASE_URL"]; present {
+				fields.Endpoint = value
+				mapped = append(mapped, "env.ANTHROPIC_BASE_URL")
+			} else if strings.TrimSpace(fields.Endpoint) != "" {
+				fields.Endpoint = ""
+				mapped = append(mapped, "env.ANTHROPIC_BASE_URL")
+			}
+			delete(fields.Env, "ANTHROPIC_BASE_URL")
+		}
 	}
 
 	// A top-level Codex `model` maps into the structured model
@@ -774,6 +799,12 @@ func surgicalRemainder(provider Provider, dropped []string, rawText string, base
 			droppedHere := false
 			for _, mappedKey := range dropped {
 				if mappedKey == path || mappedKey == candidate {
+					// A managed list container ("enabled:") must survive:
+					// only its harness-derived entries drop, so the
+					// remainder stays valid YAML.
+					if managedLists[path] || managedLists[candidate] {
+						break
+					}
 					keep[i] = false
 					removed++
 					droppedHere = true

@@ -165,12 +165,29 @@ func spliceProjectedRemainder(seed, remainder string) string {
 	return seed + "\n" + remainder
 }
 
+// redactMCPServerURLs strips token query parameters from trusted MCP URLs so
+// the editor preview never carries the daemon operator credential.
+func redactMCPServerURLs(servers []runtimeprofile.MCPServer) []runtimeprofile.MCPServer {
+	out := make([]runtimeprofile.MCPServer, 0, len(servers))
+	for _, server := range servers {
+		if url := strings.TrimSpace(server.URL); url != "" {
+			if cut, _, found := strings.Cut(url, "?token="); found {
+				server.URL = cut
+			}
+		}
+		out = append(out, server)
+	}
+	return out
+}
+
 func StructuredProjectedConfigText(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (string, error) {
 	return StructuredProjectedConfigTextWith(provider, profile, ProjectionRequest{})
 }
 
 // StructuredProjectedConfigTextWith renders the structured projection using
-// the same builders as launch. Credentials stay out of the text.
+// the same builders as launch. When the request carries CredentialEnvNames
+// (the editor preview path), credential-derived env keys render as redacted
+// placeholders from metadata only and the trusted MCP URL carries no token.
 func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile runtimeprofile.Profile, req ProjectionRequest) (string, error) {
 	profile = resolvePreviewProfile(profile, req)
 	projected, err := listPiLaunchReadyProviders(profile, req)
@@ -181,11 +198,24 @@ func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile
 	if err != nil {
 		return "", err
 	}
+	preview := len(req.CredentialEnvNames) > 0 || (req.DaemonAddr != "" && req.AuthToken == "")
+	if preview {
+		req.AuthToken = ""
+		servers = redactMCPServerURLs(servers)
+	}
 	switch provider {
 	case runtimeprofile.ProviderClaudeCode:
-		env, err := buildClaudeEnv(profile, req)
-		if err != nil {
-			return "", err
+		var env map[string]string
+		if preview {
+			env = claudeStructuredEnv(profile)
+			for _, name := range req.CredentialEnvNames {
+				env[name] = "[REDACTED]"
+			}
+		} else {
+			env, err = buildClaudeEnv(profile, req)
+			if err != nil {
+				return "", err
+			}
 		}
 		settings := map[string]any{"env": redactEnvMap(env)}
 		if allowed := claudeTrustedMCPAllowedTools(servers); len(allowed) > 0 {

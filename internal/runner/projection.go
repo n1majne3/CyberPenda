@@ -53,6 +53,10 @@ type ProjectionRequest struct {
 	ModelSnapshot               *modelprovider.Snapshot
 	LaunchModelOverride         string
 	SkillBundles                []skill.Bundle
+	// CredentialEnvNames lists the env var names credential bindings project
+	// under. Preview rendering uses it to show redacted placeholders from
+	// metadata only — no credential value ever enters preview text.
+	CredentialEnvNames []string
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local

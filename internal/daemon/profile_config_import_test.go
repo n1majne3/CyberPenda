@@ -474,3 +474,108 @@ func TestProjectedConfigPreviewIncludesTrustedMCPAllow(t *testing.T) {
 		t.Fatalf("preview must include harness-generated trusted MCP allow entries, got %s", rec.Body.String())
 	}
 }
+
+// Story 3: the daemon operator auth token must never reach editor text.
+func TestProjectedConfigPreviewNeverContainsOperatorToken(t *testing.T) {
+	root := t.TempDir()
+	server, err := daemon.NewServer(daemon.Config{
+		Version:              "test-version",
+		DBPath:               filepath.Join(root, "pentest.db"),
+		Logger:               log.New(&bytes.Buffer{}, "", 0),
+		ListenAddr:           "127.0.0.1:8791",
+		AuthToken:            "super-secret-operator-token",
+		DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	for _, provider := range []string{"codex", "hermes", "claude_code"} {
+		body := `{"name":"Token Leak","provider":"` + provider + `","fields":{}}`
+		req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader([]byte(body)))
+		req.Header.Set("Authorization", "Bearer super-secret-operator-token")
+		rec := httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("%s create status %d body %s", provider, rec.Code, rec.Body.String())
+		}
+		var created struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+			t.Fatalf("decode created: %v", err)
+		}
+		req = httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+created.ID+"/projected-config", nil)
+		req.Header.Set("Authorization", "Bearer super-secret-operator-token")
+		rec = httptest.NewRecorder()
+		server.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s projected-config status %d body %s", provider, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "super-secret-operator-token") {
+			t.Fatalf("%s preview leaked the operator token: %s", provider, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "token=") {
+			t.Fatalf("%s preview contains a token-bearing URL: %s", provider, rec.Body.String())
+		}
+	}
+}
+
+// Story 3/6: global credential values never enter editor text; the editor
+// shows a redacted placeholder under the credential's destination env name,
+// and an unchanged import still succeeds.
+func TestProjectedConfigPreviewRedactsGlobalCredentialValues(t *testing.T) {
+	server := newImportTestServer(t)
+
+	createProfile := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader([]byte(`{"name":"Cred Preview","provider":"claude_code","fields":{}}`)))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, createProfile)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create profile status %d body %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+
+	bindingBody := `{"credential_ref":"gh-token","source":{"kind":"literal","value":"sk-literal-secret-value","destination_env":"MY_CRED"}}`
+	bindingReq := httptest.NewRequest(http.MethodPut, "/api/credential-bindings", bytes.NewReader([]byte(bindingBody)))
+	bindingReq.Header.Set("Content-Type", "application/json")
+	bindingRec := httptest.NewRecorder()
+	server.ServeHTTP(bindingRec, bindingReq)
+	if bindingRec.Code != http.StatusCreated && bindingRec.Code != http.StatusOK {
+		t.Fatalf("create binding status %d body %s", bindingRec.Code, bindingRec.Body.String())
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+created.ID+"/projected-config", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("projected-config status %d body %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-literal-secret-value") {
+		t.Fatalf("preview leaked a global credential value: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "MY_CRED") {
+		t.Fatalf("preview must show the credential destination env name, got %s", rec.Body.String())
+	}
+
+	var seed struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &seed); err != nil {
+		t.Fatalf("decode seed: %v", err)
+	}
+	importBody, err := json.Marshal(map[string]string{"config_text": seed.Text})
+	if err != nil {
+		t.Fatalf("encode import body: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+created.ID+"/import-config", bytes.NewReader(importBody))
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unchanged import with credential placeholder must succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+}
