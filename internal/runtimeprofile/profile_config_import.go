@@ -295,6 +295,19 @@ func (s *Service) refuseImportProblems(profile Profile, doc, baseline map[string
 					}
 					continue
 				}
+				if text, ok := value.(string); ok && isGeneratedRedaction(baseline, path, text) {
+					// The daemon itself rendered this placeholder from a
+					// credential channel. Unchanged placeholders are not
+					// operator input; any other value is a credential change.
+					if text != generatedRedactionPlaceholder {
+						problems = append(problems, ImportConfigKeyError{
+							Key:     path,
+							Field:   "credentials",
+							Message: "value replaces a credential-channel placeholder; change the credential binding instead",
+						})
+					}
+					continue
+				}
 				if secretKeyPattern.MatchString(key) {
 					problems = append(problems, ImportConfigKeyError{
 						Key:     path,
@@ -378,6 +391,24 @@ func (s *Service) importBaselineText(profile Profile, format string) (map[string
 		return nil, fmt.Errorf("parse projected baseline: %w", err)
 	}
 	return baseline, nil
+}
+
+// generatedRedactionPlaceholder is the value the preview renders for
+// credential-derived env keys. Import treats it as daemon provenance.
+const generatedRedactionPlaceholder = "[REDACTED]"
+
+// isGeneratedRedaction reports whether the edited path carries the daemon's
+// own redaction placeholder for a credential-derived baseline entry.
+func isGeneratedRedaction(baseline map[string]any, path, value string) bool {
+	if value != generatedRedactionPlaceholder {
+		return false
+	}
+	current, ok := lookupPath(baseline, path)
+	if !ok {
+		return false
+	}
+	text, ok := current.(string)
+	return ok && text == generatedRedactionPlaceholder
 }
 
 func parseConfigDocument(format, raw string) (map[string]any, error) {
@@ -590,12 +621,19 @@ func (s *Service) mapImportConfigDocument(profile Profile, doc map[string]any, r
 		if envNode, ok := remaining["env"].(map[string]any); ok {
 			// The edited env map replaces the structured env wholesale — Story 6:
 			// keys removed in the editor are removed from the structured field,
-			// so raw edit → import round-trips instead of patching.
+			// so raw edit → import round-trips instead of patching. Generated
+			// redaction placeholders are daemon provenance, never operator
+			// input: they drop out instead of persisting into Fields.Env.
 			fields.Env = make(map[string]string, len(envNode))
 			for envKey, envValue := range envNode {
-				if text, ok := envValue.(string); ok {
-					fields.Env[envKey] = text
+				text, ok := envValue.(string)
+				if !ok {
+					continue
 				}
+				if text == generatedRedactionPlaceholder && isGeneratedRedaction(baseline, "env."+envKey, text) {
+					continue
+				}
+				fields.Env[envKey] = text
 			}
 			mapped = append(mapped, "env")
 			delete(remaining, "env")
@@ -687,6 +725,14 @@ func (s *Service) mapImportConfigDocument(profile Profile, doc map[string]any, r
 	}
 
 	resolved := strings.TrimSpace(profile.Fields.ModelProviderID) != ""
+	// MCP config sections are harness-generated at projection (trusted
+	// server injection) and out of scope for the Custom Config File. They
+	// never persist into the remainder; the structured MCPServers field is
+	// their only source of truth.
+	if _, present := remaining["mcp_servers"]; present {
+		delete(remaining, "mcp_servers")
+		mapped = append(mapped, "mcp_servers")
+	}
 	strippedKeys, stripped := stripUnchangedManagedKeys(remaining, declarations, baseline, resolved)
 
 	// The operator's raw text is preserved verbatim — comments and
@@ -751,11 +797,30 @@ func surgicalRemainder(provider Provider, dropped []string, rawText string, base
 	inSection := false
 	currentList := ""
 	sectionPath := ""
+	currentTable := ""
 	managedLists := map[string]bool{}
 	for key := range managedListEntries {
 		managedLists[key] = true
 	}
 	removed := 0
+	// Whole-subtree drops: managed keys whose baseline value is a map (or a
+	// dotted declaration like model_providers.*) must remove their complete
+	// syntactic span — the TOML table through the next table, the YAML
+	// subtree by indentation. Single-line removal would leave the harness
+	// content in the overlay where deep merge can resurrect it.
+	subtreeDrops := map[string]bool{}
+	for _, key := range dropped {
+		if managedListEntries[key] != nil {
+			continue
+		}
+		if base, ok := lookupPath(baseline, key); ok {
+			if _, isMap := base.(map[string]any); isMap || strings.Contains(key, "*") || strings.HasSuffix(key, ".*") {
+				subtreeDrops[key] = true
+			}
+		} else if strings.Contains(key, "*") {
+			subtreeDrops[key] = true
+		}
+	}
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
@@ -764,12 +829,39 @@ func surgicalRemainder(provider Provider, dropped []string, rawText string, base
 		if importConfigFormat(provider) == "toml" && strings.HasPrefix(trimmed, "[") {
 			inSection = true
 			currentList = ""
+			// A TOML table header opens a whole-table span: when the table
+			// belongs to a managed subtree, drop it through the next header.
+			tableName := strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")
+			currentTable = tableName
+			for drop := range subtreeDrops {
+				prefix := strings.TrimSuffix(drop, ".*")
+				if tableName == prefix || strings.HasPrefix(tableName, prefix+".") {
+					keep[i] = false
+					removed++
+					break
+				}
+			}
 			continue
 		}
 		if importConfigFormat(provider) == "yaml" && !strings.HasPrefix(line, " ") && strings.HasSuffix(trimmed, ":") {
 			inSection = true
 			currentList = ""
 			sectionPath = strings.TrimSuffix(trimmed, ":")
+			// A top-level YAML key with a map baseline drops its entire
+			// subtree (indentation scope), not just the header line.
+			if subtreeDrops[sectionPath] {
+				keep[i] = false
+				removed++
+				continue
+			}
+			continue
+		}
+		// YAML: indented lines under a dropped managed subtree vanish with it.
+		if importConfigFormat(provider) == "yaml" && strings.HasPrefix(line, " ") && sectionPath != "" && subtreeDrops[sectionPath] {
+			if trimmed != "" {
+				keep[i] = false
+				removed++
+			}
 			continue
 		}
 		if importConfigFormat(provider) == "yaml" && strings.HasPrefix(trimmed, "- ") {
@@ -824,6 +916,20 @@ func surgicalRemainder(provider Provider, dropped []string, rawText string, base
 			if rest == "" {
 				continue
 			}
+		}
+		// TOML: lines inside a dropped managed table vanish with it.
+		if importConfigFormat(provider) == "toml" && inSection {
+			for drop := range subtreeDrops {
+				prefix := strings.TrimSuffix(drop, ".*")
+				if currentTable == prefix || strings.HasPrefix(currentTable, prefix+".") {
+					if trimmed != "" {
+						keep[i] = false
+						removed++
+					}
+					break
+				}
+			}
+			continue
 		}
 		key, _, found := strings.Cut(trimmed, "=")
 		if found && !inSection {

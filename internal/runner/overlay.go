@@ -3,6 +3,7 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -145,7 +146,7 @@ func ProjectedConfigTextWith(provider runtimeprofile.Provider, profile runtimepr
 	// comments. JSON has no comments, so it still merge-encodes.
 	switch overlayFormat(provider) {
 	case "toml", "yaml":
-		return spliceProjectedRemainder(seed, remainder), nil
+		return spliceProjectedRemainder(provider, seed, remainder), nil
 	}
 	merged, err := MergedProjectedConfigWith(provider, profile, req)
 	if err != nil {
@@ -154,15 +155,305 @@ func ProjectedConfigTextWith(provider runtimeprofile.Provider, profile runtimepr
 	return encodeProjectedDocument(provider, merged)
 }
 
-func spliceProjectedRemainder(seed, remainder string) string {
+// spliceProjectedRemainder merges the operator's remainder into the generated
+// seed without duplicating top-level keys. Keys only in the remainder keep
+// their verbatim text (comments included); a key present on both sides is
+// merged structurally — scalars/maps keep the structured value, arrays union —
+// so the editor shows one coherent document that still parses.
+func spliceProjectedRemainder(provider runtimeprofile.Provider, seed, remainder string) string {
 	seed = strings.TrimRight(seed, "\n")
 	if remainder == "" {
 		return seed + "\n"
 	}
-	if strings.HasPrefix(remainder, "\n") {
+	if !strings.HasPrefix(remainder, "\n") {
+		remainder = "\n" + remainder
+	}
+	remainderKeys := topLevelKeys(provider, remainder)
+	if len(remainderKeys) == 0 {
 		return seed + remainder
 	}
-	return seed + "\n" + remainder
+
+	blocks := topLevelBlocks(provider, remainder)
+	var mergedParts []string
+	lines := strings.Split(seed, "\n")
+	format := overlayFormat(provider)
+
+	consumed := map[string]bool{}
+	if format == "yaml" {
+		currentKey := ""
+		var currentSpan []string
+		flush := func() {
+			if currentKey == "" {
+				return
+			}
+			if remainderKeys[currentKey] {
+				mergedParts = append(mergedParts, mergeCollidingBlock(provider, currentKey, currentSpan, blocks[currentKey]))
+				consumed[currentKey] = true
+			} else {
+				mergedParts = append(mergedParts, strings.Join(currentSpan, "\n"))
+			}
+			currentSpan = nil
+		}
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			atRoot := trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "-")
+			if atRoot && strings.HasSuffix(trimmed, ":") {
+				flush()
+				currentKey = strings.TrimSuffix(trimmed, ":")
+				currentSpan = []string{line}
+				continue
+			}
+			if currentKey != "" {
+				currentSpan = append(currentSpan, line)
+			} else if trimmed != "" || line == "" {
+				mergedParts = append(mergedParts, line)
+			}
+		}
+		flush()
+		result := strings.Join(mergedParts, "\n")
+		for key, block := range blocks {
+			if !consumed[key] && !seedHasTopLevelKey(provider, seed, key) {
+				result += "\n" + block
+			}
+		}
+		return result
+	}
+
+	// TOML: root key/values and [tables].
+	currentTable := ""
+	var currentTableSpan []string
+	rootLines := make([]string, 0)
+	tables := map[string][]string{}
+	tableOrder := make([]string, 0)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			if currentTable != "" {
+				tables[currentTable] = append(tables[currentTable], currentTableSpan...)
+			}
+			currentTable = strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")
+			currentTableSpan = []string{line}
+			tableOrder = append(tableOrder, currentTable)
+			continue
+		}
+		if currentTable != "" {
+			currentTableSpan = append(currentTableSpan, line)
+			continue
+		}
+		rootLines = append(rootLines, line)
+	}
+	if currentTable != "" {
+		tables[currentTable] = append(tables[currentTable], currentTableSpan...)
+	}
+
+	out := make([]string, 0, len(rootLines))
+	for _, line := range rootLines {
+		trimmed := strings.TrimSpace(line)
+		if key, _, found := strings.Cut(trimmed, "="); found && remainderKeys[strings.TrimSpace(key)] {
+			collide := strings.TrimSpace(key)
+			out = append(out, mergeCollidingBlock(provider, collide, []string{line}, blocks[collide]))
+			delete(blocks, collide)
+			continue
+		}
+		out = append(out, line)
+	}
+	seenTables := map[string]bool{}
+	for _, table := range tableOrder {
+		if seenTables[table] {
+			continue
+		}
+		seenTables[table] = true
+		if remainderKeys[table] {
+			out = append(out, mergeCollidingBlock(provider, table, tables[table], blocks[table]))
+			delete(blocks, table)
+			continue
+		}
+		out = append(out, tables[table]...)
+	}
+	// Remainder keys that do not exist in the seed stay verbatim (comments
+	// and formatting included). A leading comment block goes first.
+	if commentBlock, ok := blocks[""]; ok {
+		out = append(out, commentBlock)
+		delete(blocks, "")
+	}
+	for _, key := range sortedRemainderKeys(blocks) {
+		out = append(out, blocks[key])
+	}
+	return strings.Join(out, "\n")
+}
+
+// sortedRemainderKeys lists remainder-only keys in stable order.
+func sortedRemainderKeys(blocks map[string]string) []string {
+	keys := make([]string, 0, len(blocks))
+	for key := range blocks {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// topLevelBlocks splits a document into verbatim text blocks keyed by their
+// root-level key. YAML blocks span the header plus its indented subtree; TOML
+// blocks are either a "key = ..." line or a full [table].
+func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]string {
+	blocks := map[string]string{}
+	format := overlayFormat(provider)
+	lines := strings.Split(raw, "\n")
+	if format == "yaml" {
+		currentKey := ""
+		var current []string
+		flush := func() {
+			if currentKey != "" {
+				blocks[currentKey] = strings.Join(current, "\n")
+			}
+			current = nil
+		}
+		for _, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			atRoot := trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "-")
+			if atRoot && strings.HasSuffix(trimmed, ":") {
+				flush()
+				currentKey = strings.TrimSuffix(trimmed, ":")
+				current = []string{line}
+				continue
+			}
+			if currentKey != "" {
+				current = append(current, line)
+			}
+		}
+		flush()
+		return blocks
+	}
+	currentTable := ""
+	var current []string
+	flush := func() {
+		if currentTable != "" {
+			blocks[currentTable] = strings.Join(current, "\n")
+		}
+		current = nil
+	}
+	var preamble []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			flush()
+			currentTable = strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")
+			current = []string{line}
+			continue
+		}
+		if currentTable != "" {
+			current = append(current, line)
+			continue
+		}
+		if key, _, found := strings.Cut(trimmed, "="); found && trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			blocks[strings.TrimSpace(key)] = line
+			continue
+		}
+		if trimmed != "" || line == "" {
+			preamble = append(preamble, line)
+		}
+	}
+	flush()
+	if len(preamble) > 0 {
+		blocks[""] = strings.Join(preamble, "\n")
+	}
+	return blocks
+}
+
+// mergeCollidingBlock merges one colliding top-level key: the structured seed
+// span and the operator block are parsed and deep-merged (structured wins,
+// plugins.enabled unions), then re-encoded in the provider format.
+func mergeCollidingBlock(provider runtimeprofile.Provider, key string, seedSpan []string, operatorBlock string) string {
+	format := overlayFormat(provider)
+	parse := func(text string) map[string]any {
+		var doc map[string]any
+		if format == "yaml" {
+			body := strings.TrimSpace(text)
+			if strings.HasPrefix(body, key+":") {
+				// The span is already a full "key: ..." document.
+				_ = yaml.Unmarshal([]byte(body), &doc)
+				if inner, ok := doc[key]; ok {
+					return map[string]any{key: inner}
+				}
+				return doc
+			}
+			wrapped := key + ":\n" + indentLines(body, "  ")
+			_ = yaml.Unmarshal([]byte(wrapped), &doc)
+			if inner, ok := doc[key].(map[string]any); ok {
+				doc = inner
+			}
+		} else {
+			wrapped := "[parent]\n" + text
+			_ = toml.Unmarshal([]byte(wrapped), &doc)
+			if inner, ok := doc["parent"].(map[string]any); ok {
+				doc = inner
+			}
+		}
+		if doc == nil {
+			doc = map[string]any{}
+		}
+		return doc
+	}
+	seedDoc := parse(strings.Join(seedSpan, "\n"))
+	operatorDoc := parse(operatorBlock)
+	merged := deepMergeConfig("", seedDoc, operatorDoc)
+	value := merged[key]
+	if value == nil {
+		value = merged
+	}
+	var b strings.Builder
+	if format == "yaml" {
+		encoder := yaml.NewEncoder(&b)
+		encoder.SetIndent(2)
+		if err := encoder.Encode(map[string]any{key: value}); err == nil {
+			text := b.String()
+			return strings.TrimRight(text, "\n") + "\n"
+		}
+	} else if format == "toml" {
+		if err := toml.NewEncoder(&b).Encode(map[string]any{key: value}); err == nil {
+			return b.String()
+		}
+	}
+	return strings.Join(seedSpan, "\n")
+}
+
+// indentLines prefixes every non-empty line with the given indentation.
+func indentLines(text, indent string) string {
+	split := strings.Split(text, "\n")
+	for i, line := range split {
+		if strings.TrimSpace(line) != "" {
+			split[i] = indent + line
+		}
+	}
+	return strings.Join(split, "\n")
+}
+
+// topLevelKeys lists the root-level keys of a provider-native document.
+func topLevelKeys(provider runtimeprofile.Provider, raw string) map[string]bool {
+	keys := map[string]bool{}
+	for key := range topLevelBlocks(provider, raw) {
+		keys[key] = true
+	}
+	return keys
+}
+
+// seedHasTopLevelKey reports whether the seed text declares the key at root level.
+func seedHasTopLevelKey(provider runtimeprofile.Provider, seed, key string) bool {
+	format := overlayFormat(provider)
+	for _, line := range strings.Split(seed, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch format {
+		case "yaml":
+			if !strings.HasPrefix(line, " ") && strings.HasPrefix(trimmed, key+":") {
+				return true
+			}
+		case "toml":
+			if strings.HasPrefix(trimmed, "[") && strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]") == key {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // redactMCPServerURLs strips token query parameters from trusted MCP URLs so

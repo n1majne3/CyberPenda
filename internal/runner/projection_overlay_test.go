@@ -3,8 +3,11 @@ package runner_test
 import (
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -358,5 +361,35 @@ func TestProjectedConfigTextPreservesTOMLRemainderComments(t *testing.T) {
 	}
 	if !strings.Contains(text, "web_search = true") {
 		t.Fatalf("reopen seed must keep the remainder keys, got:\n%s", text)
+	}
+}
+
+// Story 8: reopening a Hermes profile with an operator plugin must produce
+// ONE plugins block containing both harness and operator entries — never a
+// duplicate top-level key.
+func TestProjectedConfigTextHermesReopenSinglePluginsBlock(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "plugins:\n  enabled:\n    - my-custom-plugin\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	if strings.Count(text, "plugins:") != 1 {
+		t.Fatalf("reopen must contain exactly one plugins block, got:\n%s", text)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+	plugins, _ := doc["plugins"].(map[string]any)
+	enabled, _ := plugins["enabled"].([]any)
+	joined := make([]string, 0, len(enabled))
+	for _, item := range enabled {
+		if s, ok := item.(string); ok {
+			joined = append(joined, s)
+		}
+	}
+	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
+		t.Fatalf("reopen must show harness + operator plugins, got %#v\n%s", joined, text)
 	}
 }

@@ -703,3 +703,122 @@ func TestImportProfileConfigHermesRemainderProjectsBothPlugins(t *testing.T) {
 		t.Fatalf("final plugins.enabled must contain harness + operator entries, got %#v", joined)
 	}
 }
+
+// Generated redactions round-trip: the daemon's own [REDACTED] placeholder
+// imports cleanly, never persists into Fields.Env, and any other value is
+// refused as a credential-channel change.
+func TestImportProfileConfigCredentialPlaceholderProvenance(t *testing.T) {
+	service := newTestService(t)
+	baseline := "{\n  \"env\": {\"GITHUB_TOKEN\": \"[REDACTED]\", \"MY_CRED\": \"[REDACTED]\"}\n}"
+	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
+	created, err := service.Create("Cred Provenance", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	unchanged, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "{\n  \"env\": {\"GITHUB_TOKEN\": \"[REDACTED]\", \"MY_CRED\": \"[REDACTED]\"}\n}",
+	})
+	if err != nil {
+		t.Fatalf("placeholder no-op import must succeed, got %v", err)
+	}
+	if _, present := unchanged.Profile.Fields.Env["GITHUB_TOKEN"]; present {
+		t.Fatalf("generated placeholder must not persist into Env, got %#v", unchanged.Profile.Fields.Env)
+	}
+	if _, present := unchanged.Profile.Fields.Env["MY_CRED"]; present {
+		t.Fatalf("generated placeholder must not persist into Env, got %#v", unchanged.Profile.Fields.Env)
+	}
+
+	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "{\n  \"env\": {\"GITHUB_TOKEN\": \"[REDACTED]\", \"MY_CRED\": \"sk-test-forged-value-123\"}\n}",
+	})
+	if err == nil {
+		t.Fatal("replacing a generated placeholder must be refused")
+	}
+	if !strings.Contains(err.Error(), "credential") {
+		t.Fatalf("refusal must point at the credential channel, got %v", err)
+	}
+}
+
+// Managed subtrees leave the raw text too: Hermes providers and Codex
+// model_providers.* tables must not survive into the stored remainder.
+func TestImportProfileConfigManagedSubtreeLeavesRawText(t *testing.T) {
+	service := newTestService(t)
+	service.SetManagedKeyDeclarations(map[runtimeprofile.Provider][]runtimeprofile.ManagedKeyDeclaration{
+		runtimeprofile.ProviderHermes: {{Key: "providers", Field: "model providers"}},
+		runtimeprofile.ProviderCodex:  {{Key: "model_providers.*", Field: "model_provider_id", Condition: "model_provider_resolved"}},
+	})
+
+	hermesBaseline := "model:\n  provider: custom:a\nproviders:\n  a:\n    base_url: https://a.example.test\n"
+	service.SetImportBaseline(func(p runtimeprofile.Profile) (string, error) {
+		if p.Provider == runtimeprofile.ProviderHermes {
+			return hermesBaseline, nil
+		}
+		return "approval_policy = \"never\"\n", nil
+	})
+	hermes, err := service.Create("Hermes Subtree", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create hermes: %v", err)
+	}
+	result, err := service.ImportConfig(hermes.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "model:\n  provider: custom:a\nproviders:\n  a:\n    base_url: https://a.example.test\nskills:\n  autoload: false\n",
+	})
+	if err != nil {
+		t.Fatalf("hermes import: %v", err)
+	}
+	if strings.Contains(result.Profile.Fields.CustomConfigFile, "base_url") || strings.Contains(result.Profile.Fields.CustomConfigFile, "providers") {
+		t.Fatalf("managed providers subtree must leave the remainder, got:\n%s", result.Profile.Fields.CustomConfigFile)
+	}
+	if !strings.Contains(result.Profile.Fields.CustomConfigFile, "autoload: false") {
+		t.Fatalf("operator keys must survive:\n%s", result.Profile.Fields.CustomConfigFile)
+	}
+
+	codex, err := service.Create("Codex Subtree", runtimeprofile.ProviderCodex, runtimeprofile.Fields{ModelProviderID: "prov-a"})
+	if err != nil {
+		t.Fatalf("create codex: %v", err)
+	}
+	codexBaseline := "approval_policy = \"never\"\n\n[model_providers.prov-a]\nname = \"A\"\nbase_url = \"https://a.example.test/v1\"\nwire_api = \"responses\"\n"
+	service.SetImportBaseline(func(p runtimeprofile.Profile) (string, error) {
+		if p.Provider == runtimeprofile.ProviderCodex {
+			return codexBaseline, nil
+		}
+		return hermesBaseline, nil
+	})
+	codexResult, err := service.ImportConfig(codex.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: "approval_policy = \"never\"\n\n[model_providers.prov-a]\nname = \"A\"\nbase_url = \"https://a.example.test/v1\"\nwire_api = \"responses\"\n\n[features]\nweb_search = true\n",
+	})
+	if err != nil {
+		t.Fatalf("codex import: %v", err)
+	}
+	if strings.Contains(codexResult.Profile.Fields.CustomConfigFile, "model_providers") || strings.Contains(codexResult.Profile.Fields.CustomConfigFile, "base_url") {
+		t.Fatalf("managed model_providers table must leave the remainder, got:\n%s", codexResult.Profile.Fields.CustomConfigFile)
+	}
+	if !strings.Contains(codexResult.Profile.Fields.CustomConfigFile, "web_search") {
+		t.Fatalf("operator table must survive:\n%s", codexResult.Profile.Fields.CustomConfigFile)
+	}
+}
+
+// MCP config sections are out of scope for the Custom Config File: they are
+// harness-generated and must never persist into the remainder.
+func TestImportProfileConfigStripsMCPServersFromRemainder(t *testing.T) {
+	service := newTestService(t)
+	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderCodex, runtimeprofile.ProviderHermes} {
+		created, err := service.Create("MCP "+string(provider), provider, runtimeprofile.Fields{})
+		if err != nil {
+			t.Fatalf("create %s: %v", provider, err)
+		}
+		var text string
+		if provider == runtimeprofile.ProviderCodex {
+			text = "\n[mcp_servers.pentest]\nurl = \"http://127.0.0.1:8787/mcp\"\nenabled = true\n"
+		} else {
+			text = "mcp_servers:\n  pentest:\n    url: http://127.0.0.1:8787/mcp\n"
+		}
+		result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: text})
+		if err != nil {
+			t.Fatalf("%s import: %v", provider, err)
+		}
+		if strings.Contains(result.Profile.Fields.CustomConfigFile, "mcp_servers") || strings.Contains(result.Profile.Fields.CustomConfigFile, "pentest") {
+			t.Fatalf("%s mcp_servers must not persist into the remainder, got:\n%s", provider, result.Profile.Fields.CustomConfigFile)
+		}
+	}
+}
