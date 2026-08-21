@@ -70,6 +70,13 @@ func BuiltinPlugins() []Plugin {
 			ConfigProjection: ConfigProjection{
 				Primitive:  "codex_home",
 				ConfigPath: "runtime-home/codex/config.toml",
+				ManagedKeys: []ManagedKey{
+					{Key: "approval_policy", Field: "non-interactive defaults"},
+					{Key: "sandbox_mode", Field: "non-interactive defaults"},
+					{Key: "model", Field: "model", Condition: "model_provider_resolved"},
+					{Key: "model_provider", Field: "model_provider_id", Condition: "model_provider_resolved"},
+					{Key: "model_providers.*", Field: "model_provider_id", Condition: "model_provider_resolved"},
+				},
 			},
 			Launch: LaunchTemplate{
 				Args: []string{"{{binary}}", "{{codex_subcommand}}", "--model", "{{model}}", "{{codex_exec_args}}", "{{custom_args}}", "{{codex_goal_prefix}}", "{{goal}}"},
@@ -112,6 +119,13 @@ func BuiltinPlugins() []Plugin {
 				Primitive:     "claude_settings",
 				ConfigPath:    "runtime-home/claude/settings.json",
 				MCPConfigPath: "workdir/.mcp.json",
+				ManagedKeys: []ManagedKey{
+					{Key: "permissions.allow", Field: "mcp_servers"},
+					{Key: "env.ANTHROPIC_BASE_URL", Field: "endpoint", Condition: "model_provider_resolved"},
+					{Key: "env.ANTHROPIC_MODEL", Field: "model", Condition: "model_provider_resolved"},
+					{Key: "env.ANTHROPIC_API_KEY", Field: "api_keys", Condition: "model_provider_resolved"},
+					{Key: "env.ANTHROPIC_AUTH_TOKEN", Field: "api_keys", Condition: "model_provider_resolved"},
+				},
 			},
 			Launch: LaunchTemplate{
 				Args: []string{
@@ -183,6 +197,9 @@ func BuiltinPlugins() []Plugin {
 				Primitive:     "pi_agent",
 				ConfigPath:    "runtime-home/pi/agent/models.json",
 				MCPConfigPath: "runtime-home/pi/agent/mcp.json",
+				ManagedKeys: []ManagedKey{
+					{Key: "providers", Field: "model providers (ADR 0015 global projection)"},
+				},
 			},
 			Launch: LaunchTemplate{
 				Args: []string{"{{binary}}", "{{pi_provider_args}}", "--model", "{{model}}", "--mode", "json", "{{custom_args}}", "{{goal}}"},
@@ -239,6 +256,15 @@ func BuiltinPlugins() []Plugin {
 			ConfigProjection: ConfigProjection{
 				Primitive:  "hermes_home",
 				ConfigPath: "runtime-home/hermes/config.yaml",
+				ManagedKeys: []ManagedKey{
+					{Key: "approvals.mode", Field: "non-interactive defaults"},
+					{Key: "agent.*", Field: "reasoning_effort"},
+					{Key: "delegation.*", Field: "reasoning_effort"},
+					{Key: "model.*", Field: "model_provider_id"},
+					{Key: "providers", Field: "model providers (ADR 0026 global projection)"},
+					{Key: "plugins.enabled", Field: "runtime extensions"},
+					{Key: "terminal.backend", Field: "non-interactive defaults"},
+				},
 			},
 			Launch: LaunchTemplate{
 				Args: []string{"{{binary}}", "--yolo", "acp", "{{custom_args}}"},

@@ -95,6 +95,11 @@ type Fields struct {
 	// SandboxImage overrides the daemon default sandbox image for tasks using
 	// this profile. Leave empty to use the daemon-wide setting.
 	SandboxImage string `json:"sandbox_image,omitempty"`
+	// CustomConfigFile is the provider-bound Custom Config File: raw
+	// provider-native config text holding only keys structured fields cannot
+	// express. Config Projection deep-merges it over the Generated Runtime
+	// Config; structured fields always win conflicts. Empty means no overlay.
+	CustomConfigFile string `json:"custom_config_file,omitempty"`
 }
 
 // ProfileKind classifies how a runtime profile was created.
@@ -121,6 +126,31 @@ type Profile struct {
 // ErrNotFound is returned when no profile matches the requested id.
 var ErrNotFound = errors.New("runtime profile not found")
 
+// ErrProviderSwitchNeedsOverlayClear reports a provider switch on a profile
+// whose Custom Config File is non-empty. The overlay is provider-bound raw
+// text; applying it under a different provider would inject foreign keys.
+type ProviderSwitchNeedsOverlayClearError struct {
+	From Provider
+	To   Provider
+}
+
+func (e *ProviderSwitchNeedsOverlayClearError) Error() string {
+	if e == nil {
+		return "provider switch requires clearing the custom config file"
+	}
+	return fmt.Sprintf(
+		"switching provider from %s to %s requires clearing the custom config file; confirm to discard it",
+		e.From, e.To,
+	)
+}
+
+// IsProviderSwitchNeedsOverlayClear reports whether err is the provider
+// switch overlay confirmation error.
+func IsProviderSwitchNeedsOverlayClear(err error) bool {
+	var target *ProviderSwitchNeedsOverlayClearError
+	return errors.As(err, &target)
+}
+
 // Sentinel validation errors.
 var (
 	ErrMissingName     = errors.New("runtime profile name is required")
@@ -130,8 +160,9 @@ var (
 
 // Service implements runtime profile business rules against SQLite.
 type Service struct {
-	db        *store.DB
-	providers map[Provider]bool
+	db          *store.DB
+	providers   map[Provider]bool
+	managedKeys map[Provider][]managedKeyDeclaration
 }
 
 // NewService returns a Service backed by the given database.
@@ -244,8 +275,10 @@ func (s *Service) List() ([]Profile, error) {
 
 // Update applies non-empty fields to an existing profile. An empty provider is
 // rejected; omitted structured fields preserve the existing values so partial
-// edits do not erase a working configuration.
-func (s *Service) Update(id, name string, provider Provider, fields Fields, fieldsTouched bool) (Profile, error) {
+// edits do not erase a working configuration. Switching the provider while the
+// Custom Config File is non-empty is refused unless
+// confirmProviderSwitchClearsOverlay is set, which clears the overlay.
+func (s *Service) Update(id, name string, provider Provider, fields Fields, fieldsTouched bool, confirmProviderSwitchClearsOverlay bool) (Profile, error) {
 	existing, err := s.Get(id)
 	if err != nil {
 		return Profile{}, err
@@ -259,6 +292,15 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 	if provider != "" {
 		if err := s.validate(existing.Name, provider); err != nil {
 			return Profile{}, err
+		}
+		if provider != existing.Provider && strings.TrimSpace(existing.Fields.CustomConfigFile) != "" {
+			if !confirmProviderSwitchClearsOverlay {
+				return Profile{}, &ProviderSwitchNeedsOverlayClearError{
+					From: existing.Provider,
+					To:   provider,
+				}
+			}
+			existing.Fields.CustomConfigFile = ""
 		}
 		existing.Provider = provider
 	} else if err := s.validate(existing.Name, existing.Provider); err != nil {
@@ -455,6 +497,11 @@ func (s *Service) validate(name string, provider Provider) error {
 // reordered.
 func normalizeFields(provider Provider, fields Fields) (Fields, error) {
 	if err := ValidateCustomArgs(provider, fields.CustomArgs); err != nil {
+		return Fields{}, err
+	}
+	// The Custom Config File persists inside fields; a Runtime Profile never
+	// stores secret values, so every write path re-checks the overlay.
+	if err := ValidateOverlaySecrets(fields.CustomConfigFile); err != nil {
 		return Fields{}, err
 	}
 	if strings.TrimSpace(fields.ReasoningEffort) == "" {

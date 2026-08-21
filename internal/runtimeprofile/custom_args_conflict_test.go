@@ -191,7 +191,7 @@ func TestUpdateRejectsConflictingCustomArgsWithoutPersisting(t *testing.T) {
 	_, err = service.Update(created.ID, "", "", runtimeprofile.Fields{
 		Model:      "DeepSeek-V4-Pro",
 		CustomArgs: []string{"--thinking", "medium"},
-	}, true)
+	}, true, false)
 	if err == nil {
 		t.Fatal("expected update to reject conflicting custom args")
 	}
