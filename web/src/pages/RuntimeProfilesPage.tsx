@@ -371,27 +371,31 @@ export function RuntimeProfilesPage() {
   const [configImporting, setConfigImporting] = useState(false);
   const [configImportKeys, setConfigImportKeys] = useState<{ key: string; field?: string; message: string }[]>([]);
   const [confirmSwitchProviderId, setConfirmSwitchProviderId] = useState<string | null>(null);
-  const [mergedPreview, setMergedPreview] = useState<string>("");
+  const [mergedPreview, setMergedPreview] = useState<{ id: string; text: string } | null>(null);
+  const activeProfileId = selected?.id;
+  const activeProfileUpdatedAt = selected?.updated_at;
+  const activeProfileOverlay = selected?.fields.custom_config_file;
+  // Only the preview fetched for the currently selected profile is shown, so
+  // switching profiles never flashes the previous profile's merged config.
+  const mergedPreviewText =
+    mergedPreview && activeProfileId && mergedPreview.id === activeProfileId ? mergedPreview.text : "";
 
   // Show the final merged result (structured + Custom Config File
   // overlay) exactly as projection will produce it.
   useEffect(() => {
-    if (!selected) {
-      setMergedPreview("");
-      return;
-    }
+    if (!activeProfileId) return;
     let cancelled = false;
-    mergedConfigPreview(selected.id)
+    mergedConfigPreview(activeProfileId)
       .then((payload) => {
-        if (!cancelled) setMergedPreview(JSON.stringify(payload?.merged ?? {}, null, 2));
+        if (!cancelled) setMergedPreview({ id: activeProfileId, text: JSON.stringify(payload?.merged ?? {}, null, 2) });
       })
       .catch(() => {
-        if (!cancelled) setMergedPreview("");
+        if (!cancelled) setMergedPreview({ id: activeProfileId, text: "" });
       });
     return () => {
       cancelled = true;
     };
-  }, [selected?.id, selected?.updated_at, selected?.fields.custom_config_file]);
+  }, [activeProfileId, activeProfileUpdatedAt, activeProfileOverlay]);
 
   async function openConfigEditor() {
     if (!selected) return;
@@ -670,13 +674,13 @@ export function RuntimeProfilesPage() {
                   </pre>
                 </div>
               ) : null}
-              {mergedPreview.trim() ? (
+              {mergedPreviewText.trim() ? (
                 <div className="mt-2 min-w-0">
                   <p className="text-sm font-medium leading-none text-muted-foreground">
                     Final merged config (structured + custom config file)
                   </p>
                   <pre data-testid="merged-config-preview" className="mt-1 max-h-64 w-full max-w-full overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-                    {mergedPreview}
+                    {mergedPreviewText}
                   </pre>
                 </div>
               ) : null}
