@@ -313,3 +313,50 @@ func TestHermesPluginsEnabledMergesOperatorEntries(t *testing.T) {
 		t.Fatalf("operator plugin must coexist, got %#v", got)
 	}
 }
+
+// Story 14/15: overlay extra permissions.allow entries must not union into
+// the harness-generated allow list. Arrays are whole-replace; structured wins.
+func TestClaudePermissionsAllowDoesNotUnionOverlayEntries(t *testing.T) {
+	layout, _ := projectForTest(t, runtimeprofile.ProviderClaudeCode)
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Fields: runtimeprofile.Fields{
+			CustomConfigFile: `{"permissions":{"allow":["Bash(*)"],"deny":["Bash(rm -rf *)"]}}`,
+		},
+	}
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		DaemonAddr: "127.0.0.1:8787",
+	})
+	if err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	settings := readJSONFile(t, projection.ConfigPath)
+	permissions, _ := settings["permissions"].(map[string]any)
+	allow, _ := permissions["allow"].([]any)
+	for _, item := range allow {
+		if text, ok := item.(string); ok && text == "Bash(*)" {
+			t.Fatalf("overlay extra allow entry must not union into the managed list: %#v", allow)
+		}
+	}
+	deny, _ := permissions["deny"].([]any)
+	if len(deny) == 0 || deny[0] != "Bash(rm -rf *)" {
+		t.Fatalf("non-managed deny must still merge: %#v", permissions)
+	}
+}
+
+// Story 8: re-opening the editor shows the Custom Config File remainder
+// with comments and formatting intact, not a re-encoded merge.
+func TestProjectedConfigTextPreservesTOMLRemainderComments(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex}
+	profile.Fields.CustomConfigFile = "# Please keep this explanation\n[features]\nweb_search = true\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderCodex, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	if !strings.Contains(text, "# Please keep this explanation") {
+		t.Fatalf("reopen seed must keep the remainder comment, got:\n%s", text)
+	}
+	if !strings.Contains(text, "web_search = true") {
+		t.Fatalf("reopen seed must keep the remainder keys, got:\n%s", text)
+	}
+}

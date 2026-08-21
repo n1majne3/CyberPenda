@@ -44,12 +44,52 @@ func createProfileForImport(t *testing.T, server *daemon.Server) string {
 	return created.ID
 }
 
+func claudeImportBodyFromSeed(t *testing.T, server *daemon.Server, id string, mutate func(map[string]any)) []byte {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+id+"/projected-config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("projected-config status %d body %s", rec.Code, rec.Body.String())
+	}
+	var seed struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &seed); err != nil {
+		t.Fatalf("decode seed: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(seed.Text), &doc); err != nil {
+		t.Fatalf("parse seed text: %v", err)
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	mutate(doc)
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("encode edited seed: %v", err)
+	}
+	body, err := json.Marshal(map[string]string{"config_text": string(raw)})
+	if err != nil {
+		t.Fatalf("encode import body: %v", err)
+	}
+	return body
+}
+
 func TestImportRuntimeProfileConfigEndpointSucceeds(t *testing.T) {
 	server := newImportTestServer(t)
 	id := createProfileForImport(t, server)
 
-	body := `{"config_text":"{\n  \"env\": {\"MY_TOOL_TAG\": \"abc\"},\n  \"enabledPlugins\": {\"warp@claude-code-warp\": true}\n}"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader([]byte(body)))
+	body := claudeImportBodyFromSeed(t, server, id, func(doc map[string]any) {
+		env, _ := doc["env"].(map[string]any)
+		if env == nil {
+			env = map[string]any{}
+			doc["env"] = env
+		}
+		env["MY_TOOL_TAG"] = "abc"
+		doc["enabledPlugins"] = map[string]any{"warp@claude-code-warp": true}
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 
@@ -130,8 +170,10 @@ func TestUpdateRuntimeProfileProviderSwitchReturnsConflict(t *testing.T) {
 	id := createProfileForImport(t, server)
 
 	// Seed a non-empty Custom Config File through the import endpoint.
-	importBody := `{"config_text":"{\"enabledPlugins\":{\"warp@claude-code-warp\":true}}"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader([]byte(importBody)))
+	importBody := claudeImportBodyFromSeed(t, server, id, func(doc map[string]any) {
+		doc["enabledPlugins"] = map[string]any{"warp@claude-code-warp": true}
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader(importBody))
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -156,8 +198,10 @@ func TestUpdateRuntimeProfileProviderSwitchConfirmClearsOverlay(t *testing.T) {
 	server := newImportTestServer(t)
 	id := createProfileForImport(t, server)
 
-	importBody := `{"config_text":"{\"enabledPlugins\":{\"warp@claude-code-warp\":true}}"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader([]byte(importBody)))
+	importBody := claudeImportBodyFromSeed(t, server, id, func(doc map[string]any) {
+		doc["enabledPlugins"] = map[string]any{"warp@claude-code-warp": true}
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader(importBody))
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -181,8 +225,10 @@ func TestUpdateRuntimeProfileProviderSwitchConfirmClearsOverlayWithFields(t *tes
 	server := newImportTestServer(t)
 	id := createProfileForImport(t, server)
 
-	importBody := `{"config_text":"{\"enabledPlugins\":{\"warp@claude-code-warp\":true}}"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader([]byte(importBody)))
+	importBody := claudeImportBodyFromSeed(t, server, id, func(doc map[string]any) {
+		doc["enabledPlugins"] = map[string]any{"warp@claude-code-warp": true}
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader(importBody))
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -208,8 +254,10 @@ func TestMergedConfigPreviewEndpointCombinesOverlay(t *testing.T) {
 	server := newImportTestServer(t)
 	id := createProfileForImport(t, server)
 
-	importBody := `{"config_text":"{\"enabledPlugins\":{\"warp@claude-code-warp\":true}}"}`
-	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader([]byte(importBody)))
+	importBody := claudeImportBodyFromSeed(t, server, id, func(doc map[string]any) {
+		doc["enabledPlugins"] = map[string]any{"warp@claude-code-warp": true}
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader(importBody))
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -333,5 +381,96 @@ func TestProjectedConfigPreviewIncludesResolvedModelProvider(t *testing.T) {
 	}
 	if strings.Contains(rec.Body.String(), "sk-test-not-a-real-key") {
 		t.Fatalf("preview must redact credentials, got %s", rec.Body.String())
+	}
+}
+
+// Story 6/7: NewServer HTTP import maps official Claude catalog plugins into
+// Runtime Extensions and drops them on disable. warp stays remainder.
+func TestImportRuntimeProfileConfigMapsOfficialPlugin(t *testing.T) {
+	server := newImportTestServer(t)
+	id := createProfileForImport(t, server)
+
+	body := claudeImportBodyFromSeed(t, server, id, func(doc map[string]any) {
+		doc["enabledPlugins"] = map[string]any{
+			"frontend-design@claude-plugins-official": true,
+			"warp@claude-code-warp":                   true,
+		}
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import status %d body %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Profile struct {
+			Fields struct {
+				CustomConfigFile  string `json:"custom_config_file"`
+				RuntimeExtensions []struct {
+					Config map[string]string `json:"config"`
+				} `json:"runtime_extensions"`
+			} `json:"fields"`
+		} `json:"profile"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	found := false
+	for _, ref := range payload.Profile.Fields.RuntimeExtensions {
+		if ref.Config["install_ref"] == "frontend-design@claude-plugins-official" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("official plugin must map into Runtime Extensions, got %#v remainder %q", payload.Profile.Fields.RuntimeExtensions, payload.Profile.Fields.CustomConfigFile)
+	}
+	if strings.Contains(payload.Profile.Fields.CustomConfigFile, "frontend-design") {
+		t.Fatalf("official plugin must not linger in remainder: %q", payload.Profile.Fields.CustomConfigFile)
+	}
+	if !strings.Contains(payload.Profile.Fields.CustomConfigFile, "warp@claude-code-warp") {
+		t.Fatalf("unknown plugin must stay in remainder: %q", payload.Profile.Fields.CustomConfigFile)
+	}
+
+	disable := claudeImportBodyFromSeed(t, server, id, func(doc map[string]any) {
+		doc["enabledPlugins"] = map[string]any{"warp@claude-code-warp": true}
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader(disable))
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("disable import status %d body %s", rec.Code, rec.Body.String())
+	}
+	var disabled struct {
+		Profile struct {
+			Fields struct {
+				RuntimeExtensions []struct {
+					Config map[string]string `json:"config"`
+				} `json:"runtime_extensions"`
+			} `json:"fields"`
+		} `json:"profile"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &disabled); err != nil {
+		t.Fatalf("decode disable: %v", err)
+	}
+	for _, ref := range disabled.Profile.Fields.RuntimeExtensions {
+		if ref.Config["install_ref"] == "frontend-design@claude-plugins-official" {
+			t.Fatalf("omitting the official plugin must drop Runtime Extensions, got %#v", disabled.Profile.Fields.RuntimeExtensions)
+		}
+	}
+}
+
+// Story 16: Claude preview must include the harness-generated trusted MCP
+// allow list the launch projection writes.
+func TestProjectedConfigPreviewIncludesTrustedMCPAllow(t *testing.T) {
+	server := newImportTestServer(t)
+	id := createProfileForImport(t, server)
+	req := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+id+"/projected-config", nil)
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("projected-config status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "mcp__pentest__") {
+		t.Fatalf("preview must include harness-generated trusted MCP allow entries, got %s", rec.Body.String())
 	}
 }

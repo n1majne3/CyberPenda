@@ -170,6 +170,19 @@ func (s *Service) knownInstallRefList() []string {
 	return s.knownInstallRefs()
 }
 
+func (s *Service) isKnownInstallRef(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+	if slices.Contains(s.knownInstallRefList(), ref) {
+		return true
+	}
+	// Official Claude marketplace plugins are catalog-known without a
+	// network fetch: warp@claude-code-warp stays unknown remainder.
+	return strings.HasSuffix(ref, "@claude-plugins-official")
+}
+
 // importConfigFormat reports the provider-native config format.
 func importConfigFormat(provider Provider) string {
 	switch provider {
@@ -420,18 +433,16 @@ func managedValueUnchanged(baseline map[string]any, path string, value any) bool
 	if !ok {
 		return false
 	}
-	return valuesMatchBaseline(current, value)
+	return valuesMatchBaseline(path, current, value)
 }
 
-// valuesMatchBaseline compares an edited value against its baseline. Arrays
-// compare by set containment: every baseline entry must survive somewhere in
-// the edited array, and operator-added entries are allowed — a managed array
-// locks only the entries the harness derives, not the whole list. Every other
-// shape compares by deep equality.
-func valuesMatchBaseline(baselineValue, editedValue any) bool {
+// valuesMatchBaseline compares an edited value against its baseline.
+// Arrays compare by deep equality except for the Hermes plugins.enabled
+// list, which locks only harness-derived entries (Story 21).
+func valuesMatchBaseline(path string, baselineValue, editedValue any) bool {
 	baseArr, baseOK := baselineValue.([]any)
 	editArr, editOK := editedValue.([]any)
-	if baseOK && editOK {
+	if baseOK && editOK && path == "plugins.enabled" {
 		for _, base := range baseArr {
 			found := false
 			for _, edited := range editArr {
@@ -483,10 +494,10 @@ func stripUnchangedManagedKeys(remaining map[string]any, declarations []managedK
 			}
 			if _, matched := managedKeyForPath(declarations, path, resolved); matched {
 				if managedValueUnchanged(baseline, path, value) {
-					// Arrays under a managed path keep operator-added
-					// entries in the remainder: only baseline entries are
-					// harness-derived, the rest belong to the operator.
-					if arr, ok := value.([]any); ok {
+					// Hermes plugins.enabled keeps operator-added entries
+					// in the remainder. Every other managed array is a
+					// whole leaf: unchanged means strip it entirely.
+					if arr, ok := value.([]any); ok && path == "plugins.enabled" {
 						baseArr, _ := lookupPath(baseline, path)
 						if baseList, ok := baseArr.([]any); ok {
 							kept := make([]any, 0, len(arr))
@@ -575,18 +586,23 @@ func (s *Service) mapImportConfigDocument(profile Profile, doc map[string]any, r
 		remaining[key] = value
 	}
 
-	if envNode, ok := remaining["env"].(map[string]any); ok && existingEnvMappable(profile.Provider) {
-		// The edited env map replaces the structured env wholesale — Story 6:
-		// keys removed in the editor are removed from the structured field,
-		// so raw edit → import round-trips instead of patching.
-		fields.Env = make(map[string]string, len(envNode))
-		for envKey, envValue := range envNode {
-			if text, ok := envValue.(string); ok {
-				fields.Env[envKey] = text
+	if existingEnvMappable(profile.Provider) {
+		if envNode, ok := remaining["env"].(map[string]any); ok {
+			// The edited env map replaces the structured env wholesale — Story 6:
+			// keys removed in the editor are removed from the structured field,
+			// so raw edit → import round-trips instead of patching.
+			fields.Env = make(map[string]string, len(envNode))
+			for envKey, envValue := range envNode {
+				if text, ok := envValue.(string); ok {
+					fields.Env[envKey] = text
+				}
 			}
+			mapped = append(mapped, "env")
+			delete(remaining, "env")
+		} else if _, present := remaining["env"]; !present {
+			fields.Env = nil
+			mapped = append(mapped, "env")
 		}
-		mapped = append(mapped, "env")
-		delete(remaining, "env")
 	}
 
 	// A top-level Codex `model` maps into the structured model
@@ -607,35 +623,42 @@ func (s *Service) mapImportConfigDocument(profile Profile, doc map[string]any, r
 
 	// Catalog-sourced plugins the editor round-trips through enabledPlugins
 	// map back into the structured Runtime Extensions field; unknown refs
-	// stay in the remainder for the provider to resolve.
-	if plugins, ok := remaining["enabledPlugins"].(map[string]any); ok && len(plugins) > 0 && profile.Provider == ProviderClaudeCode {
-		structured := make([]RuntimeExtensionRef, 0, len(profile.Fields.RuntimeExtensions))
-		structured = append(structured, profile.Fields.RuntimeExtensions...)
-		for ref, value := range plugins {
-			enabled, isBool := value.(bool)
-			if !isBool || !enabled {
+	// stay in the remainder for the provider to resolve. The editor map is
+	// the full set of catalog plugins: false and absence both drop the
+	// structured entry, and known refs never linger in the remainder.
+	if profile.Provider == ProviderClaudeCode {
+		kept := make([]RuntimeExtensionRef, 0, len(profile.Fields.RuntimeExtensions))
+		for _, existing := range profile.Fields.RuntimeExtensions {
+			if s.isKnownInstallRef(existing.Config["install_ref"]) {
 				continue
 			}
-			if !slices.Contains(s.knownInstallRefList(), ref) {
-				continue
-			}
-			if slices.ContainsFunc(structured, func(existing RuntimeExtensionRef) bool {
-				return existing.Config["install_ref"] == ref
-			}) {
-				continue
-			}
-			structured = append(structured, RuntimeExtensionRef{
-				ID:      pluginIDFromInstallRef(ref),
-				Enabled: &enabled,
-				Config:  map[string]string{"install_ref": ref},
-			})
-			delete(plugins, ref)
-			mapped = append(mapped, "enabledPlugins."+ref)
+			kept = append(kept, existing)
 		}
-		if len(plugins) == 0 {
-			delete(remaining, "enabledPlugins")
+		if plugins, ok := remaining["enabledPlugins"].(map[string]any); ok {
+			for ref, value := range plugins {
+				if !s.isKnownInstallRef(ref) {
+					continue
+				}
+				delete(plugins, ref)
+				mapped = append(mapped, "enabledPlugins."+ref)
+				enabled, isBool := value.(bool)
+				if !isBool || !enabled {
+					continue
+				}
+				on := true
+				kept = append(kept, RuntimeExtensionRef{
+					ID:      pluginIDFromInstallRef(ref),
+					Enabled: &on,
+					Config:  map[string]string{"install_ref": ref},
+				})
+			}
+			if len(plugins) == 0 {
+				delete(remaining, "enabledPlugins")
+			}
+		} else {
+			mapped = append(mapped, "enabledPlugins")
 		}
-		fields.RuntimeExtensions = structured
+		fields.RuntimeExtensions = kept
 	}
 
 	resolved := strings.TrimSpace(profile.Fields.ModelProviderID) != ""
@@ -739,18 +762,37 @@ func surgicalRemainder(provider Provider, dropped []string, rawText string, base
 		}
 		// A "key:" line inside a section can open a managed list context
 		// when the section path plus key matches a managed list path.
-		if importConfigFormat(provider) == "yaml" && strings.HasSuffix(trimmed, ":") && !strings.Contains(trimmed, " ") {
-			candidate := strings.TrimSuffix(trimmed, ":")
+		// Nested managed keys (approvals.mode, agent.*, model.*) drop too.
+		if importConfigFormat(provider) == "yaml" && strings.Contains(trimmed, ":") && !strings.HasPrefix(trimmed, "- ") {
+			candidate, rest, _ := strings.Cut(trimmed, ":")
+			candidate = strings.TrimSpace(candidate)
+			rest = strings.TrimSpace(rest)
 			path := candidate
-			if sectionPath != "" {
+			if strings.HasPrefix(line, " ") && sectionPath != "" {
 				path = sectionPath + "." + candidate
 			}
-			if managedLists[path] {
-				currentList = path
-			} else {
-				currentList = ""
+			droppedHere := false
+			for _, mappedKey := range dropped {
+				if mappedKey == path || mappedKey == candidate {
+					keep[i] = false
+					removed++
+					droppedHere = true
+					break
+				}
 			}
-			continue
+			if rest == "" {
+				if managedLists[path] {
+					currentList = path
+				} else if !droppedHere {
+					currentList = ""
+				}
+			}
+			if droppedHere {
+				continue
+			}
+			if rest == "" {
+				continue
+			}
 		}
 		key, _, found := strings.Cut(trimmed, "=")
 		if found && !inSection {

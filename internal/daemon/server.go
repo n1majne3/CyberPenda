@@ -188,6 +188,15 @@ func NewServer(config Config) (*Server, error) {
 		managedDeclarations[runtimeprofile.Provider(plugin.ID)] = declarations
 	}
 	profiles.SetManagedKeyDeclarations(managedDeclarations)
+	profiles.SetKnownInstallRefs(func() []string {
+		var refs []string
+		for _, ext := range runtimeExtensions.List() {
+			if ref := strings.TrimSpace(ext.Config["install_ref"]); ref != "" {
+				refs = append(refs, ref)
+			}
+		}
+		return refs
+	})
 	modelProviders := modelprovider.NewService(db)
 	skillsRoot := strings.TrimSpace(config.SkillsRoot)
 	var tempSkillsRoot string
@@ -1342,6 +1351,8 @@ func (server *Server) previewProjectionRequest() runner.ProjectionRequest {
 		RuntimePlugins:              server.runtimePlugins,
 		Credentials:                 server.creds,
 		GlobalModelProviderSnapshot: snapshot,
+		DaemonAddr:                  server.listenAddr,
+		AuthToken:                   server.authToken,
 	}
 }
 

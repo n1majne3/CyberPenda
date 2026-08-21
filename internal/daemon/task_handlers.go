@@ -3622,18 +3622,23 @@ func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, 
 		config["reasoning_effort"] = string(requestedEffort)
 	}
 	// Carry the captured Custom Config File forward so a later turn
-	// selection does not drop the overlay that launch pinned. Prefer the
-	// previous captured value over the live profile, which may have changed.
+	// selection on the same profile does not drop the overlay that launch
+	// pinned. An explicit switch to another profile captures that
+	// profile's overlay instead.
 	if _, present := config["custom_config_file"]; !present {
-		versions, versionErr := server.tasks.RuntimeConfigVersions(found.ID)
-		copied := false
-		if versionErr == nil && len(versions) > 0 {
-			if previous, ok := versions[len(versions)-1].Config["custom_config_file"].(string); ok {
-				config["custom_config_file"] = previous
-				copied = true
+		if requestedProfile.ID == found.RuntimeProfileID {
+			versions, versionErr := server.tasks.RuntimeConfigVersions(found.ID)
+			copied := false
+			if versionErr == nil && len(versions) > 0 {
+				if previous, ok := versions[len(versions)-1].Config["custom_config_file"].(string); ok {
+					config["custom_config_file"] = previous
+					copied = true
+				}
 			}
-		}
-		if !copied {
+			if !copied {
+				config["custom_config_file"] = requestedProfile.Fields.CustomConfigFile
+			}
+		} else {
 			config["custom_config_file"] = requestedProfile.Fields.CustomConfigFile
 		}
 	}

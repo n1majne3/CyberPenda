@@ -106,8 +106,8 @@ func scanOverlaySecrets(prefix string, doc map[string]any) error {
 // structured generated document. Object keys merge recursively; on any leaf
 // conflict the structured (generated) value wins, so drifted overlays can add
 // keys the structured fields do not express but never override derived ones.
-// Scalars land whole. Arrays union by value so a harness-derived list
-// (Hermes plugins.enabled) can coexist with operator-added entries.
+// Scalars and arrays land whole. The Hermes plugins.enabled list is the
+// single exception: harness-derived entries coexist with operator-added ones.
 func applyConfigOverlay(provider runtimeprofile.Provider, generated map[string]any, overlayRaw string) (map[string]any, error) {
 	overlay, err := parseOverlayDocument(provider, overlayRaw)
 	if err != nil {
@@ -119,7 +119,7 @@ func applyConfigOverlay(provider runtimeprofile.Provider, generated map[string]a
 	if len(overlay) == 0 {
 		return generated, nil
 	}
-	return deepMergeConfig(generated, overlay), nil
+	return deepMergeConfig("", generated, overlay), nil
 }
 
 // ProjectedConfigText renders the provider-native seed the Profile Config
@@ -137,14 +137,32 @@ func ProjectedConfigTextWith(provider runtimeprofile.Provider, profile runtimepr
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(profile.Fields.CustomConfigFile) == "" {
+	remainder := profile.Fields.CustomConfigFile
+	if strings.TrimSpace(remainder) == "" {
 		return seed, nil
+	}
+	// Story 8: TOML/YAML reopen keeps the remainder byte-for-byte, including
+	// comments. JSON has no comments, so it still merge-encodes.
+	switch overlayFormat(provider) {
+	case "toml", "yaml":
+		return spliceProjectedRemainder(seed, remainder), nil
 	}
 	merged, err := MergedProjectedConfigWith(provider, profile, req)
 	if err != nil {
 		return "", err
 	}
 	return encodeProjectedDocument(provider, merged)
+}
+
+func spliceProjectedRemainder(seed, remainder string) string {
+	seed = strings.TrimRight(seed, "\n")
+	if remainder == "" {
+		return seed + "\n"
+	}
+	if strings.HasPrefix(remainder, "\n") {
+		return seed + remainder
+	}
+	return seed + "\n" + remainder
 }
 
 func StructuredProjectedConfigText(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (string, error) {
@@ -159,10 +177,18 @@ func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile
 	if err != nil {
 		return "", err
 	}
+	servers, err := collectMCPServers(profile, req)
+	if err != nil {
+		return "", err
+	}
 	switch provider {
 	case runtimeprofile.ProviderClaudeCode:
-		settings := map[string]any{"env": redactEnvMap(claudeStructuredEnv(profile))}
-		if allowed := claudeTrustedMCPAllowedTools(profile.Fields.MCPServers); len(allowed) > 0 {
+		env, err := buildClaudeEnv(profile, req)
+		if err != nil {
+			return "", err
+		}
+		settings := map[string]any{"env": redactEnvMap(env)}
+		if allowed := claudeTrustedMCPAllowedTools(servers); len(allowed) > 0 {
 			settings["permissions"] = map[string]any{"allow": allowed}
 		}
 		if refs := enabledExtensionInstallRefs(profile); len(refs) > 0 {
@@ -178,13 +204,13 @@ func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile
 		}
 		return string(raw), nil
 	case runtimeprofile.ProviderCodex:
-		return buildCodexConfigTOML(profile, profile.Fields.MCPServers), nil
+		return buildCodexConfigTOML(profile, servers), nil
 	case runtimeprofile.ProviderHermes:
 		effort, err := runtimeprofile.NormalizeReasoningEffort(profile.Fields.ReasoningEffort)
 		if err != nil {
 			return "", err
 		}
-		return buildHermesConfigYAML(profile, projected, profile.Fields.MCPServers, string(effort)), nil
+		return buildHermesConfigYAML(profile, projected, servers, string(effort)), nil
 	case runtimeprofile.ProviderPi:
 		models := buildPiModels(profile, nil)
 		if len(projected) > 0 {
@@ -270,27 +296,29 @@ func encodeProjectedDocument(provider runtimeprofile.Provider, doc map[string]an
 }
 
 // deepMergeConfig merges overlay into base. Recursion happens when both
-// sides hold maps; arrays union by value (base order first) so a
-// harness-derived list can coexist with operator-added entries. Every
-// other existing base value (scalar, type mismatch) is kept — structured
-// fields win conflicts, overlays add the rest.
-func deepMergeConfig(base, overlay map[string]any) map[string]any {
+// sides hold maps; arrays are whole leaves (structured wins) except for
+// plugins.enabled, which unions so Hermes operator plugins coexist.
+func deepMergeConfig(path string, base, overlay map[string]any) map[string]any {
 	merged := make(map[string]any, len(base)+len(overlay))
 	for key, value := range base {
 		merged[key] = value
 	}
 	for key, overlayValue := range overlay {
+		childPath := key
+		if path != "" {
+			childPath = path + "." + key
+		}
 		baseValue, exists := merged[key]
 		if exists {
 			baseMap, baseOK := normalizeConfigMap(baseValue)
 			overlayMap, overlayOK := normalizeConfigMap(overlayValue)
 			if baseOK && overlayOK {
-				merged[key] = deepMergeConfig(baseMap, overlayMap)
+				merged[key] = deepMergeConfig(childPath, baseMap, overlayMap)
 				continue
 			}
 			baseArr, baseArrOK := normalizeConfigArray(baseValue)
 			overlayArr, overlayArrOK := normalizeConfigArray(overlayValue)
-			if baseArrOK && overlayArrOK {
+			if baseArrOK && overlayArrOK && childPath == "plugins.enabled" {
 				merged[key] = unionConfigArrays(baseArr, overlayArr)
 				continue
 			}

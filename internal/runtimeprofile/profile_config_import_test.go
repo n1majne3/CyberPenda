@@ -467,3 +467,108 @@ func TestImportProfileConfigModelDeletionRoundTrips(t *testing.T) {
 		t.Fatalf("model deletion must round-trip into the structured field, got %q", result.Profile.Fields.Model)
 	}
 }
+
+// Story 14/15: permissions.allow is a Managed array with whole-replace
+// semantics. Extra entries are a change, not a coexistence.
+func TestImportProfileConfigRefusesExtraPermissionsAllow(t *testing.T) {
+	service := newTestService(t)
+	baseline := `{
+  "permissions": {"allow": ["mcp__pentest__blackboard_read"]}
+}`
+	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
+	created, err := service.Create("Claude Allow", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	edited := `{
+  "permissions": {"allow": ["mcp__pentest__blackboard_read", "Bash(*)"]}
+}`
+	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
+	if err == nil {
+		t.Fatal("extra permissions.allow entry must be refused")
+	}
+	var refusal *runtimeprofile.ImportConfigError
+	if !errors.As(err, &refusal) {
+		t.Fatalf("want ImportConfigError, got %v", err)
+	}
+	found := false
+	for _, keyErr := range refusal.Errors {
+		if strings.Contains(keyErr.Key, "permissions.allow") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("refusal must name permissions.allow, got %+v", refusal.Errors)
+	}
+}
+
+// Story 6: deleting the whole env section clears the structured env field.
+func TestImportProfileConfigEnvSectionDeletionClearsStructuredEnv(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Claude Env Section", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		Env: map[string]string{"FOO": "1", "BAR": "2"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: `{"enabledPlugins":{"warp@claude-code-warp":true}}`,
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(result.Profile.Fields.Env) != 0 {
+		t.Fatalf("deleting the env section must clear structured env, got %#v", result.Profile.Fields.Env)
+	}
+}
+
+// Story 6/7: a known plugin already on Runtime Extensions must still be
+// stripped from the remainder, and setting it false must disable it.
+func TestImportProfileConfigKnownPluginDisableAndNoRemainderDuplicate(t *testing.T) {
+	service := newTestService(t)
+	service.SetKnownInstallRefs(func() []string { return []string{"frontend-design@claude-plugins-official"} })
+	enabled := true
+	created, err := service.Create("Claude Plugin Dup", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{{
+			ID:      "frontend-design",
+			Enabled: &enabled,
+			Config:  map[string]string{"install_ref": "frontend-design@claude-plugins-official"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: `{"enabledPlugins":{"frontend-design@claude-plugins-official":true}}`,
+	})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if strings.Contains(result.Profile.Fields.CustomConfigFile, "frontend-design") {
+		t.Fatalf("already-structured plugin must not copy into remainder: %q", result.Profile.Fields.CustomConfigFile)
+	}
+
+	disabled, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: `{"enabledPlugins":{"frontend-design@claude-plugins-official":false}}`,
+	})
+	if err != nil {
+		t.Fatalf("disable import: %v", err)
+	}
+	for _, ref := range disabled.Profile.Fields.RuntimeExtensions {
+		if ref.Config["install_ref"] == "frontend-design@claude-plugins-official" && (ref.Enabled == nil || *ref.Enabled) {
+			t.Fatalf("false must disable the structured plugin, got %#v", disabled.Profile.Fields.RuntimeExtensions)
+		}
+	}
+
+	removed, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText: `{"enabledPlugins":{"warp@claude-code-warp":true}}`,
+	})
+	if err != nil {
+		t.Fatalf("delete import: %v", err)
+	}
+	for _, ref := range removed.Profile.Fields.RuntimeExtensions {
+		if ref.Config["install_ref"] == "frontend-design@claude-plugins-official" {
+			t.Fatalf("omitting the plugin must drop it from Runtime Extensions, got %#v", removed.Profile.Fields.RuntimeExtensions)
+		}
+	}
+}
