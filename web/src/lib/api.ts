@@ -371,14 +371,14 @@ export function listRuntimeProfiles() {
   return apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles");
 }
 
-/** Story 16: final merged result the runtime receives (structured + Custom Config File overlay). */
+/** Final merged result the runtime receives (structured + Custom Config File overlay). */
 export function mergedConfigPreview(profileId: string) {
   return apiGet<{ provider: string; merged: Record<string, unknown> }>(
     `/api/runtime-profiles/${encodeURIComponent(profileId)}/merged-config-preview`,
   );
 }
 
-/** Story 2: provider-native seed text the config editor opens on (redacted). */
+/** Provider-native seed text the config editor opens on (redacted). */
 export function projectedConfig(profileId: string) {
   return apiGet<{ provider: string; format: string; text: string; custom_config_file?: string }>(
     `/api/runtime-profiles/${encodeURIComponent(profileId)}/projected-config`,

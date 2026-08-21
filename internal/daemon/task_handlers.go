@@ -1105,7 +1105,7 @@ func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile
 		"runner":             created.Runner,
 		"generated_config":   generatedConfig,
 	}
-	// Story 18: capture the imported overlay so continuations reproduce the
+	// The imported Custom Config File is captured so continuations reproduce the
 	// same effective config even if the profile's Custom Config File changes.
 	if overlay := strings.TrimSpace(profile.Fields.CustomConfigFile); overlay != "" {
 		captured["custom_config_file"] = profile.Fields.CustomConfigFile

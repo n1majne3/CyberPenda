@@ -306,7 +306,7 @@ func mapImportConfigDocument(profile Profile, doc map[string]any, rawText string
 		delete(remaining, "env")
 	}
 
-	// Story 6: a top-level Codex `model` maps into the structured model
+	// A top-level Codex `model` maps into the structured model
 	// field whenever it is not a Managed Config Key (model provider resolved)
 	// — the structured form stays the single source of truth.
 	if profile.Provider == ProviderCodex && strings.TrimSpace(profile.Fields.ModelProviderID) == "" {
@@ -317,7 +317,7 @@ func mapImportConfigDocument(profile Profile, doc map[string]any, rawText string
 		}
 	}
 
-	// Story 8: the operator's raw text is preserved verbatim — comments and
+	// The operator's raw text is preserved verbatim — comments and
 	// formatting included — whenever nothing mapped away. Only when keys were
 	// extracted into structured fields is the remainder re-encoded.
 	if len(mapped) == 0 {

@@ -173,12 +173,12 @@ func claudeStructuredEnv(profile runtimeprofile.Profile) map[string]string {
 	return env
 }
 
-// MergedProjectedConfigText renders the final merged result the runtime
+// MergedProjectedConfig renders the final merged result the runtime
 // receives: the provider-native projected config parsed and deep-merged with
 // the profile's Custom Config File overlay (structured fields win). It backs
 // the merged config preview so operators see exactly the file shape that
 // will run.
-func MergedProjectedConfigText(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (map[string]any, error) {
+func MergedProjectedConfig(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (map[string]any, error) {
 	seed, err := ProjectedConfigText(provider, profile)
 	if err != nil {
 		return nil, err

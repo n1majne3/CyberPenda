@@ -144,13 +144,6 @@ func (e *ProviderSwitchNeedsOverlayClearError) Error() string {
 	)
 }
 
-// IsProviderSwitchNeedsOverlayClear reports whether err is the provider
-// switch overlay confirmation error.
-func IsProviderSwitchNeedsOverlayClear(err error) bool {
-	var target *ProviderSwitchNeedsOverlayClearError
-	return errors.As(err, &target)
-}
-
 // Sentinel validation errors.
 var (
 	ErrMissingName     = errors.New("runtime profile name is required")

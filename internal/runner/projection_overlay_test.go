@@ -258,11 +258,11 @@ func TestProjectedConfigTextRendersProviderNativeSeeds(t *testing.T) {
 	}
 }
 
-func TestMergedProjectedConfigTextMergesOverlayIntoNativeShape(t *testing.T) {
+func TestMergedProjectedConfigMergesOverlayIntoNativeShape(t *testing.T) {
 	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode}
 	profile.Fields.Env = map[string]string{"STRUCTURED": "wins"}
 	profile.Fields.CustomConfigFile = `{"env":{"OVERLAY":"adds"},"enabledPlugins":{"warp@claude-code-warp":true}}`
-	merged, err := runner.MergedProjectedConfigText(profile.Provider, profile)
+	merged, err := runner.MergedProjectedConfig(profile.Provider, profile)
 	if err != nil {
 		t.Fatalf("merged projected text: %v", err)
 	}

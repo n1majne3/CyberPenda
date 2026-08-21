@@ -373,7 +373,7 @@ export function RuntimeProfilesPage() {
   const [confirmSwitchProviderId, setConfirmSwitchProviderId] = useState<string | null>(null);
   const [mergedPreview, setMergedPreview] = useState<string>("");
 
-  // Story 16: show the final merged result (structured + Custom Config File
+  // Show the final merged result (structured + Custom Config File
   // overlay) exactly as projection will produce it.
   useEffect(() => {
     if (!selected) {
@@ -397,7 +397,7 @@ export function RuntimeProfilesPage() {
     if (!selected) return;
     setConfigImportKeys([]);
     setConfigEditorOpen(true);
-    // Story 2: the editor opens on the complete provider-native projected
+    // The editor opens on the complete provider-native projected
     // file (redacted), never a preview envelope; fall back to the local
     // preview only if the endpoint is unavailable.
     setConfigDraft(previewConfig);

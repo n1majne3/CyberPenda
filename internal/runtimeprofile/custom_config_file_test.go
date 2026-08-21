@@ -1,6 +1,7 @@
 package runtimeprofile_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -41,7 +42,8 @@ func TestProviderSwitchRequiresOverlayClearConfirmation(t *testing.T) {
 	}
 
 	// Switching provider without confirmation is refused; the overlay stays.
-	if _, err := service.Update(created.ID, "", runtimeprofile.ProviderHermes, runtimeprofile.Fields{}, false, false); !runtimeprofile.IsProviderSwitchNeedsOverlayClear(err) {
+	var switchErr *runtimeprofile.ProviderSwitchNeedsOverlayClearError
+	if _, err := service.Update(created.ID, "", runtimeprofile.ProviderHermes, runtimeprofile.Fields{}, false, false); !errors.As(err, &switchErr) {
 		t.Fatalf("expected provider switch overlay confirmation error, got %v", err)
 	}
 	kept, err := service.Get(created.ID)

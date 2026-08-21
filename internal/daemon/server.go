@@ -1343,7 +1343,7 @@ func (server *Server) handleMergedConfigPreview(response http.ResponseWriter, re
 		writeError(response, http.StatusInternalServerError, "load runtime profile")
 		return
 	}
-	merged, err := runner.MergedProjectedConfigText(profile.Provider, profile)
+	merged, err := runner.MergedProjectedConfig(profile.Provider, profile)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
