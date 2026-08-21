@@ -82,6 +82,14 @@ func scanOverlaySecrets(prefix string, doc map[string]any) error {
 			if err := scanOverlaySecrets(path, typed); err != nil {
 				return err
 			}
+		case []any:
+			for _, item := range typed {
+				if child, ok := item.(map[string]any); ok {
+					if err := scanOverlaySecrets(path, child); err != nil {
+						return err
+					}
+				}
+			}
 		case map[string]bool:
 			// BurntSushi/toml renders inline bool maps; keys are plugin ids.
 			for subKey := range typed {
@@ -118,6 +126,21 @@ func applyConfigOverlay(provider runtimeprofile.Provider, generated map[string]a
 // the profile's structured fields only (no credential resolution, no file
 // writes) and redacted so secret values never enter editor text.
 func ProjectedConfigText(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (string, error) {
+	seed, err := StructuredProjectedConfigText(provider, profile)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(profile.Fields.CustomConfigFile) == "" {
+		return seed, nil
+	}
+	merged, err := MergedProjectedConfig(provider, profile)
+	if err != nil {
+		return "", err
+	}
+	return encodeProjectedDocument(provider, merged)
+}
+
+func StructuredProjectedConfigText(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (string, error) {
 	switch provider {
 	case runtimeprofile.ProviderClaudeCode:
 		settings := map[string]any{"env": redactEnvMap(claudeStructuredEnv(profile))}
@@ -179,7 +202,7 @@ func claudeStructuredEnv(profile runtimeprofile.Profile) map[string]string {
 // the merged config preview so operators see exactly the file shape that
 // will run.
 func MergedProjectedConfig(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (map[string]any, error) {
-	seed, err := ProjectedConfigText(provider, profile)
+	seed, err := StructuredProjectedConfigText(provider, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -188,6 +211,37 @@ func MergedProjectedConfig(provider runtimeprofile.Provider, profile runtimeprof
 		return nil, fmt.Errorf("parse projected config: %w", err)
 	}
 	return applyConfigOverlay(provider, generated, profile.Fields.CustomConfigFile)
+}
+
+func encodeProjectedDocument(provider runtimeprofile.Provider, doc map[string]any) (string, error) {
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	switch overlayFormat(provider) {
+	case "json":
+		raw, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		return string(raw), nil
+	case "toml":
+		var b strings.Builder
+		if err := toml.NewEncoder(&b).Encode(doc); err != nil {
+			return "", err
+		}
+		return b.String(), nil
+	case "yaml":
+		var b strings.Builder
+		encoder := yaml.NewEncoder(&b)
+		encoder.SetIndent(2)
+		if err := encoder.Encode(doc); err != nil {
+			return "", err
+		}
+		_ = encoder.Close()
+		return b.String(), nil
+	default:
+		return "", fmt.Errorf("provider %s has no config projection", provider)
+	}
 }
 
 // deepMergeConfig merges overlay into base. Recursion happens only when both

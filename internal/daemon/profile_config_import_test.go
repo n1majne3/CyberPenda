@@ -177,6 +177,32 @@ func TestUpdateRuntimeProfileProviderSwitchConfirmClearsOverlay(t *testing.T) {
 	}
 }
 
+func TestUpdateRuntimeProfileProviderSwitchConfirmClearsOverlayWithFields(t *testing.T) {
+	server := newImportTestServer(t)
+	id := createProfileForImport(t, server)
+
+	importBody := `{"config_text":"{\"enabledPlugins\":{\"warp@claude-code-warp\":true}}"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+id+"/import-config", bytes.NewReader([]byte(importBody)))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("import status %d body %s", rec.Code, rec.Body.String())
+	}
+
+	// The UI form save resubmits the previous overlay alongside the
+	// confirmation flag; the service must still drop it.
+	switchBody := `{"provider":"codex","fields":{"custom_config_file":"{\"enabledPlugins\":{\"warp@claude-code-warp\":true}}"},"confirm_provider_switch_clears_overlay":true}`
+	req = httptest.NewRequest(http.MethodPatch, "/api/runtime-profiles/"+id, bytes.NewReader([]byte(switchBody)))
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("confirmed switch with fields status %d body %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "warp@claude-code-warp") {
+		t.Fatalf("overlay must be cleared even when fields resubmit it: %s", rec.Body.String())
+	}
+}
+
 // Story 16: the generated config preview shows the final merged result.
 func TestMergedConfigPreviewEndpointCombinesOverlay(t *testing.T) {
 	server := newImportTestServer(t)

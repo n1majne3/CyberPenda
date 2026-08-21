@@ -52,9 +52,10 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 		t.Fatalf("projected-config: status %d body %s", rec.Code, rec.Body.String())
 	}
 	var seed struct {
-		Provider string `json:"provider"`
-		Format   string `json:"format"`
-		Text     string `json:"text"`
+		Provider      string `json:"provider"`
+		Format        string `json:"format"`
+		Text          string `json:"text"`
+		ProjectedText string `json:"projected_text"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &seed); err != nil {
 		t.Fatalf("parse projected-config: %v", err)
@@ -63,13 +64,31 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 		t.Fatalf("seed must be a native Claude settings.json, got format=%q text=%q", seed.Format, seed.Text)
 	}
 
-	// 3. Import an edited config: a new env var plus the warp plugin.
-	edited := `{
-  "env": {"ANTHROPIC_MODEL": "claude-opus-4-6", "EXTRA_TOOL_FLAG": "1"},
-  "enabledPlugins": {"warp@claude-code-warp": true}
-}`
+	// 3. Import the projected seed plus an overlay-only plugin and extra env.
+	var seedDoc map[string]any
+	if err := json.Unmarshal([]byte(seed.Text), &seedDoc); err != nil {
+		t.Fatalf("parse seed text: %v", err)
+	}
+	env, _ := seedDoc["env"].(map[string]any)
+	if env == nil {
+		env = map[string]any{}
+		seedDoc["env"] = env
+	}
+	env["EXTRA_TOOL_FLAG"] = "1"
+	seedDoc["enabledPlugins"] = map[string]any{"warp@claude-code-warp": true}
+	editedRaw, err := json.Marshal(seedDoc)
+	if err != nil {
+		t.Fatalf("encode edited seed: %v", err)
+	}
 	rec = httptest.NewRecorder()
-	importReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+profileID+"/import-config", strings.NewReader(`{"config_text":`+quoteJSON(edited)+`}`))
+	importBody, err := json.Marshal(map[string]string{
+		"config_text":    string(editedRaw),
+		"projected_text": seed.ProjectedText,
+	})
+	if err != nil {
+		t.Fatalf("encode import body: %v", err)
+	}
+	importReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+profileID+"/import-config", bytes.NewReader(importBody))
 	server.ServeHTTP(rec, importReq)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("import-config: status %d body %s", rec.Code, rec.Body.String())
@@ -102,10 +121,10 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &preview); err != nil {
 		t.Fatalf("parse merged preview: %v", err)
 	}
-	env, _ := preview.Merged["env"].(map[string]any)
+	previewEnv, _ := preview.Merged["env"].(map[string]any)
 	plugins, _ := preview.Merged["enabledPlugins"].(map[string]any)
-	if env["EXTRA_TOOL_FLAG"] != "1" || plugins["warp@claude-code-warp"] != true {
-		t.Fatalf("merged preview must show structured env plus overlay plugin, got env=%#v plugins=%#v", env, plugins)
+	if previewEnv["EXTRA_TOOL_FLAG"] != "1" || plugins["warp@claude-code-warp"] != true {
+		t.Fatalf("merged preview must show structured env plus overlay plugin, got env=%#v plugins=%#v", previewEnv, plugins)
 	}
 
 	// 6. The real Config Projection deep-merges the same overlay onto disk.
@@ -125,6 +144,19 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 	}
 	if projectedPlugins["warp@claude-code-warp"] != true {
 		t.Fatalf("warp plugin must reach the projected settings.json, got %#v", projectedPlugins)
+	}
+
+	// 7. Re-opening the editor shows the merged file, including the remainder.
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+profileID+"/projected-config", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reopen projected-config: status %d body %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &seed); err != nil {
+		t.Fatalf("parse reopen seed: %v", err)
+	}
+	if !strings.Contains(seed.Text, "warp@claude-code-warp") {
+		t.Fatalf("reopened editor must show the Custom Config File remainder, got %q", seed.Text)
 	}
 }
 

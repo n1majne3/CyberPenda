@@ -1065,6 +1065,7 @@ describe("RuntimeProfilesPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Switch and clear/i }));
     await waitFor(() => expect(patchCalls).toHaveLength(2));
     expect(patchCalls[1]).toMatchObject({ confirm_provider_switch_clears_overlay: true });
+    expect(patchCalls[1].fields.custom_config_file ?? "").toBe("");
   });
 });
 
@@ -1210,5 +1211,76 @@ describe("RuntimeProfilesPage", () => {
       expect(value).toContain("approval_policy");
       // The seed is provider-native TOML, not the JSON preview envelope.
       expect(value).not.toContain('"launch_preview"');
+    });
+  });
+
+  it("reopens the config editor on the merged projected file including the Custom Config File", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/projected-config")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                provider: "claude_code",
+                format: "json",
+                text: JSON.stringify(
+                  {
+                    env: { ANTHROPIC_MODEL: "claude-opus-4-6" },
+                    enabledPlugins: { "warp@claude-code-warp": true },
+                  },
+                  null,
+                  2,
+                ),
+                custom_config_file: '{\n  "enabledPlugins": {\n    "warp@claude-code-warp": true\n  }\n}',
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/merged-config-preview")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ provider: "claude_code", merged: { enabledPlugins: { "warp@claude-code-warp": true } } }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.includes("/api/runtime-profiles")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                profiles: [
+                  {
+                    id: "profile-1",
+                    name: "Claude Warp",
+                    provider: "claude_code",
+                    fields: { custom_config_file: '{\n  "enabledPlugins": {\n    "warp@claude-code-warp": true\n  }\n}' },
+                    created_at: "",
+                    updated_at: "2026-06-19T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify(url.includes("model-providers") ? { providers: [] } : { plugins: [], extensions: [], items: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Claude Warp/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /Edit config/i }));
+
+    const editor = await screen.findByLabelText(/config editor/i);
+    await waitFor(() => {
+      expect((editor as HTMLTextAreaElement).value).toContain("warp@claude-code-warp");
     });
   });

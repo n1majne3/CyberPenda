@@ -59,6 +59,7 @@ function mergedPreview() {
 
 async function routeProfileConfigImport(page: Page) {
   const requests: string[] = [];
+  const importBodies: string[] = [];
   const projectedSeed = projectedText();
   // The profiles list is stateful: after the import lands, the stored profile
   // carries the overlay and a fresh updated_at, which is what re-triggers the
@@ -72,11 +73,28 @@ async function routeProfileConfigImport(page: Page) {
     if (path === "/api/runtime-profiles") {
       body = JSON.stringify({ profiles: [imported ? importedProfile : claudeProfile] });
     } else if (path === `/api/runtime-profiles/${claudeProfile.id}/projected-config`) {
+      // Once imported, the editor seed re-opens on the merged file: the
+      // structured projection plus the Custom Config File remainder.
       body = JSON.stringify({
         provider: "claude_code",
         format: "json",
-        text: projectedSeed,
-        custom_config_file: "",
+        text: imported
+          ? JSON.stringify(
+              {
+                env: {
+                  ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+                  ANTHROPIC_MODEL: "claude-opus-4-6",
+                  ANTHROPIC_API_KEY: "REDACTED",
+                  OVERLAY_FLAG: "adds",
+                },
+                enabledPlugins: { "warp@claude-code-warp": true },
+              },
+              null,
+              2,
+            )
+          : projectedSeed,
+        projected_text: projectedSeed,
+        custom_config_file: imported ? importedProfile.fields.custom_config_file : "",
       });
     } else if (path === `/api/runtime-profiles/${claudeProfile.id}/merged-config-preview` && requests.filter((p) => p === path).length > 1) {
       // Second and later reads happen after the import refreshed the profile.
@@ -85,6 +103,7 @@ async function routeProfileConfigImport(page: Page) {
       body = JSON.stringify({ provider: "claude_code", merged: {} });
     } else if (path === `/api/runtime-profiles/${claudeProfile.id}/import-config`) {
       imported = true;
+      importBodies.push(route.request().postData() ?? "");
       body = JSON.stringify({
         profile: importedProfile,
         mapped_keys: ["env"],
@@ -102,11 +121,11 @@ async function routeProfileConfigImport(page: Page) {
     }
     await route.fulfill({ status: 200, contentType: "application/json", body });
   });
-  return { requests };
+  return { requests, importBodies };
 }
 
 test("Profile Config Import maps env and keeps the remainder on the Custom Config File", async ({ page }) => {
-  const { requests } = await routeProfileConfigImport(page);
+  const { requests, importBodies } = await routeProfileConfigImport(page);
 
   await page.goto("/profiles");
 
@@ -142,4 +161,39 @@ test("Profile Config Import maps env and keeps the remainder on the Custom Confi
   expect(requests).toContain(`/api/runtime-profiles/${claudeProfile.id}/projected-config`);
   expect(requests).toContain(`/api/runtime-profiles/${claudeProfile.id}/import-config`);
   expect(requests).toContain(`/api/runtime-profiles/${claudeProfile.id}/merged-config-preview`);
+
+  // The import carried the structured baseline so unchanged Managed Config
+  // Keys from the seed are accepted instead of refused.
+  const importPayload = JSON.parse(importBodies[0] ?? "{}");
+  expect(importPayload.projected_text).toBe(projectedText());
+});
+
+test("re-opening the config editor shows the Custom Config File remainder", async ({ page }) => {
+  const { requests } = await routeProfileConfigImport(page);
+
+  await page.goto("/profiles");
+
+  // Import once so the profile carries a Custom Config File remainder.
+  await page.getByRole("button", { name: "Edit config" }).click();
+  const editor = page.getByLabel("Runtime config editor");
+  await editor.fill(
+    JSON.stringify(
+      {
+        env: { ANTHROPIC_MODEL: "claude-opus-4-6", OVERLAY_FLAG: "adds" },
+        enabledPlugins: { "warp@claude-code-warp": true },
+      },
+      null,
+      2,
+    ),
+  );
+  await page.getByRole("button", { name: "Import config" }).click();
+  await expect(page.getByLabel("Runtime config editor")).toHaveCount(0);
+
+  // Re-open the editor: the seed now includes the stored remainder, so
+  // nothing the operator wrote silently disappears.
+  await page.getByRole("button", { name: "Edit config" }).click();
+  await expect(page.getByLabel("Runtime config editor")).toHaveValue(/warp@claude-code-warp/);
+  await expect(page.getByLabel("Runtime config editor")).toHaveValue(/ANTHROPIC_MODEL/);
+
+  expect(requests).toContain(`/api/runtime-profiles/${claudeProfile.id}/import-config`);
 });

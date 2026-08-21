@@ -3,6 +3,7 @@ package runtimeprofile
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -13,9 +14,11 @@ import (
 )
 
 // ImportConfigRequest carries the edited provider-native config text for a
-// Profile Config Import.
+// Profile Config Import. ProjectedText is the current structured projection
+// used as the Managed Config Key baseline (unchanged values are not a change).
 type ImportConfigRequest struct {
-	ConfigText string
+	ConfigText    string
+	ProjectedText string
 }
 
 // ImportConfigKeyError reports one refused key from a Profile Config Import.
@@ -47,10 +50,9 @@ func (e *ImportConfigError) Error() string {
 	return fmt.Sprintf("profile config import refused: %s", strings.Join(parts, "; "))
 }
 
-// ValidateOverlaySecrets refuses a Custom Config File whose raw text contains
-// a secret-shaped value. Every write path (Create, Update, Import) runs this
-// so a Runtime Profile never stores secret values. Key-name scanning lives
-// in refuseImportProblems, which sees the parsed document.
+// ValidateOverlaySecrets refuses a Custom Config File that contains a
+// secret-shaped value or a secret-named key. Every write path (Create,
+// Update, Import) runs this so a Runtime Profile never stores secret values.
 func ValidateOverlaySecrets(raw string) error {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -58,6 +60,51 @@ func ValidateOverlaySecrets(raw string) error {
 	}
 	if secretValuePattern.MatchString(trimmed) {
 		return fmt.Errorf("custom config file contains a secret-shaped value; use the structured credential channels instead")
+	}
+	if doc := parseOverlayAny(trimmed); doc != nil {
+		if err := scanSecretNodes(doc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func parseOverlayAny(raw string) map[string]any {
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(raw), &doc); err == nil && doc != nil {
+		return doc
+	}
+	doc = map[string]any{}
+	if err := toml.Unmarshal([]byte(raw), &doc); err == nil && len(doc) > 0 {
+		return doc
+	}
+	doc = map[string]any{}
+	if err := yaml.Unmarshal([]byte(raw), &doc); err == nil && len(doc) > 0 {
+		return doc
+	}
+	return nil
+}
+
+func scanSecretNodes(node any) error {
+	switch typed := node.(type) {
+	case map[string]any:
+		for key, value := range typed {
+			if secretKeyPattern.MatchString(key) {
+				return fmt.Errorf("custom config file key %q looks like a secret; use the API keys structured field instead", key)
+			}
+			if text, ok := value.(string); ok && secretValuePattern.MatchString(text) {
+				return fmt.Errorf("custom config file contains a secret-shaped value; use the structured credential channels instead")
+			}
+			if err := scanSecretNodes(value); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for _, item := range typed {
+			if err := scanSecretNodes(item); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -133,50 +180,29 @@ func (s *Service) ImportConfig(id string, request ImportConfigRequest) (ImportCo
 		}
 	}
 
-	var doc map[string]any
-	switch format {
-	case "json":
-		if err := json.Unmarshal([]byte(request.ConfigText), &doc); err != nil {
-			return ImportConfigResult{}, &ImportConfigError{
-				Provider: existing.Provider,
-				Errors: []ImportConfigKeyError{{
-					Key:     "",
-					Message: fmt.Sprintf("parse config text: %v", err),
-				}},
-			}
-		}
-	case "toml":
-		doc = map[string]any{}
-		if err := toml.Unmarshal([]byte(request.ConfigText), &doc); err != nil {
-			return ImportConfigResult{}, &ImportConfigError{
-				Provider: existing.Provider,
-				Errors: []ImportConfigKeyError{{
-					Key:     "",
-					Message: fmt.Sprintf("parse config text: %v", err),
-				}},
-			}
-		}
-	case "yaml":
-		doc = map[string]any{}
-		if err := yaml.Unmarshal([]byte(request.ConfigText), &doc); err != nil {
-			return ImportConfigResult{}, &ImportConfigError{
-				Provider: existing.Provider,
-				Errors: []ImportConfigKeyError{{
-					Key:     "",
-					Message: fmt.Sprintf("parse config text: %v", err),
-				}},
-			}
+	doc, err := parseConfigDocument(format, request.ConfigText)
+	if err != nil {
+		return ImportConfigResult{}, &ImportConfigError{
+			Provider: existing.Provider,
+			Errors: []ImportConfigKeyError{{
+				Key:     "",
+				Message: fmt.Sprintf("parse config text: %v", err),
+			}},
 		}
 	}
 	if doc == nil {
 		doc = map[string]any{}
 	}
 
-	if refusal := s.refuseImportProblems(existing, doc); refusal != nil {
+	baseline, err := parseConfigDocument(format, request.ProjectedText)
+	if err != nil {
+		baseline = nil
+	}
+	if refusal := s.refuseImportProblems(existing, doc, baseline); refusal != nil {
 		return ImportConfigResult{}, refusal
 	}
 
-	fields, remainder, mapped := mapImportConfigDocument(existing, doc, request.ConfigText)
+	fields, remainder, mapped := mapImportConfigDocument(existing, doc, request.ConfigText, s.managedKeys[existing.Provider], baseline)
 	fields.CustomConfigFile = remainder
 	normalized, err := normalizeFields(existing.Provider, fields)
 	if err != nil {
@@ -199,44 +225,52 @@ func (s *Service) ImportConfig(id string, request ImportConfigRequest) (ImportCo
 	return ImportConfigResult{Profile: updated, MappedKeys: mapped}, nil
 }
 
-// refuseImportProblems collects managed-key changes and secret-shaped values
-// from the parsed document. Nil means the document is importable.
-func (s *Service) refuseImportProblems(profile Profile, doc map[string]any) *ImportConfigError {
+// refuseImportProblems collects managed-key *changes* and secret-shaped
+// values from the parsed document. Unchanged managed keys matching the
+// projected baseline are not a change. Nil means the document is importable.
+func (s *Service) refuseImportProblems(profile Profile, doc, baseline map[string]any) *ImportConfigError {
 	var problems []ImportConfigKeyError
 	managed := s.managedKeys[profile.Provider]
 	resolved := strings.TrimSpace(profile.Fields.ModelProviderID) != ""
 
-	var walk func(prefix string, node map[string]any)
-	walk = func(prefix string, node map[string]any) {
-		for key, value := range node {
-			path := key
-			if prefix != "" {
-				path = prefix + "." + key
+	var walk func(prefix string, node any)
+	walk = func(prefix string, node any) {
+		switch typed := node.(type) {
+		case map[string]any:
+			for key, value := range typed {
+				path := key
+				if prefix != "" {
+					path = prefix + "." + key
+				}
+				if declaration, matched := managedKeyForPath(managed, path, resolved); matched {
+					if !managedValueUnchanged(baseline, path, value) {
+						problems = append(problems, ImportConfigKeyError{
+							Key:     path,
+							Field:   declaration.Field,
+							Message: "managed key is re-derived at every config projection; change the structured field instead",
+						})
+					}
+					continue
+				}
+				if secretKeyPattern.MatchString(key) {
+					problems = append(problems, ImportConfigKeyError{
+						Key:     path,
+						Message: "key looks like a secret; use the API keys structured field instead",
+					})
+					continue
+				}
+				if text, ok := value.(string); ok && secretValuePattern.MatchString(text) {
+					problems = append(problems, ImportConfigKeyError{
+						Key:     path,
+						Message: "value looks like a secret-shaped credential; use the structured credential channels instead",
+					})
+					continue
+				}
+				walk(path, value)
 			}
-			if declaration, matched := managedKeyForPath(managed, path, resolved); matched {
-				problems = append(problems, ImportConfigKeyError{
-					Key:     path,
-					Field:   declaration.Field,
-					Message: "managed key is re-derived at every config projection; change the structured field instead",
-				})
-				continue
-			}
-			if secretKeyPattern.MatchString(key) {
-				problems = append(problems, ImportConfigKeyError{
-					Key:     path,
-					Message: "key looks like a secret; use the API keys structured field instead",
-				})
-				continue
-			}
-			if text, ok := value.(string); ok && secretValuePattern.MatchString(text) {
-				problems = append(problems, ImportConfigKeyError{
-					Key:     path,
-					Message: "value looks like a secret-shaped credential; use the structured credential channels instead",
-				})
-				continue
-			}
-			if child, ok := value.(map[string]any); ok {
-				walk(path, child)
+		case []any:
+			for _, item := range typed {
+				walk(prefix, item)
 			}
 		}
 	}
@@ -247,6 +281,110 @@ func (s *Service) refuseImportProblems(profile Profile, doc map[string]any) *Imp
 	}
 	sort.Slice(problems, func(i, j int) bool { return problems[i].Key < problems[j].Key })
 	return &ImportConfigError{Provider: profile.Provider, Errors: problems}
+}
+
+func parseConfigDocument(format, raw string) (map[string]any, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return map[string]any{}, nil
+	}
+	var doc map[string]any
+	var err error
+	switch format {
+	case "json":
+		err = json.Unmarshal([]byte(trimmed), &doc)
+	case "toml":
+		doc = map[string]any{}
+		err = toml.Unmarshal([]byte(trimmed), &doc)
+	case "yaml":
+		doc = map[string]any{}
+		err = yaml.Unmarshal([]byte(trimmed), &doc)
+	default:
+		return nil, fmt.Errorf("unknown config format %q", format)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if doc == nil {
+		doc = map[string]any{}
+	}
+	return doc, nil
+}
+
+func lookupPath(doc map[string]any, path string) (any, bool) {
+	if doc == nil || path == "" {
+		return nil, false
+	}
+	parts := strings.Split(path, ".")
+	var current any = doc
+	for _, part := range parts {
+		asMap, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		next, exists := asMap[part]
+		if !exists {
+			return nil, false
+		}
+		current = next
+	}
+	return current, true
+}
+
+func managedValueUnchanged(baseline map[string]any, path string, value any) bool {
+	current, ok := lookupPath(baseline, path)
+	if !ok {
+		return false
+	}
+	return reflect.DeepEqual(normalizeComparable(current), normalizeComparable(value))
+}
+
+func normalizeComparable(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			out[key] = normalizeComparable(item)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = normalizeComparable(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
+func stripUnchangedManagedKeys(remaining map[string]any, declarations []managedKeyDeclaration, baseline map[string]any, resolved bool) bool {
+	stripped := false
+	var walk func(prefix string, node map[string]any)
+	walk = func(prefix string, node map[string]any) {
+		for key, value := range node {
+			path := key
+			if prefix != "" {
+				path = prefix + "." + key
+			}
+			if _, matched := managedKeyForPath(declarations, path, resolved); matched {
+				if managedValueUnchanged(baseline, path, value) {
+					delete(node, key)
+					stripped = true
+					continue
+				}
+			}
+			if child, ok := value.(map[string]any); ok {
+				walk(path, child)
+				if len(child) == 0 {
+					delete(node, key)
+					stripped = true
+				}
+			}
+		}
+	}
+	walk("", remaining)
+	return stripped
 }
 
 // managedKeyForPath reports whether the dotted path is covered by a managed
@@ -284,7 +422,7 @@ func managedPathCovers(managed, path string) bool {
 
 // mapImportConfigDocument syncs structured-expressible keys into the profile
 // fields and renders the remainder back as provider-native text.
-func mapImportConfigDocument(profile Profile, doc map[string]any, rawText string) (Fields, string, []string) {
+func mapImportConfigDocument(profile Profile, doc map[string]any, rawText string, declarations []managedKeyDeclaration, baseline map[string]any) (Fields, string, []string) {
 	fields := profile.Fields
 	var mapped []string
 
@@ -317,10 +455,12 @@ func mapImportConfigDocument(profile Profile, doc map[string]any, rawText string
 		}
 	}
 
+	resolved := strings.TrimSpace(profile.Fields.ModelProviderID) != ""
+	stripped := stripUnchangedManagedKeys(remaining, declarations, baseline, resolved)
+
 	// The operator's raw text is preserved verbatim — comments and
-	// formatting included — whenever nothing mapped away. Only when keys were
-	// extracted into structured fields is the remainder re-encoded.
-	if len(mapped) == 0 {
+	// formatting included — whenever nothing mapped or stripped away.
+	if len(mapped) == 0 && !stripped {
 		return fields, rawText, mapped
 	}
 	remainder := renderRemainder(profile.Provider, remaining)

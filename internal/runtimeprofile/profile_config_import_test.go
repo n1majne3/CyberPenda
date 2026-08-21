@@ -232,3 +232,60 @@ func TestImportProfileConfigMapsCodexModelIntoFields(t *testing.T) {
 		t.Fatalf("unstructured keys must stay in the remainder: %q", result.Profile.Fields.CustomConfigFile)
 	}
 }
+
+// Unchanged Managed Config Keys from the projected seed are not a change:
+// import accepts them and strips them from the Custom Config File remainder.
+func TestImportProfileConfigAcceptsUnchangedManagedKeys(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Codex Seed", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	seed := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n"
+	edited := seed + "\n[features]\nweb_search = true\n"
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText:    edited,
+		ProjectedText: seed,
+	})
+	if err != nil {
+		t.Fatalf("unchanged managed keys must import, got %v", err)
+	}
+	if strings.Contains(result.Profile.Fields.CustomConfigFile, "approval_policy") ||
+		strings.Contains(result.Profile.Fields.CustomConfigFile, "sandbox_mode") {
+		t.Fatalf("unchanged managed keys must be stripped from remainder, got %q", result.Profile.Fields.CustomConfigFile)
+	}
+	if !strings.Contains(result.Profile.Fields.CustomConfigFile, "web_search") {
+		t.Fatalf("unmanaged remainder must stay, got %q", result.Profile.Fields.CustomConfigFile)
+	}
+}
+
+func TestImportProfileConfigRefusesChangedManagedKeyValue(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Codex Changed", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	seed := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n"
+	edited := "approval_policy = \"on-request\"\nsandbox_mode = \"danger-full-access\"\n"
+	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
+		ConfigText:    edited,
+		ProjectedText: seed,
+	})
+	if err == nil {
+		t.Fatal("changed managed key must be refused")
+	}
+	var refusal *runtimeprofile.ImportConfigError
+	if !asImportConfigError(err, &refusal) {
+		t.Fatalf("error = %v (%T), want ImportConfigError", err, err)
+	}
+	found := false
+	for _, keyErr := range refusal.Errors {
+		if keyErr.Key == "approval_policy" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected approval_policy change refusal, got %#v", refusal.Errors)
+	}
+}

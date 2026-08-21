@@ -380,7 +380,7 @@ export function mergedConfigPreview(profileId: string) {
 
 /** Provider-native seed text the config editor opens on (redacted). */
 export function projectedConfig(profileId: string) {
-  return apiGet<{ provider: string; format: string; text: string; custom_config_file?: string }>(
+  return apiGet<{ provider: string; format: string; text: string; projected_text?: string; custom_config_file?: string }>(
     `/api/runtime-profiles/${encodeURIComponent(profileId)}/projected-config`,
   );
 }

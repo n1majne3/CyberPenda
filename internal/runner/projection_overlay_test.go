@@ -258,6 +258,22 @@ func TestProjectedConfigTextRendersProviderNativeSeeds(t *testing.T) {
 	}
 }
 
+func TestProjectedConfigTextIncludesCustomConfigFileRemainder(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode}
+	profile.Fields.Env = map[string]string{"STRUCTURED": "wins"}
+	profile.Fields.CustomConfigFile = `{"enabledPlugins":{"warp@claude-code-warp":true}}`
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderClaudeCode, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	if !strings.Contains(text, "warp@claude-code-warp") {
+		t.Fatalf("editor seed must include the Custom Config File remainder, got:\n%s", text)
+	}
+	if !strings.Contains(text, "STRUCTURED") {
+		t.Fatalf("editor seed must still include structured fields, got:\n%s", text)
+	}
+}
+
 func TestMergedProjectedConfigMergesOverlayIntoNativeShape(t *testing.T) {
 	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode}
 	profile.Fields.Env = map[string]string{"STRUCTURED": "wins"}

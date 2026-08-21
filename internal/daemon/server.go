@@ -1294,14 +1294,26 @@ func (server *Server) handleImportRuntimeProfileConfig(response http.ResponseWri
 	}
 
 	var input struct {
-		ConfigText string `json:"config_text"`
+		ConfigText    string `json:"config_text"`
+		ProjectedText string `json:"projected_text"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
-	result, err := server.profiles.ImportConfig(id, runtimeprofile.ImportConfigRequest{ConfigText: input.ConfigText})
+	if strings.TrimSpace(input.ProjectedText) == "" {
+		profile, loadErr := server.profiles.Get(id)
+		if loadErr == nil {
+			if baseline, seedErr := runner.StructuredProjectedConfigText(profile.Provider, profile); seedErr == nil {
+				input.ProjectedText = baseline
+			}
+		}
+	}
+	result, err := server.profiles.ImportConfig(id, runtimeprofile.ImportConfigRequest{
+		ConfigText:    input.ConfigText,
+		ProjectedText: input.ProjectedText,
+	})
 	if err != nil {
 		var refusal *runtimeprofile.ImportConfigError
 		if errors.As(err, &refusal) {
@@ -1377,10 +1389,15 @@ func (server *Server) handleProjectedConfig(response http.ResponseWriter, reques
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
+	baseline, err := runner.StructuredProjectedConfigText(profile.Provider, profile)
+	if err != nil {
+		baseline = text
+	}
 	writeJSON(response, http.StatusOK, map[string]any{
 		"provider":           string(profile.Provider),
 		"format":             runner.OverlayFormat(profile.Provider),
 		"text":               text,
+		"projected_text":     baseline,
 		"custom_config_file": profile.Fields.CustomConfigFile,
 	})
 }

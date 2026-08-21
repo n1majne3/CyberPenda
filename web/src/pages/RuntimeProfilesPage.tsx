@@ -332,7 +332,7 @@ export function RuntimeProfilesPage() {
         provider: draft.provider,
         fields: {
           ...buildProfileFields(draft, effectivePlugins),
-          ...(selected.fields.custom_config_file ? { custom_config_file: selected.fields.custom_config_file } : {}),
+          custom_config_file: confirmProviderSwitch ? "" : (selected.fields.custom_config_file ?? ""),
         },
         ...(confirmProviderSwitch ? { confirm_provider_switch_clears_overlay: true } : {}),
       });
@@ -368,6 +368,7 @@ export function RuntimeProfilesPage() {
 
   const [configEditorOpen, setConfigEditorOpen] = useState(false);
   const [configDraft, setConfigDraft] = useState("");
+  const [configProjectedBaseline, setConfigProjectedBaseline] = useState("");
   const [configImporting, setConfigImporting] = useState(false);
   const [configImportKeys, setConfigImportKeys] = useState<{ key: string; field?: string; message: string }[]>([]);
   const [confirmSwitchProviderId, setConfirmSwitchProviderId] = useState<string | null>(null);
@@ -405,9 +406,11 @@ export function RuntimeProfilesPage() {
     // file (redacted), never a preview envelope; fall back to the local
     // preview only if the endpoint is unavailable.
     setConfigDraft(previewConfig);
+    setConfigProjectedBaseline("");
     try {
       const payload = await projectedConfig(selected.id);
       if (payload?.text) setConfigDraft(payload.text);
+      if (payload?.projected_text) setConfigProjectedBaseline(payload.projected_text);
     } catch {
       // keep the local preview fallback
     }
@@ -421,7 +424,10 @@ export function RuntimeProfilesPage() {
       await apiPost<{
         profile: RuntimeProfile;
         mapped_keys: string[];
-      }>(`/api/runtime-profiles/${selected.id}/import-config`, { config_text: configDraft });
+      }>(`/api/runtime-profiles/${selected.id}/import-config`, {
+        config_text: configDraft,
+        projected_text: configProjectedBaseline,
+      });
       await load();
       setConfigEditorOpen(false);
       showSavedNotice();

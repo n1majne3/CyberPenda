@@ -281,6 +281,7 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 	if strings.TrimSpace(name) != "" {
 		existing.Name = strings.TrimSpace(name)
 	}
+	confirmedSwitchClearsOverlay := false
 	// Provider: must always be valid; empty means keep current.
 	if provider != "" {
 		if err := s.validate(existing.Name, provider); err != nil {
@@ -293,7 +294,7 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 					To:   provider,
 				}
 			}
-			existing.Fields.CustomConfigFile = ""
+			confirmedSwitchClearsOverlay = true
 		}
 		existing.Provider = provider
 	} else if err := s.validate(existing.Name, existing.Provider); err != nil {
@@ -316,6 +317,9 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 		// Provider-only edits still reject Custom Args that conflict under the
 		// resolved provider family. Args are not rewritten.
 		return Profile{}, err
+	}
+	if confirmedSwitchClearsOverlay {
+		existing.Fields.CustomConfigFile = ""
 	}
 	existing.UpdatedAt = time.Now().UTC()
 
