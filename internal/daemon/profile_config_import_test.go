@@ -579,3 +579,87 @@ func TestProjectedConfigPreviewRedactsGlobalCredentialValues(t *testing.T) {
 		t.Fatalf("unchanged import with credential placeholder must succeed, got %d body %s", rec.Code, rec.Body.String())
 	}
 }
+
+// Story 2/16 over the real HTTP path: a profile with a Model Provider shows
+// the provider API-key env as a redacted placeholder in the editor preview,
+// and an unchanged import keeps it out of the structured env.
+func TestProjectedConfigHTTPPreviewShowsModelProviderAPIKeyEnv(t *testing.T) {
+	server := newImportTestServer(t)
+	t.Setenv("MIMO_API_KEY", "sk-test-not-a-real-key")
+
+	createProvider := httptest.NewRequest(http.MethodPost, "/api/model-providers", bytes.NewReader([]byte(`{
+		"name":"MiMo",
+		"base_url":"https://api.example.test/v1",
+		"protocols":["anthropic_messages"],
+		"catalog":{"manual":["mimo-v2-pro"],"default_model":"mimo-v2-pro"}
+	}`)))
+	createProvider.Header.Set("Content-Type", "application/json")
+	providerResp := httptest.NewRecorder()
+	server.ServeHTTP(providerResp, createProvider)
+	if providerResp.Code != http.StatusCreated {
+		t.Fatalf("create provider status %d body %s", providerResp.Code, providerResp.Body.String())
+	}
+	var provider struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(providerResp.Body.Bytes(), &provider); err != nil {
+		t.Fatalf("decode provider: %v", err)
+	}
+
+	body := `{"name":"Claude MiMo","provider":"claude_code","fields":{"model_provider_id":"` + provider.ID + `"}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader([]byte(body)))
+	rec := httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create profile status %d body %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+created.ID+"/projected-config", nil)
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("projected-config status %d body %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "MIMO_API_KEY") {
+		t.Fatalf("preview must show the Model Provider API-key env, got %s", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-test-not-a-real-key") {
+		t.Fatalf("preview leaked the API key value, got %s", rec.Body.String())
+	}
+
+	var seed struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &seed); err != nil {
+		t.Fatalf("decode seed: %v", err)
+	}
+	importBody, err := json.Marshal(map[string]string{"config_text": seed.Text})
+	if err != nil {
+		t.Fatalf("encode import body: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+created.ID+"/import-config", bytes.NewReader(importBody))
+	rec = httptest.NewRecorder()
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unchanged import must succeed, got %d body %s", rec.Code, rec.Body.String())
+	}
+	var imported struct {
+		Profile struct {
+			Fields struct {
+				Env map[string]string `json:"env"`
+			} `json:"fields"`
+		} `json:"profile"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &imported); err != nil {
+		t.Fatalf("decode import: %v", err)
+	}
+	if value, present := imported.Profile.Fields.Env["MIMO_API_KEY"]; present {
+		t.Fatalf("Model Provider API-key placeholder must not persist into Env, got %q", value)
+	}
+}

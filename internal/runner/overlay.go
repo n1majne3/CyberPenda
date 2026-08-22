@@ -414,11 +414,18 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]str
 	return blocks
 }
 
-// mergeCollidingBlock merges one colliding top-level key: the structured seed
-// span and the operator block are parsed and deep-merged (structured wins,
-// plugins.enabled unions), then re-encoded in the provider format.
+// mergeCollidingBlock merges one colliding top-level key. The operator's raw
+// block is the display base (Story 8 verbatim): harness-only list entries
+// inject into it textually at the matching indentation, so operator comments
+// and formatting survive. When a textual injection cannot express the merge,
+// fall back to parse → deep-merge → re-encode.
 func mergeCollidingBlock(provider runtimeprofile.Provider, key string, seedSpan []string, operatorBlock string) string {
 	format := overlayFormat(provider)
+	if format == "yaml" {
+		if merged, ok := mergeYAMLCollidingBlockVerbatim(key, seedSpan, operatorBlock); ok {
+			return merged
+		}
+	}
 	parse := func(text string) map[string]any {
 		var doc map[string]any
 		if format == "yaml" {
@@ -469,6 +476,117 @@ func mergeCollidingBlock(provider runtimeprofile.Provider, key string, seedSpan 
 		}
 	}
 	return strings.Join(seedSpan, "\n")
+}
+
+// mergeYAMLCollidingBlockVerbatim merges a colliding YAML block keeping the
+// operator's raw text: every list entry the seed carries but the operator
+// block lacks is injected after the last existing "- entry" line at that
+// list's indentation. It reports false when the shape defeats textual
+// injection (no shared list, or non-list leaf conflicts).
+func mergeYAMLCollidingBlockVerbatim(key string, seedSpan []string, operatorBlock string) (string, bool) {
+	var seedDoc, opDoc map[string]any
+	if err := yaml.Unmarshal([]byte(strings.Join(seedSpan, "\n")), &seedDoc); err != nil {
+		return "", false
+	}
+	if err := yaml.Unmarshal([]byte(operatorBlock), &opDoc); err != nil {
+		return "", false
+	}
+	seedValue, ok := seedDoc[key].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	opValue, ok := opDoc[key].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	// Find shared list sub-keys (e.g. enabled:) needing entry injection.
+	listKey := ""
+	var seedList []any
+	for subKey, sub := range seedValue {
+		list, isList := sub.([]any)
+		if !isList {
+			continue
+		}
+		opList, opIsList := opValue[subKey].([]any)
+		if !opIsList {
+			continue
+		}
+		// Only handle the single-list case textually.
+		if listKey != "" {
+			return "", false
+		}
+		listKey = subKey
+		seedList = list
+		_ = opList
+	}
+	if listKey == "" {
+		// No shared list: nothing to union textually. Scalars/maps in the
+		// seed win per structured-wins, so fall through to re-encode.
+		return "", false
+	}
+	opLines := strings.Split(strings.TrimRight(operatorBlock, "\n"), "\n")
+	// Locate the list's "- " entry lines and their indentation.
+	entryIndent := ""
+	lastEntryIdx := -1
+	inList := false
+	for i, line := range opLines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, listKey+":") {
+			inList = true
+			continue
+		}
+		if !inList {
+			continue
+		}
+		// Stop at the next key at the list key's indentation or shallower.
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "- ") {
+			rawIndent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			listLine := ""
+			for _, l := range opLines {
+				if strings.HasPrefix(strings.TrimSpace(l), listKey+":") {
+					listLine = l
+					break
+				}
+			}
+			listIndentLen := len(listLine) - len(strings.TrimLeft(listLine, " \t"))
+			if len(rawIndent) <= listIndentLen {
+				break
+			}
+		}
+		if strings.HasPrefix(trimmed, "- ") {
+			entryIndent = line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			lastEntryIdx = i
+		}
+	}
+	// Operator entries present in the block.
+	opEntries := map[string]bool{}
+	for _, line := range opLines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "- ") {
+			opEntries[strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))] = true
+		}
+	}
+	// Seed-only entries inject after the last operator entry.
+	var inject []string
+	for _, item := range seedList {
+		text, ok := item.(string)
+		if !ok || opEntries[text] {
+			continue
+		}
+		inject = append(inject, entryIndent+"- "+text)
+	}
+	if len(inject) == 0 {
+		// Operator already carries every seed entry: the raw block stands.
+		return strings.Join(opLines, "\n") + "\n", true
+	}
+	if lastEntryIdx == -1 || entryIndent == "" {
+		return "", false
+	}
+	out := make([]string, 0, len(opLines)+len(inject))
+	out = append(out, opLines[:lastEntryIdx+1]...)
+	out = append(out, inject...)
+	out = append(out, opLines[lastEntryIdx+1:]...)
+	return strings.Join(out, "\n") + "\n", true
 }
 
 // indentLines prefixes every non-empty line with the given indentation.

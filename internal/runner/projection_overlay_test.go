@@ -463,3 +463,29 @@ func TestProjectedConfigTextClaudePreviewShowsCredentialChannels(t *testing.T) {
 		t.Fatalf("preview leaked an inline API key value:\n%s", text)
 	}
 }
+
+// Story 8 verbatim: the operator's comment inside a colliding block survives
+// reopen byte-for-byte; harness entries merge in without re-encoding the
+// operator's own lines.
+func TestProjectedConfigTextHermesReopenKeepsOperatorComments(t *testing.T) {
+	remainder := "plugins:\n  # keep this comment\n  enabled:\n    - my-custom-plugin\n"
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = remainder
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	if !strings.Contains(text, "# keep this comment") {
+		t.Fatalf("operator comment must survive reopen, got:\n%s", text)
+	}
+	if !strings.Contains(text, "my-custom-plugin") || !strings.Contains(text, "cyberpenda-iteration-budget") {
+		t.Fatalf("reopen must show both harness and operator plugins, got:\n%s", text)
+	}
+	if strings.Count(text, "plugins:") != 1 {
+		t.Fatalf("reopen must contain exactly one plugins block, got:\n%s", text)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+}

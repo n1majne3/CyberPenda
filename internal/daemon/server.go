@@ -338,7 +338,7 @@ func NewServer(config Config) (*Server, error) {
 	// The provenance list names the credential-generated paths so import
 	// enforces placeholder integrity without guessing from a sentinel.
 	profiles.SetImportBaselineProvenance(func(profile runtimeprofile.Profile) (string, []string, error) {
-		req := server.previewProjectionRequest()
+		req := server.previewProjectionRequest(profile)
 		text, err := runner.StructuredProjectedConfigTextWith(profile.Provider, profile, req)
 		if err != nil {
 			return "", nil, err
@@ -349,6 +349,9 @@ func NewServer(config Config) (*Server, error) {
 		}
 		for _, name := range runner.InlineAPIKeyEnvNames(profile) {
 			generated = append(generated, "env."+name)
+		}
+		if req.ModelSnapshot != nil && strings.TrimSpace(req.ModelSnapshot.APIKeyEnv) != "" {
+			generated = append(generated, "env."+req.ModelSnapshot.APIKeyEnv)
 		}
 		return text, generated, nil
 	})
@@ -1355,7 +1358,7 @@ func (server *Server) handleImportRuntimeProfileConfig(response http.ResponseWri
 	})
 }
 
-func (server *Server) previewProjectionRequest() runner.ProjectionRequest {
+func (server *Server) previewProjectionRequest(profiles ...runtimeprofile.Profile) runner.ProjectionRequest {
 	snapshot, err := server.snapshotGlobalModelProviders()
 	if err != nil {
 		snapshot = runner.CloneGlobalModelProviderSnapshot(nil)
@@ -1364,13 +1367,29 @@ func (server *Server) previewProjectionRequest() runner.ProjectionRequest {
 	// the preview request carries no AuthToken and no credential values.
 	// Credential-derived env keys render as redacted placeholders derived
 	// from binding metadata only.
-	return runner.ProjectionRequest{
+	req := runner.ProjectionRequest{
 		ModelProviders:              server.modelProviders,
 		RuntimePlugins:              server.runtimePlugins,
 		GlobalModelProviderSnapshot: snapshot,
 		DaemonAddr:                  server.listenAddr,
 		CredentialEnvNames:          server.credentialEnvNames(),
 	}
+	// Resolve the preview ModelSnapshot so the editor shows every env the
+	// launch projection materializes, including the Model Provider API-key
+	// env (Story 2/16).
+	if len(profiles) > 0 {
+		profile := profiles[0]
+		if strings.TrimSpace(profile.Fields.ModelProviderID) != "" && server.modelProviders != nil {
+			if resolved, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+				Profile:   profile,
+				Providers: server.modelProviders,
+				Plugins:   server.runtimePlugins,
+			}); err == nil && resolved.ModelProviderID != "" {
+				req.ModelSnapshot = &resolved
+			}
+		}
+	}
+	return req
 }
 
 // credentialEnvNames lists the env var names global credential bindings
@@ -1412,7 +1431,7 @@ func (server *Server) handleMergedConfigPreview(response http.ResponseWriter, re
 		writeError(response, http.StatusInternalServerError, "load runtime profile")
 		return
 	}
-	merged, err := runner.MergedProjectedConfigWith(profile.Provider, profile, server.previewProjectionRequest())
+	merged, err := runner.MergedProjectedConfigWith(profile.Provider, profile, server.previewProjectionRequest(profile))
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
@@ -1441,7 +1460,7 @@ func (server *Server) handleProjectedConfig(response http.ResponseWriter, reques
 		writeError(response, http.StatusInternalServerError, "load runtime profile")
 		return
 	}
-	text, err := runner.ProjectedConfigTextWith(profile.Provider, profile, server.previewProjectionRequest())
+	text, err := runner.ProjectedConfigTextWith(profile.Provider, profile, server.previewProjectionRequest(profile))
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
