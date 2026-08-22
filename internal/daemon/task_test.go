@@ -1051,7 +1051,20 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	if resp.Code != http.StatusAccepted {
 		t.Fatalf("expected resume status 202, got %d with body %s", resp.Code, resp.Body.String())
 	}
-	waitForTaskStatus(t, server, projectID, taskID, "completed")
+	// Wait for the second container creation directly: the task status may
+	// still read "completed" from the first run while the resume launch is
+	// still in flight, and reading the log before the second create races.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rawCount, err := os.ReadFile(countPath)
+		if err == nil && strings.TrimSpace(string(rawCount)) == "2" {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("timed out waiting for second container creation")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 
 	rawLog, err := os.ReadFile(logPath)
 	if err != nil {

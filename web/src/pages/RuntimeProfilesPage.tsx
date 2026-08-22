@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
-import { apiGet, apiPost, apiPatch, apiDelete, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, mergedConfigPreview, projectedConfig, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
 import { enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
 import {
@@ -18,7 +18,7 @@ import {
 } from "@/pages/runtimeProfileForm";
 import { isLaunchResolvedProfile, isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { cn } from "@/lib/utils";
-import { Button, Input, Label, Badge, Textarea, Select } from "@/components/ui";
+import { Button, Input, Label, Badge, Textarea, Select, Card, CardTitle } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SaveActionButton } from "@/components/SaveActionButton";
 import {
@@ -316,7 +316,7 @@ export function RuntimeProfilesPage() {
     }
   }
 
-  async function saveSelected() {
+  async function saveSelected(confirmProviderSwitch = false) {
     if (!selected || !draft || saving) return;
     setSaving(true);
     setError(null);
@@ -324,15 +324,29 @@ export function RuntimeProfilesPage() {
     try {
       // Authoritative conflict rejection lives in daemon Runtime Profile
       // validation. A 400 leaves the draft (including Custom Args) intact.
+      // The Custom Config File is owned by the config editor's import flow,
+      // not this form; carry the stored overlay through so a form save never
+      // wipes it.
       await apiPatch(`/api/runtime-profiles/${selected.id}`, {
         name: draft.name,
         provider: draft.provider,
-        fields: buildProfileFields(draft, effectivePlugins),
+        fields: {
+          ...buildProfileFields(draft, effectivePlugins),
+          custom_config_file: confirmProviderSwitch ? "" : (selected.fields.custom_config_file ?? ""),
+        },
+        ...(confirmProviderSwitch ? { confirm_provider_switch_clears_overlay: true } : {}),
       });
       await load();
       showSavedNotice();
     } catch (e) {
-      setError((e as Error).message);
+      const error = e as { message?: string; status?: number };
+      // The daemon answers a provider switch that would drop a non-empty
+      // Custom Config File with 409; ask the operator once and retry.
+      if (!confirmProviderSwitch && error.status === 409) {
+        setConfirmSwitchProviderId(selected.id);
+        return;
+      }
+      setError(error.message ?? String(e));
     } finally {
       setSaving(false);
     }
@@ -351,6 +365,77 @@ export function RuntimeProfilesPage() {
         2
       )
     : "";
+
+  const [configEditorOpen, setConfigEditorOpen] = useState(false);
+  const [configDraft, setConfigDraft] = useState("");
+  const [configImporting, setConfigImporting] = useState(false);
+  const [configImportKeys, setConfigImportKeys] = useState<{ key: string; field?: string; message: string }[]>([]);
+  const [confirmSwitchProviderId, setConfirmSwitchProviderId] = useState<string | null>(null);
+  const [mergedPreview, setMergedPreview] = useState<{ id: string; text: string } | null>(null);
+  const activeProfileId = selected?.id;
+  const activeProfileUpdatedAt = selected?.updated_at;
+  const activeProfileOverlay = selected?.fields.custom_config_file;
+  // Only the preview fetched for the currently selected profile is shown, so
+  // switching profiles never flashes the previous profile's merged config.
+  const mergedPreviewText =
+    mergedPreview && activeProfileId && mergedPreview.id === activeProfileId ? mergedPreview.text : "";
+
+  // Show the final merged result (structured + Custom Config File
+  // overlay) exactly as projection will produce it.
+  useEffect(() => {
+    if (!activeProfileId) return;
+    let cancelled = false;
+    mergedConfigPreview(activeProfileId)
+      .then((payload) => {
+        if (!cancelled) setMergedPreview({ id: activeProfileId, text: JSON.stringify(payload?.merged ?? {}, null, 2) });
+      })
+      .catch(() => {
+        if (!cancelled) setMergedPreview({ id: activeProfileId, text: "" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProfileId, activeProfileUpdatedAt, activeProfileOverlay]);
+
+  async function openConfigEditor() {
+    if (!selected) return;
+    setConfigImportKeys([]);
+    setConfigEditorOpen(true);
+    // The editor opens on the complete provider-native projected
+    // file (redacted), never a preview envelope; fall back to the local
+    // preview only if the endpoint is unavailable.
+    setConfigDraft(previewConfig);
+    try {
+      const payload = await projectedConfig(selected.id);
+      if (payload?.text) setConfigDraft(payload.text);
+    } catch {
+      // keep the local preview fallback
+    }
+  }
+
+  async function importConfigText() {
+    if (!selected) return;
+    setConfigImporting(true);
+    setConfigImportKeys([]);
+    try {
+      await apiPost<{
+        profile: RuntimeProfile;
+        mapped_keys: string[];
+      }>(`/api/runtime-profiles/${selected.id}/import-config`, {
+        config_text: configDraft,
+      });
+      await load();
+      setConfigEditorOpen(false);
+      showSavedNotice();
+    } catch (e) {
+      setError((e as Error).message);
+      // Per-key detail travels on the ApiError body, not the message.
+      const body = (e as { body?: unknown }).body as { keys?: { key: string; field?: string; message: string }[] } | undefined;
+      if (body?.keys?.length) setConfigImportKeys(body.keys);
+    } finally {
+      setConfigImporting(false);
+    }
+  }
 
   return (
     <SettingsPageShell>
@@ -572,10 +657,35 @@ export function RuntimeProfilesPage() {
               extensionCatalog={extensionCatalog}
             />
             <div className="min-w-0">
-              <p className="text-sm font-medium leading-none text-muted-foreground">Generated config preview</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-medium leading-none text-muted-foreground">Generated config preview</p>
+                <Button size="sm" variant="outline" onClick={openConfigEditor}>
+                  Edit config
+                </Button>
+              </div>
               <pre className="mt-1 max-h-64 w-full max-w-full overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
                 {previewConfig}
               </pre>
+              {selected.fields.custom_config_file?.trim() ? (
+                <div className="mt-2 min-w-0">
+                  <p className="text-sm font-medium leading-none text-muted-foreground">
+                    Custom config file (remainder, deep-merged on projection)
+                  </p>
+                  <pre className="mt-1 max-h-40 w-full max-w-full overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
+                    {selected.fields.custom_config_file}
+                  </pre>
+                </div>
+              ) : null}
+              {mergedPreviewText.trim() ? (
+                <div className="mt-2 min-w-0">
+                  <p className="text-sm font-medium leading-none text-muted-foreground">
+                    Final merged config (structured + custom config file)
+                  </p>
+                  <pre data-testid="merged-config-preview" className="mt-1 max-h-64 w-full max-w-full overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
+                    {mergedPreviewText}
+                  </pre>
+                </div>
+              ) : null}
             </div>
           </SettingsDetailPane>
         ) : (
@@ -599,6 +709,62 @@ export function RuntimeProfilesPage() {
         }}
         onCancel={() => setConfirmDeleteId(null)}
       />
+      <ConfirmDialog
+        open={confirmSwitchProviderId !== null}
+        title="Switch runtime provider?"
+        description="This profile has a non-empty Custom Config File. Switching the runtime provider clears it because the overlay format is provider-specific."
+        confirmLabel="Switch and clear"
+        destructive
+        onConfirm={() => {
+          setConfirmSwitchProviderId(null);
+          void saveSelected(true);
+        }}
+        onCancel={() => setConfirmSwitchProviderId(null)}
+      />
+      {configEditorOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <Card className="flex max-h-[90vh] w-full max-w-3xl flex-col gap-3 overflow-hidden p-4">
+            <CardTitle className="text-base">Edit runtime config</CardTitle>
+            <p className="text-sm text-muted-foreground">
+              Edit the generated config for {selected?.name}. On import, keys the structured fields express map back to
+              them; Managed Config Keys and secret-shaped values are refused; the remainder is stored as the Custom
+              Config File.
+            </p>
+            <label className="sr-only" htmlFor="runtime-config-editor">
+              Runtime config editor
+            </label>
+            <textarea
+              id="runtime-config-editor"
+              aria-label="Runtime config editor"
+              className="min-h-[40vh] w-full resize-y rounded-md border border-border bg-muted/30 p-3 font-mono text-xs"
+              value={configDraft}
+              onChange={(event) => setConfigDraft(event.target.value)}
+              spellCheck={false}
+            />
+            {configImportKeys.length > 0 && (
+              <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm">
+                <p className="font-medium">Import refused — fix these keys and retry:</p>
+                <ul className="mt-1 list-disc space-y-1 pl-5">
+                  {configImportKeys.map((keyError) => (
+                    <li key={keyError.key}>
+                      <span className="font-mono">{keyError.key}</span>: {keyError.message}
+                      {keyError.field ? <span className="text-muted-foreground"> (owned by the {keyError.field} field)</span> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setConfigEditorOpen(false)}>
+                Cancel
+              </Button>
+              <Button disabled={configImporting} onClick={() => void importConfigText()}>
+                {configImporting ? "Importing…" : "Import config"}
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
     </SettingsPageShell>
   );
 }

@@ -114,6 +114,13 @@ func ResolveSourceEnv(source Source) (envName, value string, err error) {
 // under. DestinationEnv wins; otherwise env sources fall back to their Value
 // (the variable name). Literal sources must declare DestinationEnv because
 // their Value is a secret, not an env var name.
+// DestinationEnv returns the runtime env var name a credential source
+// projects under, without materializing any secret value. DestinationEnv
+// wins; env sources fall back to their Value (the variable name).
+func DestinationEnv(source Source) (string, error) {
+	return destinationEnv(source)
+}
+
 func destinationEnv(source Source) (string, error) {
 	if dest := strings.TrimSpace(source.DestinationEnv); dest != "" {
 		return dest, nil

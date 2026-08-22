@@ -23,6 +23,24 @@ func TestValidateManifestRejectsInvalidInput(t *testing.T) {
 			plugin.ProfileSchema.Fields = append(plugin.ProfileSchema.Fields, runtimeplugin.ProfileField{Name: "model", Type: "string", Label: "Again"})
 		}},
 		{name: "credential value", mutate: func(plugin *runtimeplugin.Plugin) { plugin.CredentialEnv = []string{"ANTHROPIC_API_KEY=secret"} }},
+		{name: "managed key empty path", mutate: func(plugin *runtimeplugin.Plugin) {
+			plugin.ConfigProjection.ManagedKeys = []runtimeplugin.ManagedKey{{Key: "", Field: "model"}}
+		}},
+		{name: "managed key invalid path", mutate: func(plugin *runtimeplugin.Plugin) {
+			plugin.ConfigProjection.ManagedKeys = []runtimeplugin.ManagedKey{{Key: "a..b", Field: "model"}}
+		}},
+		{name: "managed key missing field", mutate: func(plugin *runtimeplugin.Plugin) {
+			plugin.ConfigProjection.ManagedKeys = []runtimeplugin.ManagedKey{{Key: "model"}}
+		}},
+		{name: "managed key unknown condition", mutate: func(plugin *runtimeplugin.Plugin) {
+			plugin.ConfigProjection.ManagedKeys = []runtimeplugin.ManagedKey{{Key: "model", Field: "model", Condition: "someday"}}
+		}},
+		{name: "managed key duplicate", mutate: func(plugin *runtimeplugin.Plugin) {
+			plugin.ConfigProjection.ManagedKeys = []runtimeplugin.ManagedKey{
+				{Key: "model", Field: "model"},
+				{Key: "model", Field: "endpoint"},
+			}
+		}},
 	}
 
 	if err := runtimeplugin.Validate(valid); err != nil {

@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
@@ -50,6 +53,10 @@ type ProjectionRequest struct {
 	ModelSnapshot               *modelprovider.Snapshot
 	LaunchModelOverride         string
 	SkillBundles                []skill.Bundle
+	// CredentialEnvNames lists the env var names credential bindings project
+	// under. Preview rendering uses it to show redacted placeholders from
+	// metadata only — no credential value ever enters preview text.
+	CredentialEnvNames []string
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -327,6 +334,30 @@ func runtimePluginForProvider(provider runtimeprofile.Provider, registry *runtim
 	return runtimeplugin.MustBuiltinRegistry().Get(string(provider))
 }
 
+// resolvePreviewProfile applies the same Model Provider snapshot the launch
+// projection uses, without requiring an API key. Preview and import baseline
+// share this so the editor seed matches the runtime-received main config.
+func resolvePreviewProfile(profile runtimeprofile.Profile, req ProjectionRequest) runtimeprofile.Profile {
+	if req.ModelSnapshot != nil {
+		return profileWithModelSnapshot(profile, *req.ModelSnapshot)
+	}
+	if req.ModelProviders == nil || strings.TrimSpace(profile.Fields.ModelProviderID) == "" {
+		return profile
+	}
+	snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+		Profile:             profile,
+		Providers:           req.ModelProviders,
+		Plugins:             req.RuntimePlugins,
+		Credentials:         req.Credentials,
+		CheckEnv:            false,
+		LaunchModelOverride: req.LaunchModelOverride,
+	})
+	if err != nil || snapshot.ModelProviderID == "" {
+		return profile
+	}
+	return profileWithModelSnapshot(profile, snapshot)
+}
+
 func profileWithModelSnapshot(profile runtimeprofile.Profile, snapshot modelprovider.Snapshot) runtimeprofile.Profile {
 	profile.Fields.Model = snapshot.Model
 	profile.Fields.Endpoint = snapshot.EndpointBaseURL
@@ -430,6 +461,23 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 		}
 		settings["enabledPlugins"] = enabled
 	}
+	settings, err = applyConfigOverlay(profile.Provider, settings, profile.Fields.CustomConfigFile)
+	if err != nil {
+		return ConfigProjection{}, fmt.Errorf("apply custom config file: %w", err)
+	}
+	// Merge plugin enablement from the overlay into the preview install refs.
+	if overlayPlugins, ok := settings["enabledPlugins"].(map[string]any); ok {
+		previewRefs := make([]string, 0, len(installRefs))
+		previewRefs = append(previewRefs, installRefs...)
+		for ref, value := range overlayPlugins {
+			enabled, isBool := value.(bool)
+			if isBool && enabled && !slices.Contains(previewRefs, ref) {
+				previewRefs = append(previewRefs, ref)
+			}
+		}
+		sort.Strings(previewRefs)
+		installRefs = previewRefs
+	}
 	settingsPath := filepath.Join(layout.ProviderHome, "settings.json")
 	if err := writeJSONConfigFile(settingsPath, settings); err != nil {
 		return ConfigProjection{}, err
@@ -494,7 +542,10 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 	}
 
 	configPath := filepath.Join(layout.ProviderHome, "config.toml")
-	configTOML := buildCodexConfigTOML(profile, mcpServers)
+	configTOML, err := applyCodexConfigOverlay(profile, buildCodexConfigTOML(profile, mcpServers))
+	if err != nil {
+		return ConfigProjection{}, err
+	}
 	if err := os.WriteFile(configPath, []byte(configTOML), 0o600); err != nil {
 		return ConfigProjection{}, fmt.Errorf("write codex config: %w", err)
 	}
@@ -545,6 +596,28 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 	return ConfigProjection{ConfigPath: configPath, Config: preview}, nil
 }
 
+// applyCodexConfigOverlay deep-merges the Custom Config File over the
+// generated Codex config.toml text and re-encodes TOML. Structured keys
+// always win; overlay comments are preserved in the stored overlay text.
+func applyCodexConfigOverlay(profile runtimeprofile.Profile, generatedTOML string) (string, error) {
+	if strings.TrimSpace(profile.Fields.CustomConfigFile) == "" {
+		return generatedTOML, nil
+	}
+	var generated map[string]any
+	if err := toml.Unmarshal([]byte(generatedTOML), &generated); err != nil {
+		return "", fmt.Errorf("parse generated codex config: %w", err)
+	}
+	merged, err := applyConfigOverlay(profile.Provider, generated, profile.Fields.CustomConfigFile)
+	if err != nil {
+		return "", fmt.Errorf("apply custom config file: %w", err)
+	}
+	var b strings.Builder
+	if err := toml.NewEncoder(&b).Encode(merged); err != nil {
+		return "", fmt.Errorf("encode merged codex config: %w", err)
+	}
+	return b.String(), nil
+}
+
 func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
 	materialized, err := resolveMaterializedCredentials(profile, req)
 	if err != nil {
@@ -591,6 +664,10 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	} else {
 		modelsDoc = buildPiModels(profile, materialized)
 		authDoc = buildPiAuth(profile, materialized)
+	}
+	modelsDoc, err = applyConfigOverlay(profile.Provider, modelsDoc, profile.Fields.CustomConfigFile)
+	if err != nil {
+		return ConfigProjection{}, fmt.Errorf("apply custom config file: %w", err)
 	}
 	modelsPath := filepath.Join(agentDir, "models.json")
 	// ADR 0015: when CyberPenda can list global Model Providers, the projected

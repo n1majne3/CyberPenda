@@ -671,3 +671,82 @@ func TestProjectPiConfigInvalidInitialProviderStillFails(t *testing.T) {
 		t.Fatal("expected invalid initial provider to fail projection")
 	}
 }
+
+// Story 16: preview of the Pi main config must be semantic-equal to the
+// launch-projected models.json, including every launch-ready global.
+func TestProjectedConfigTextMatchesPiLaunchReadyGlobals(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	providers := modelprovider.NewService(db)
+	primary, err := providers.Create(modelprovider.CreateRequest{
+		Name:      "Primary OpenAI",
+		BaseURL:   "https://primary.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIChatCompletions},
+		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-primary"}, DefaultModel: "gpt-primary"},
+	})
+	if err != nil {
+		t.Fatalf("create primary: %v", err)
+	}
+	alternate, err := providers.Create(modelprovider.CreateRequest{
+		Name:      "Alternate Anthropic",
+		BaseURL:   "https://alternate.example.test/anthropic",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolAnthropicMessages},
+		Catalog:   modelprovider.Catalog{Manual: []string{"claude-alt"}, DefaultModel: "claude-alt"},
+	})
+	if err != nil {
+		t.Fatalf("create alternate: %v", err)
+	}
+	t.Setenv(primary.APIKeyEnv, "sk-test-not-a-real-key")
+	t.Setenv(alternate.APIKeyEnv, "sk-test-not-a-real-key")
+
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderPi,
+		Fields:   runtimeprofile.Fields{ModelProviderID: primary.ID},
+	}
+	req := runner.ProjectionRequest{ModelProviders: providers}
+
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-pi-preview", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, req); err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+	modelsRaw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "agent", "models.json"))
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+
+	preview, err := runner.ProjectedConfigTextWith(runtimeprofile.ProviderPi, profile, req)
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if strings.Contains(preview, "sk-test-not-a-real-key") {
+		t.Fatalf("preview must redact credentials, got %s", preview)
+	}
+
+	var launched, shown struct {
+		Providers map[string]struct {
+			BaseURL string `json:"baseUrl"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(modelsRaw, &launched); err != nil {
+		t.Fatalf("decode launched: %v", err)
+	}
+	if err := json.Unmarshal([]byte(preview), &shown); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if len(shown.Providers) != len(launched.Providers) {
+		t.Fatalf("preview providers = %#v, launched = %#v", shown.Providers, launched.Providers)
+	}
+	for id, entry := range launched.Providers {
+		got, ok := shown.Providers[id]
+		if !ok || got.BaseURL != entry.BaseURL {
+			t.Fatalf("preview missing launched provider %q: shown=%#v launched=%#v", id, shown.Providers, launched.Providers)
+		}
+	}
+}
