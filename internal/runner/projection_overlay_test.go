@@ -489,3 +489,50 @@ func TestProjectedConfigTextHermesReopenKeepsOperatorComments(t *testing.T) {
 		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
 	}
 }
+
+// Story 8 verbatim: a preamble comment before any root key survives reopen.
+func TestProjectedConfigTextHermesReopenKeepsPreambleComment(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "# keep this operator note\nskills:\n  autoload: false\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	if !strings.Contains(text, "# keep this operator note") {
+		t.Fatalf("preamble comment must survive reopen:\n%s", text)
+	}
+	if !strings.Contains(text, "autoload: false") {
+		t.Fatalf("remainder keys must survive reopen:\n%s", text)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+}
+
+// Story 16: entry dedup must scope to the target list. A sibling list
+// (plugins.disabled) carrying the same entry name does not satisfy the
+// plugins.enabled union.
+func TestProjectedConfigTextHermesSiblingListDoesNotSuppressInjection(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "plugins:\n  enabled:\n    - my-custom-plugin\n  disabled:\n    - cyberpenda-iteration-budget\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+	plugins, _ := doc["plugins"].(map[string]any)
+	enabled, _ := plugins["enabled"].([]any)
+	joined := make([]string, 0, len(enabled))
+	for _, item := range enabled {
+		if s, ok := item.(string); ok {
+			joined = append(joined, s)
+		}
+	}
+	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
+		t.Fatalf("preview enabled must match the runtime union, got %#v\n%s", joined, text)
+	}
+}

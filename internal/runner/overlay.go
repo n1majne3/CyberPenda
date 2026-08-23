@@ -222,10 +222,9 @@ func spliceProjectedRemainder(provider runtimeprofile.Provider, seed, remainder 
 		}
 		flush()
 		result := strings.Join(mergedParts, "\n")
-		// Root-level scalar lines from the remainder (no trailing colon)
-		// and unconsumed blocks append at the document root.
-		if commentBlock, ok := blocks[""]; ok {
-			result += "\n" + commentBlock
+		// A preamble comment block belongs at the very top of the document.
+		if preambleBlock, ok := blocks[""]; ok {
+			result = preambleBlock + "\n" + result
 			consumed[""] = true
 		}
 		result += appendRemainderOnly()
@@ -346,6 +345,7 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]str
 	if format == "yaml" {
 		currentKey := ""
 		var current []string
+		var preamble []string
 		flush := func() {
 			if currentKey != "" {
 				blocks[currentKey] = strings.Join(current, "\n")
@@ -373,9 +373,18 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]str
 			}
 			if currentKey != "" {
 				current = append(current, line)
+				continue
+			}
+			// Lines before any root key (preamble comments, blank lines)
+			// belong to the document itself, not to a key block.
+			if trimmed != "" || line == "" {
+				preamble = append(preamble, line)
 			}
 		}
 		flush()
+		if len(preamble) > 0 {
+			blocks[""] = strings.Join(preamble, "\n")
+		}
 		return blocks
 	}
 	currentTable := ""
@@ -525,46 +534,47 @@ func mergeYAMLCollidingBlockVerbatim(key string, seedSpan []string, operatorBloc
 		return "", false
 	}
 	opLines := strings.Split(strings.TrimRight(operatorBlock, "\n"), "\n")
-	// Locate the list's "- " entry lines and their indentation.
-	entryIndent := ""
-	lastEntryIdx := -1
-	inList := false
+	// Locate the target list's line index, its indentation, and its entry
+	// range. Sibling lists at the same indentation (plugins.disabled) must
+	// not contribute entries.
+	listLineIdx := -1
 	for i, line := range opLines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, listKey+":") {
-			inList = true
-			continue
-		}
-		if !inList {
-			continue
-		}
-		// Stop at the next key at the list key's indentation or shallower.
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(trimmed, "- ") {
-			rawIndent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
-			listLine := ""
-			for _, l := range opLines {
-				if strings.HasPrefix(strings.TrimSpace(l), listKey+":") {
-					listLine = l
-					break
-				}
-			}
-			listIndentLen := len(listLine) - len(strings.TrimLeft(listLine, " \t"))
-			if len(rawIndent) <= listIndentLen {
-				break
-			}
-		}
-		if strings.HasPrefix(trimmed, "- ") {
-			entryIndent = line[:len(line)-len(strings.TrimLeft(line, " \t"))]
-			lastEntryIdx = i
+			listLineIdx = i
+			break
 		}
 	}
-	// Operator entries present in the block.
+	if listLineIdx == -1 {
+		return "", false
+	}
+	listLine := opLines[listLineIdx]
+	listIndentLen := len(listLine) - len(strings.TrimLeft(listLine, " 	"))
+	entryIndent := ""
+	lastEntryIdx := -1
 	opEntries := map[string]bool{}
-	for _, line := range opLines {
+	for i := listLineIdx + 1; i < len(opLines); i++ {
+		line := opLines[i]
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "- ") {
-			opEntries[strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))] = true
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
 		}
+		rawIndentLen := len(line) - len(strings.TrimLeft(line, " 	"))
+		// The list ends at the first non-entry line at or above the list
+		// key's indentation (a sibling key like "disabled:").
+		if !strings.HasPrefix(trimmed, "- ") {
+			if rawIndentLen <= listIndentLen {
+				break
+			}
+			// A deeper non-entry line is nested content, not a sibling.
+			continue
+		}
+		if rawIndentLen <= listIndentLen {
+			break
+		}
+		entryIndent = line[:len(line)-len(strings.TrimLeft(line, " 	"))]
+		lastEntryIdx = i
+		opEntries[strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))] = true
 	}
 	// Seed-only entries inject after the last operator entry.
 	var inject []string
