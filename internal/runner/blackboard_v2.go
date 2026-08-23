@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"pentest/internal/blackboardv2"
@@ -209,5 +210,11 @@ func writeRootFileAtomically(root *os.Root, name string, data []byte) error {
 		return err
 	}
 	defer directory.Close()
+	// Windows cannot fsync a directory handle: FlushFileBuffers(ERROR_ACCESS_DENIED)
+	// (golang/go#47366). The rename above already made the file visible, so the
+	// durability sync is a Linux/macOS-only ordering guarantee.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	return directory.Sync()
 }

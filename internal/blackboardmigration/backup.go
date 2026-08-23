@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"pentest/internal/store"
@@ -276,6 +277,11 @@ func syncDirectory(path string) error {
 		return fmt.Errorf("open backup directory for fsync: %w", err)
 	}
 	defer directory.Close()
+	// Windows cannot fsync a directory handle (golang/go#47366); the migration
+	// files are already visible after write, so skip the durability sync.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	if err := directory.Sync(); err != nil {
 		return fmt.Errorf("fsync backup directory: %w", err)
 	}

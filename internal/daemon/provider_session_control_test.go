@@ -619,7 +619,10 @@ func TestStopClosesProviderSessionBeforeWaitingForRuntimeResources(t *testing.T)
 		t.Fatal(err)
 	}
 	defer server.Close()
-	server.runtimeStopTimeout = 50 * time.Millisecond
+	// A load-safe budget: CI runners stretched a 50ms deadline past its bound
+	// and flaked with "runtime did not stop in time". The assertions here guard
+	// the close ordering, not the stop latency bound.
+	server.runtimeStopTimeout = 5 * time.Second
 
 	projectRecord, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
 	if err != nil {
@@ -690,7 +693,11 @@ func TestStopWaitsForActiveProviderControlBeforeClosingSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer server.Close()
-	server.runtimeStopTimeout = 100 * time.Millisecond
+	// Load-safe stop budget: the delayed provider close (cancel wake-up plus the
+	// fake's 20ms settle) must finish inside the stop deadline; 100ms flaked on
+	// loaded CI runners. The test asserts the wait-for-control ORDER, not a
+	// latency bound.
+	server.runtimeStopTimeout = 5 * time.Second
 
 	projectRecord, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
 	if err != nil {
