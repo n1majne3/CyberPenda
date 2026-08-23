@@ -142,10 +142,11 @@ func ProjectedConfigTextWith(provider runtimeprofile.Provider, profile runtimepr
 	if strings.TrimSpace(remainder) == "" {
 		return seed, nil
 	}
-	// Story 8: TOML/YAML reopen keeps the remainder byte-for-byte, including
-	// comments. JSON has no comments, so it still merge-encodes.
+	// Story 8: reopen keeps the remainder byte-for-byte, comments and JSON
+	// spacing included. JSON collision keys merge structurally; remainder-only
+	// keys append verbatim.
 	switch overlayFormat(provider) {
-	case "toml", "yaml":
+	case "toml", "yaml", "json":
 		return spliceProjectedRemainder(provider, seed, remainder), nil
 	}
 	merged, err := MergedProjectedConfigWith(provider, profile, req)
@@ -525,6 +526,9 @@ func mergeYAMLCollidingBlockVerbatim(key string, seedSpan []string, operatorBloc
 	// Find shared list sub-keys (e.g. enabled:) needing entry injection.
 	listKey := ""
 	var seedList []any
+	// Semantic membership from the PARSED operator list: quoted,
+	// single-quoted, or inline-commented entries compare by value.
+	opEntriesParsed := map[string]bool{}
 	for subKey, sub := range seedValue {
 		list, isList := sub.([]any)
 		if !isList {
@@ -540,12 +544,19 @@ func mergeYAMLCollidingBlockVerbatim(key string, seedSpan []string, operatorBloc
 		}
 		listKey = subKey
 		seedList = list
-		_ = opList
+		for _, item := range opList {
+			if text, ok := item.(string); ok {
+				opEntriesParsed[text] = true
+			}
+		}
 	}
 	if listKey == "" {
-		// No shared list: nothing to union textually. Scalars/maps in the
-		// seed win per structured-wins, so fall through to re-encode.
-		return "", false
+		// No shared list: colliding map/scalar children still keep the
+		// operator's raw block. Seed-only children splice in textually at
+		// the derived child indentation; operator children and comments
+		// stay byte-for-byte (structured-wins still holds because the
+		// projection merge enforces the structured value at runtime).
+		return spliceYAMLMapChildrenVerbatim(key, seedValue, opValue, operatorBlock)
 	}
 	opLines := strings.Split(strings.TrimRight(operatorBlock, "\n"), "\n")
 	// Locate the target list at the root block's DIRECT child indentation:
@@ -612,7 +623,9 @@ func mergeYAMLCollidingBlockVerbatim(key string, seedSpan []string, operatorBloc
 	listIndentLen := len(listLine) - len(strings.TrimLeft(listLine, " 	"))
 	entryIndent := ""
 	lastEntryIdx := -1
-	opEntries := map[string]bool{}
+	// Semantic membership from the PARSED list: quoted, single-quoted, or
+	// inline-commented entries compare by value, not raw text.
+	opEntries := opEntriesParsed
 	for i := listLineIdx + 1; i < len(opLines); i++ {
 		line := opLines[i]
 		trimmed := strings.TrimSpace(line)
@@ -634,7 +647,6 @@ func mergeYAMLCollidingBlockVerbatim(key string, seedSpan []string, operatorBloc
 		}
 		entryIndent = line[:len(line)-len(strings.TrimLeft(line, " 	"))]
 		lastEntryIdx = i
-		opEntries[strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))] = true
 	}
 	// Seed-only entries inject after the last operator entry.
 	var inject []string
@@ -698,6 +710,100 @@ func topLevelKeys(provider runtimeprofile.Provider, raw string) map[string]bool 
 		keys[key] = true
 	}
 	return keys
+}
+
+// spliceYAMLMapChildrenVerbatim merges a colliding YAML map block without a
+// shared list: the operator's raw block is the display base; seed-only
+// children (e.g. a managed terminal.backend the operator did not write)
+// render textually at the block's derived child indentation and append after
+// the last operator child. Operator lines and comments stay untouched. It
+// reports false only when the block shape defeats textual placement.
+func spliceYAMLMapChildrenVerbatim(key string, seedValue, opValue map[string]any, operatorBlock string) (string, bool) {
+	// Seed-only scalar children are the only splice candidates.
+	type scalarChild struct {
+		name  string
+		value string
+	}
+	var seedOnly []scalarChild
+	for subKey, sub := range seedValue {
+		if _, operatorHas := opValue[subKey]; operatorHas {
+			continue
+		}
+		text, isText := sub.(string)
+		if !isText {
+			continue
+		}
+		seedOnly = append(seedOnly, scalarChild{name: subKey, value: text})
+	}
+	if len(seedOnly) == 0 {
+		// Operator already covers every seed child: the raw block stands.
+		return strings.TrimRight(operatorBlock, "\n") + "\n", true
+	}
+	sort.Slice(seedOnly, func(i, j int) bool { return seedOnly[i].name < seedOnly[j].name })
+	opLines := strings.Split(strings.TrimRight(operatorBlock, "\n"), "\n")
+	// Locate the root header line and derive child indentation from the
+	// first content line below it.
+	rootLineIdx := -1
+	for i, line := range opLines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, key+":") {
+			rootLineIdx = i
+			break
+		}
+	}
+	if rootLineIdx == -1 {
+		return "", false
+	}
+	rootIndentLen := len(opLines[rootLineIdx]) - len(strings.TrimLeft(opLines[rootLineIdx], " \t"))
+	childIndent := ""
+	lastChildIdx := -1
+	for i := rootLineIdx + 1; i < len(opLines); i++ {
+		line := opLines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		rawIndentLen := len(line) - len(strings.TrimLeft(line, " \t"))
+		if rawIndentLen <= rootIndentLen {
+			break
+		}
+		if childIndent == "" {
+			childIndent = line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		}
+		lastChildIdx = i
+	}
+	if childIndent == "" {
+		// Operator block has no children yet: seed-only children render at
+		// a default one-level indent under the header.
+		childIndent = strings.Repeat(" ", rootIndentLen+2)
+		header := opLines[:rootLineIdx+1]
+		rest := opLines[rootLineIdx+1:]
+		var b strings.Builder
+		for _, line := range header {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		for _, child := range seedOnly {
+			b.WriteString(childIndent + child.name + ": " + child.value + "\n")
+		}
+		for _, line := range rest {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		return strings.TrimRight(b.String(), "\n") + "\n", true
+	}
+	if lastChildIdx == -1 {
+		return "", false
+	}
+	var inject []string
+	for _, child := range seedOnly {
+		inject = append(inject, childIndent+child.name+": "+child.value)
+	}
+	out := make([]string, 0, len(opLines)+len(inject))
+	out = append(out, opLines[:lastChildIdx+1]...)
+	out = append(out, inject...)
+	out = append(out, opLines[lastChildIdx+1:]...)
+	return strings.Join(out, "\n") + "\n", true
 }
 
 // seedHasTopLevelKey reports whether the seed text declares the key at root level.

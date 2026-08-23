@@ -57,12 +57,39 @@ func claudeImportBodyFromSeed(t *testing.T, server *daemon.Server, id string, mu
 	if err := json.Unmarshal(rec.Body.Bytes(), &seed); err != nil {
 		t.Fatalf("decode seed: %v", err)
 	}
+	// After the first import the profile carries a remainder; the reopen
+	// seed is seed+remainder spliced (two JSON objects), so compose the
+	// editable document from the first JSON object plus the stored
+	// remainder — never re-parse the spliced text as one document.
 	var doc map[string]any
-	if err := json.Unmarshal([]byte(seed.Text), &doc); err != nil {
+	if err := json.Unmarshal([]byte(firstJSONObject(seed.Text)), &doc); err != nil {
 		t.Fatalf("parse seed text: %v", err)
 	}
 	if doc == nil {
 		doc = map[string]any{}
+	}
+	fetched := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+id, nil)
+	frec := httptest.NewRecorder()
+	server.ServeHTTP(frec, fetched)
+	if frec.Code != http.StatusOK {
+		t.Fatalf("get profile status %d body %s", frec.Code, frec.Body.String())
+	}
+	var current struct {
+		Fields struct {
+			CustomConfigFile string `json:"custom_config_file"`
+		} `json:"fields"`
+	}
+	if err := json.Unmarshal(frec.Body.Bytes(), &current); err != nil {
+		t.Fatalf("decode profile: %v", err)
+	}
+	if strings.TrimSpace(current.Fields.CustomConfigFile) != "" {
+		var stored map[string]any
+		if err := json.Unmarshal([]byte(current.Fields.CustomConfigFile), &stored); err != nil {
+			t.Fatalf("parse stored remainder: %v", err)
+		}
+		for k, v := range stored {
+			doc[k] = v
+		}
 	}
 	mutate(doc)
 	raw, err := json.Marshal(doc)
@@ -74,6 +101,34 @@ func claudeImportBodyFromSeed(t *testing.T, server *daemon.Server, id string, mu
 		t.Fatalf("encode import body: %v", err)
 	}
 	return body
+}
+
+// firstJSONObject returns the leading JSON object of a spliced seed+remainder
+// text by scanning balanced braces outside strings.
+func firstJSONObject(text string) string {
+	depth := 0
+	inString := false
+	escaped := false
+	for i, ch := range text {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch {
+		case ch == '\\' && inString:
+			escaped = true
+		case ch == '"':
+			inString = !inString
+		case !inString && ch == '{':
+			depth++
+		case !inString && ch == '}':
+			depth--
+			if depth == 0 {
+				return text[:i+1]
+			}
+		}
+	}
+	return text
 }
 
 func TestImportRuntimeProfileConfigEndpointSucceeds(t *testing.T) {

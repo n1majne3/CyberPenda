@@ -909,3 +909,21 @@ func TestImportProfileConfigRefusesModifiedMCPServers(t *testing.T) {
 		t.Fatalf("operator-added MCP section must be refused, got remainder %q", added.Profile.Fields.CustomConfigFile)
 	}
 }
+
+// Story 8 verbatim: a JSON remainder with operator spacing/layout keeps its
+// exact bytes when structured keys map away.
+func TestImportProfileConfigJSONRemainderVerbatimBytes(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Claude JSON Verbatim", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	raw := "{\n  \"env\":{\"FOO\":\"1\"},\n  \"enabledPlugins\" : { \"warp@claude-code-warp\" : true }\n}"
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: raw})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if !strings.Contains(result.Profile.Fields.CustomConfigFile, "\"enabledPlugins\" : { \"warp@claude-code-warp\" : true }") {
+		t.Fatalf("JSON remainder must keep operator spacing verbatim, got:\n%s", result.Profile.Fields.CustomConfigFile)
+	}
+}

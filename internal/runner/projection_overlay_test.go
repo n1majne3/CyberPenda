@@ -686,3 +686,65 @@ func TestProjectedConfigTextHermesInlineCommentMappingHeader(t *testing.T) {
 		t.Fatalf("plugins.enabled must contain harness + operator entries, got %#v\n%s", joined, text)
 	}
 }
+
+// Story 16: quoted list entries dedupe semantically. The operator's
+// quoted harness entry must not cause a duplicate preview injection.
+func TestProjectedConfigTextHermesQuotedEntryNoDuplicate(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "plugins:\n  enabled:\n    - \"cyberpenda-iteration-budget\"\n    - my-custom-plugin\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+	plugins, _ := doc["plugins"].(map[string]any)
+	enabled, _ := plugins["enabled"].([]any)
+	count := 0
+	hasOperator := false
+	for _, item := range enabled {
+		if s, ok := item.(string); ok {
+			if s == "cyberpenda-iteration-budget" {
+				count++
+			}
+			if s == "my-custom-plugin" {
+				hasOperator = true
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("harness entry must appear exactly once (semantic dedup), got %d\n%s", count, text)
+	}
+	if !hasOperator {
+		t.Fatalf("operator entry must survive:\n%s", text)
+	}
+}
+
+// Story 8: a colliding non-list YAML map keeps the operator's comment and
+// formatting while the managed child still merges.
+func TestProjectedConfigTextHermesCollidingMapKeepsComments(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "terminal:\n  # use zsh for tool wrappers\n  shell: /bin/zsh\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	if !strings.Contains(text, "# use zsh for tool wrappers") {
+		t.Fatalf("colliding-map comment must survive reopen:\n%s", text)
+	}
+	if !strings.Contains(text, "shell: /bin/zsh") {
+		t.Fatalf("operator shell must survive reopen:\n%s", text)
+	}
+	if !strings.Contains(text, "backend: local") {
+		t.Fatalf("managed backend must still merge:\n%s", text)
+	}
+	if strings.Count(text, "terminal:") != 1 {
+		t.Fatalf("reopen must contain exactly one terminal block:\n%s", text)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+}
