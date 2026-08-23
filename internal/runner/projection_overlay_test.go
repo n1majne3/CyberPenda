@@ -591,3 +591,65 @@ func TestProjectedConfigTextHermesNestedSameNameListStaysScoped(t *testing.T) {
 		}
 	}
 }
+
+// Story 8: a mapping block followed by a root scalar then another mapping
+// must not lose the first block to a stale currentKey.
+func TestProjectedConfigTextHermesMapScalarMapKeepsAllBlocks(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "plugins:\n  enabled:\n    - my-custom-plugin\ncustom_setting: true\nskills:\n  autoload: false\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+	plugins, _ := doc["plugins"].(map[string]any)
+	enabled, _ := plugins["enabled"].([]any)
+	joined := make([]string, 0, len(enabled))
+	for _, item := range enabled {
+		if s, ok := item.(string); ok {
+			joined = append(joined, s)
+		}
+	}
+	if !slices.Contains(joined, "my-custom-plugin") {
+		t.Fatalf("operator plugin must survive map→scalar→map reopen, got %#v\n%s", joined, text)
+	}
+	if doc["custom_setting"] != true {
+		t.Fatalf("root scalar must survive: %#v\n%s", doc["custom_setting"], text)
+	}
+	skills, _ := doc["skills"].(map[string]any)
+	if skills["autoload"] != false {
+		t.Fatalf("trailing mapping must survive: %#v\n%s", doc["skills"], text)
+	}
+}
+
+// Story 8 verbatim: 4-space direct-child indentation keeps the operator's
+// comment through the colliding-block merge.
+func TestProjectedConfigTextHermesFourSpaceIndentKeepsComments(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "plugins:\n    # keep this comment\n    enabled:\n      - my-custom-plugin\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	if !strings.Contains(text, "# keep this comment") {
+		t.Fatalf("operator comment must survive the 4-space merge:\n%s", text)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+	plugins, _ := doc["plugins"].(map[string]any)
+	enabled, _ := plugins["enabled"].([]any)
+	joined := make([]string, 0, len(enabled))
+	for _, item := range enabled {
+		if s, ok := item.(string); ok {
+			joined = append(joined, s)
+		}
+	}
+	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
+		t.Fatalf("4-space enabled must still union harness + operator, got %#v\n%s", joined, text)
+	}
+}

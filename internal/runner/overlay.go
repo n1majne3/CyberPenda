@@ -385,6 +385,11 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) *docBlocks {
 			if atRoot {
 				// A root-level "scalar_key: value" line is its own block.
 				flush()
+				// flush() keeps currentKey for span resumption, but a root
+				// scalar terminates the previous mapping block: clear the
+				// key so the next root mapping does not re-flush and
+				// overwrite the saved block with an empty span.
+				currentKey = ""
 				if key, _, found := strings.Cut(trimmed, ":"); found {
 					blocks.set(strings.TrimSpace(key), line)
 				}
@@ -568,7 +573,29 @@ func mergeYAMLCollidingBlockVerbatim(key string, seedSpan []string, operatorBloc
 	if rootLineIdx == -1 {
 		return "", false
 	}
-	rootIndentLen := len(opLines[rootLineIdx]) - len(strings.TrimLeft(opLines[rootLineIdx], " \t"))
+	rootIndentLen := len(opLines[rootLineIdx]) - len(strings.TrimLeft(opLines[rootLineIdx], " 	"))
+	// Derive the actual direct-child indentation from the block's first
+	// content line: YAML allows 2/4/any-space indents, so a hardcoded +2
+	// would miss deeper layouts and fall back to re-encoding (losing the
+	// operator's comments). Skip comment-only lines so an indented "# ..."
+	// does not define the child level.
+	childIndentLen := -1
+	for i := rootLineIdx + 1; i < len(opLines); i++ {
+		line := opLines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		rawIndentLen := len(line) - len(strings.TrimLeft(line, " 	"))
+		if rawIndentLen <= rootIndentLen {
+			break
+		}
+		childIndentLen = rawIndentLen
+		break
+	}
+	if childIndentLen == -1 {
+		return "", false
+	}
 	listLineIdx := -1
 	for i := rootLineIdx + 1; i < len(opLines); i++ {
 		line := opLines[i]
@@ -576,14 +603,14 @@ func mergeYAMLCollidingBlockVerbatim(key string, seedSpan []string, operatorBloc
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		rawIndentLen := len(line) - len(strings.TrimLeft(line, " \t"))
+		rawIndentLen := len(line) - len(strings.TrimLeft(line, " 	"))
 		// Left the root block entirely.
 		if rawIndentLen <= rootIndentLen {
 			break
 		}
-		// The direct child list key sits exactly at root+2 columns and is
-		// not itself an entry of a sibling list.
-		if rawIndentLen == rootIndentLen+2 && strings.HasPrefix(trimmed, listKey+":") {
+		// The direct child list key sits exactly at the derived child
+		// indentation; deeper same-name keys (metadata.enabled) do not match.
+		if rawIndentLen == childIndentLen && strings.HasPrefix(trimmed, listKey+":") {
 			listLineIdx = i
 			break
 		}
