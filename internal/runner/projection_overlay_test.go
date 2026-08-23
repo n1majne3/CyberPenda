@@ -536,3 +536,58 @@ func TestProjectedConfigTextHermesSiblingListDoesNotSuppressInjection(t *testing
 		t.Fatalf("preview enabled must match the runtime union, got %#v\n%s", joined, text)
 	}
 }
+
+// Story 8 verbatim: remainder root-key order survives reopen byte-for-byte.
+func TestProjectedConfigTextHermesReopenKeepsRootKeyOrder(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "z_custom:\n  value: 1\na_custom:\n  value: 2\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	zIdx := strings.Index(text, "z_custom:")
+	aIdx := strings.Index(text, "a_custom:")
+	if zIdx == -1 || aIdx == -1 {
+		t.Fatalf("reopen must keep both remainder keys:\n%s", text)
+	}
+	if zIdx > aIdx {
+		t.Fatalf("remainder root-key order must be preserved (z_custom before a_custom):\n%s", text)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+}
+
+// Story 16: a nested same-name list (plugins.metadata.enabled) must not
+// attract the harness entry; only the direct plugins.enabled unions.
+func TestProjectedConfigTextHermesNestedSameNameListStaysScoped(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "plugins:\n  metadata:\n    enabled:\n      - shadow-plugin\n  enabled:\n    - my-custom-plugin\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+	plugins, _ := doc["plugins"].(map[string]any)
+	enabled, _ := plugins["enabled"].([]any)
+	joined := make([]string, 0, len(enabled))
+	for _, item := range enabled {
+		if s, ok := item.(string); ok {
+			joined = append(joined, s)
+		}
+	}
+	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
+		t.Fatalf("direct plugins.enabled must match the runtime union, got %#v\n%s", joined, text)
+	}
+	metadata, _ := plugins["metadata"].(map[string]any)
+	nested, _ := metadata["enabled"].([]any)
+	for _, item := range nested {
+		if s, ok := item.(string); ok && s == "cyberpenda-iteration-budget" {
+			t.Fatalf("harness entry must not inject into the nested same-name list:\n%s", text)
+		}
+	}
+}

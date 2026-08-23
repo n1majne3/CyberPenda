@@ -180,13 +180,16 @@ func spliceProjectedRemainder(provider runtimeprofile.Provider, seed, remainder 
 
 	consumed := map[string]bool{}
 	appendRemainderOnly := func() string {
-		// Remainder keys absent from the seed keep their verbatim block.
+		// Remainder keys absent from the seed keep their verbatim block in
+		// the operator's original document order (Story 8 verbatim).
 		tail := ""
-		for _, key := range sortedRemainderKeysNonConsumed(blocks, consumed) {
-			if key == "" {
+		for _, key := range blocks.keysInOrder() {
+			if key == "" || consumed[key] {
 				continue
 			}
-			tail += "\n" + blocks[key]
+			if raw, ok := blocks.get(key); ok {
+				tail += "\n" + raw
+			}
 		}
 		return tail
 	}
@@ -197,8 +200,8 @@ func spliceProjectedRemainder(provider runtimeprofile.Provider, seed, remainder 
 			if currentKey == "" {
 				return
 			}
-			if remainderKeys[currentKey] {
-				mergedParts = append(mergedParts, mergeCollidingBlock(provider, currentKey, currentSpan, blocks[currentKey]))
+			if raw, ok := blocks.get(currentKey); ok && remainderKeys[currentKey] {
+				mergedParts = append(mergedParts, mergeCollidingBlock(provider, currentKey, currentSpan, raw))
 				consumed[currentKey] = true
 			} else {
 				mergedParts = append(mergedParts, strings.Join(currentSpan, "\n"))
@@ -223,7 +226,7 @@ func spliceProjectedRemainder(provider runtimeprofile.Provider, seed, remainder 
 		flush()
 		result := strings.Join(mergedParts, "\n")
 		// A preamble comment block belongs at the very top of the document.
-		if preambleBlock, ok := blocks[""]; ok {
+		if preambleBlock, ok := blocks.get(""); ok {
 			result = preambleBlock + "\n" + result
 			consumed[""] = true
 		}
@@ -263,21 +266,25 @@ func spliceProjectedRemainder(provider runtimeprofile.Provider, seed, remainder 
 		trimmed := strings.TrimSpace(line)
 		if key, _, found := strings.Cut(trimmed, "="); found && remainderKeys[strings.TrimSpace(key)] {
 			collide := strings.TrimSpace(key)
-			out = append(out, mergeCollidingBlock(provider, collide, []string{line}, blocks[collide]))
-			delete(blocks, collide)
+			if raw, ok := blocks.get(collide); ok {
+				out = append(out, mergeCollidingBlock(provider, collide, []string{line}, raw))
+				blocks.delete(collide)
+			} else {
+				out = append(out, line)
+			}
 			continue
 		}
 		out = append(out, line)
 	}
 	// Remainder root keys must land BEFORE any generated table: TOML bare
 	// keys after a [table] header belong to that table.
-	for _, key := range sortedRemainderKeys(blocks) {
+	for _, key := range blocks.keysInOrder() {
 		if key == "" {
 			continue
 		}
-		if !strings.Contains(blocks[key], "[") && remainderKeys[key] && !seedHasTopLevelKey(provider, seed, key) && isRootKeyValue(blocks[key]) {
-			out = append(out, blocks[key])
-			delete(blocks, key)
+		if raw, ok := blocks.get(key); ok && !strings.Contains(raw, "[") && remainderKeys[key] && !seedHasTopLevelKey(provider, seed, key) && isRootKeyValue(raw) {
+			out = append(out, raw)
+			blocks.delete(key)
 		}
 	}
 	seenTables := map[string]bool{}
@@ -287,59 +294,73 @@ func spliceProjectedRemainder(provider runtimeprofile.Provider, seed, remainder 
 		}
 		seenTables[table] = true
 		if remainderKeys[table] {
-			out = append(out, mergeCollidingBlock(provider, table, tables[table], blocks[table]))
-			delete(blocks, table)
-			continue
+			if raw, ok := blocks.get(table); ok {
+				out = append(out, mergeCollidingBlock(provider, table, tables[table], raw))
+				blocks.delete(table)
+				continue
+			}
 		}
 		out = append(out, tables[table]...)
 	}
-	// Remainder keys that do not exist in the seed stay verbatim (comments
-	// and formatting included). A leading comment block goes first.
-	if commentBlock, ok := blocks[""]; ok {
+	// Remaining blocks stay verbatim (comments and formatting included) in
+	// document order; a comment block goes first.
+	if commentBlock, ok := blocks.get(""); ok {
 		out = append(out, commentBlock)
-		delete(blocks, "")
+		blocks.delete("")
 	}
-	for _, key := range sortedRemainderKeys(blocks) {
-		out = append(out, blocks[key])
+	for _, key := range blocks.keysInOrder() {
+		if raw, ok := blocks.get(key); ok {
+			out = append(out, raw)
+		}
 	}
 	return strings.Join(out, "\n")
 }
 
-// sortedRemainderKeys lists remainder-only keys in stable order.
-func sortedRemainderKeys(blocks map[string]string) []string {
-	keys := make([]string, 0, len(blocks))
-	for key := range blocks {
-		keys = append(keys, key)
+// docBlocks is an ordered collection of document blocks keyed by their
+// root-level key. Order matches the source document so reopen preserves
+// the operator's raw root-key sequence (Story 8 verbatim).
+type docBlocks struct {
+	order []string
+	byKey map[string]string
+}
+
+func newDocBlocks() *docBlocks {
+	return &docBlocks{byKey: map[string]string{}}
+}
+
+func (d *docBlocks) set(key, raw string) {
+	if _, exists := d.byKey[key]; !exists {
+		d.order = append(d.order, key)
 	}
-	sort.Strings(keys)
-	return keys
+	d.byKey[key] = raw
 }
 
-// isRootKeyValue reports whether a TOML block is a single "key = value" line
-// rather than a [table].
-func isRootKeyValue(block string) bool {
-	trimmed := strings.TrimSpace(block)
-	return trimmed != "" && !strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, "=")
+func (d *docBlocks) get(key string) (string, bool) {
+	raw, ok := d.byKey[key]
+	return raw, ok
 }
 
-// sortedRemainderKeysNonConsumed lists remainder keys that the seed merge did
-// not consume, so they append at the document root.
-func sortedRemainderKeysNonConsumed(blocks map[string]string, consumed map[string]bool) []string {
-	keys := make([]string, 0, len(blocks))
-	for key := range blocks {
-		if !consumed[key] {
-			keys = append(keys, key)
+func (d *docBlocks) delete(key string) {
+	delete(d.byKey, key)
+	for i, existing := range d.order {
+		if existing == key {
+			d.order = append(d.order[:i], d.order[i+1:]...)
+			break
 		}
 	}
-	sort.Strings(keys)
-	return keys
+}
+
+func (d *docBlocks) keysInOrder() []string {
+	out := make([]string, 0, len(d.order))
+	out = append(out, d.order...)
+	return out
 }
 
 // topLevelBlocks splits a document into verbatim text blocks keyed by their
 // root-level key. YAML blocks span the header plus its indented subtree; TOML
 // blocks are either a "key = ..." line or a full [table].
-func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]string {
-	blocks := map[string]string{}
+func topLevelBlocks(provider runtimeprofile.Provider, raw string) *docBlocks {
+	blocks := newDocBlocks()
 	format := overlayFormat(provider)
 	lines := strings.Split(raw, "\n")
 	if format == "yaml" {
@@ -348,7 +369,7 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]str
 		var preamble []string
 		flush := func() {
 			if currentKey != "" {
-				blocks[currentKey] = strings.Join(current, "\n")
+				blocks.set(currentKey, strings.Join(current, "\n"))
 			}
 			current = nil
 		}
@@ -365,9 +386,7 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]str
 				// A root-level "scalar_key: value" line is its own block.
 				flush()
 				if key, _, found := strings.Cut(trimmed, ":"); found {
-					currentKey = strings.TrimSpace(key)
-					blocks[currentKey] = line
-					currentKey = ""
+					blocks.set(strings.TrimSpace(key), line)
 				}
 				continue
 			}
@@ -383,7 +402,7 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]str
 		}
 		flush()
 		if len(preamble) > 0 {
-			blocks[""] = strings.Join(preamble, "\n")
+			blocks.set("", strings.Join(preamble, "\n"))
 		}
 		return blocks
 	}
@@ -391,7 +410,7 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]str
 	var current []string
 	flush := func() {
 		if currentTable != "" {
-			blocks[currentTable] = strings.Join(current, "\n")
+			blocks.set(currentTable, strings.Join(current, "\n"))
 		}
 		current = nil
 	}
@@ -409,7 +428,7 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]str
 			continue
 		}
 		if key, _, found := strings.Cut(trimmed, "="); found && trimmed != "" && !strings.HasPrefix(trimmed, "#") {
-			blocks[strings.TrimSpace(key)] = line
+			blocks.set(strings.TrimSpace(key), line)
 			continue
 		}
 		if trimmed != "" || line == "" {
@@ -418,7 +437,7 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) map[string]str
 	}
 	flush()
 	if len(preamble) > 0 {
-		blocks[""] = strings.Join(preamble, "\n")
+		blocks.set("", strings.Join(preamble, "\n"))
 	}
 	return blocks
 }
@@ -534,13 +553,37 @@ func mergeYAMLCollidingBlockVerbatim(key string, seedSpan []string, operatorBloc
 		return "", false
 	}
 	opLines := strings.Split(strings.TrimRight(operatorBlock, "\n"), "\n")
-	// Locate the target list's line index, its indentation, and its entry
-	// range. Sibling lists at the same indentation (plugins.disabled) must
-	// not contribute entries.
-	listLineIdx := -1
+	// Locate the target list at the root block's DIRECT child indentation:
+	// the operator block starts with "key:" at some indent, and the list
+	// key must sit exactly one level deeper. A nested same-name key
+	// (plugins.metadata.enabled) sits deeper and must not match.
+	rootLineIdx := -1
 	for i, line := range opLines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, listKey+":") {
+		if strings.HasPrefix(trimmed, key+":") {
+			rootLineIdx = i
+			break
+		}
+	}
+	if rootLineIdx == -1 {
+		return "", false
+	}
+	rootIndentLen := len(opLines[rootLineIdx]) - len(strings.TrimLeft(opLines[rootLineIdx], " \t"))
+	listLineIdx := -1
+	for i := rootLineIdx + 1; i < len(opLines); i++ {
+		line := opLines[i]
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		rawIndentLen := len(line) - len(strings.TrimLeft(line, " \t"))
+		// Left the root block entirely.
+		if rawIndentLen <= rootIndentLen {
+			break
+		}
+		// The direct child list key sits exactly at root+2 columns and is
+		// not itself an entry of a sibling list.
+		if rawIndentLen == rootIndentLen+2 && strings.HasPrefix(trimmed, listKey+":") {
 			listLineIdx = i
 			break
 		}
@@ -624,10 +667,17 @@ func InlineAPIKeyEnvNames(profile runtimeprofile.Profile) []string {
 	return names
 }
 
+// isRootKeyValue reports whether a TOML block is a single "key = value" line
+// rather than a [table].
+func isRootKeyValue(block string) bool {
+	trimmed := strings.TrimSpace(block)
+	return trimmed != "" && !strings.HasPrefix(trimmed, "[") && strings.Contains(trimmed, "=")
+}
+
 // topLevelKeys lists the root-level keys of a provider-native document.
 func topLevelKeys(provider runtimeprofile.Provider, raw string) map[string]bool {
 	keys := map[string]bool{}
-	for key := range topLevelBlocks(provider, raw) {
+	for _, key := range topLevelBlocks(provider, raw).keysInOrder() {
 		keys[key] = true
 	}
 	return keys
