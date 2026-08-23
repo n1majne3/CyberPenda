@@ -364,51 +364,41 @@ func topLevelBlocks(provider runtimeprofile.Provider, raw string) *docBlocks {
 	format := overlayFormat(provider)
 	lines := strings.Split(raw, "\n")
 	if format == "yaml" {
-		currentKey := ""
-		var current []string
-		var preamble []string
-		flush := func() {
-			if currentKey != "" {
-				blocks.set(currentKey, strings.Join(current, "\n"))
-			}
-			current = nil
-		}
-		for _, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			atRoot := trimmed != "" && !strings.HasPrefix(trimmed, "#") && !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "-")
-			if atRoot && strings.HasSuffix(trimmed, ":") {
-				flush()
-				currentKey = strings.TrimSuffix(trimmed, ":")
-				current = []string{line}
-				continue
-			}
-			if atRoot {
-				// A root-level "scalar_key: value" line is its own block.
-				flush()
-				// flush() keeps currentKey for span resumption, but a root
-				// scalar terminates the previous mapping block: clear the
-				// key so the next root mapping does not re-flush and
-				// overwrite the saved block with an empty span.
-				currentKey = ""
-				if key, _, found := strings.Cut(trimmed, ":"); found {
-					blocks.set(strings.TrimSpace(key), line)
+		// Parse only to discover root-key boundaries; each block's bytes come
+		// directly from the original lines. This recognizes mapping headers
+		// with inline comments, anchors, or tags without re-encoding them.
+		var document yaml.Node
+		if err := yaml.Unmarshal([]byte(raw), &document); err == nil && len(document.Content) > 0 {
+			root := document.Content[0]
+			if root.Kind == yaml.MappingNode {
+				firstStart := len(lines)
+				for i := 0; i+1 < len(root.Content); i += 2 {
+					keyNode := root.Content[i]
+					start := keyNode.Line - 1
+					if start < 0 || start >= len(lines) {
+						continue
+					}
+					if start < firstStart {
+						firstStart = start
+					}
+					end := len(lines)
+					if i+2 < len(root.Content) {
+						nextStart := root.Content[i+2].Line - 1
+						if nextStart >= start && nextStart <= len(lines) {
+							end = nextStart
+						}
+					}
+					blocks.set(keyNode.Value, strings.Join(lines[start:end], "\n"))
 				}
-				continue
-			}
-			if currentKey != "" {
-				current = append(current, line)
-				continue
-			}
-			// Lines before any root key (preamble comments, blank lines)
-			// belong to the document itself, not to a key block.
-			if trimmed != "" || line == "" {
-				preamble = append(preamble, line)
+				if firstStart > 0 && firstStart <= len(lines) {
+					blocks.set("", strings.Join(lines[:firstStart], "\n"))
+				}
+				return blocks
 			}
 		}
-		flush()
-		if len(preamble) > 0 {
-			blocks.set("", strings.Join(preamble, "\n"))
-		}
+		// Import parsing already rejects malformed YAML; this fallback only
+		// keeps direct helper callers safe if no root mapping was available.
+		blocks.set("", raw)
 		return blocks
 	}
 	currentTable := ""

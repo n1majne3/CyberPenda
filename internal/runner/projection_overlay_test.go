@@ -653,3 +653,36 @@ func TestProjectedConfigTextHermesFourSpaceIndentKeepsComments(t *testing.T) {
 		t.Fatalf("4-space enabled must still union harness + operator, got %#v\n%s", joined, text)
 	}
 }
+
+// Story 8: a root mapping header with an inline comment is still one mapping
+// block. Its comment and children survive reopen while the harness entry
+// merges into the direct plugins.enabled list.
+func TestProjectedConfigTextHermesInlineCommentMappingHeader(t *testing.T) {
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+	profile.Fields.CustomConfigFile = "plugins: # keep this inline comment\n  enabled:\n    - my-custom-plugin\n"
+	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+	if err != nil {
+		t.Fatalf("projected text: %v", err)
+	}
+	if !strings.Contains(text, "# keep this inline comment") {
+		t.Fatalf("inline mapping comment must survive reopen:\n%s", text)
+	}
+	if strings.Count(text, "plugins:") != 1 {
+		t.Fatalf("reopen must contain exactly one plugins block:\n%s", text)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
+	}
+	plugins, _ := doc["plugins"].(map[string]any)
+	enabled, _ := plugins["enabled"].([]any)
+	joined := make([]string, 0, len(enabled))
+	for _, item := range enabled {
+		if s, ok := item.(string); ok {
+			joined = append(joined, s)
+		}
+	}
+	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
+		t.Fatalf("plugins.enabled must contain harness + operator entries, got %#v\n%s", joined, text)
+	}
+}
