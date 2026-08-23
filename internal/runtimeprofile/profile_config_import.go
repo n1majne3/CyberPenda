@@ -12,6 +12,8 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
+
+	"pentest/internal/configtext"
 )
 
 // ImportConfigRequest carries the edited provider-native config text for a
@@ -65,6 +67,25 @@ func ValidateOverlaySecrets(raw string) error {
 	if doc := parseOverlayAny(trimmed); doc != nil {
 		if err := scanSecretNodes(doc); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// ValidateCustomConfigFile validates provider-native shape and secret policy
+// before a Runtime Profile persists its Custom Config File.
+func ValidateCustomConfigFile(provider Provider, raw string) error {
+	if err := ValidateOverlaySecrets(raw); err != nil {
+		return err
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	if importConfigFormat(provider) == "json" {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(trimmed), &doc); err != nil || doc == nil {
+			return fmt.Errorf("Custom Config File must be a JSON object")
 		}
 	}
 	return nil
@@ -819,6 +840,18 @@ func (s *Service) renderRemainderVerbatim(provider Provider, remaining map[strin
 	if len(dropped) == 0 {
 		return rawText
 	}
+	if importConfigFormat(provider) == "json" {
+		if edited, err := configtext.RenderJSONTarget(rawText, remaining); err == nil {
+			return edited
+		}
+		return renderRemainder(provider, remaining)
+	}
+	if importConfigFormat(provider) == "toml" {
+		if edited, err := configtext.RenderTOMLTarget(rawText, remaining); err == nil {
+			return edited
+		}
+		return renderRemainder(provider, remaining)
+	}
 	if edited, ok := surgicalRemainder(provider, dropped, rawText, baseline); ok {
 		return edited
 	}
@@ -831,7 +864,7 @@ func (s *Service) renderRemainderVerbatim(provider Provider, remaining map[strin
 // edits (a mapped key whose span cannot be located).
 func surgicalRemainder(provider Provider, dropped []string, rawText string, baseline map[string]any) (string, bool) {
 	if importConfigFormat(provider) == "json" {
-		return surgicalJSONRemainder(dropped, rawText)
+		return "", false
 	}
 	if importConfigFormat(provider) != "toml" && importConfigFormat(provider) != "yaml" {
 		return "", false
@@ -1035,119 +1068,6 @@ func pluginIDFromInstallRef(ref string) string {
 // env map that maps onto the structured env field.
 func existingEnvMappable(provider Provider) bool {
 	return provider == ProviderClaudeCode
-}
-
-// surgicalJSONRemainder drops the mapped top-level keys from the operator's
-// raw JSON while keeping every surviving byte exactly as written (spacing,
-// key order, layout). It locates each key's line span through a re-parse of
-// the raw text, matching the value end by line scanning.
-func surgicalJSONRemainder(dropped []string, rawText string) (string, bool) {
-	lines := strings.Split(rawText, "\n")
-	if len(lines) == 0 {
-		return "", false
-	}
-	// Find each dropped key's first line: a line whose trimmed form starts
-	// with the JSON-quoted key followed by a colon.
-	startOf := map[string]int{}
-	for _, key := range dropped {
-		needle := `"` + key + `"`
-		for i, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if !strings.HasPrefix(trimmed, needle) {
-				continue
-			}
-			rest := strings.TrimPrefix(trimmed, needle)
-			if strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, " :") {
-				startOf[key] = i
-				break
-			}
-		}
-	}
-	if len(startOf) == 0 {
-		return "", false
-	}
-	keep := make([]bool, len(lines))
-	for i := range keep {
-		keep[i] = true
-	}
-	// Track brace/bracket depth from the document start so each key's span
-	// ends at its value's closing line (depth returns to the top level).
-	depth := 0
-	inString := false
-	escaped := false
-	keySpans := map[string][2]int{}
-	activeKey := ""
-	activeStart := -1
-	for i, line := range lines {
-		if activeKey == "" {
-			if start, ok := startOfLabel(lines, i, startOf); ok {
-				activeKey = start.key
-				activeStart = start.line
-				depth = 0
-				inString = false
-				escaped = false
-			}
-		}
-		if activeKey != "" {
-			for _, ch := range line {
-				if escaped {
-					escaped = false
-					continue
-				}
-				switch {
-				case ch == '\\' && inString:
-					escaped = true
-				case ch == '"' && !escaped:
-					inString = !inString
-				case !inString && (ch == '{' || ch == '['):
-					depth++
-				case !inString && (ch == '}' || ch == ']'):
-					depth--
-				}
-			}
-			// The span closes on the line where the value's depth returns
-			// to zero after having opened (or immediately for scalars).
-			if i == activeStart {
-				// Value opening counted above; scalars close on same line.
-			}
-			if depth <= 0 {
-				keySpans[activeKey] = [2]int{activeStart, i}
-				activeKey = ""
-				activeStart = -1
-			}
-		}
-	}
-	if len(keySpans) == 0 {
-		return "", false
-	}
-	for _, span := range keySpans {
-		for i := span[0]; i <= span[1] && i < len(keep); i++ {
-			keep[i] = false
-		}
-	}
-	var b strings.Builder
-	for i, line := range lines {
-		if keep[i] {
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-	}
-	return strings.TrimRight(b.String(), "\n") + "\n", true
-}
-
-type jsonKeyStart struct {
-	key  string
-	line int
-}
-
-// startOfLabel reports the dropped key whose header line is the given line.
-func startOfLabel(lines []string, i int, startOf map[string]int) (jsonKeyStart, bool) {
-	for key, start := range startOf {
-		if start == i {
-			return jsonKeyStart{key: key, line: start}, true
-		}
-	}
-	return jsonKeyStart{}, false
 }
 
 // renderRemainder re-encodes the un-mappable remainder as provider-native

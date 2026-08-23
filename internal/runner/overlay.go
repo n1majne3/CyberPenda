@@ -9,6 +9,7 @@ import (
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 
+	"pentest/internal/configtext"
 	"pentest/internal/runtimeprofile"
 )
 
@@ -146,7 +147,11 @@ func ProjectedConfigTextWith(provider runtimeprofile.Provider, profile runtimepr
 	// spacing included. JSON collision keys merge structurally; remainder-only
 	// keys append verbatim.
 	switch overlayFormat(provider) {
-	case "toml", "yaml", "json":
+	case "json":
+		return configtext.MergeJSONObjects(seed, remainder)
+	case "toml":
+		return configtext.MergeTOMLDocuments(seed, remainder)
+	case "yaml":
 		return spliceProjectedRemainder(provider, seed, remainder), nil
 	}
 	merged, err := MergedProjectedConfigWith(provider, profile, req)
@@ -719,34 +724,34 @@ func topLevelKeys(provider runtimeprofile.Provider, raw string) map[string]bool 
 // the last operator child. Operator lines and comments stay untouched. It
 // reports false only when the block shape defeats textual placement.
 func spliceYAMLMapChildrenVerbatim(key string, seedValue, opValue map[string]any, operatorBlock string) (string, bool) {
-	// Seed-only scalar children are the only splice candidates.
 	type scalarChild struct {
 		name  string
 		value string
 	}
-	var seedOnly []scalarChild
+	var appendChildren []scalarChild
+	replaceChildren := map[string]string{}
 	for subKey, sub := range seedValue {
+		text, isScalar := yamlScalarText(sub)
+		if !isScalar {
+			continue
+		}
 		if _, operatorHas := opValue[subKey]; operatorHas {
+			// Structured values win conflicts that reach projection; preserve
+			// the operator line's indentation/comment while replacing only
+			// the scalar value bytes.
+			replaceChildren[subKey] = text
 			continue
 		}
-		text, isText := sub.(string)
-		if !isText {
-			continue
-		}
-		seedOnly = append(seedOnly, scalarChild{name: subKey, value: text})
+		appendChildren = append(appendChildren, scalarChild{name: subKey, value: text})
 	}
-	if len(seedOnly) == 0 {
-		// Operator already covers every seed child: the raw block stands.
+	if len(appendChildren) == 0 && len(replaceChildren) == 0 {
 		return strings.TrimRight(operatorBlock, "\n") + "\n", true
 	}
-	sort.Slice(seedOnly, func(i, j int) bool { return seedOnly[i].name < seedOnly[j].name })
+	sort.Slice(appendChildren, func(i, j int) bool { return appendChildren[i].name < appendChildren[j].name })
 	opLines := strings.Split(strings.TrimRight(operatorBlock, "\n"), "\n")
-	// Locate the root header line and derive child indentation from the
-	// first content line below it.
 	rootLineIdx := -1
 	for i, line := range opLines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, key+":") {
+		if strings.HasPrefix(strings.TrimSpace(line), key+":") {
 			rootLineIdx = i
 			break
 		}
@@ -754,7 +759,7 @@ func spliceYAMLMapChildrenVerbatim(key string, seedValue, opValue map[string]any
 	if rootLineIdx == -1 {
 		return "", false
 	}
-	rootIndentLen := len(opLines[rootLineIdx]) - len(strings.TrimLeft(opLines[rootLineIdx], " \t"))
+	rootIndentLen := len(opLines[rootLineIdx]) - len(strings.TrimLeft(opLines[rootLineIdx], " 	"))
 	childIndent := ""
 	lastChildIdx := -1
 	for i := rootLineIdx + 1; i < len(opLines); i++ {
@@ -763,40 +768,54 @@ func spliceYAMLMapChildrenVerbatim(key string, seedValue, opValue map[string]any
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		rawIndentLen := len(line) - len(strings.TrimLeft(line, " \t"))
+		rawIndentLen := len(line) - len(strings.TrimLeft(line, " 	"))
 		if rawIndentLen <= rootIndentLen {
 			break
 		}
 		if childIndent == "" {
-			childIndent = line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			childIndent = line[:rawIndentLen]
+		}
+		if rawIndentLen != len(childIndent) {
+			continue
 		}
 		lastChildIdx = i
+		if child, _, found := strings.Cut(trimmed, ":"); found {
+			child = strings.TrimSpace(child)
+			if structured, replace := replaceChildren[child]; replace {
+				// Minimal edit: replace exactly the value span. The value ends
+				// at its closing quote (quoted scalars) or where trailing
+				// whitespace before a comment/line-end begins, so the
+				// operator's value-to-comment gap stays verbatim.
+				prefixAt := strings.Index(line, child+":")
+				if prefixAt < 0 {
+					return "", false
+				}
+				valueStart := prefixAt + len(child) + 1
+				sepEnd := valueStart
+				for sepEnd < len(line) && (line[sepEnd] == ' ' || line[sepEnd] == '	') {
+					sepEnd++
+				}
+				valueEnd := len(line)
+				if hash := yamlCommentStart(line); hash >= sepEnd {
+					valueEnd = hash
+				}
+				for valueEnd > sepEnd && (line[valueEnd-1] == ' ' || line[valueEnd-1] == '	') {
+					valueEnd--
+				}
+				opLines[i] = line[:sepEnd] + structured + line[valueEnd:]
+				delete(replaceChildren, child)
+			}
+		}
 	}
-	if childIndent == "" {
-		// Operator block has no children yet: seed-only children render at
-		// a default one-level indent under the header.
-		childIndent = strings.Repeat(" ", rootIndentLen+2)
-		header := opLines[:rootLineIdx+1]
-		rest := opLines[rootLineIdx+1:]
-		var b strings.Builder
-		for _, line := range header {
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-		for _, child := range seedOnly {
-			b.WriteString(childIndent + child.name + ": " + child.value + "\n")
-		}
-		for _, line := range rest {
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-		return strings.TrimRight(b.String(), "\n") + "\n", true
-	}
-	if lastChildIdx == -1 {
+	if len(replaceChildren) > 0 {
 		return "", false
 	}
+	if childIndent == "" {
+		childIndent = strings.Repeat(" ", rootIndentLen+2)
+		lastChildIdx = rootLineIdx
+	}
 	var inject []string
-	for _, child := range seedOnly {
+	for _, child := range appendChildren {
 		inject = append(inject, childIndent+child.name+": "+child.value)
 	}
 	out := make([]string, 0, len(opLines)+len(inject))
@@ -804,6 +823,66 @@ func spliceYAMLMapChildrenVerbatim(key string, seedValue, opValue map[string]any
 	out = append(out, inject...)
 	out = append(out, opLines[lastChildIdx+1:]...)
 	return strings.Join(out, "\n") + "\n", true
+}
+
+// yamlScalarText renders any YAML scalar leaf (string, int, float, bool) as
+// source text with correct quoting, matching the launch projection. A # or
+// other YAML indicator inside a string must stay quoted so the preview parses
+// to the same value the runtime receives.
+func yamlScalarText(value any) (string, bool) {
+	switch typed := value.(type) {
+	case string:
+		return yamlScalar(typed), true
+	case int:
+		return fmt.Sprintf("%d", typed), true
+	case int64:
+		return fmt.Sprintf("%d", typed), true
+	case float64:
+		return fmt.Sprintf("%v", typed), true
+	case bool:
+		return fmt.Sprintf("%v", typed), true
+	default:
+		return "", false
+	}
+}
+
+// yamlCommentStart returns the first comment marker outside quoted scalars.
+func yamlCommentStart(line string) int {
+	inSingle := false
+	inDouble := false
+	escaped := false
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if inDouble && ch == '\\' {
+			escaped = true
+			continue
+		}
+		switch ch {
+		case '"':
+			if !inSingle {
+				inDouble = !inDouble
+			}
+		case '\'':
+			if !inDouble {
+				// YAML escapes a single quote inside a single-quoted scalar
+				// by doubling it.
+				if inSingle && i+1 < len(line) && line[i+1] == '\'' {
+					i++
+					continue
+				}
+				inSingle = !inSingle
+			}
+		case '#':
+			if !inSingle && !inDouble && (i == 0 || line[i-1] == ' ' || line[i-1] == '	') {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // seedHasTopLevelKey reports whether the seed text declares the key at root level.

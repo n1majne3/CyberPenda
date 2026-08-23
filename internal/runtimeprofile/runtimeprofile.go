@@ -501,7 +501,7 @@ func normalizeFields(provider Provider, fields Fields) (Fields, error) {
 	}
 	// The Custom Config File persists inside fields; a Runtime Profile never
 	// stores secret values, so every write path re-checks the overlay.
-	if err := ValidateOverlaySecrets(fields.CustomConfigFile); err != nil {
+	if err := ValidateCustomConfigFile(provider, fields.CustomConfigFile); err != nil {
 		return Fields{}, err
 	}
 	if strings.TrimSpace(fields.ReasoningEffort) == "" {

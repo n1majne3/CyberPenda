@@ -31,11 +31,23 @@ func TestProfileCustomConfigFileRoundTrips(t *testing.T) {
 	}
 }
 
+// Story 11/13: JSON Custom Config Files must be objects because Config
+// Projection merges object members. Reject arrays/scalars before persistence.
+func TestProfileRejectsNonObjectJSONCustomConfigFile(t *testing.T) {
+	service := newTestService(t)
+	for _, raw := range []string{`[]`, `[1,2]`, `null`, `true`, `42`, `"text"`} {
+		_, err := service.Create("Bad JSON", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{CustomConfigFile: raw})
+		if err == nil {
+			t.Fatalf("Create must reject non-object JSON Custom Config File %s", raw)
+		}
+	}
+}
+
 func TestProviderSwitchRequiresOverlayClearConfirmation(t *testing.T) {
 	service := newTestService(t)
 
 	created, err := service.Create("Claude Preset", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
-		CustomConfigFile: "enabledPlugins:\n  warp@claude-code-warp: true\n",
+		CustomConfigFile: `{"enabledPlugins":{"warp@claude-code-warp":true}}`,
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)

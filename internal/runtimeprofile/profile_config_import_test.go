@@ -927,3 +927,81 @@ func TestImportProfileConfigJSONRemainderVerbatimBytes(t *testing.T) {
 		t.Fatalf("JSON remainder must keep operator spacing verbatim, got:\n%s", result.Profile.Fields.CustomConfigFile)
 	}
 }
+
+// Story 8: minified JSON and multiple members on one line still remove the
+// structured env member without canonicalizing the surviving raw member.
+func TestImportProfileConfigMinifiedJSONRemainderVerbatim(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Claude Minified JSON", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	raw := `{"env":{"FOO":"1"},"enabledPlugins" : { "warp@claude-code-warp" : true }}`
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: raw})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	want := `{"enabledPlugins" : { "warp@claude-code-warp" : true }}`
+	if result.Profile.Fields.CustomConfigFile != want {
+		t.Fatalf("minified JSON remainder must stay verbatim, got %q want %q", result.Profile.Fields.CustomConfigFile, want)
+	}
+}
+
+// Story 4/6/8: a known plugin maps to Runtime Extensions while an unknown
+// plugin survives in the same minified enabledPlugins object verbatim.
+func TestImportProfileConfigMixedKnownUnknownPluginsVerbatim(t *testing.T) {
+	service := newTestService(t)
+	service.SetKnownInstallRefs(func() []string { return []string{"frontend-design@claude-plugins-official"} })
+	created, err := service.Create("Claude Mixed Plugins", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	raw := `{"enabledPlugins":{"frontend-design@claude-plugins-official":true,"warp@claude-code-warp" : true}}`
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: raw})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	want := `{"enabledPlugins":{"warp@claude-code-warp" : true}}`
+	if result.Profile.Fields.CustomConfigFile != want {
+		t.Fatalf("unknown plugin remainder must stay verbatim, got %q want %q", result.Profile.Fields.CustomConfigFile, want)
+	}
+	if len(result.Profile.Fields.RuntimeExtensions) != 1 || result.Profile.Fields.RuntimeExtensions[0].Config["install_ref"] != "frontend-design@claude-plugins-official" {
+		t.Fatalf("known plugin must map to Runtime Extensions: %#v", result.Profile.Fields.RuntimeExtensions)
+	}
+}
+
+// Story 8: importing a structured Codex model must not break or reformat an
+// unrelated repeated array-of-table remainder.
+func TestImportProfileConfigTOMLArrayOfTablesVerbatim(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Codex Array Tables", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	remainder := "[[custom.backends]]\nname = \"a\"\n\n[[custom.backends]]\nname = \"b\"\n"
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: "model = \"gpt-5.2\"\n" + remainder})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if result.Profile.Fields.CustomConfigFile != remainder {
+		t.Fatalf("array-of-table remainder must stay verbatim, got %q want %q", result.Profile.Fields.CustomConfigFile, remainder)
+	}
+}
+
+// Story 8: a multiline root TOML value remains contiguous and verbatim when a
+// sibling structured key maps away.
+func TestImportProfileConfigTOMLMultilineRootVerbatim(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Codex Multiline", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	remainder := "my_list = [\n  \"a\",\n  \"b\",\n]\n"
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: "model = \"gpt-5.2\"\n" + remainder})
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if result.Profile.Fields.CustomConfigFile != remainder {
+		t.Fatalf("multiline root remainder must stay verbatim, got %q want %q", result.Profile.Fields.CustomConfigFile, remainder)
+	}
+}
