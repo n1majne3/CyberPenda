@@ -2,6 +2,8 @@ package runner_test
 
 import (
 	"encoding/json"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -100,6 +102,76 @@ func TestProjectedConfigYAMLNumericAndQuotedStructuredLeavesWin(t *testing.T) {
 	model, _ := doc["model"].(map[string]any)
 	if model["provider"] != "custom" {
 		t.Fatalf("model.provider must stay custom, got %#v\n%s", model["provider"], text)
+	}
+}
+
+// Story 8/15/16: block-scalar continuation lines stay attached to their
+// operator-owned child, and a conflicting structured child replaces the whole
+// scalar span so preview semantics match the written runtime config.
+func TestProjectedConfigYAMLBlockScalarChildrenRemainWellFormed(t *testing.T) {
+	tests := []struct {
+		name            string
+		overlay         string
+		shell           string
+		preservedSource string
+	}{
+		{
+			name:    "operator-only shell before injected backend",
+			overlay: "terminal:\n  shell: |\n    /bin/zsh\n    -l\n",
+			shell:   "/bin/zsh\n-l\n",
+		},
+		{
+			name:    "conflicting backend block scalar",
+			overlay: "terminal:\n  backend: |\n    docker\n  shell: /bin/zsh\n",
+			shell:   "/bin/zsh",
+		},
+		{
+			name:            "sibling comment after conflicting block scalar",
+			overlay:         "terminal:\n  backend: |\n    docker\n  # operator comment for shell\n  shell: /bin/zsh\n",
+			shell:           "/bin/zsh",
+			preservedSource: "# operator comment for shell",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
+			profile.Fields.CustomConfigFile = test.overlay
+			text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
+			if err != nil {
+				t.Fatalf("projected text: %v", err)
+			}
+			var doc map[string]any
+			if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
+				t.Fatalf("preview must parse as YAML: %v\n%s", err, text)
+			}
+			terminal, _ := doc["terminal"].(map[string]any)
+			if terminal["backend"] != "local" || terminal["shell"] != test.shell {
+				t.Fatalf("preview must match structured-wins runtime semantics: %#v\n%s", terminal, text)
+			}
+			if test.preservedSource != "" && !strings.Contains(text, test.preservedSource) {
+				t.Fatalf("operator-owned sibling comment must survive block-scalar replacement:\n%s", text)
+			}
+
+			layout, err := runner.PrepareTaskLayout(t.TempDir(), "yaml-block-scalar", runtimeprofile.ProviderHermes)
+			if err != nil {
+				t.Fatalf("prepare layout: %v", err)
+			}
+			projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
+			if err != nil {
+				t.Fatalf("write runtime projection: %v", err)
+			}
+			runtimeRaw, err := os.ReadFile(projection.ConfigPath)
+			if err != nil {
+				t.Fatalf("read runtime projection: %v", err)
+			}
+			var runtimeDoc map[string]any
+			if err := yaml.Unmarshal(runtimeRaw, &runtimeDoc); err != nil {
+				t.Fatalf("runtime projection must parse as YAML: %v\n%s", err, runtimeRaw)
+			}
+			if !reflect.DeepEqual(doc["terminal"], runtimeDoc["terminal"]) {
+				t.Fatalf("preview terminal must equal written runtime terminal:\npreview=%#v\nruntime=%#v\n%s", doc["terminal"], runtimeDoc["terminal"], text)
+			}
+		})
 	}
 }
 

@@ -41,21 +41,24 @@ func parseOverlayDocument(provider runtimeprofile.Provider, raw string) (map[str
 	if format == "" {
 		return nil, fmt.Errorf("provider %s has no config projection to overlay", provider)
 	}
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
+	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}
+	// Parse the original source bytes. Trimming is not semantics-neutral for
+	// YAML block scalars: removing the document's final newline changes `|`
+	// from a value ending in newline to one without it, so preview and launch
+	// would receive different strings.
 	var doc map[string]any
 	var err error
 	switch format {
 	case "json":
-		err = json.Unmarshal([]byte(trimmed), &doc)
+		err = json.Unmarshal([]byte(raw), &doc)
 	case "toml":
 		doc = map[string]any{}
-		err = toml.Unmarshal([]byte(trimmed), &doc)
+		err = toml.Unmarshal([]byte(raw), &doc)
 	case "yaml":
 		doc = map[string]any{}
-		err = yaml.Unmarshal([]byte(trimmed), &doc)
+		err = yaml.Unmarshal([]byte(raw), &doc)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("parse custom config file: %w", err)
@@ -781,16 +784,21 @@ func spliceYAMLMapChildrenVerbatim(key string, seedValue, opValue map[string]any
 		lastChildIdx = i
 		if child, _, found := strings.Cut(trimmed, ":"); found {
 			child = strings.TrimSpace(child)
+			prefixAt := strings.Index(line, child+":")
+			if prefixAt < 0 {
+				return "", false
+			}
+			valueStart := prefixAt + len(child) + 1
+			blockEnd := i + 1
+			if yamlBlockScalarHeader(line, valueStart) {
+				blockEnd = yamlBlockScalarEnd(opLines, i+1, rawIndentLen)
+				lastChildIdx = blockEnd - 1
+			}
 			if structured, replace := replaceChildren[child]; replace {
-				// Minimal edit: replace exactly the value span. The value ends
-				// at its closing quote (quoted scalars) or where trailing
-				// whitespace before a comment/line-end begins, so the
-				// operator's value-to-comment gap stays verbatim.
-				prefixAt := strings.Index(line, child+":")
-				if prefixAt < 0 {
-					return "", false
-				}
-				valueStart := prefixAt + len(child) + 1
+				// Minimal edit: replace exactly the complete scalar source span.
+				// A block scalar owns its continuation lines; dropping only its
+				// header would leave those lines attached to the replacement or
+				// to a newly injected sibling.
 				sepEnd := valueStart
 				for sepEnd < len(line) && (line[sepEnd] == ' ' || line[sepEnd] == '	') {
 					sepEnd++
@@ -803,6 +811,10 @@ func spliceYAMLMapChildrenVerbatim(key string, seedValue, opValue map[string]any
 					valueEnd--
 				}
 				opLines[i] = line[:sepEnd] + structured + line[valueEnd:]
+				if blockEnd > i+1 {
+					opLines = append(opLines[:i+1], opLines[blockEnd:]...)
+					lastChildIdx = i
+				}
 				delete(replaceChildren, child)
 			}
 		}
@@ -823,6 +835,45 @@ func spliceYAMLMapChildrenVerbatim(key string, seedValue, opValue map[string]any
 	out = append(out, inject...)
 	out = append(out, opLines[lastChildIdx+1:]...)
 	return strings.Join(out, "\n") + "\n", true
+}
+
+// yamlBlockScalarHeader reports whether a direct-child key line starts a YAML
+// literal/folded block scalar (`|`, `>`, and their chomping/indent variants).
+func yamlBlockScalarHeader(line string, valueStart int) bool {
+	value := strings.TrimSpace(line[valueStart:])
+	if hash := yamlCommentStart(value); hash >= 0 {
+		value = strings.TrimSpace(value[:hash])
+	}
+	if value == "" || (value[0] != '|' && value[0] != '>') {
+		return false
+	}
+	for _, ch := range value[1:] {
+		if ch != '+' && ch != '-' && (ch < '1' || ch > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// yamlBlockScalarEnd returns the first line not owned by the block scalar.
+// Blank/comment continuation lines remain in the span; a nonblank line at or
+// above the key indentation starts the next mapping entry or outer block.
+func yamlBlockScalarEnd(lines []string, start, keyIndent int) int {
+	for i := start; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			// Blank lines can be semantic block-scalar content. Keep them in
+			// the scalar span until a nonblank line proves the block ended.
+			continue
+		}
+		indent := len(lines[i]) - len(strings.TrimLeft(lines[i], " 	"))
+		if indent <= keyIndent {
+			// This includes sibling-level comments: they annotate the next
+			// mapping area and must not be deleted with a replaced scalar.
+			return i
+		}
+	}
+	return len(lines)
 }
 
 // yamlScalarText renders any YAML scalar leaf (string, int, float, bool) as
