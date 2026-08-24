@@ -1487,7 +1487,21 @@ func (s *Service) acquireEvidencePublisher(ctx context.Context, root *os.Root, p
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("inspect journaled Evidence temp: %w", err)
 	}
-	file, err := root.OpenFile(tempName, os.O_RDWR|os.O_CREATE, 0o600)
+	openFlags := os.O_RDONLY | os.O_CREATE
+	if runtime.GOOS == "windows" {
+		// On Windows the payload must be written through the locked handle
+		// itself (a second handle would collide with the exclusive
+		// byte-range lock), so the publisher handle needs write access. A
+		// stale temp from an interrupted publisher may still be immutable
+		// (0400); clear that before opening, matching the write path.
+		if info, err := root.Lstat(tempName); err == nil && info.Mode().Perm()&0o200 == 0 {
+			if err := root.Chmod(tempName, 0o600); err != nil {
+				return nil, fmt.Errorf("unlock immutable journaled Evidence temp: %w", err)
+			}
+		}
+		openFlags = os.O_RDWR | os.O_CREATE
+	}
+	file, err := root.OpenFile(tempName, openFlags, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open journaled Evidence temp publisher: %w", err)
 	}

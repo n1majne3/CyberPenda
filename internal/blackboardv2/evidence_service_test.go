@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -1702,9 +1703,13 @@ func TestV24UpgradeAdoptsSyncedLegacyTempForTerminalAttemptReplay(t *testing.T) 
 	if err != nil {
 		t.Fatalf("open v24 temp directory: %v", err)
 	}
-	if err := directory.Sync(); err != nil {
-		_ = directory.Close()
-		t.Fatalf("sync v24 temp rename: %v", err)
+	// Directory fsync is unsupported on Windows (golang/go#47366), the same
+	// constraint the durability sync helpers work around.
+	if runtime.GOOS != "windows" {
+		if err := directory.Sync(); err != nil {
+			_ = directory.Close()
+			t.Fatalf("sync v24 temp rename: %v", err)
+		}
 	}
 	if err := directory.Close(); err != nil {
 		t.Fatalf("close v24 temp directory: %v", err)
