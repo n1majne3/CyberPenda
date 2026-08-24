@@ -2510,7 +2510,10 @@ func newAssistedConclusionFixtureAtWithDecorator(t *testing.T, root string, repo
 
 func waitForAssistedProviderRequests(t *testing.T, session *runtime.FakeProviderSession, count int) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	// Match waitForBlackboardConclusionState's 5s budget: the conclusion
+	// dispatch chain is multi-hop and asynchronous, and a 2s window flaked on
+	// loaded CI runners before the last provider request was recorded.
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(session.LastRequests()) >= count {
 			return
