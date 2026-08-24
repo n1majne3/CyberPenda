@@ -23,3 +23,9 @@ func unlockAndCloseEvidencePublisher(file *os.File) {
 	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
 	_ = file.Close()
 }
+
+// evidenceLockViolation reports whether err is a byte-range lock conflict.
+// flock never blocks another handle's I/O, so no Unix error counts.
+func evidenceLockViolation(err error) bool {
+	return false
+}
