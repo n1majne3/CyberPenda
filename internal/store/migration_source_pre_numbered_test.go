@@ -212,6 +212,10 @@ func useInspectionTempRoot(t *testing.T) string {
 		t.Fatalf("create inspection TMPDIR: %v", err)
 	}
 	t.Setenv("TMPDIR", root)
+	// os.MkdirTemp reads TMPDIR on Unix but TMP/TEMP on Windows; set all
+	// three so the inspection copies land under root on every platform.
+	t.Setenv("TMP", root)
+	t.Setenv("TEMP", root)
 	return root
 }
 

@@ -14,6 +14,7 @@ import (
 )
 
 func TestHostSessionBridgeForwardsJSONRPCWithoutTTY(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	root := t.TempDir()
 	script := filepath.Join(root, "echo-rpc.sh")
 	if err := os.WriteFile(script, []byte(`#!/bin/sh
@@ -48,6 +49,7 @@ done
 }
 
 func TestHostSessionBridgeRegistryBindsOneProcessPerTask(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	root := t.TempDir()
 	script := filepath.Join(root, "echo-rpc.sh")
 	if err := os.WriteFile(script, []byte(`#!/bin/sh

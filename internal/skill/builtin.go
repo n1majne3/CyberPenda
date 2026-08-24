@@ -133,7 +133,7 @@ func (s *Service) migrateLegacyBuiltinSkillID(newID string) (Skill, error) {
 		newPath := s.bundlePath(newID)
 		if _, err := os.Lstat(oldPath); err == nil {
 			if _, newErr := os.Lstat(newPath); os.IsNotExist(newErr) {
-				if err := os.Rename(oldPath, newPath); err != nil {
+				if err := renameBundleDir(oldPath, newPath); err != nil {
 					return Skill{}, fmt.Errorf("migrate builtin skill bundle path: %w", err)
 				}
 			}

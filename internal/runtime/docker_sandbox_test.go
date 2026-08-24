@@ -14,6 +14,7 @@ import (
 )
 
 func TestDockerSandboxAdapterPullsMissingImageBeforeCreateAndStreamsProgress(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")
 	pulledPath := filepath.Join(dir, "pulled")
@@ -115,6 +116,7 @@ func TestDockerSandboxAdapterPullsMissingImageBeforeCreateAndStreamsProgress(t *
 }
 
 func TestDockerSandboxAdapterUsesCachedImageWithoutPulling(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")
 	docker := filepath.Join(dir, "docker")
@@ -179,6 +181,7 @@ func TestDockerSandboxAdapterUsesCachedImageWithoutPulling(t *testing.T) {
 }
 
 func TestDockerSandboxAdapterPreservesCreatePathOnOpaqueImageInspectFailure(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")
 	docker := filepath.Join(dir, "docker")
@@ -229,6 +232,7 @@ func TestDockerSandboxAdapterPreservesCreatePathOnOpaqueImageInspectFailure(t *t
 }
 
 func TestDockerSandboxAdapterReportsPullFailureWithoutCreatingContainer(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")
 	docker := filepath.Join(dir, "docker")
@@ -304,6 +308,7 @@ func TestDockerSandboxAdapterReportsPullFailureWithoutCreatingContainer(t *testi
 }
 
 func TestDockerSandboxAdapterCancelsImagePullWithoutCreatingContainer(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")
 	docker := filepath.Join(dir, "docker")

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -562,6 +563,9 @@ func TestOpenDoesNotBlessPartialWatermarkSchemaAsMigration38(t *testing.T) {
 // the main file and its WAL/SHM sidecars must be owner-only (0600) rather than
 // the umask default (typically 0644) that other local OS users could read.
 func TestOpenRestrictsDatabaseFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX owner-only permission bits (0600) do not exist on Windows")
+	}
 	path := filepath.Join(t.TempDir(), "pentest.db")
 
 	db, err := store.Open(path)

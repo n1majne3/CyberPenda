@@ -8,13 +8,44 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"pentest/internal/store"
 )
+
+// renameRetrying renames with a bounded backoff while rename keeps failing with
+// permission errors. On Windows, antivirus or search indexers can hold
+// short-lived handles inside freshly written skill bundles, which makes a
+// directory rename fail with access denied until the scan releases them; Linux
+// renames are unaffected by open handles, so retrying is enabled only where it
+// can help.
+func renameRetrying(rename func(oldpath, newpath string) error, oldpath, newpath string, retryPermission bool, sleep func(time.Duration)) error {
+	err := rename(oldpath, newpath)
+	if err == nil || !retryPermission || !errors.Is(err, fs.ErrPermission) {
+		return err
+	}
+	for delay := 50 * time.Millisecond; ; delay *= 2 {
+		sleep(delay)
+		err = rename(oldpath, newpath)
+		if !errors.Is(err, fs.ErrPermission) {
+			return err
+		}
+		if delay >= 400*time.Millisecond {
+			return err
+		}
+	}
+}
+
+// renameBundleDir moves a skill bundle directory inside the library, retrying
+// transient Windows access-denied failures (antivirus/indexer handles).
+func renameBundleDir(oldpath, newpath string) error {
+	return renameRetrying(os.Rename, oldpath, newpath, runtime.GOOS == "windows", time.Sleep)
+}
 
 type PublishRequest struct {
 	Metadata Metadata
@@ -82,7 +113,7 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (Skill, error
 	hadLive := false
 	if _, err := os.Lstat(live); err == nil {
 		hadLive = true
-		if err := os.Rename(live, backup); err != nil {
+		if err := renameBundleDir(live, backup); err != nil {
 			return Skill{}, fmt.Errorf("stage existing live skill: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
@@ -95,7 +126,7 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (Skill, error
 			_ = os.Rename(backup, live)
 		}
 	}
-	if err := os.Rename(staging, live); err != nil {
+	if err := renameBundleDir(staging, live); err != nil {
 		restore()
 		return Skill{}, fmt.Errorf("promote skill bundle: %w", err)
 	}

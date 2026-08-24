@@ -1,4 +1,4 @@
-.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image build-tsecbench-hosted-image smoke-tsecbench-hosted-image tsecbench-hosted-runtime-inventory build-tsecbench-hosted-bundle test test-ci test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
+.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image build-tsecbench-hosted-image smoke-tsecbench-hosted-image tsecbench-hosted-runtime-inventory build-tsecbench-hosted-bundle test test-ci test-ci-windows test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
@@ -108,6 +108,13 @@ test-ci: test-backend
 
 test-backend: ensure-embed-stub
 	go test ./cmd/... ./internal/... ./scripts
+
+# Windows CI: daemon code only. The scripts package pins POSIX-only
+# deliverables (Makefile text, bash, chmod 600, LF endings); its tests are
+# Linux-only by design. POSIX-only test doubles inside cmd/internal skip
+# in place on Windows, so this target stays meaningful there.
+test-ci-windows: ensure-embed-stub
+	go test ./cmd/... ./internal/...
 
 # Live smokes (local):
 #   make smoke-sandbox-mcp     — sandbox image + daemon MCP, no LLM
