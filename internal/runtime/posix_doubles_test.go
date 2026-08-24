@@ -5,12 +5,26 @@ import (
 	"os"
 	"runtime"
 	"testing"
+	"time"
 )
 
 const alwaysRunningContainerCLIEnv = "CYBERPENDA_TEST_CONTAINER_ALWAYS_RUNNING"
+const containerCLIInvocationPathEnv = "CYBERPENDA_TEST_CONTAINER_INVOCATION_PATH"
+const slowContainerCLIEnv = "CYBERPENDA_TEST_CONTAINER_SLOW"
 
 func TestMain(m *testing.M) {
+	if os.Getenv(slowContainerCLIEnv) == "1" {
+		time.Sleep(time.Second)
+		fmt.Println("true")
+		os.Exit(0)
+	}
 	if os.Getenv(alwaysRunningContainerCLIEnv) == "1" {
+		if marker := os.Getenv(containerCLIInvocationPathEnv); marker != "" {
+			if err := os.WriteFile(marker, []byte("called"), 0o600); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+		}
 		fmt.Println("true")
 		os.Exit(0)
 	}
