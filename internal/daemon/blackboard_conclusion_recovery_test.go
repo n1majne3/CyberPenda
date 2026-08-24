@@ -239,6 +239,28 @@ func TestAssistedConclusionPendingRecoveryRetryDispatchesInitialTurnIdempotently
 		action.DispatchRequestID != "" || action.ApplyIdempotencyKey != "" {
 		t.Fatalf("pending recovery action = %#v, err=%v", action, err)
 	}
+	original, err := restarted.tasks.LatestContinuation(seed.task.ID)
+	if err != nil || original == nil {
+		t.Fatalf("load interrupted Continuation: %#v err=%v", original, err)
+	}
+	replacement, err := restarted.tasks.CreateReplacementContinuation(*original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.blackboardV2Continuity.RebindContinuationForNativeSteer(
+		context.Background(), original.ID, replacement.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err = restarted.tasks.UpdateContinuationRuntimeMetadata(
+		replacement.ID, "", "assisted-session", "/sessions/assisted-session.jsonl",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.tasks.UpdateContinuationStatus(replacement.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
 
 	session := newConclusionRecoverySession()
 	if err := restarted.BindProviderSession(seed.task.ID, session); err != nil {
@@ -265,7 +287,14 @@ func TestAssistedConclusionPendingRecoveryRetryDispatchesInitialTurnIdempotently
 		requests[0].TurnKind != runtime.RuntimeTurnKindControl {
 		t.Fatalf("pending retry provider requests = %#v", requests)
 	}
-	assertConclusionRecoveryDidNotLaunch(t, restarted, factory, seed.task.ID)
+	opens, recovers := factory.counts()
+	if opens != 0 || recovers != 1 || restarted.harness.IsActive(seed.task.ID) {
+		t.Fatalf("restart launched Runtime: opens=%d recovers=%d harness_active=%v", opens, recovers, restarted.harness.IsActive(seed.task.ID))
+	}
+	var continuations int
+	if err := restarted.db.QueryRow(`SELECT COUNT(*) FROM task_continuations WHERE task_id=?`, seed.task.ID).Scan(&continuations); err != nil || continuations != 2 {
+		t.Fatalf("replacement continuation count=%d err=%v", continuations, err)
+	}
 }
 
 func TestAssistedConclusionRestartRecoversUnsentFollowupGenerationOnce(t *testing.T) {

@@ -1041,7 +1041,7 @@ func (e *Engine) RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(owne
 	return receipt, won, err
 }
 
-// RetryLatestBlackboardConclusionForRuntime atomically binds a dispatch_failed
+// RetryLatestBlackboardConclusionForRuntime atomically binds a Runtime-recovery
 // retry to a daemon-proven live replacement Runtime. Initial is true only when
 // the obligation had never created a prior Conclusion Dispatch.
 func (e *Engine) RetryLatestBlackboardConclusionForRuntime(ownerID, idempotencyKey string, binding RetryRuntimeBinding, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {
@@ -1114,10 +1114,10 @@ func (e *Engine) retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlack
 	if !errors.Is(err, sql.ErrNoRows) {
 		return BlackboardConclusionReceipt{}, false, false, fmt.Errorf("read "+e.Dialect.Subject+" retry idempotency history: %w", err)
 	}
-	if requireRuntimeBinding && obligation.RecoveryReason == ConclusionRecoveryDispatchFailed && binding == nil {
+	if requireRuntimeBinding && owner.ConclusionRecoveryRequiresRuntimeBinding(obligation.RecoveryReason) && binding == nil {
 		return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
 	}
-	if binding != nil && obligation.RecoveryReason != ConclusionRecoveryDispatchFailed {
+	if binding != nil && !owner.ConclusionRecoveryRequiresRuntimeBinding(obligation.RecoveryReason) {
 		return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	switch owner.ConclusionRetryDecisionFor(obligation.State, obligation.ErrorCode, obligation.RecoveryReason, obligation.NextEligibleAt, now) {
@@ -1880,11 +1880,11 @@ func (e *Engine) failActiveDispatchTx(tx *sql.Tx, obligation PendingBlackboardCo
 
 func (e *Engine) updateObligationProtocolTx(tx *sql.Tx, obligation PendingBlackboardConclusion) error {
 	if _, err := tx.Exec(`UPDATE `+e.Dialect.ObligationsTable+`
-		SET state=?,canonical_result_json=?,canonical_result_sha256=?,applied_revision=?,base_revision=?,automatic_turn_count=?,repair_count=?,
+		SET state=?,canonical_result_json=?,canonical_result_sha256=?,apply_idempotency_key=?,applied_revision=?,base_revision=?,automatic_turn_count=?,repair_count=?,
 		version_regeneration_count=?,explicit_retry_count=?,operator_retry_key=?,error_code=?,recovery_reason=?,next_eligible_at=?,
 		validation_reason=?,validation_field_path=?,validation_expected=?,updated_at=? WHERE id=?`,
 		string(obligation.State), obligation.CanonicalResultJSON, obligation.CanonicalResultSHA256,
-		intPointerValue(obligation.AppliedRevision), intPointerValue(obligation.BaseRevision), obligation.AutomaticTurnCount, obligation.RepairCount,
+		obligation.ApplyIdempotencyKey, intPointerValue(obligation.AppliedRevision), intPointerValue(obligation.BaseRevision), obligation.AutomaticTurnCount, obligation.RepairCount,
 		obligation.VersionRegenerationCount, obligation.ExplicitRetryCount, obligation.OperatorRetryKey,
 		string(obligation.ErrorCode), string(obligation.RecoveryReason),
 		formatTimePtr(obligation.NextEligibleAt), obligation.ValidationReason, obligation.ValidationFieldPath,

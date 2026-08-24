@@ -293,7 +293,7 @@ func (s *Service) RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(tas
 	return receiptFromConclusion(rec), won, nil
 }
 
-// RetryLatestBlackboardConclusionForRuntime binds a dispatch_failed retry to
+// RetryLatestBlackboardConclusionForRuntime binds a Runtime-recovery retry to
 // one daemon-proven live replacement Runtime. Initial reports that no prior
 // Conclusion Dispatch existed for the obligation.
 func (s *Service) RetryLatestBlackboardConclusionForRuntime(taskID, idempotencyKey, continuationID, sessionID string, baseRevision int, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {

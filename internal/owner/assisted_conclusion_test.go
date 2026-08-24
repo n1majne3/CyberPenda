@@ -87,3 +87,19 @@ func TestConclusionFailureAndRetryDecisionsAreOwnerNeutral(t *testing.T) {
 		t.Fatalf("ambiguous retry decision = %q", decision)
 	}
 }
+
+func TestConclusionRecoveryRequiresRuntimeBinding(t *testing.T) {
+	for _, reason := range []ConclusionRecoveryReason{
+		ConclusionRecoveryRuntimeOwnershipNotProven,
+		ConclusionRecoveryWritableReplacementUnavailable,
+		ConclusionRecoveryDispatchFailed,
+		ConclusionRecoveryLegacyCorrelationUnproven,
+	} {
+		if !ConclusionRecoveryRequiresRuntimeBinding(reason) {
+			t.Fatalf("reason %q must require a proven replacement Runtime binding", reason)
+		}
+	}
+	if ConclusionRecoveryRequiresRuntimeBinding(ConclusionRecoveryAcceptanceAmbiguous) {
+		t.Fatal("acceptance_ambiguous must remain non-retriable, not Runtime-rebindable")
+	}
+}

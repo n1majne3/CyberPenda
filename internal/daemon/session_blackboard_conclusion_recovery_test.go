@@ -1,10 +1,16 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"pentest/internal/runtime"
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/session"
 )
 
@@ -56,5 +62,137 @@ func TestAssistedSessionRestartReplaysAPreSendReceiptWithProvenRuntimeOwnership(
 	requests := provider.LastRequests()
 	if len(requests) != 1 || requests[0].RequestID != recovered.DispatchRequestID {
 		t.Fatalf("recovered Session provider requests = %#v", requests)
+	}
+}
+
+func TestRetrySessionConclusionBindsProvenLiveReplacementRuntime(t *testing.T) {
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(),
+		DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	found, err := server.sessions.Create(session.CreateRequest{
+		Input: "retry Session conclusion", BlackboardConclusionMode: session.BlackboardConclusionModeAssisted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := server.sessions.CreateContinuation(found.ID, "profile-1", "codex", session.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err = server.sessions.UpdateContinuationRuntimeMetadata(original.ID, "", "session-original", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.sessions.UpdateContinuationStatus(original.ID, session.RuntimeStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.blackboardV2.BindSessionContinuation(context.Background(), found.ID, original.ID); err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := server.sessions.RecordBlackboardConclusionCheckpoint(
+		found.ID, original.ID, "work-request-rebind", original.NativeSessionID, "work-turn-rebind",
+		session.RuntimeTurnSelection{ModelProviderID: "provider-1", Model: "model-1"},
+		session.SemanticDebtWatermarks{SourceWork: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, won, err := server.sessions.ClaimBlackboardConclusionDispatch(receipt.ID, 0)
+	if err != nil || !won {
+		t.Fatalf("claim initial dispatch: %#v won=%v err=%v", initial, won, err)
+	}
+	if _, changed, err := server.sessions.MarkBlackboardConclusionRecoveryActionRequired(
+		initial.DispatchRequestID, session.ConclusionRecoveryDispatchFailed, time.Now().UTC(), 0,
+	); err != nil || !changed {
+		t.Fatalf("mark dispatch_failed: changed=%v err=%v", changed, err)
+	}
+	replacement, err := server.sessions.CreateReplacementContinuation(original, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.blackboardV2.RebindSessionContinuation(context.Background(), found.ID, original.ID, replacement.ID); err != nil {
+		t.Fatal(err)
+	}
+	const replacementSessionID = "session-replacement"
+	replacement, err = server.sessions.UpdateContinuationRuntimeMetadata(replacement.ID, "", replacementSessionID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.sessions.UpdateContinuationStatus(replacement.ID, session.RuntimeStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	missingRuntimeRequest := httptest.NewRequest(http.MethodPost,
+		"/api/sessions/"+found.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	missingRuntimeRequest.Header.Set("Idempotency-Key", "session-runtime-rebind")
+	missingRuntimeResponse := httptest.NewRecorder()
+	server.ServeHTTP(missingRuntimeResponse, missingRuntimeRequest)
+	if missingRuntimeResponse.Code != http.StatusConflict {
+		t.Fatalf("missing Runtime retry status=%d body=%s, want conflict", missingRuntimeResponse.Code, missingRuntimeResponse.Body.String())
+	}
+	mismatchedProvider := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-other",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, AssistedConclusion: true,
+		},
+	})
+	if err := server.BindSessionProviderSession(found.ID, mismatchedProvider); err != nil {
+		t.Fatal(err)
+	}
+	unprovenRequest := httptest.NewRequest(http.MethodPost,
+		"/api/sessions/"+found.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	unprovenRequest.Header.Set("Idempotency-Key", "session-runtime-rebind")
+	unprovenResponse := httptest.NewRecorder()
+	server.ServeHTTP(unprovenResponse, unprovenRequest)
+	if unprovenResponse.Code != http.StatusConflict {
+		t.Fatalf("mismatched Runtime retry status=%d body=%s, want conflict", unprovenResponse.Code, unprovenResponse.Body.String())
+	}
+	_ = server.sessionProviderSessions.remove(found.ID)
+	provider := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: replacementSessionID,
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, AssistedConclusion: true,
+		},
+	})
+	if err := server.BindSessionProviderSession(found.ID, provider); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost,
+		"/api/sessions/"+found.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	request.Header.Set("Idempotency-Key", "session-runtime-rebind")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("retry status=%d body=%s, want accepted", response.Code, response.Body.String())
+	}
+	server.providerControlWG.Wait()
+	latest, err := server.sessions.LatestBlackboardConclusion(found.ID)
+	if err != nil || latest == nil || latest.InternalState != session.BlackboardConclusionReceiptAwaitingResult ||
+		latest.ContinuationID != replacement.ID || latest.SourceSessionID != replacementSessionID {
+		t.Fatalf("replacement Session retry=%#v err=%v", latest, err)
+	}
+	if requests := provider.LastRequests(); len(requests) != 1 || requests[0].RequestID != latest.DispatchRequestID {
+		t.Fatalf("replacement Session Runtime requests=%#v", requests)
+	}
+	history, err := server.sessions.ConclusionDispatches(receipt.ID)
+	if err != nil || len(history) != 2 {
+		t.Fatalf("immutable Session dispatch history=%#v err=%v", history, err)
+	}
+	foundInitial := false
+	for _, dispatch := range history {
+		if dispatch.DispatchRequestID == initial.DispatchRequestID {
+			foundInitial = true
+			if dispatch.ContinuationID != original.ID || dispatch.SourceSessionID != "session-original" ||
+				dispatch.DeliveryState != session.ConclusionDispatchSuperseded {
+				t.Fatalf("historical Session dispatch changed=%#v", dispatch)
+			}
+		}
+	}
+	if !foundInitial {
+		t.Fatalf("initial Session dispatch missing from history=%#v", history)
 	}
 }

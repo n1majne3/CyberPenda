@@ -325,3 +325,19 @@ func ValidConclusionRecoveryReason(reason ConclusionRecoveryReason) bool {
 		return false
 	}
 }
+
+// ConclusionRecoveryRequiresRuntimeBinding reports whether an operator retry
+// must create a new dispatch on a proven live replacement Runtime. An
+// acceptance-ambiguous delivery is deliberately excluded because it cannot be
+// retried safely at all.
+func ConclusionRecoveryRequiresRuntimeBinding(reason ConclusionRecoveryReason) bool {
+	switch reason {
+	case ConclusionRecoveryRuntimeOwnershipNotProven,
+		ConclusionRecoveryWritableReplacementUnavailable,
+		ConclusionRecoveryDispatchFailed,
+		ConclusionRecoveryLegacyCorrelationUnproven:
+		return true
+	default:
+		return false
+	}
+}

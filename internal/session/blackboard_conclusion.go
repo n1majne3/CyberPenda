@@ -383,6 +383,32 @@ func (s *Service) RetryLatestBlackboardConclusion(sessionID, idempotencyKey stri
 	return receiptFromConclusion(rec), won, nil
 }
 
+// RetryLatestBlackboardConclusionFailClosedOnDispatchFailure retries only when
+// the transaction confirms that no replacement Runtime binding is required.
+func (s *Service) RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(sessionID, idempotencyKey string, now time.Time) (BlackboardConclusionReceipt, bool, error) {
+	rec, won, err := s.conclusions().RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(sessionID, idempotencyKey, now)
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, mapConclusionError(err)
+	}
+	return receiptFromConclusion(rec), won, nil
+}
+
+// RetryLatestBlackboardConclusionForRuntime binds a Runtime-recovery retry to
+// one daemon-proven live replacement Runtime.
+func (s *Service) RetryLatestBlackboardConclusionForRuntime(sessionID, idempotencyKey, continuationID, providerSessionID string, baseRevision int, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {
+	rec, won, initial, err := s.conclusions().RetryLatestBlackboardConclusionForRuntime(
+		sessionID, idempotencyKey, conclusion.RetryRuntimeBinding{
+			ContinuationID: continuationID,
+			SessionID:      providerSessionID,
+			BaseRevision:   baseRevision,
+		}, now,
+	)
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, false, mapConclusionError(err)
+	}
+	return receiptFromConclusion(rec), won, initial, nil
+}
+
 func (s *Service) BlackboardConclusionByDispatchRequestID(dispatchRequestID string) (BlackboardConclusionReceipt, error) {
 	rec, err := s.conclusions().BlackboardConclusionByDispatchRequestID(dispatchRequestID)
 	if err != nil {

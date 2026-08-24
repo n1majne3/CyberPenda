@@ -238,11 +238,25 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 			return latest.RecoveryReason, true, nil
 		},
 		retry: func(idempotencyKey string) (bool, conclusionRetryDispatchMode, error) {
+			var won bool
+			var retryErr error
+			retried, won, retryErr = server.tasks.RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(
+				taskID, idempotencyKey, time.Now().UTC(),
+			)
+			if retryErr == nil {
+				if retried.InternalState == task.BlackboardConclusionReceiptPending {
+					return won, conclusionRetryDispatchPending, nil
+				}
+				return won, conclusionRetryDispatchRepair, nil
+			}
+			if !errors.Is(retryErr, task.ErrInvalidBlackboardConclusionReceipt) {
+				return false, conclusionRetryDispatchNone, retryErr
+			}
 			latest, err := server.tasks.LatestBlackboardConclusion(taskID)
 			if err != nil || latest == nil {
 				return false, conclusionRetryDispatchNone, err
 			}
-			if latest.RecoveryReason == string(task.ConclusionRecoveryDispatchFailed) {
+			if owner.ConclusionRecoveryRequiresRuntimeBinding(owner.ConclusionRecoveryReason(latest.RecoveryReason)) {
 				provider, live := server.providerSessions.get(taskID)
 				active, activeErr := server.tasks.ActiveContinuation(taskID)
 				if !live || provider == nil || activeErr != nil || active == nil ||
@@ -255,8 +269,7 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 				if authorityErr != nil {
 					return false, conclusionRetryDispatchNone, fmt.Errorf("Blackboard conclusion retry requires a writable Continuation: %w", authorityErr)
 				}
-				var won, initial bool
-				var retryErr error
+				var initial bool
 				retried, won, initial, retryErr = server.tasks.RetryLatestBlackboardConclusionForRuntime(
 					taskID, idempotencyKey, active.ID, provider.SessionID(), authority.Sync.Revision, time.Now().UTC(),
 				)
@@ -271,18 +284,7 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 				}
 				return won, conclusionRetryDispatchRepair, nil
 			}
-			var won bool
-			var retryErr error
-			retried, won, retryErr = server.tasks.RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(
-				taskID, idempotencyKey, time.Now().UTC(),
-			)
-			if retryErr != nil {
-				return false, conclusionRetryDispatchNone, retryErr
-			}
-			if retried.InternalState == task.BlackboardConclusionReceiptPending {
-				return won, conclusionRetryDispatchPending, nil
-			}
-			return won, conclusionRetryDispatchRepair, nil
+			return false, conclusionRetryDispatchNone, retryErr
 		},
 		dispatchPending: func() { server.scheduleBlackboardConclusionDispatch(retried) },
 		dispatchInitial: func() {

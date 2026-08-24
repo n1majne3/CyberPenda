@@ -484,12 +484,52 @@ func (server *Server) handleRetrySessionBlackboardConclusion(response http.Respo
 		retry: func(idempotencyKey string) (bool, conclusionRetryDispatchMode, error) {
 			var won bool
 			var err error
-			retried, won, err = server.sessions.RetryLatestBlackboardConclusion(sessionID, idempotencyKey, time.Now().UTC())
+			retried, won, err = server.sessions.RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(
+				sessionID, idempotencyKey, time.Now().UTC(),
+			)
+			if err == nil {
+				if retried.InternalState == session.BlackboardConclusionReceiptPending {
+					return won, conclusionRetryDispatchPending, nil
+				}
+				return won, conclusionRetryDispatchRepair, nil
+			}
+			if !errors.Is(err, session.ErrInvalidBlackboardConclusionReceipt) {
+				return false, conclusionRetryDispatchNone, err
+			}
+			latest, latestErr := server.sessions.LatestBlackboardConclusion(sessionID)
+			if latestErr != nil || latest == nil {
+				return false, conclusionRetryDispatchNone, latestErr
+			}
+			if !owner.ConclusionRecoveryRequiresRuntimeBinding(owner.ConclusionRecoveryReason(latest.RecoveryReason)) {
+				return false, conclusionRetryDispatchNone, err
+			}
+			provider, live := server.sessionProviderSessions.get(sessionID)
+			active, activeErr := server.sessions.ActiveContinuation(sessionID)
+			if !live || provider == nil || activeErr != nil || active == nil ||
+				strings.TrimSpace(active.NativeSessionID) != provider.SessionID() {
+				return false, conclusionRetryDispatchNone, fmt.Errorf("Session Blackboard conclusion retry requires a proven live Runtime")
+			}
+			if _, authorityErr := server.blackboardV2.AuthorizeSessionContinuation(
+				request.Context(), sessionID, active.ID,
+			); authorityErr != nil {
+				return false, conclusionRetryDispatchNone, fmt.Errorf("Session Blackboard conclusion retry requires a writable Continuation: %w", authorityErr)
+			}
+			snapshot, snapshotErr := server.blackboardV2.SessionRuntimeSnapshot(request.Context(), sessionID)
+			if snapshotErr != nil {
+				return false, conclusionRetryDispatchNone, snapshotErr
+			}
+			var initial bool
+			retried, won, initial, err = server.sessions.RetryLatestBlackboardConclusionForRuntime(
+				sessionID, idempotencyKey, active.ID, provider.SessionID(), snapshot.Revision, time.Now().UTC(),
+			)
 			if err != nil {
 				return false, conclusionRetryDispatchNone, err
 			}
 			if retried.InternalState == session.BlackboardConclusionReceiptPending {
 				return won, conclusionRetryDispatchPending, nil
+			}
+			if initial {
+				return won, conclusionRetryDispatchInitial, nil
 			}
 			return won, conclusionRetryDispatchRepair, nil
 		},

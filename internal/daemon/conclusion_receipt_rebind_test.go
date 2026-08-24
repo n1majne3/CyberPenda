@@ -104,7 +104,7 @@ func newAuthorizedAssistedConclusionRecoveryServer(t *testing.T) (*Server, task.
 	return server, created, continuation
 }
 
-func prepareDispatchFailedReplacement(t *testing.T, providerSessionID string) (*Server, task.Task, task.BlackboardConclusionReceipt) {
+func prepareRuntimeRebindRecovery(t *testing.T, reason task.ConclusionRecoveryReason, providerSessionID string) (*Server, task.Task, task.BlackboardConclusionReceipt) {
 	t.Helper()
 	server, created, original := newAuthorizedAssistedConclusionRecoveryServer(t)
 	receipt, _, err := server.tasks.RecordBlackboardConclusionCheckpoint(
@@ -116,7 +116,7 @@ func prepareDispatchFailedReplacement(t *testing.T, providerSessionID string) (*
 		t.Fatal(err)
 	}
 	if _, changed, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
-		receipt.ID, task.ConclusionRecoveryDispatchFailed, time.Now().UTC(), 0,
+		receipt.ID, reason, time.Now().UTC(), 0,
 	); err != nil || !changed {
 		t.Fatalf("mark action_required: changed=%v err=%v", changed, err)
 	}
@@ -154,34 +154,42 @@ func prepareDispatchFailedReplacement(t *testing.T, providerSessionID string) (*
 }
 
 func TestRetryDispatchFailedConclusionRequiresMatchingLiveRuntime(t *testing.T) {
-	for _, test := range []struct {
-		name              string
-		providerSessionID string
-	}{
-		{name: "provider missing"},
-		{name: "native session mismatch", providerSessionID: "session-other"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			server, created, receipt := prepareDispatchFailedReplacement(t, test.providerSessionID)
-			request := httptest.NewRequest(http.MethodPost,
-				"/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry",
-				bytes.NewBufferString(`{}`))
-			request.Header.Set("Idempotency-Key", "retry-without-runtime-proof")
-			response := httptest.NewRecorder()
-			server.ServeHTTP(response, request)
+	reasons := []task.ConclusionRecoveryReason{
+		task.ConclusionRecoveryRuntimeOwnershipNotProven,
+		task.ConclusionRecoveryWritableReplacementUnavailable,
+		task.ConclusionRecoveryDispatchFailed,
+		task.ConclusionRecoveryLegacyCorrelationUnproven,
+	}
+	for _, reason := range reasons {
+		for _, test := range []struct {
+			name              string
+			providerSessionID string
+		}{
+			{name: "provider missing"},
+			{name: "native session mismatch", providerSessionID: "session-other"},
+		} {
+			t.Run(string(reason)+"/"+test.name, func(t *testing.T) {
+				server, created, receipt := prepareRuntimeRebindRecovery(t, reason, test.providerSessionID)
+				request := httptest.NewRequest(http.MethodPost,
+					"/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry",
+					bytes.NewBufferString(`{}`))
+				request.Header.Set("Idempotency-Key", "retry-without-runtime-proof")
+				response := httptest.NewRecorder()
+				server.ServeHTTP(response, request)
 
-			if response.Code != http.StatusConflict {
-				t.Fatalf("retry status=%d body=%s, want conflict", response.Code, response.Body.String())
-			}
-			latest, err := server.tasks.LatestBlackboardConclusion(created.ID)
-			if err != nil || latest == nil || latest.ExplicitRetryCount != 0 ||
-				latest.InternalState != task.BlackboardConclusionReceiptActionRequired {
-				t.Fatalf("failed-closed conclusion=%#v err=%v", latest, err)
-			}
-			if history, err := server.tasks.ConclusionDispatches(receipt.ID); err != nil || len(history) != 0 {
-				t.Fatalf("failed-closed dispatch history=%#v err=%v", history, err)
-			}
-		})
+				if response.Code != http.StatusConflict {
+					t.Fatalf("retry status=%d body=%s, want conflict", response.Code, response.Body.String())
+				}
+				latest, err := server.tasks.LatestBlackboardConclusion(created.ID)
+				if err != nil || latest == nil || latest.ExplicitRetryCount != 0 ||
+					latest.InternalState != task.BlackboardConclusionReceiptActionRequired {
+					t.Fatalf("failed-closed conclusion=%#v err=%v", latest, err)
+				}
+				if history, err := server.tasks.ConclusionDispatches(receipt.ID); err != nil || len(history) != 0 {
+					t.Fatalf("failed-closed dispatch history=%#v err=%v", history, err)
+				}
+			})
+		}
 	}
 }
 
@@ -344,6 +352,27 @@ func TestRetryDispatchFailedConclusionBindsProvenLiveReplacementRuntime(t *testi
 	}
 	if !foundInitial {
 		t.Fatalf("initial dispatch missing from history: %#v", history)
+	}
+	if _, changed, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequired(
+		latest.DispatchRequestID, task.ConclusionRecoveryDispatchFailed, time.Now().UTC(), 0,
+	); err != nil || !changed {
+		t.Fatalf("mark replacement dispatch_failed: changed=%v err=%v", changed, err)
+	}
+	_ = server.providerSessions.remove(created.ID)
+	lostResponseReplay := httptest.NewRequest(http.MethodPost,
+		"/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry",
+		bytes.NewBufferString(`{}`))
+	lostResponseReplay.Header.Set("Idempotency-Key", "retry-on-live-replacement")
+	lostResponseReplayResponse := httptest.NewRecorder()
+	server.ServeHTTP(lostResponseReplayResponse, lostResponseReplay)
+	if lostResponseReplayResponse.Code != http.StatusOK {
+		t.Fatalf("retry replay after Runtime loss status=%d body=%s, want OK",
+			lostResponseReplayResponse.Code, lostResponseReplayResponse.Body.String())
+	}
+	afterReplay, err := server.tasks.LatestBlackboardConclusion(created.ID)
+	if err != nil || afterReplay == nil || afterReplay.ExplicitRetryCount != 1 ||
+		afterReplay.InternalState != task.BlackboardConclusionReceiptActionRequired {
+		t.Fatalf("retry replay after Runtime loss=%#v err=%v", afterReplay, err)
 	}
 }
 
