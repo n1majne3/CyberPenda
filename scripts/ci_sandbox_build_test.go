@@ -222,7 +222,7 @@ func TestPullRequestSandboxSmokeSkipsFullKaliImageBuild(t *testing.T) {
 	makefile := string(makefileBytes)
 	assertContains(t, makefile, "SANDBOX_SMOKE_IMAGE ?= cyberpenda-sandbox-smoke:ci")
 	assertContains(t, makefile, "docker build --target smoke -t $(SANDBOX_SMOKE_IMAGE) -f docker/pentest-sandbox/Dockerfile .")
-	assertContains(t, makefile, "go test ./cmd/... ./internal/... ./scripts")
+	assertContains(t, makefile, "go test -timeout 20m ./cmd/... ./internal/... ./scripts")
 
 	workflowBytes, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "ci.yml"))
 	if err != nil {
