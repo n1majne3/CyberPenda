@@ -31,6 +31,13 @@ func TestSessionBlackboardConclusionRestartRecoveryAndRetryAreOwnerScoped(t *tes
 	if err != nil {
 		t.Fatalf("create Session continuation: %v", err)
 	}
+	continuation, err = service.UpdateContinuationRuntimeMetadata(continuation.ID, "", "provider-session-1", "")
+	if err != nil {
+		t.Fatalf("bind Session Runtime metadata: %v", err)
+	}
+	if _, err := service.UpdateContinuationStatus(continuation.ID, RuntimeStatusRunning); err != nil {
+		t.Fatalf("mark Session Continuation running: %v", err)
+	}
 	otherContinuation, err := service.CreateContinuation(second.ID, "profile-1", "codex", RunnerSandbox)
 	if err != nil {
 		t.Fatalf("create other Session continuation: %v", err)
@@ -62,8 +69,11 @@ func TestSessionBlackboardConclusionRestartRecoveryAndRetryAreOwnerScoped(t *tes
 	}
 
 	retryAt := latest.NextEligibleAt.Add(time.Nanosecond)
-	retried, won, err := service.RetryLatestBlackboardConclusion(first.ID, "session-retry-1", retryAt)
-	if err != nil || !won || retried.InternalState != BlackboardConclusionReceiptPending {
+	retried, won, initial, err := service.RetryLatestBlackboardConclusionForRuntime(
+		first.ID, "session-retry-1", continuation.ID, continuation.NativeSessionID, 0, retryAt,
+	)
+	if err != nil || !won || !initial || retried.InternalState != BlackboardConclusionReceiptDispatchRequested ||
+		retried.DispatchKind != ConclusionDispatchKindInitial {
 		t.Fatalf("Session retry = %#v won=%v err=%v", retried, won, err)
 	}
 	replayed, won, err := service.RetryLatestBlackboardConclusion(first.ID, "session-retry-1", retryAt)

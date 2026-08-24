@@ -240,7 +240,7 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 		retry: func(idempotencyKey string) (bool, conclusionRetryDispatchMode, error) {
 			var won bool
 			var retryErr error
-			retried, won, retryErr = server.tasks.RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(
+			retried, won, retryErr = server.tasks.RetryLatestBlackboardConclusion(
 				taskID, idempotencyKey, time.Now().UTC(),
 			)
 			if retryErr == nil {

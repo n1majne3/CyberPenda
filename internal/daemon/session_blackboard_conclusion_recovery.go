@@ -117,18 +117,7 @@ func (server *Server) resumeLiveSessionBlackboardConclusionObligation(ctx contex
 		},
 		Dispatch: func(state string, baseRevision int, explicitRetryCount int) {
 			server.enqueueRecoveredSessionBlackboardConclusion(obligation, func(controlCtx context.Context) error {
-				directive := concludeDirective(sessionConclusionDirectiveProfile, baseRevision)
-				switch session.BlackboardConclusionReceiptState(state) {
-				case session.BlackboardConclusionReceiptRepairDispatchRequested:
-					directive = repairDirective(sessionConclusionDirectiveProfile, baseRevision, conclusionDetailFromSessionReceipt(obligation))
-				case session.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
-					directive = regenerateDirective(sessionConclusionDirectiveProfile, baseRevision)
-				default:
-					if explicitRetryCount > 0 {
-						directive = repairDirective(sessionConclusionDirectiveProfile, baseRevision, conclusionDetailFromSessionReceipt(obligation))
-					}
-				}
-				return server.sendSessionBlackboardConclusionTurn(controlCtx, obligation, directive)
+				return server.dispatchRecoveredSessionConclusionDispatch(controlCtx, obligation)
 			})
 		},
 		VersionSync: func() {

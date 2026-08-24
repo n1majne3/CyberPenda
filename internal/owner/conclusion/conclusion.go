@@ -1017,7 +1017,7 @@ func (e *Engine) RetryBlackboardConclusion(obligationID, idempotencyKey string, 
 	if err != nil {
 		return BlackboardConclusionReceipt{}, false, e.blackboardConclusionLookupError(err)
 	}
-	receipt, won, _, err := e.retryBlackboardConclusionTx(tx, obligation, idempotencyKey, nil, false, now)
+	receipt, won, _, err := e.retryBlackboardConclusionTx(tx, obligation, idempotencyKey, nil, now)
 	if err != nil || !won {
 		return receipt, won, err
 	}
@@ -1030,14 +1030,7 @@ func (e *Engine) RetryBlackboardConclusion(obligationID, idempotencyKey string, 
 // RetryLatestBlackboardConclusion atomically applies an owner-scoped operator
 // retry key to the latest durable conclusion obligation.
 func (e *Engine) RetryLatestBlackboardConclusion(ownerID, idempotencyKey string, now time.Time) (BlackboardConclusionReceipt, bool, error) {
-	receipt, won, _, err := e.retryLatestBlackboardConclusion(ownerID, idempotencyKey, nil, false, now)
-	return receipt, won, err
-}
-
-// RetryLatestBlackboardConclusionFailClosedOnDispatchFailure atomically
-// retries only when no daemon-proven replacement Runtime binding is required.
-func (e *Engine) RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(ownerID, idempotencyKey string, now time.Time) (BlackboardConclusionReceipt, bool, error) {
-	receipt, won, _, err := e.retryLatestBlackboardConclusion(ownerID, idempotencyKey, nil, true, now)
+	receipt, won, _, err := e.retryLatestBlackboardConclusion(ownerID, idempotencyKey, nil, now)
 	return receipt, won, err
 }
 
@@ -1050,10 +1043,10 @@ func (e *Engine) RetryLatestBlackboardConclusionForRuntime(ownerID, idempotencyK
 	if binding.ContinuationID == "" || binding.SessionID == "" || binding.BaseRevision < 0 {
 		return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
 	}
-	return e.retryLatestBlackboardConclusion(ownerID, idempotencyKey, &binding, true, now)
+	return e.retryLatestBlackboardConclusion(ownerID, idempotencyKey, &binding, now)
 }
 
-func (e *Engine) retryLatestBlackboardConclusion(ownerID, idempotencyKey string, binding *RetryRuntimeBinding, requireRuntimeBinding bool, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {
+func (e *Engine) retryLatestBlackboardConclusion(ownerID, idempotencyKey string, binding *RetryRuntimeBinding, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {
 	ownerID, idempotencyKey = strings.TrimSpace(ownerID), strings.TrimSpace(idempotencyKey)
 	if ownerID == "" || idempotencyKey == "" {
 		return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
@@ -1086,7 +1079,7 @@ func (e *Engine) retryLatestBlackboardConclusion(ownerID, idempotencyKey string,
 			return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
 		}
 	}
-	receipt, won, initial, err := e.retryBlackboardConclusionTx(tx, obligation, idempotencyKey, binding, requireRuntimeBinding, now)
+	receipt, won, initial, err := e.retryBlackboardConclusionTx(tx, obligation, idempotencyKey, binding, now)
 	if err != nil || !won {
 		return receipt, won, initial, err
 	}
@@ -1096,7 +1089,7 @@ func (e *Engine) retryLatestBlackboardConclusion(ownerID, idempotencyKey string,
 	return receipt, true, initial, nil
 }
 
-func (e *Engine) retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclusion, idempotencyKey string, binding *RetryRuntimeBinding, requireRuntimeBinding bool, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {
+func (e *Engine) retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclusion, idempotencyKey string, binding *RetryRuntimeBinding, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {
 	var priorObligationID string
 	err := tx.QueryRow(`SELECT `+e.Dialect.RetryKeysReceiptColumn+` FROM `+e.Dialect.RetryKeysTable+`
 		WHERE `+e.Dialect.RetryKeysOwnerColumn+`=? AND idempotency_key=?`, obligation.OwnerID, idempotencyKey).Scan(&priorObligationID)
@@ -1114,7 +1107,7 @@ func (e *Engine) retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlack
 	if !errors.Is(err, sql.ErrNoRows) {
 		return BlackboardConclusionReceipt{}, false, false, fmt.Errorf("read "+e.Dialect.Subject+" retry idempotency history: %w", err)
 	}
-	if requireRuntimeBinding && owner.ConclusionRecoveryRequiresRuntimeBinding(obligation.RecoveryReason) && binding == nil {
+	if owner.ConclusionRecoveryRequiresRuntimeBinding(obligation.RecoveryReason) && binding == nil {
 		return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	if binding != nil && !owner.ConclusionRecoveryRequiresRuntimeBinding(obligation.RecoveryReason) {

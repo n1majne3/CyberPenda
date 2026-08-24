@@ -1256,6 +1256,8 @@ func TestVersionSyncRecoveryPreservesCanonicalResultUntilOperatorRetryStartsNewG
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	continuation, _ = svc.UpdateContinuationRuntimeMetadata(continuation.ID, "", "session-1", "")
+	_, _ = svc.UpdateContinuationStatus(continuation.ID, task.StatusRunning)
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
 	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-sync-recovery",
 		"session-1", "turn-sync-recovery", task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"},
@@ -1277,7 +1279,9 @@ func TestVersionSyncRecoveryPreservesCanonicalResultUntilOperatorRetryStartsNewG
 		replayed.CanonicalResultSHA256 != validated.CanonicalResultSHA256 {
 		t.Fatalf("version-sync recovery replay = %#v, changed=%v, err=%v", replayed, changed, err)
 	}
-	retried, won, err := svc.RetryBlackboardConclusion(syncing.ID, "sync-recovery-retry", now.Add(5*time.Minute))
+	retried, won, _, err := svc.RetryLatestBlackboardConclusionForRuntime(
+		created.ID, "sync-recovery-retry", continuation.ID, "session-1", 4, now.Add(5*time.Minute),
+	)
 	if err != nil || !won || retried.InternalState != task.BlackboardConclusionReceiptDispatchRequested ||
 		len(retried.CanonicalResultJSON) != 0 || retried.CanonicalResultSHA256 != "" {
 		t.Fatalf("version-sync recovery retry = %#v, won=%v, err=%v", retried, won, err)
@@ -1293,6 +1297,8 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
 		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	continuation, _ = svc.UpdateContinuationRuntimeMetadata(continuation.ID, "", "session-1", "")
+	_, _ = svc.UpdateContinuationStatus(continuation.ID, task.StatusRunning)
 	pending, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-pending",
 		"session-1", "turn-pending", task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"},
 		task.SemanticDebtWatermarks{SourceWork: 1})
@@ -1317,22 +1323,20 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 	if err != nil || changed || replay.NextEligibleAt == nil || !replay.NextEligibleAt.Equal(now.Add(5*time.Minute)) || replay.AutomaticTurnCount != 0 {
 		t.Fatalf("pending recovery replay = %#v, changed=%v, err=%v", replay, changed, err)
 	}
-	rearmed, won, err := svc.RetryLatestBlackboardConclusion(created.ID, "pending-recovery-retry", now.Add(5*time.Minute))
-	if err != nil || !won || rearmed.InternalState != task.BlackboardConclusionReceiptPending ||
-		rearmed.DispatchRequestID != "" || rearmed.BaseRevision != nil || rearmed.ApplyIdempotencyKey != "" ||
+	rearmed, won, initial, err := svc.RetryLatestBlackboardConclusionForRuntime(
+		created.ID, "pending-recovery-retry", continuation.ID, "session-1", 13, now.Add(5*time.Minute),
+	)
+	if err != nil || !won || !initial || rearmed.InternalState != task.BlackboardConclusionReceiptDispatchRequested ||
+		rearmed.DispatchRequestID == "" || rearmed.BaseRevision == nil || *rearmed.BaseRevision != 13 || rearmed.ApplyIdempotencyKey == "" ||
 		rearmed.ExplicitRetryCount != 1 || rearmed.OperatorRetryKey != "pending-recovery-retry" ||
-		rearmed.ErrorCode != "" || rearmed.NextEligibleAt != nil {
+		rearmed.AutomaticTurnCount != 1 || rearmed.ErrorCode != "" || rearmed.NextEligibleAt != nil {
 		t.Fatalf("pending recovery retry = %#v, won=%v, err=%v", rearmed, won, err)
 	}
 	replayedRetry, won, err := svc.RetryLatestBlackboardConclusion(created.ID, "pending-recovery-retry", now.Add(time.Hour))
-	if err != nil || won || replayedRetry.ID != pending.ID || replayedRetry.InternalState != task.BlackboardConclusionReceiptPending {
+	if err != nil || won || replayedRetry.ID != pending.ID || replayedRetry.InternalState != task.BlackboardConclusionReceiptDispatchRequested {
 		t.Fatalf("pending recovery retry replay = %#v, won=%v, err=%v", replayedRetry, won, err)
 	}
-	dispatched, won, err := svc.ClaimBlackboardConclusionDispatch(pending.ID, 13)
-	if err != nil || !won || dispatched.BaseRevision == nil || *dispatched.BaseRevision != 13 ||
-		dispatched.ApplyIdempotencyKey == "" || dispatched.AutomaticTurnCount != 1 || dispatched.ExplicitRetryCount != 1 {
-		t.Fatalf("rearmed pending dispatch = %#v, won=%v, err=%v", dispatched, won, err)
-	}
+	dispatched := rearmed
 	_, _, _ = svc.MarkBlackboardConclusionSendStarted(dispatched.DispatchRequestID, now.Add(6*time.Minute))
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-after-recovery")
 	exhausted, dispatchedRepair, err := svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID,
@@ -1366,9 +1370,13 @@ func TestRetryLatestBlackboardConclusionFailsClosedWhenDispatchFailureAppearsBef
 		t.Fatalf("mark dispatch_failed: changed=%v err=%v", changed, err)
 	}
 
-	retried, won, err := svc.RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(created.ID, "stale-adapter-retry", now)
+	retried, won, err := svc.RetryLatestBlackboardConclusion(created.ID, "stale-adapter-retry", now)
 	if !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) || won {
 		t.Fatalf("retry without proven Runtime = %#v, won=%v, err=%v", retried, won, err)
+	}
+	retried, won, err = svc.RetryBlackboardConclusion(receipt.ID, "stale-receipt-retry", now)
+	if !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) || won {
+		t.Fatalf("receipt retry without proven Runtime = %#v, won=%v, err=%v", retried, won, err)
 	}
 	latest, latestErr := svc.LatestBlackboardConclusion(created.ID)
 	if latestErr != nil || latest == nil || latest.InternalState != task.BlackboardConclusionReceiptActionRequired ||

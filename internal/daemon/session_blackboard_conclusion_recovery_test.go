@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,5 +195,80 @@ func TestRetrySessionConclusionBindsProvenLiveReplacementRuntime(t *testing.T) {
 	}
 	if !foundInitial {
 		t.Fatalf("initial Session dispatch missing from history=%#v", history)
+	}
+}
+
+func TestSessionInitialRuntimeRetryRemainsInitialAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := server.sessions.Create(session.CreateRequest{
+		Input: "restart initial Session conclusion", BlackboardConclusionMode: session.BlackboardConclusionModeAssisted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.sessions.CreateContinuation(found.ID, "profile-1", "codex", session.RunnerHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err = server.sessions.UpdateContinuationRuntimeMetadata(
+		continuation.ID, "", "assisted-session", "/sessions/assisted-session.jsonl",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.sessions.UpdateContinuationStatus(continuation.ID, session.RuntimeStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.blackboardV2.BindSessionContinuation(context.Background(), found.ID, continuation.ID); err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := server.sessions.RecordBlackboardConclusionCheckpoint(
+		found.ID, continuation.ID, "work-request-initial-restart", continuation.NativeSessionID, "work-turn-initial-restart",
+		session.RuntimeTurnSelection{ModelProviderID: "provider-1", Model: "model-1"},
+		session.SemanticDebtWatermarks{SourceWork: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, changed, err := server.sessions.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
+		receipt.ID, session.ConclusionRecoveryRuntimeOwnershipNotProven, now, 0,
+	); err != nil || !changed {
+		t.Fatalf("mark recovery: changed=%v err=%v", changed, err)
+	}
+	retried, won, initial, err := server.sessions.RetryLatestBlackboardConclusionForRuntime(
+		found.ID, "session-restart-initial", continuation.ID, continuation.NativeSessionID, 0, now,
+	)
+	if err != nil || !won || !initial || retried.DispatchKind != session.ConclusionDispatchKindInitial {
+		t.Fatalf("persist initial retry=%#v won=%v initial=%v err=%v", retried, won, initial, err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := newConclusionRecoverySession()
+	restarted, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		DisableBuiltinSkills: true,
+		ProviderSessionFactory: &conclusionRecoveryFactory{
+			session: provider, liveness: ProviderSessionRecoveryLive,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	restarted.providerControlWG.Wait()
+	requests := provider.LastRequests()
+	if len(requests) != 1 || !strings.Contains(requests[0].Message, "perform only the Harness conclusion below") ||
+		strings.Contains(requests[0].Message, "previous Blackboard conclusion result was invalid") {
+		t.Fatalf("restarted initial Session directive=%#v", requests)
 	}
 }

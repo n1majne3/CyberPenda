@@ -484,7 +484,7 @@ func (server *Server) handleRetrySessionBlackboardConclusion(response http.Respo
 		retry: func(idempotencyKey string) (bool, conclusionRetryDispatchMode, error) {
 			var won bool
 			var err error
-			retried, won, err = server.sessions.RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(
+			retried, won, err = server.sessions.RetryLatestBlackboardConclusion(
 				sessionID, idempotencyKey, time.Now().UTC(),
 			)
 			if err == nil {
