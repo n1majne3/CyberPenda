@@ -111,10 +111,12 @@ test-backend: ensure-embed-stub
 
 # Windows CI: daemon code only. The scripts package pins POSIX-only
 # deliverables (Makefile text, bash, chmod 600, LF endings); its tests are
-# Linux-only by design. POSIX-only test doubles inside cmd/internal skip
-# in place on Windows, so this target stays meaningful there.
+# Linux-only by design. internal/daemon and internal/runner are excluded
+# until their POSIX shell-script test doubles and sandbox container-path
+# semantics are ported (tracked in issue #231). POSIX-only test doubles in
+# the remaining packages skip in place on Windows.
 test-ci-windows: ensure-embed-stub
-	go test ./cmd/... ./internal/...
+	go test $$(go list ./cmd/... ./internal/... | grep -vxF 'pentest/internal/daemon' | grep -vxF 'pentest/internal/runner')
 
 # Live smokes (local):
 #   make smoke-sandbox-mcp     — sandbox image + daemon MCP, no LLM

@@ -1445,6 +1445,13 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 	if err := syncEvidenceDirectory(stagingRoot); err != nil {
 		return err
 	}
+	// Release the exclusive publisher lock now that the temp has been renamed
+	// to its managed path. The byte-range lock follows the file across the
+	// rename on Windows, so the fresh verification handle below would collide
+	// with the still-locked range; the DB publisher claim guards the rest of
+	// the publication checkpoint.
+	unlockAndCloseEvidencePublisher(publisher.file)
+	publisher.file = nil
 	if err := s.failEvidence(EvidenceFailureBeforePublishStore); err != nil {
 		return err
 	}
@@ -1480,7 +1487,7 @@ func (s *Service) acquireEvidencePublisher(ctx context.Context, root *os.Root, p
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("inspect journaled Evidence temp: %w", err)
 	}
-	file, err := root.OpenFile(tempName, os.O_RDONLY|os.O_CREATE, 0o600)
+	file, err := root.OpenFile(tempName, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open journaled Evidence temp publisher: %w", err)
 	}
@@ -1545,18 +1552,11 @@ func (publisher *evidencePublisher) writer(root *os.Root, name string) (*os.File
 	if err := publisher.file.Chmod(0o600); err != nil {
 		return nil, fmt.Errorf("make journaled Evidence temp writable: %w", err)
 	}
-	writer, err := root.OpenFile(name, os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open journaled Evidence temp writer: %w", err)
-	}
-	lockedInfo, lockErr := publisher.file.Stat()
-	writerInfo, writerErr := writer.Stat()
-	if lockErr != nil || writerErr != nil || !os.SameFile(lockedInfo, writerInfo) {
-		_ = writer.Close()
-		return nil, semanticError("evidence_integrity_failed", "journaled Evidence temp inode changed before write", "source_path", nil)
-	}
-	publisher.writerFD = writer
-	return writer, nil
+	// Write through the publisher handle itself: it carries the exclusive
+	// publication lock (LockFileEx byte-range lock on Windows), and a second
+	// handle to the same file would collide with the locked range.
+	publisher.writerFD = publisher.file
+	return publisher.writerFD, nil
 }
 
 func (publisher *evidencePublisher) validate(ctx context.Context, db *store.DB, root *os.Root, projectID, continuationID, key string, row evidenceRequestRow) error {
@@ -1579,10 +1579,15 @@ func (publisher *evidencePublisher) validate(ctx context.Context, db *store.DB, 
 }
 
 func (publisher *evidencePublisher) close() {
-	if publisher.writerFD != nil {
+	// writerFD is the publisher handle itself when writes went through the
+	// locked handle, so avoid closing the same *os.File twice.
+	if publisher.writerFD != nil && publisher.writerFD != publisher.file {
 		_ = publisher.writerFD.Close()
 	}
-	unlockAndCloseEvidencePublisher(publisher.file)
+	if publisher.file != nil {
+		unlockAndCloseEvidencePublisher(publisher.file)
+		publisher.file = nil
+	}
 }
 
 func openLockedEvidenceFile(root *os.Root, name, description string) (*os.File, error) {
