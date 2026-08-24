@@ -878,10 +878,33 @@ func TestDockerContainerStopConfirmationTimesOutWhileContainerRuns(t *testing.T)
 	if err != nil {
 		t.Fatalf("resolve portable container CLI double: %v", err)
 	}
+	invocationMarker := filepath.Join(dir, "container-cli-called")
 	t.Setenv(alwaysRunningContainerCLIEnv, "1")
+	t.Setenv(containerCLIInvocationPathEnv, invocationMarker)
 
-	err = runtime.ConfirmDockerContainerExited(docker, cidFile, 80*time.Millisecond)
+	err = runtime.ConfirmDockerContainerExited(docker, cidFile, time.Second)
 	if got, want := fmt.Sprint(err), "container ctr-running did not stop before timeout"; got != want {
+		t.Fatalf("stop confirmation error = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(invocationMarker); err != nil {
+		t.Fatalf("portable container CLI was not invoked: %v", err)
+	}
+}
+
+func TestDockerContainerStopConfirmationReportsStableTimeoutWhenInspectExceedsDeadline(t *testing.T) {
+	dir := t.TempDir()
+	cidFile := filepath.Join(dir, "container.cid")
+	if err := os.WriteFile(cidFile, []byte("ctr-slow\n"), 0o600); err != nil {
+		t.Fatalf("write cidfile: %v", err)
+	}
+	docker, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve portable container CLI double: %v", err)
+	}
+	t.Setenv(slowContainerCLIEnv, "1")
+
+	err = runtime.ConfirmDockerContainerExited(docker, cidFile, 30*time.Millisecond)
+	if got, want := fmt.Sprint(err), "container ctr-slow did not stop before timeout"; got != want {
 		t.Fatalf("stop confirmation error = %q, want %q", got, want)
 	}
 }

@@ -57,6 +57,9 @@ func ConfirmDockerContainerExited(containerCLI, cidFile string, timeout time.Dur
 	for {
 		stopped, err := dockerContainerStopped(ctx, containerCLI, id)
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("container %s did not stop before timeout", id)
+			}
 			return err
 		}
 		if stopped {
