@@ -56,6 +56,15 @@ type Engine struct {
 	Dialect Dialect
 }
 
+// RetryRuntimeBinding is a daemon-proven live Runtime target for one
+// operator-authorized retry. The Engine revalidates the durable owner,
+// Continuation, and native session binding inside the retry transaction.
+type RetryRuntimeBinding struct {
+	ContinuationID string
+	SessionID      string
+	BaseRevision   int
+}
+
 // Selection is the owner-neutral Runtime Turn Selection snapshot retained on
 // an obligation.
 type Selection struct {
@@ -1008,7 +1017,7 @@ func (e *Engine) RetryBlackboardConclusion(obligationID, idempotencyKey string, 
 	if err != nil {
 		return BlackboardConclusionReceipt{}, false, e.blackboardConclusionLookupError(err)
 	}
-	receipt, won, err := e.retryBlackboardConclusionTx(tx, obligation, idempotencyKey, now)
+	receipt, won, _, err := e.retryBlackboardConclusionTx(tx, obligation, idempotencyKey, nil, now)
 	if err != nil || !won {
 		return receipt, won, err
 	}
@@ -1018,63 +1027,100 @@ func (e *Engine) RetryBlackboardConclusion(obligationID, idempotencyKey string, 
 	return receipt, true, nil
 }
 
-// RetryLatestBlackboardConclusion atomically applies a Task-scoped operator
+// RetryLatestBlackboardConclusion atomically applies an owner-scoped operator
 // retry key to the latest durable conclusion obligation.
 func (e *Engine) RetryLatestBlackboardConclusion(ownerID, idempotencyKey string, now time.Time) (BlackboardConclusionReceipt, bool, error) {
+	receipt, won, _, err := e.retryLatestBlackboardConclusion(ownerID, idempotencyKey, nil, now)
+	return receipt, won, err
+}
+
+// RetryLatestBlackboardConclusionForRuntime atomically binds a dispatch_failed
+// retry to a daemon-proven live replacement Runtime. Initial is true only when
+// the obligation had never created a prior Conclusion Dispatch.
+func (e *Engine) RetryLatestBlackboardConclusionForRuntime(ownerID, idempotencyKey string, binding RetryRuntimeBinding, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {
+	binding.ContinuationID = strings.TrimSpace(binding.ContinuationID)
+	binding.SessionID = strings.TrimSpace(binding.SessionID)
+	if binding.ContinuationID == "" || binding.SessionID == "" || binding.BaseRevision < 0 {
+		return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
+	}
+	return e.retryLatestBlackboardConclusion(ownerID, idempotencyKey, &binding, now)
+}
+
+func (e *Engine) retryLatestBlackboardConclusion(ownerID, idempotencyKey string, binding *RetryRuntimeBinding, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {
 	ownerID, idempotencyKey = strings.TrimSpace(ownerID), strings.TrimSpace(idempotencyKey)
 	if ownerID == "" || idempotencyKey == "" {
-		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+		return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	now = now.UTC()
 	tx, err := e.DB.Begin()
 	if err != nil {
-		return BlackboardConclusionReceipt{}, false, err
+		return BlackboardConclusionReceipt{}, false, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	obligation, err := e.scanPendingBlackboardConclusion(tx.QueryRow(`SELECT `+e.obligationColumns()+`
 		FROM `+e.Dialect.ObligationsTable+` WHERE `+e.Dialect.OwnerColumn+`=? ORDER BY created_at DESC,id DESC LIMIT 1`, ownerID))
 	if err != nil {
-		return BlackboardConclusionReceipt{}, false, e.blackboardConclusionLookupError(err)
+		return BlackboardConclusionReceipt{}, false, false, e.blackboardConclusionLookupError(err)
 	}
-	receipt, won, err := e.retryBlackboardConclusionTx(tx, obligation, idempotencyKey, now)
+	if binding != nil {
+		var activeContinuationID, continuationStatus, nativeSessionID string
+		if err := tx.QueryRow(`SELECT id,status,native_session_id FROM `+e.Dialect.ContinuationsTable+`
+			WHERE `+e.Dialect.ContinuationOwnerColumn+`=? AND status IN ('pending','running','paused')
+			ORDER BY number DESC LIMIT 1`, ownerID).
+			Scan(&activeContinuationID, &continuationStatus, &nativeSessionID); err != nil {
+			return BlackboardConclusionReceipt{}, false, false, e.blackboardConclusionLookupError(err)
+		}
+		if activeContinuationID != binding.ContinuationID || strings.TrimSpace(nativeSessionID) != binding.SessionID {
+			return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
+		}
+		switch continuationStatus {
+		case "pending", "running", "paused":
+		default:
+			return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
+		}
+	}
+	receipt, won, initial, err := e.retryBlackboardConclusionTx(tx, obligation, idempotencyKey, binding, now)
 	if err != nil || !won {
-		return receipt, won, err
+		return receipt, won, initial, err
 	}
 	if err := tx.Commit(); err != nil {
-		return BlackboardConclusionReceipt{}, false, err
+		return BlackboardConclusionReceipt{}, false, false, err
 	}
-	return receipt, true, nil
+	return receipt, true, initial, nil
 }
 
-func (e *Engine) retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclusion, idempotencyKey string, now time.Time) (BlackboardConclusionReceipt, bool, error) {
+func (e *Engine) retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlackboardConclusion, idempotencyKey string, binding *RetryRuntimeBinding, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {
 	var priorObligationID string
 	err := tx.QueryRow(`SELECT `+e.Dialect.RetryKeysReceiptColumn+` FROM `+e.Dialect.RetryKeysTable+`
 		WHERE `+e.Dialect.RetryKeysOwnerColumn+`=? AND idempotency_key=?`, obligation.OwnerID, idempotencyKey).Scan(&priorObligationID)
 	if err == nil {
 		prior, loadErr := e.loadPendingBlackboardConclusionByID(tx, priorObligationID)
 		if loadErr != nil {
-			return BlackboardConclusionReceipt{}, false, e.blackboardConclusionLookupError(loadErr)
+			return BlackboardConclusionReceipt{}, false, false, e.blackboardConclusionLookupError(loadErr)
 		}
 		view, viewErr := e.combinedConclusionView(tx, prior)
 		if viewErr != nil {
-			return BlackboardConclusionReceipt{}, false, viewErr
+			return BlackboardConclusionReceipt{}, false, false, viewErr
 		}
-		return view, false, nil
+		return view, false, false, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return BlackboardConclusionReceipt{}, false, fmt.Errorf("read "+e.Dialect.Subject+" retry idempotency history: %w", err)
+		return BlackboardConclusionReceipt{}, false, false, fmt.Errorf("read "+e.Dialect.Subject+" retry idempotency history: %w", err)
+	}
+	if binding != nil && obligation.RecoveryReason != ConclusionRecoveryDispatchFailed {
+		return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	switch owner.ConclusionRetryDecisionFor(obligation.State, obligation.ErrorCode, obligation.RecoveryReason, obligation.NextEligibleAt, now) {
 	case owner.ConclusionRetryInvalidState:
-		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
+		return BlackboardConclusionReceipt{}, false, false, ErrInvalidBlackboardConclusionReceipt
 	case owner.ConclusionRetryNeverSettled:
-		return BlackboardConclusionReceipt{}, false, ErrBlackboardConclusionWorkTurnNeverSettled
+		return BlackboardConclusionReceipt{}, false, false, ErrBlackboardConclusionWorkTurnNeverSettled
 	case owner.ConclusionRetryAcceptanceAmbiguous, owner.ConclusionRetryCooldown:
-		return BlackboardConclusionReceipt{}, false, ErrBlackboardConclusionRetryCooldown
+		return BlackboardConclusionReceipt{}, false, false, ErrBlackboardConclusionRetryCooldown
 	}
 	dispatch, err := e.activeConclusionDispatchTx(tx, obligation.ID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return BlackboardConclusionReceipt{}, false, err
+		return BlackboardConclusionReceipt{}, false, false, err
 	}
 	if dispatch == nil {
 		// No active dispatch (for example the failed repair was superseded).
@@ -1083,11 +1129,54 @@ func (e *Engine) retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlack
 		// source binding of the completed Work Turn.
 		dispatch, err = e.latestConclusionDispatchTx(tx, obligation.ID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return BlackboardConclusionReceipt{}, false, err
+			return BlackboardConclusionReceipt{}, false, false, err
 		}
 	}
 	retryNumber := obligation.ExplicitRetryCount + 1
 	if dispatch == nil {
+		if binding != nil {
+			requestID := blackboardConclusionAttemptRequestID("retry", binding.ContinuationID, obligation.SourceTurnID, retryNumber, idempotencyKey)
+			_, applyKey := blackboardConclusionRequestLineage(obligation.SourceContinuationID, obligation.SourceTurnID)
+			nowDispatch := ConclusionDispatch{
+				ID: e.Dialect.NewID(), ObligationID: obligation.ID, Kind: ConclusionDispatchKindInitial,
+				ContinuationID: binding.ContinuationID, SourceSessionID: binding.SessionID,
+				DispatchRequestID: requestID, BaseRevision: intPointer(binding.BaseRevision),
+				DeliveryState: ConclusionDispatchRequested, CreatedAt: now, UpdatedAt: now,
+			}
+			if _, err := tx.Exec(`INSERT INTO `+e.Dialect.DispatchesTable+`
+				(id,obligation_id,kind,continuation_id,source_session_id,dispatch_request_id,base_revision,delivery_state,created_at,updated_at)
+				VALUES (?,?,?,?,?,?,?,?,?,?)`, nowDispatch.ID, nowDispatch.ObligationID, string(nowDispatch.Kind), nowDispatch.ContinuationID,
+				nowDispatch.SourceSessionID, nowDispatch.DispatchRequestID, binding.BaseRevision, string(nowDispatch.DeliveryState),
+				now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+				return BlackboardConclusionReceipt{}, false, false, fmt.Errorf("store replacement retry Conclusion Dispatch: %w", err)
+			}
+			obligation.State = BlackboardConclusionReceiptDispatchRequested
+			obligation.ExplicitRetryCount++
+			obligation.OperatorRetryKey = idempotencyKey
+			obligation.ApplyIdempotencyKey = applyKey
+			obligation.BaseRevision = intPointer(binding.BaseRevision)
+			obligation.AutomaticTurnCount++
+			obligation.ErrorCode = ""
+			obligation.RecoveryReason = ""
+			obligation.NextEligibleAt = nil
+			obligation.UpdatedAt = now
+			if err := e.updateObligationProtocolTx(tx, obligation); err != nil {
+				return BlackboardConclusionReceipt{}, false, false, err
+			}
+			if _, err := tx.Exec(`INSERT INTO `+e.Dialect.RetryKeysTable+`
+				(`+e.Dialect.RetryKeysOwnerColumn+`,`+e.Dialect.RetryKeysReceiptColumn+`,idempotency_key,dispatch_request_id,created_at) VALUES (?,?,?,?,?)`,
+				obligation.OwnerID, obligation.ID, idempotencyKey, requestID, now.Format(time.RFC3339Nano)); err != nil {
+				return BlackboardConclusionReceipt{}, false, false, fmt.Errorf("store replacement "+e.Dialect.Subject+" retry history: %w", err)
+			}
+			view := blackboardConclusionReceiptFromObligationDispatch(&nowDispatch, obligation)
+			if err := e.appendBlackboardConclusionEventTx(tx, view, map[string]any{
+				"phase": "retry_requested", "receipt_id": obligation.ID, "request_id": requestID,
+				"explicit_retry_count": obligation.ExplicitRetryCount, "turn_kind": "control",
+			}, now); err != nil {
+				return BlackboardConclusionReceipt{}, false, false, err
+			}
+			return view, true, true, nil
+		}
 		// Never-dispatched obligation: re-arm to pending so the initial claim
 		// runs on the live runtime. The retry history records the deterministic
 		// initial request lineage.
@@ -1099,42 +1188,53 @@ func (e *Engine) retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlack
 		obligation.NextEligibleAt = nil
 		obligation.UpdatedAt = now
 		if err := e.updateObligationProtocolTx(tx, obligation); err != nil {
-			return BlackboardConclusionReceipt{}, false, err
+			return BlackboardConclusionReceipt{}, false, false, err
 		}
 		if _, err := tx.Exec(`INSERT INTO `+e.Dialect.RetryKeysTable+`
 			(`+e.Dialect.RetryKeysOwnerColumn+`,`+e.Dialect.RetryKeysReceiptColumn+`,idempotency_key,dispatch_request_id,created_at) VALUES (?,?,?,?,?)`,
 			obligation.OwnerID, obligation.ID, idempotencyKey, initialRequestID, now.Format(time.RFC3339Nano)); err != nil {
-			return BlackboardConclusionReceipt{}, false, fmt.Errorf("store pending "+e.Dialect.Subject+" retry history: %w", err)
+			return BlackboardConclusionReceipt{}, false, false, fmt.Errorf("store pending "+e.Dialect.Subject+" retry history: %w", err)
 		}
 		if err := e.appendBlackboardConclusionEventTx(tx, obligationView(obligation), map[string]any{
 			"phase": "retry_requested", "receipt_id": obligation.ID, "request_id": initialRequestID,
 			"explicit_retry_count": obligation.ExplicitRetryCount, "turn_kind": "control",
 		}, now); err != nil {
-			return BlackboardConclusionReceipt{}, false, err
+			return BlackboardConclusionReceipt{}, false, false, err
 		}
-		return obligationView(obligation), true, nil
+		return obligationView(obligation), true, true, nil
 	}
-	requestID := blackboardConclusionAttemptRequestID("retry", dispatch.ContinuationID, obligation.SourceTurnID, retryNumber, idempotencyKey)
+	dispatchContinuationID, dispatchSessionID := dispatch.ContinuationID, dispatch.SourceSessionID
+	dispatchBaseRevision := dispatch.BaseRevision
+	if binding != nil {
+		dispatchContinuationID = binding.ContinuationID
+		dispatchSessionID = binding.SessionID
+		dispatchBaseRevision = intPointer(binding.BaseRevision)
+	}
+	requestID := blackboardConclusionAttemptRequestID("retry", dispatchContinuationID, obligation.SourceTurnID, retryNumber, idempotencyKey)
 	nowDispatch := ConclusionDispatch{
 		ID: e.Dialect.NewID(), ObligationID: obligation.ID, Kind: ConclusionDispatchKindRetry,
-		ContinuationID: dispatch.ContinuationID, SourceSessionID: dispatch.SourceSessionID,
-		DispatchRequestID: requestID, BaseRevision: dispatch.BaseRevision,
+		ContinuationID: dispatchContinuationID, SourceSessionID: dispatchSessionID,
+		DispatchRequestID: requestID, BaseRevision: dispatchBaseRevision,
 		DeliveryState: ConclusionDispatchRequested, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := e.supersedeActiveDispatchTx(tx, dispatch, "superseded_by_retry", now); err != nil {
-		return BlackboardConclusionReceipt{}, false, err
+		return BlackboardConclusionReceipt{}, false, false, err
 	}
 	if _, err := tx.Exec(`INSERT INTO `+e.Dialect.DispatchesTable+`
 		(id,obligation_id,kind,continuation_id,source_session_id,dispatch_request_id,base_revision,delivery_state,created_at,updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?)`, nowDispatch.ID, nowDispatch.ObligationID, string(nowDispatch.Kind), nowDispatch.ContinuationID,
 		nowDispatch.SourceSessionID, nowDispatch.DispatchRequestID, intPointerValue(nowDispatch.BaseRevision), string(nowDispatch.DeliveryState),
 		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
-		return BlackboardConclusionReceipt{}, false, fmt.Errorf("store retry Conclusion Dispatch: %w", err)
+		return BlackboardConclusionReceipt{}, false, false, fmt.Errorf("store retry Conclusion Dispatch: %w", err)
 	}
 	obligation.State = BlackboardConclusionReceiptDispatchRequested
 	obligation.ExplicitRetryCount++
 	obligation.OperatorRetryKey = idempotencyKey
 	obligation.ErrorCode = ""
+	if binding != nil {
+		obligation.BaseRevision = dispatchBaseRevision
+		obligation.RecoveryReason = ""
+	}
 	obligation.NextEligibleAt = nil
 	// The operator retry starts a fresh generation: the previous validated
 	// result and its bounded rejection detail are no longer current.
@@ -1145,12 +1245,12 @@ func (e *Engine) retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlack
 	obligation.ValidationExpected = ""
 	obligation.UpdatedAt = now
 	if err := e.updateObligationProtocolTx(tx, obligation); err != nil {
-		return BlackboardConclusionReceipt{}, false, err
+		return BlackboardConclusionReceipt{}, false, false, err
 	}
 	if _, err := tx.Exec(`INSERT INTO `+e.Dialect.RetryKeysTable+`
 		(`+e.Dialect.RetryKeysOwnerColumn+`,`+e.Dialect.RetryKeysReceiptColumn+`,idempotency_key,dispatch_request_id,created_at) VALUES (?,?,?,?,?)`,
 		obligation.OwnerID, obligation.ID, idempotencyKey, requestID, now.Format(time.RFC3339Nano)); err != nil {
-		return BlackboardConclusionReceipt{}, false, fmt.Errorf("store "+e.Dialect.Subject+" retry idempotency history: %w", err)
+		return BlackboardConclusionReceipt{}, false, false, fmt.Errorf("store "+e.Dialect.Subject+" retry idempotency history: %w", err)
 	}
 	view := obligationView(obligation)
 	view.ActiveDispatchID = nowDispatch.ID
@@ -1160,9 +1260,9 @@ func (e *Engine) retryBlackboardConclusionTx(tx *sql.Tx, obligation PendingBlack
 	view.SourceSessionID = nowDispatch.SourceSessionID
 	view.BaseRevision = nowDispatch.BaseRevision
 	if err := e.appendBlackboardConclusionEventTx(tx, view, map[string]any{"phase": "retry_requested", "receipt_id": obligation.ID, "request_id": requestID, "explicit_retry_count": obligation.ExplicitRetryCount, "turn_kind": "control"}, now); err != nil {
-		return BlackboardConclusionReceipt{}, false, err
+		return BlackboardConclusionReceipt{}, false, false, err
 	}
-	return view, true, nil
+	return view, true, false, nil
 }
 
 // BlackboardConclusionByDispatchRequestID resolves the obligation whose ACTIVE

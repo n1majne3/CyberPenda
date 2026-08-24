@@ -237,16 +237,62 @@ func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWrit
 			}
 			return latest.RecoveryReason, true, nil
 		},
-		retry: func(idempotencyKey string) (bool, bool, error) {
-			var won bool
-			var err error
-			retried, won, err = server.tasks.RetryLatestBlackboardConclusion(taskID, idempotencyKey, time.Now().UTC())
-			if err != nil {
-				return false, false, err
+		retry: func(idempotencyKey string) (bool, conclusionRetryDispatchMode, error) {
+			latest, err := server.tasks.LatestBlackboardConclusion(taskID)
+			if err != nil || latest == nil {
+				return false, conclusionRetryDispatchNone, err
 			}
-			return won, retried.InternalState == task.BlackboardConclusionReceiptPending, nil
+			if latest.RecoveryReason == string(task.ConclusionRecoveryDispatchFailed) {
+				provider, live := server.providerSessions.get(taskID)
+				active, activeErr := server.tasks.ActiveContinuation(taskID)
+				if !live || provider == nil || activeErr != nil || active == nil ||
+					strings.TrimSpace(active.NativeSessionID) != provider.SessionID() {
+					return false, conclusionRetryDispatchNone, fmt.Errorf("Blackboard conclusion retry requires a proven live Runtime")
+				}
+				authority, authorityErr := server.blackboardV2.AuthorizeContinuationBinding(
+					request.Context(), found.ProjectID, taskID, active.ID, true,
+				)
+				if authorityErr != nil {
+					return false, conclusionRetryDispatchNone, fmt.Errorf("Blackboard conclusion retry requires a writable Continuation: %w", authorityErr)
+				}
+				var won, initial bool
+				var retryErr error
+				retried, won, initial, retryErr = server.tasks.RetryLatestBlackboardConclusionForRuntime(
+					taskID, idempotencyKey, active.ID, provider.SessionID(), authority.Sync.Revision, time.Now().UTC(),
+				)
+				if retryErr != nil {
+					return false, conclusionRetryDispatchNone, retryErr
+				}
+				if retried.InternalState == task.BlackboardConclusionReceiptPending {
+					return won, conclusionRetryDispatchPending, nil
+				}
+				if initial {
+					return won, conclusionRetryDispatchInitial, nil
+				}
+				return won, conclusionRetryDispatchRepair, nil
+			}
+			var won bool
+			var retryErr error
+			retried, won, retryErr = server.tasks.RetryLatestBlackboardConclusion(taskID, idempotencyKey, time.Now().UTC())
+			if retryErr != nil {
+				return false, conclusionRetryDispatchNone, retryErr
+			}
+			if retried.InternalState == task.BlackboardConclusionReceiptPending {
+				return won, conclusionRetryDispatchPending, nil
+			}
+			return won, conclusionRetryDispatchRepair, nil
 		},
 		dispatchPending: func() { server.scheduleBlackboardConclusionDispatch(retried) },
+		dispatchInitial: func() {
+			queued := server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
+				if err := server.dispatchRecoveredConclusionDispatch(ctx, retried); err != nil {
+					server.recoverBlackboardConclusionDispatchFailure(retried, err)
+				}
+			})
+			if !queued {
+				server.recoverBlackboardConclusionDispatchFailure(retried, fmt.Errorf("provider control queue is closed"))
+			}
+		},
 		dispatchRepair: func() {
 			queued := server.enqueueProviderTaskControl(taskID, func(ctx context.Context) {
 				if err := server.dispatchBlackboardConclusionRepair(ctx, retried); err != nil {
@@ -314,6 +360,10 @@ func (server *Server) scheduleRecoveredConclusionDispatch(view task.BlackboardCo
 }
 
 func (server *Server) dispatchRecoveredConclusionDispatch(ctx context.Context, view task.BlackboardConclusionReceipt) error {
+	return server.sendBlackboardConclusionTurn(ctx, view, taskConclusionDispatchDirective(view))
+}
+
+func taskConclusionDispatchDirective(view task.BlackboardConclusionReceipt) string {
 	directive := concludeDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision))
 	switch view.InternalState {
 	case task.BlackboardConclusionReceiptRepairDispatchRequested:
@@ -321,11 +371,11 @@ func (server *Server) dispatchRecoveredConclusionDispatch(ctx context.Context, v
 	case task.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
 		directive = regenerateDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision))
 	default:
-		if view.ExplicitRetryCount > 0 {
+		if view.DispatchKind != task.ConclusionDispatchKindInitial && view.ExplicitRetryCount > 0 {
 			directive = repairDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))
 		}
 	}
-	return server.sendBlackboardConclusionTurn(ctx, view, directive)
+	return directive
 }
 
 func (server *Server) reconcileValidatedBlackboardConclusionApplies() {

@@ -481,16 +481,29 @@ func (server *Server) handleRetrySessionBlackboardConclusion(response http.Respo
 			}
 			return latest.RecoveryReason, true, nil
 		},
-		retry: func(idempotencyKey string) (bool, bool, error) {
+		retry: func(idempotencyKey string) (bool, conclusionRetryDispatchMode, error) {
 			var won bool
 			var err error
 			retried, won, err = server.sessions.RetryLatestBlackboardConclusion(sessionID, idempotencyKey, time.Now().UTC())
 			if err != nil {
-				return false, false, err
+				return false, conclusionRetryDispatchNone, err
 			}
-			return won, retried.InternalState == session.BlackboardConclusionReceiptPending, nil
+			if retried.InternalState == session.BlackboardConclusionReceiptPending {
+				return won, conclusionRetryDispatchPending, nil
+			}
+			return won, conclusionRetryDispatchRepair, nil
 		},
 		dispatchPending: func() { server.scheduleSessionBlackboardConclusionDispatch(retried) },
+		dispatchInitial: func() {
+			queued := server.enqueueProviderTaskControl(sessionID, func(ctx context.Context) {
+				if err := server.sendSessionBlackboardConclusionTurn(ctx, retried, concludeDirective(sessionConclusionDirectiveProfile, pointerValue(retried.BaseRevision))); err != nil {
+					server.requireSessionBlackboardConclusionRecovery(retried, session.ConclusionRecoveryDispatchFailed, err)
+				}
+			})
+			if !queued {
+				server.requireSessionBlackboardConclusionRecovery(retried, session.ConclusionRecoveryDispatchFailed, fmt.Errorf("provider control queue is closed"))
+			}
+		},
 		dispatchRepair: func() {
 			queued := server.enqueueProviderTaskControl(sessionID, func(ctx context.Context) {
 				if err := server.sendSessionBlackboardConclusionTurn(ctx, retried, repairDirective(sessionConclusionDirectiveProfile, pointerValue(retried.BaseRevision), conclusionDetailFromSessionReceipt(retried))); err != nil {
