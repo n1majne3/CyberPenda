@@ -50,13 +50,14 @@ type BlackboardConclusionReceipt struct {
 	RecoveryReason string `json:"recovery_reason,omitempty"`
 	// ActiveDispatchID and DispatchKind expose the active Conclusion Dispatch
 	// so recovery can create a new dispatch without rewriting history.
-	ActiveDispatchID    string                 `json:"-"`
-	DispatchKind        ConclusionDispatchKind `json:"-"`
-	ValidationReason    string                 `json:"validation_reason,omitempty"`
-	ValidationFieldPath string                 `json:"validation_field_path,omitempty"`
-	ValidationExpected  string                 `json:"validation_expected,omitempty"`
-	CreatedAt           time.Time              `json:"created_at"`
-	UpdatedAt           time.Time              `json:"updated_at"`
+	ActiveDispatchID    string                  `json:"-"`
+	DispatchKind        ConclusionDispatchKind  `json:"-"`
+	DirectiveKind       ConclusionDirectiveKind `json:"-"`
+	ValidationReason    string                  `json:"validation_reason,omitempty"`
+	ValidationFieldPath string                  `json:"validation_field_path,omitempty"`
+	ValidationExpected  string                  `json:"validation_expected,omitempty"`
+	CreatedAt           time.Time               `json:"created_at"`
+	UpdatedAt           time.Time               `json:"updated_at"`
 }
 
 // View projects internal coordinator progress into the compact Session API
@@ -228,6 +229,7 @@ func receiptFromConclusion(rec conclusion.BlackboardConclusionReceipt) Blackboar
 		RecoveryReason:           rec.RecoveryReason,
 		ActiveDispatchID:         rec.ActiveDispatchID,
 		DispatchKind:             rec.DispatchKind,
+		DirectiveKind:            rec.DirectiveKind,
 		ValidationReason:         rec.ValidationReason,
 		ValidationFieldPath:      rec.ValidationFieldPath,
 		ValidationExpected:       rec.ValidationExpected,

@@ -1350,7 +1350,8 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 	dispatched, reboundWon, err := svc.CreateRecoveryConclusionDispatch(
 		pending.ID, replacement.ID, "session-2", now.Add(6*time.Minute),
 	)
-	if err != nil || !reboundWon || dispatched.DispatchKind != task.ConclusionDispatchKindInitial {
+	if err != nil || !reboundWon || dispatched.DispatchKind != task.ConclusionDispatchKindRecovery ||
+		dispatched.DirectiveKind != task.ConclusionDirectiveKindInitial {
 		t.Fatalf("rebound initial retry = %#v, created=%v, err=%v", dispatched, reboundWon, err)
 	}
 	_, _, _ = svc.MarkBlackboardConclusionSendStarted(dispatched.DispatchRequestID, now.Add(6*time.Minute))

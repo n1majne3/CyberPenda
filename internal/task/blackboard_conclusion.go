@@ -122,6 +122,7 @@ func receiptFromConclusion(rec conclusion.BlackboardConclusionReceipt) Blackboar
 		RecoveryReason:           rec.RecoveryReason,
 		ActiveDispatchID:         rec.ActiveDispatchID,
 		DispatchKind:             rec.DispatchKind,
+		DirectiveKind:            rec.DirectiveKind,
 		ValidationReason:         rec.ValidationReason,
 		ValidationFieldPath:      rec.ValidationFieldPath,
 		ValidationExpected:       rec.ValidationExpected,

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -294,6 +295,72 @@ func TestAssistedConclusionPendingRecoveryRetryDispatchesInitialTurnIdempotently
 	var continuations int
 	if err := restarted.db.QueryRow(`SELECT COUNT(*) FROM task_continuations WHERE task_id=?`, seed.task.ID).Scan(&continuations); err != nil || continuations != 2 {
 		t.Fatalf("replacement continuation count=%d err=%v", continuations, err)
+	}
+}
+
+func TestAssistedConclusionMigrationPreservesInitialDirectiveForActiveRecovery(t *testing.T) {
+	root := t.TempDir()
+	seed := seedConclusionRecoveryReceipt(t, root)
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	if _, changed, err := seed.server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
+		seed.receipt.ID, task.ConclusionRecoveryDispatchFailed, now, 0,
+	); err != nil || !changed {
+		t.Fatalf("mark recovery: changed=%v err=%v", changed, err)
+	}
+	original, err := seed.server.tasks.LatestContinuation(seed.task.ID)
+	if err != nil || original == nil {
+		t.Fatalf("load source Continuation: %#v err=%v", original, err)
+	}
+	retried, won, initial, err := seed.server.tasks.RetryLatestBlackboardConclusionForRuntime(
+		seed.task.ID, "legacy-task-initial", original.ID, original.NativeSessionID, 0, now,
+	)
+	if err != nil || !won || !initial || retried.DirectiveKind != task.ConclusionDirectiveKindInitial {
+		t.Fatalf("persist initial retry=%#v won=%v initial=%v err=%v", retried, won, initial, err)
+	}
+	replacement, err := seed.server.tasks.CreateReplacementContinuation(*original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.server.blackboardV2Continuity.RebindContinuationForNativeSteer(
+		context.Background(), original.ID, replacement.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err = seed.server.tasks.UpdateContinuationRuntimeMetadata(
+		replacement.ID, "", "assisted-session", "/sessions/assisted-session.jsonl",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.server.tasks.UpdateContinuationStatus(original.ID, task.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.server.tasks.UpdateContinuationStatus(replacement.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	rebound, created, err := seed.server.tasks.CreateRecoveryConclusionDispatch(
+		retried.ID, replacement.ID, replacement.NativeSessionID, now.Add(time.Second),
+	)
+	if err != nil || !created || rebound.DispatchKind != task.ConclusionDispatchKindRecovery ||
+		rebound.DirectiveKind != task.ConclusionDirectiveKindInitial {
+		t.Fatalf("rebind initial retry=%#v created=%v err=%v", rebound, created, err)
+	}
+	if _, err := seed.server.db.Exec(`UPDATE conclusion_dispatches SET directive_kind='' WHERE id=?`, rebound.ActiveDispatchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := seed.server.db.Exec(`DELETE FROM schema_migrations WHERE version=60`); err != nil {
+		t.Fatal(err)
+	}
+	closeSeedServer(t, seed.server)
+
+	provider := newConclusionRecoverySession()
+	factory := &conclusionRecoveryFactory{session: provider, liveness: ProviderSessionRecoveryLive}
+	restarted := openConclusionRecoveryServer(t, root, factory)
+	restarted.providerControlWG.Wait()
+	requests := provider.LastRequests()
+	if len(requests) != 1 || !strings.Contains(requests[0].Message, "perform only the Harness conclusion below") ||
+		strings.Contains(requests[0].Message, "previous Blackboard conclusion result was invalid") {
+		t.Fatalf("migrated initial Task directive=%#v", requests)
 	}
 }
 

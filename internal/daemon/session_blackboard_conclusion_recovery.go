@@ -167,21 +167,31 @@ func (server *Server) scheduleRecoveredSessionConclusionDispatch(view session.Bl
 
 func (server *Server) dispatchRecoveredSessionConclusionDispatch(ctx context.Context, view session.BlackboardConclusionReceipt) error {
 	directive := concludeDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision))
-	switch view.DispatchKind {
-	case session.ConclusionDispatchKindInitial:
-	case session.ConclusionDispatchKindRepair, session.ConclusionDispatchKindRetry:
+	switch view.DirectiveKind {
+	case session.ConclusionDirectiveKindInitial:
+	case session.ConclusionDirectiveKindRepair:
 		directive = repairDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromSessionReceipt(view))
-	case session.ConclusionDispatchKindVersionRegeneration:
+	case session.ConclusionDirectiveKindVersionRegeneration:
 		directive = regenerateDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision))
 	default:
-		switch view.InternalState {
-		case session.BlackboardConclusionReceiptRepairDispatchRequested:
+		// Legacy dispatches created before directive_kind use the durable
+		// protocol state and counters as a compatibility fallback.
+		switch view.DispatchKind {
+		case session.ConclusionDispatchKindInitial:
+		case session.ConclusionDispatchKindRepair, session.ConclusionDispatchKindRetry:
 			directive = repairDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromSessionReceipt(view))
-		case session.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
+		case session.ConclusionDispatchKindVersionRegeneration:
 			directive = regenerateDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision))
 		default:
-			if view.ExplicitRetryCount > 0 {
+			switch view.InternalState {
+			case session.BlackboardConclusionReceiptRepairDispatchRequested:
 				directive = repairDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromSessionReceipt(view))
+			case session.BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
+				directive = regenerateDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision))
+			default:
+				if view.ExplicitRetryCount > 0 {
+					directive = repairDirective(sessionConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromSessionReceipt(view))
+				}
 			}
 		}
 	}

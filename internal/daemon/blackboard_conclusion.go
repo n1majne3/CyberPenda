@@ -369,6 +369,16 @@ func (server *Server) dispatchRecoveredConclusionDispatch(ctx context.Context, v
 
 func taskConclusionDispatchDirective(view task.BlackboardConclusionReceipt) string {
 	directive := concludeDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision))
+	switch view.DirectiveKind {
+	case task.ConclusionDirectiveKindInitial:
+		return directive
+	case task.ConclusionDirectiveKindRepair:
+		return repairDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))
+	case task.ConclusionDirectiveKindVersionRegeneration:
+		return regenerateDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision))
+	}
+	// Legacy dispatches created before directive_kind use the durable protocol
+	// state and attempt counters as a compatibility fallback.
 	switch view.InternalState {
 	case task.BlackboardConclusionReceiptRepairDispatchRequested:
 		directive = repairDirective(taskConclusionDirectiveProfile, pointerValue(view.BaseRevision), conclusionDetailFromTaskReceipt(view))

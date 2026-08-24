@@ -270,8 +270,15 @@ func TestSessionInitialRuntimeRetryRemainsInitialAfterRestart(t *testing.T) {
 	rebound, created, err := server.sessions.CreateRecoveryConclusionDispatch(
 		retried.ID, replacement.ID, replacement.NativeSessionID, now.Add(time.Second),
 	)
-	if err != nil || !created || rebound.DispatchKind != session.ConclusionDispatchKindInitial {
+	if err != nil || !created || rebound.DispatchKind != session.ConclusionDispatchKindRecovery ||
+		rebound.DirectiveKind != session.ConclusionDirectiveKindInitial {
 		t.Fatalf("rebind initial retry=%#v created=%v err=%v", rebound, created, err)
+	}
+	if _, err := server.db.Exec(`UPDATE session_conclusion_dispatches SET directive_kind='' WHERE id=?`, rebound.ActiveDispatchID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.db.Exec(`DELETE FROM schema_migrations WHERE version=60`); err != nil {
+		t.Fatal(err)
 	}
 	if err := server.Close(); err != nil {
 		t.Fatal(err)

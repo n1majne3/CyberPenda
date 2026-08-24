@@ -944,7 +944,112 @@ func migrations() []migration {
 		newMigration(57, "task_type_snapshot", migration57SQL, migration57Up),
 		newMigration(58, "challenge_operation_recovery_settlement", migration58SQL, migration58Up),
 		newMigration(59, "project_approval_workflows", migration59SQL, migration59Up),
+		newMigration(60, "blackboard_conclusion_directive_kind", migration60SQL, migration60Up),
 	}
+}
+
+// migration60SQL separates immutable delivery lineage from the semantic
+// control instruction. Existing recovery rows retain an empty directive kind;
+// the owner engine derives their legacy meaning from prior dispatch history.
+const migration60SQL = `
+ALTER TABLE conclusion_dispatches ADD COLUMN directive_kind TEXT NOT NULL DEFAULT ''
+	CHECK (directive_kind IN ('','initial','repair','version_regeneration'));
+ALTER TABLE session_conclusion_dispatches ADD COLUMN directive_kind TEXT NOT NULL DEFAULT ''
+	CHECK (directive_kind IN ('','initial','repair','version_regeneration'));
+UPDATE conclusion_dispatches
+	SET directive_kind = CASE kind
+		WHEN 'repair' THEN 'repair'
+		WHEN 'retry' THEN 'repair'
+		WHEN 'version_regeneration' THEN 'version_regeneration'
+		WHEN 'initial' THEN 'initial'
+		ELSE '' END;
+UPDATE conclusion_dispatches
+	SET directive_kind = COALESCE((
+		SELECT CASE prior.kind
+			WHEN 'repair' THEN 'repair'
+			WHEN 'retry' THEN 'repair'
+			WHEN 'version_regeneration' THEN 'version_regeneration'
+			ELSE 'initial' END
+		FROM conclusion_dispatches AS prior
+		WHERE prior.obligation_id=conclusion_dispatches.obligation_id
+			AND prior.kind<>'recovery'
+			AND prior.rowid<conclusion_dispatches.rowid
+		ORDER BY prior.rowid DESC LIMIT 1
+	), 'initial')
+	WHERE kind='recovery' AND directive_kind='';
+UPDATE session_conclusion_dispatches
+	SET directive_kind = CASE kind
+		WHEN 'repair' THEN 'repair'
+		WHEN 'retry' THEN 'repair'
+		WHEN 'version_regeneration' THEN 'version_regeneration'
+		WHEN 'initial' THEN 'initial'
+		ELSE '' END;
+UPDATE session_conclusion_dispatches
+	SET directive_kind = COALESCE((
+		SELECT CASE prior.kind
+			WHEN 'repair' THEN 'repair'
+			WHEN 'retry' THEN 'repair'
+			WHEN 'version_regeneration' THEN 'version_regeneration'
+			ELSE 'initial' END
+		FROM session_conclusion_dispatches AS prior
+		WHERE prior.obligation_id=session_conclusion_dispatches.obligation_id
+			AND prior.kind<>'recovery'
+			AND prior.rowid<session_conclusion_dispatches.rowid
+		ORDER BY prior.rowid DESC LIMIT 1
+	), 'initial')
+	WHERE kind='recovery' AND directive_kind='';
+`
+
+func migration60Up(tx *sql.Tx) error {
+	definition := "TEXT NOT NULL DEFAULT '' CHECK (directive_kind IN ('','initial','repair','version_regeneration'))"
+	if err := ensureColumn(tx, "conclusion_dispatches", "directive_kind", definition); err != nil {
+		return err
+	}
+	if err := ensureColumn(tx, "session_conclusion_dispatches", "directive_kind", definition); err != nil {
+		return err
+	}
+	_, err := tx.Exec(`UPDATE conclusion_dispatches
+		SET directive_kind = CASE kind
+			WHEN 'repair' THEN 'repair'
+			WHEN 'retry' THEN 'repair'
+			WHEN 'version_regeneration' THEN 'version_regeneration'
+			WHEN 'initial' THEN 'initial'
+			ELSE directive_kind END`)
+	if err != nil {
+		return err
+	}
+	if err := backfillRecoveryConclusionDirectiveKinds(tx, "conclusion_dispatches"); err != nil {
+		return err
+	}
+	_, err = tx.Exec(`UPDATE session_conclusion_dispatches
+		SET directive_kind = CASE kind
+			WHEN 'repair' THEN 'repair'
+			WHEN 'retry' THEN 'repair'
+			WHEN 'version_regeneration' THEN 'version_regeneration'
+			WHEN 'initial' THEN 'initial'
+			ELSE directive_kind END`)
+	if err != nil {
+		return err
+	}
+	return backfillRecoveryConclusionDirectiveKinds(tx, "session_conclusion_dispatches")
+}
+
+func backfillRecoveryConclusionDirectiveKinds(tx *sql.Tx, table string) error {
+	_, err := tx.Exec(`UPDATE ` + table + `
+		SET directive_kind = COALESCE((
+			SELECT CASE prior.kind
+				WHEN 'repair' THEN 'repair'
+				WHEN 'retry' THEN 'repair'
+				WHEN 'version_regeneration' THEN 'version_regeneration'
+				ELSE 'initial' END
+			FROM ` + table + ` AS prior
+			WHERE prior.obligation_id=` + table + `.obligation_id
+				AND prior.kind<>'recovery'
+				AND prior.rowid<` + table + `.rowid
+			ORDER BY prior.rowid DESC LIMIT 1
+		), 'initial')
+		WHERE kind='recovery' AND directive_kind=''`)
+	return err
 }
 
 // migration59SQL stores operator-approved Project workflows. Scope Expansion
