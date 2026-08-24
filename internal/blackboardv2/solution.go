@@ -101,7 +101,10 @@ func applyUpdateSolution(ctx context.Context, tx *sql.Tx, projectID string, revi
 	}
 	current := existing.record.solutionRecord()
 	if current.Status != "candidate" && (patch.Kind != nil || patch.Value != nil || patch.VerificationSummary != nil || solutionClearChangesVerification(change.Clear)) {
-		return revision, "", 0, false, semanticError("semantic_validation", "verified Solution kind, value, and verification_summary are immutable", path+".record", nil)
+		return revision, "", 0, false, semanticError("semantic_validation", "verified Solution kind, value, and verification_summary are immutable", path+".record", map[string]any{
+			"immutable_fields": []string{"kind", "value", "verification_summary"},
+			"next_action":      "create_candidate_then_supersede",
+		})
 	}
 	next := current
 	if patch.Kind != nil {

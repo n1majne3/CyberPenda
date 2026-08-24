@@ -1,7 +1,6 @@
 package mcpserver
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +13,7 @@ import (
 	"pentest/internal/blackboardconclusion"
 	"pentest/internal/blackboardv2"
 	"pentest/internal/blackboardv2contract"
+	"pentest/internal/blackboardv2input"
 	"pentest/internal/projectinterface"
 )
 
@@ -81,7 +81,7 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 			panic(fmt.Errorf("load MCP input schema for %s: %w", tool.Name, schemaErr))
 		}
 		if deps.ownerIsSession() {
-			schema = sessionToolInputSchema(schema)
+			schema = blackboardv2input.SessionToolInputSchema(schema)
 		}
 		schemas[tool.Name] = schema
 	}
@@ -97,13 +97,15 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 			server.AddTool(&sdkmcp.Tool{
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
-				var args blackboardv2.ChangeBatch
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
-					return toolBlackboardV2ErrorResult(decodeErr)
-				}
+				raw := req.Params.Arguments
+				idempotencyKey := v2InputIdempotencyKey(raw)
 				// Exact replay remains available after Finish/supersession; response-loss
 				// retries redeliver the same sync attachment via idempotency fingerprint.
-				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("change", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("change", idempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+					var args blackboardv2.ChangeBatch
+					if decodeErr := blackboardv2input.DecodeContractInput(tool.InputSchema, deps.ownerIsSession(), raw, &args); decodeErr != nil {
+						return nil, decodeErr
+					}
 					if deps.ownerIsSession() {
 						return deps.BlackboardV2.ApplyForSessionContinuation(ctx, projectID, continuationID, args)
 					}
@@ -114,29 +116,30 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 			server.AddTool(&sdkmcp.Tool{
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
-				var args blackboardAttemptResultArgs
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
-					return toolBlackboardV2ErrorResult(decodeErr)
-				}
-				raw, marshalErr := json.Marshal(args.Result)
-				if marshalErr != nil {
-					return nil, marshalErr
-				}
-				validated, validationErr := blackboardconclusion.Decode(raw)
-				if validationErr != nil {
-					detail := blackboardconclusion.DecodeDetailOf(validationErr)
-					return toolBlackboardV2ErrorResult(&blackboardv2.Error{
-						Code: "invalid_schema", Message: "Attempt result violates the closed semantic contract",
-						Path: detail.FieldPath, Retryable: false,
-						Details: map[string]any{"reason": detail.Reason, "expected": detail.Expected},
-					})
-				}
-				batch, compileErr := blackboardconclusion.Compile(validated.Result, args.IdempotencyKey)
-				if compileErr != nil {
-					return toolBlackboardV2ErrorResult(&blackboardv2.Error{Code: "invalid_schema", Message: "Attempt result cannot be compiled", Retryable: false})
-				}
-				fingerprint := blackboardv2.SynchronizationDeliveryFingerprint("attempt-result", args.IdempotencyKey)
+				rawArguments := req.Params.Arguments
+				fingerprint := blackboardv2.SynchronizationDeliveryFingerprint("attempt-result", v2InputIdempotencyKey(rawArguments))
 				return deps.callV2WithFingerprint(ctx, false, true, fingerprint, func(ctx context.Context, ownerID, continuationID string) (any, error) {
+					var args blackboardAttemptResultArgs
+					if decodeErr := blackboardv2input.DecodeContractInput(tool.InputSchema, deps.ownerIsSession(), rawArguments, &args); decodeErr != nil {
+						return nil, decodeErr
+					}
+					rawResult, marshalErr := json.Marshal(args.Result)
+					if marshalErr != nil {
+						return nil, marshalErr
+					}
+					validated, validationErr := blackboardconclusion.Decode(rawResult)
+					if validationErr != nil {
+						detail := blackboardconclusion.DecodeDetailOf(validationErr)
+						return nil, &blackboardv2.Error{
+							Code: "invalid_schema", Message: "Attempt result violates the closed semantic contract",
+							Path: detail.FieldPath, Retryable: false,
+							Details: map[string]any{"reason": detail.Reason, "expected": detail.Expected},
+						}
+					}
+					batch, compileErr := blackboardconclusion.Compile(validated.Result, args.IdempotencyKey)
+					if compileErr != nil {
+						return nil, &blackboardv2.Error{Code: "invalid_schema", Message: "Attempt result cannot be compiled", Retryable: false}
+					}
 					if aliasErr := deps.rejectAttemptResultKeyAliases(ctx, ownerID, validated.Result); aliasErr != nil {
 						return nil, aliasErr
 					}
@@ -150,14 +153,15 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 			server.AddTool(&sdkmcp.Tool{
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
-				var args blackboardV2ReadArgs
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
-					return toolBlackboardV2ErrorResult(decodeErr)
-				}
+				rawArguments := req.Params.Arguments
 				// Live read/current knowledge authority only; closed Continuations
 				// keep exact write/finish replay but not current knowledge reads.
 				// Reads are Pending-only (no durable request fingerprint).
 				return deps.callV2WithFingerprint(ctx, true, true, "", func(ctx context.Context, projectID, _ string) (any, error) {
+					var args blackboardV2ReadArgs
+					if decodeErr := blackboardv2input.DecodeContractInput(tool.InputSchema, deps.ownerIsSession(), rawArguments, &args); decodeErr != nil {
+						return nil, decodeErr
+					}
 					if deps.ownerIsSession() {
 						return deps.BlackboardV2.ReadSessionCurrent(ctx, projectID, args.Key)
 					}
@@ -168,11 +172,12 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 			server.AddTool(&sdkmcp.Tool{
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
-				var args blackboardV2HistoryArgs
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
-					return toolBlackboardV2ErrorResult(decodeErr)
-				}
+				rawArguments := req.Params.Arguments
 				return deps.callV2WithFingerprint(ctx, true, true, "", func(ctx context.Context, projectID, _ string) (any, error) {
+					var args blackboardV2HistoryArgs
+					if decodeErr := blackboardv2input.DecodeContractInput(tool.InputSchema, deps.ownerIsSession(), rawArguments, &args); decodeErr != nil {
+						return nil, decodeErr
+					}
 					if deps.ownerIsSession() {
 						return deps.BlackboardV2.ReadSessionHistory(ctx, projectID, args.Key, blackboardv2.HistoryOptions{Cursor: args.Cursor, Limit: args.Limit})
 					}
@@ -185,11 +190,13 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 			server.AddTool(&sdkmcp.Tool{
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
-				var args blackboardv2.RetainEvidenceRequest
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
-					return toolBlackboardV2ErrorResult(decodeErr)
-				}
-				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("evidence", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+				rawArguments := req.Params.Arguments
+				fingerprint := blackboardv2.SynchronizationDeliveryFingerprint("evidence", v2InputIdempotencyKey(rawArguments))
+				return deps.callV2WithFingerprint(ctx, false, true, fingerprint, func(ctx context.Context, projectID, continuationID string) (any, error) {
+					var args blackboardv2.RetainEvidenceRequest
+					if decodeErr := blackboardv2input.DecodeContractInput(tool.InputSchema, deps.ownerIsSession(), rawArguments, &args); decodeErr != nil {
+						return nil, decodeErr
+					}
 					if deps.ownerIsSession() {
 						return nil, blackboardV2AuthError("authority_denied", "Evidence retention is Project-only", "authorization")
 					}
@@ -200,11 +207,13 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 			server.AddTool(&sdkmcp.Tool{
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
-				var args blackboardv2.CheckpointAttemptRequest
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
-					return toolBlackboardV2ErrorResult(decodeErr)
-				}
-				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("checkpoint", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+				rawArguments := req.Params.Arguments
+				fingerprint := blackboardv2.SynchronizationDeliveryFingerprint("checkpoint", v2InputIdempotencyKey(rawArguments))
+				return deps.callV2WithFingerprint(ctx, false, true, fingerprint, func(ctx context.Context, projectID, continuationID string) (any, error) {
+					var args blackboardv2.CheckpointAttemptRequest
+					if decodeErr := blackboardv2input.DecodeContractInput(tool.InputSchema, deps.ownerIsSession(), rawArguments, &args); decodeErr != nil {
+						return nil, decodeErr
+					}
 					if deps.ownerIsSession() {
 						return deps.BlackboardV2.CheckpointSessionAttemptForContinuation(ctx, projectID, continuationID, args)
 					}
@@ -215,13 +224,15 @@ func registerBlackboardV2Tools(server *sdkmcp.Server, deps Deps) {
 			server.AddTool(&sdkmcp.Tool{
 				Name: tool.Name, Description: tool.Description, InputSchema: inputSchema,
 			}, func(ctx context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
-				var args blackboardv2.FinishContinuationRequest
-				if decodeErr := decodeV2ToolArgs(harness, tool.InputSchema, inputSchema, deps.ownerIsSession(), req.Params.Arguments, &args); decodeErr != nil {
-					return toolBlackboardV2ErrorResult(decodeErr)
-				}
+				rawArguments := req.Params.Arguments
 				// Initial live Finish may carry pending synchronization; exact replay
 				// redelivers via the finish idempotency fingerprint.
-				return deps.callV2WithFingerprint(ctx, false, true, blackboardv2.SynchronizationDeliveryFingerprint("finish", args.IdempotencyKey), func(ctx context.Context, projectID, continuationID string) (any, error) {
+				fingerprint := blackboardv2.SynchronizationDeliveryFingerprint("finish", v2InputIdempotencyKey(rawArguments))
+				return deps.callV2WithFingerprint(ctx, false, true, fingerprint, func(ctx context.Context, projectID, continuationID string) (any, error) {
+					var args blackboardv2.FinishContinuationRequest
+					if decodeErr := blackboardv2input.DecodeContractInput(tool.InputSchema, deps.ownerIsSession(), rawArguments, &args); decodeErr != nil {
+						return nil, decodeErr
+					}
 					decision, decideErr := deps.resolveFinishDecision(continuationID)
 					if decideErr != nil {
 						return nil, decideErr
@@ -309,113 +320,17 @@ type blackboardV2HistoryArgs struct {
 	Limit  int    `json:"limit,omitempty"`
 }
 
-// decodeV2ToolArgs validates raw MCP arguments against the frozen contract
-// schema, then decodes into the closed service DTO. Failures always surface as
-// invalid_schema so transport validation never leaks SDK prose.
-func decodeV2ToolArgs(harness *blackboardv2contract.Harness, schemaName string, inputSchema *jsonschema.Schema, sessionOwner bool, raw json.RawMessage, target any) *blackboardv2.Error {
-	if len(bytes.TrimSpace(raw)) == 0 {
-		raw = json.RawMessage(`{}`)
+func v2InputIdempotencyKey(raw json.RawMessage) string {
+	var envelope struct {
+		IdempotencyKey string `json:"idempotency_key"`
 	}
-	valid := func() error { return harness.Validate(schemaName, raw) }
-	if sessionOwner {
-		valid = func() error {
-			var instance any
-			if err := json.Unmarshal(raw, &instance); err != nil {
-				return err
-			}
-			resolved, err := inputSchema.Resolve(nil)
-			if err != nil {
-				return err
-			}
-			return resolved.Validate(instance)
-		}
-	}
-	if err := valid(); err != nil {
-		return &blackboardv2.Error{
-			Code:      "invalid_schema",
-			Message:   "tool arguments do not match the closed input schema",
-			Path:      "arguments",
-			Retryable: false,
-		}
-	}
-	if err := json.Unmarshal(raw, target); err != nil {
-		return &blackboardv2.Error{
-			Code:      "invalid_schema",
-			Message:   "tool arguments do not match the closed input schema",
-			Path:      "arguments",
-			Retryable: false,
-		}
-	}
-	return nil
-}
-
-// sessionToolInputSchema derives the Session-owned view of the same trusted
-// protocol without adding a second hand-maintained schema. Project Scope is
-// removed recursively from records and patches; owner capability validation
-// still rejects Project-only record types, operations, and relationships.
-func sessionToolInputSchema(source *jsonschema.Schema) *jsonschema.Schema {
-	schema := source.CloneSchemas()
-	var strip func(*jsonschema.Schema)
-	strip = func(current *jsonschema.Schema) {
-		if current == nil {
-			return
-		}
-		delete(current.Properties, "scope_status")
-		required := current.Required[:0]
-		for _, name := range current.Required {
-			if name != "scope_status" {
-				required = append(required, name)
-			}
-		}
-		current.Required = required
-		for _, child := range current.Defs {
-			strip(child)
-		}
-		for _, child := range current.Definitions {
-			strip(child)
-		}
-		for _, child := range current.Properties {
-			strip(child)
-		}
-		for _, child := range current.PatternProperties {
-			strip(child)
-		}
-		for _, child := range current.AllOf {
-			strip(child)
-		}
-		for _, child := range current.AnyOf {
-			strip(child)
-		}
-		for _, child := range current.OneOf {
-			strip(child)
-		}
-		for _, child := range current.PrefixItems {
-			strip(child)
-		}
-		strip(current.Items)
-		strip(current.AdditionalItems)
-		strip(current.Contains)
-		strip(current.Not)
-		strip(current.If)
-		strip(current.Then)
-		strip(current.Else)
-	}
-	strip(schema)
-	return schema
-}
-
-func (deps Deps) callV2(ctx context.Context, requireLive, attachSync bool, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, error) {
-	return deps.callV2WithFingerprint(ctx, requireLive, attachSync, "", action)
+	_ = json.Unmarshal(raw, &envelope)
+	return envelope.IdempotencyKey
 }
 
 func (deps Deps) callV2WithFingerprint(ctx context.Context, requireLive, attachSync bool, requestFingerprint string, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, error) {
 	result, _, err := deps.serveV2(ctx, requireLive, attachSync, requestFingerprint, action)
 	return result, err
-}
-
-func toolBlackboardV2ErrorResult(err *blackboardv2.Error) (*sdkmcp.CallToolResult, error) {
-	result, _, callErr := toolBlackboardV2Error(err, nil)
-	return result, callErr
 }
 
 func (deps Deps) serveV2(ctx context.Context, requireLive, attachSync bool, requestFingerprint string, action func(context.Context, string, string) (any, error)) (*sdkmcp.CallToolResult, any, error) {

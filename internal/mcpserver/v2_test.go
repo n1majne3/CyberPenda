@@ -3,9 +3,12 @@ package mcpserver_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -161,6 +164,10 @@ type v2MCPFixture struct {
 }
 
 func newV2MCPFixture(t *testing.T) v2MCPFixture {
+	return newV2MCPFixtureForKind(t, project.KindPentest, task.TypePentest)
+}
+
+func newV2MCPFixtureForKind(t *testing.T, projectKind string, taskType task.Type) v2MCPFixture {
 	t.Helper()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "pentest.db")
@@ -171,11 +178,11 @@ func newV2MCPFixture(t *testing.T) v2MCPFixture {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	projects := project.NewService(db)
-	created, err := projects.Create("MCP v2", "", project.Scope{}, project.Defaults{})
+	created, err := projects.CreateWithKind("MCP v2", "", projectKind, project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	foreign, err := projects.Create("Foreign MCP v2", "", project.Scope{}, project.Defaults{})
+	foreign, err := projects.CreateWithKind("Foreign MCP v2", "", projectKind, project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create foreign Project: %v", err)
 	}
@@ -186,7 +193,7 @@ func newV2MCPFixture(t *testing.T) v2MCPFixture {
 	tasks := task.NewService(db, projects)
 	createTask := func(projectID, goal string) task.Task {
 		createdTask, err := tasks.Create(task.CreateRequest{
-			ProjectID: projectID, Type: task.TypePentest, Goal: goal, RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+			ProjectID: projectID, Type: taskType, Goal: goal, RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
 		})
 		if err != nil {
 			t.Fatalf("create Task: %v", err)
@@ -650,6 +657,94 @@ func TestBlackboardV2MCPPeerReadAttachesSynchronization(t *testing.T) {
 	}
 }
 
+func TestBlackboardV2MCPContractFailureAttachesPendingSynchronizationLikeHTTP(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	owner := fixture.session(t, &fixture.ownerGrant, nil)
+	peerGrant, err := projectinterface.NewGrantStore(fixture.db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{}).
+		Resolve(context.Background(), fixture.peerToken)
+	if err != nil {
+		t.Fatalf("resolve peer grant: %v", err)
+	}
+	peer := fixture.session(t, &peerGrant, nil)
+	if result, raw := callV2Tool(t, owner, "blackboard_change", map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "mcp-contract-sync-source",
+		"changes": []any{map[string]any{
+			"op": "create", "key": "entity:mcp-contract-sync", "type": "entity",
+			"record": map[string]any{"status": "active", "kind": "host", "name": "Sync source", "scope_status": "in_scope"},
+		}},
+	}); result.IsError {
+		t.Fatalf("source change: %s", raw)
+	}
+
+	result, raw := callV2Tool(t, peer, "blackboard_change", map[string]any{
+		"schema": "semantic-change-batch/v1", "idempotency_key": "mcp-contract-sync-invalid", "changes": []any{},
+	})
+	if !result.IsError {
+		t.Fatalf("invalid Contract unexpectedly succeeded: %s", raw)
+	}
+	var envelope struct {
+		Error *blackboardv2.Error                     `json:"error"`
+		Sync  *blackboardv2.SynchronizationAttachment `json:"sync"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode error envelope: %v body=%s", err, raw)
+	}
+	if envelope.Error == nil || envelope.Error.Code != "invalid_schema" || envelope.Sync == nil || envelope.Sync.Reason != "another_task_changed_shared_project_knowledge" {
+		t.Fatalf("MCP Contract failure did not match HTTP trusted synchronization semantics: %#v body=%s", envelope, raw)
+	}
+}
+
+func TestBlackboardV2MCPAllTrustedContractFailuresAttachPendingSynchronization(t *testing.T) {
+	tests := []struct {
+		name string
+		tool string
+		args map[string]any
+	}{
+		{name: "Attempt result", tool: "blackboard_record_attempt_result", args: map[string]any{"idempotency_key": "sync-invalid-attempt-result"}},
+		{name: "read", tool: "blackboard_read", args: map[string]any{"key": 7}},
+		{name: "history", tool: "blackboard_history", args: map[string]any{"key": "entity:any", "limit": "many"}},
+		{name: "Evidence", tool: "blackboard_retain_evidence", args: map[string]any{"idempotency_key": "sync-invalid-evidence"}},
+		{name: "checkpoint", tool: "blackboard_checkpoint_attempt", args: map[string]any{"idempotency_key": "sync-invalid-checkpoint"}},
+		{name: "finish", tool: "blackboard_finish", args: map[string]any{"idempotency_key": "sync-invalid-finish", "unexpected": true}},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			fixture := newV2MCPFixture(t)
+			owner := fixture.session(t, &fixture.ownerGrant, nil)
+			peerGrant, err := projectinterface.NewGrantStore(fixture.db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{}).
+				Resolve(context.Background(), fixture.peerToken)
+			if err != nil {
+				t.Fatalf("resolve peer grant: %v", err)
+			}
+			peer := fixture.session(t, &peerGrant, nil)
+			if result, raw := callV2Tool(t, owner, "blackboard_change", map[string]any{
+				"schema": "semantic-change-batch/v2", "idempotency_key": "sync-source-" + testCase.name,
+				"changes": []any{map[string]any{
+					"op": "create", "key": "entity:sync-source", "type": "entity",
+					"record": map[string]any{"status": "active", "kind": "host", "name": "Sync source", "scope_status": "in_scope"},
+				}},
+			}); result.IsError {
+				t.Fatalf("source change: %s", raw)
+			}
+
+			result, raw := callV2Tool(t, peer, testCase.tool, testCase.args)
+			if !result.IsError {
+				t.Fatalf("invalid Contract unexpectedly succeeded: %s", raw)
+			}
+			var envelope struct {
+				Error *blackboardv2.Error                     `json:"error"`
+				Sync  *blackboardv2.SynchronizationAttachment `json:"sync"`
+			}
+			if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Error == nil {
+				t.Fatalf("decode error envelope: %v body=%s", err, raw)
+			}
+			if envelope.Error.Code != "invalid_schema" || envelope.Sync == nil || envelope.Sync.Reason != "another_task_changed_shared_project_knowledge" {
+				t.Fatalf("trusted Contract failure omitted Pending synchronization: %#v body=%s", envelope, raw)
+			}
+		})
+	}
+}
+
 // Issue #117 P1 — MCP response-loss retry redelivers the exact sync attachment
 // for the same idempotency key; later operations stay ordinary.
 func TestBlackboardV2MCPResponseLossRetryRedeliversExactSyncAttachment(t *testing.T) {
@@ -821,8 +916,11 @@ func assertV2InvalidSchemaEnvelope(t *testing.T, raw []byte) {
 	if envelope.Error == nil || envelope.Error.Code != "invalid_schema" || envelope.Error.Message == "" || envelope.Error.Retryable {
 		t.Fatalf("invalid_schema envelope = %s", raw)
 	}
-	if envelope.Error.Path != "arguments" {
-		t.Fatalf("invalid_schema path = %q, want arguments; body=%s", envelope.Error.Path, raw)
+	if envelope.Error.Path == "" {
+		t.Fatalf("invalid_schema omitted path; body=%s", raw)
+	}
+	if envelope.Error.Details["reason"] == nil {
+		t.Fatalf("invalid_schema omitted actionable reason; body=%s", raw)
 	}
 	if len(envelope.Sync) != 0 {
 		t.Fatalf("invalid_schema attached sync: %s", raw)
@@ -869,49 +967,58 @@ func TestBlackboardV2MCPInvalidSchemaReturnsStableErrorEnvelope(t *testing.T) {
 	session := fixture.session(t, &fixture.ownerGrant, nil)
 
 	cases := []struct {
-		name string
-		tool string
-		args any
+		name       string
+		tool       string
+		args       any
+		wantPath   string
+		wantReason string
 	}{
 		{
-			name: "unknown project_id on change",
-			tool: "blackboard_change",
+			name:     "unknown project_id on change",
+			tool:     "blackboard_change",
+			wantPath: "project_id", wantReason: "additional_field",
 			args: map[string]any{
 				"schema": "semantic-change-batch/v2", "idempotency_key": "schema-project-id",
 				"changes": []any{}, "project_id": fixture.project.ID,
 			},
 		},
 		{
-			name: "missing required change fields",
-			tool: "blackboard_change",
+			name:     "missing required change fields",
+			tool:     "blackboard_change",
+			wantPath: "schema", wantReason: "missing_field",
 			args: map[string]any{"idempotency_key": "schema-missing"},
 		},
 		{
-			name: "unknown task_id on finish",
-			tool: "blackboard_finish",
+			name:     "unknown task_id on finish",
+			tool:     "blackboard_finish",
+			wantPath: "task_id", wantReason: "additional_field",
 			args: map[string]any{"idempotency_key": "schema-finish", "task_id": fixture.task.ID},
 		},
 		{
-			name: "unknown authority on read",
-			tool: "blackboard_read",
+			name:     "unknown authority on read",
+			tool:     "blackboard_read",
+			wantPath: "continuation_id", wantReason: "additional_field",
 			args: map[string]any{"key": "entity:x", "continuation_id": fixture.continuation.ID},
 		},
 		{
-			name: "wrong type on history limit",
-			tool: "blackboard_history",
+			name:     "wrong type on history limit",
+			tool:     "blackboard_history",
+			wantPath: "limit", wantReason: "invalid_type",
 			args: map[string]any{"key": "entity:x", "limit": "twenty"},
 		},
 		{
-			name: "unknown field on retain",
-			tool: "blackboard_retain_evidence",
+			name:     "unknown field on retain",
+			tool:     "blackboard_retain_evidence",
+			wantPath: "actor_id", wantReason: "additional_field",
 			args: map[string]any{
 				"idempotency_key": "schema-retain", "key": "evidence:x", "attempt": "attempt:x",
 				"source_path": "a.txt", "artifact_type": "text", "summary": "x", "actor_id": "model",
 			},
 		},
 		{
-			name: "unknown field on checkpoint",
-			tool: "blackboard_checkpoint_attempt",
+			name:     "unknown field on checkpoint",
+			tool:     "blackboard_checkpoint_attempt",
+			wantPath: "origin", wantReason: "additional_field",
 			args: map[string]any{
 				"idempotency_key": "schema-checkpoint", "key": "attempt:x", "version": 1, "summary": "x",
 				"origin": "runtime",
@@ -925,7 +1032,343 @@ func TestBlackboardV2MCPInvalidSchemaReturnsStableErrorEnvelope(t *testing.T) {
 				t.Fatalf("expected schema error, got success: %s", raw)
 			}
 			assertV2InvalidSchemaEnvelope(t, raw)
+			var envelope struct {
+				Error *blackboardv2.Error `json:"error"`
+			}
+			if err := json.Unmarshal(raw, &envelope); err != nil {
+				t.Fatalf("decode invalid_schema envelope: %v", err)
+			}
+			if envelope.Error.Path != tc.wantPath || envelope.Error.Details["reason"] != tc.wantReason {
+				t.Fatalf("invalid_schema = %#v, want path=%q reason=%q", envelope.Error, tc.wantPath, tc.wantReason)
+			}
 		})
+	}
+}
+
+func TestBlackboardV2MCPChoosesTheSamePathForEveryInvalidSchemaReplay(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	args := map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "stable-multiple-fields",
+		"changes": []any{}, "project_id": fixture.project.ID, "actor_id": "runtime",
+	}
+	for replay := 0; replay < 100; replay++ {
+		result, raw := callV2Tool(t, session, "blackboard_change", args)
+		if !result.IsError {
+			t.Fatalf("replay %d unexpectedly succeeded: %s", replay, raw)
+		}
+		var envelope struct {
+			Error *blackboardv2.Error `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Error == nil {
+			t.Fatalf("decode replay %d: %v body=%s", replay, err, raw)
+		}
+		if envelope.Error.Path != "actor_id" || envelope.Error.Details["reason"] != "additional_field" {
+			t.Fatalf("replay %d error = %#v, want deterministic actor_id", replay, envelope.Error)
+		}
+	}
+}
+
+func TestBlackboardV2MCPKeepsNumericObjectPropertyDistinctFromArrayIndex(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	result, raw := callV2Tool(t, session, "blackboard_change", map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "numeric-object-property",
+		"changes": []any{}, "0": "not-an-array-index",
+	})
+	if !result.IsError {
+		t.Fatalf("numeric additional property unexpectedly succeeded: %s", raw)
+	}
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Error == nil {
+		t.Fatalf("decode numeric-property error: %v body=%s", err, raw)
+	}
+	if envelope.Error.Path != "0" || envelope.Error.Details["reason"] != "additional_field" {
+		t.Fatalf("numeric object property path = %#v", envelope.Error)
+	}
+}
+
+func TestBlackboardV2MCPQuotesObjectPropertiesThatContainPathSyntax(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	result, raw := callV2Tool(t, session, "blackboard_change", map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "quoted-object-property",
+		"changes": []any{}, "changes[0].type": "not-a-nested-path",
+	})
+	if !result.IsError {
+		t.Fatalf("path-shaped additional property unexpectedly succeeded: %s", raw)
+	}
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Error == nil {
+		t.Fatalf("decode path-shaped property error: %v body=%s", err, raw)
+	}
+	if envelope.Error.Path != `["changes[0].type"]` || envelope.Error.Details["reason"] != "additional_field" {
+		t.Fatalf("path-shaped object property path = %#v", envelope.Error)
+	}
+}
+
+func TestBlackboardV2MCPDecodesEveryContractIntegerForm(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	result, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{
+		Name:      "blackboard_history",
+		Arguments: json.RawMessage(`{"key":"entity:missing","limit":1.0}`),
+	})
+	if err != nil {
+		t.Fatalf("call history: %v", err)
+	}
+	raw := []byte(mcpText(result))
+	if !result.IsError || !bytes.Contains(raw, []byte(`"code":"not_found"`)) {
+		t.Fatalf("Contract integer form did not reach semantic handling: %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`decoder_mismatch`)) {
+		t.Fatalf("Contract-accepted integer reached DTO mismatch: %s", raw)
+	}
+}
+
+func TestBlackboardV2MCPRejectsNearIntegerVersionBeforeSemanticHandling(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	result, err := session.CallTool(context.Background(), &sdkmcp.CallToolParams{
+		Name:      "blackboard_checkpoint_attempt",
+		Arguments: json.RawMessage(`{"idempotency_key":"mcp-near-integer","key":"attempt:missing","version":1.0000000000000001,"summary":"Preserve the wire number."}`),
+	})
+	if err != nil {
+		t.Fatalf("call checkpoint: %v", err)
+	}
+	raw := []byte(mcpText(result))
+	if !result.IsError {
+		t.Fatalf("near-integer version unexpectedly succeeded: %s", raw)
+	}
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Error == nil {
+		t.Fatalf("decode near-integer error: %v body=%s", err, raw)
+	}
+	if envelope.Error.Code != "invalid_schema" || envelope.Error.Path != "version" {
+		t.Fatalf("near-integer reached semantic handling: %#v body=%s", envelope.Error, raw)
+	}
+}
+
+func TestBlackboardV2MCPRejectsGenericEvidenceCreateWithActionablePath(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	result, raw := callV2Tool(t, session, "blackboard_change", map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "asean-evidence-create",
+		"changes": []any{map[string]any{
+			"op": "create", "key": "evidence:asean", "type": "evidence",
+			"record": map[string]any{
+				"status": "available", "artifact_type": "http_exchange",
+				"summary": "Captured response", "source_path": "captures/response.txt",
+			},
+		}},
+	})
+	if !result.IsError {
+		t.Fatalf("generic Evidence create succeeded: %s", raw)
+	}
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode error envelope: %v body=%s", err, raw)
+	}
+	if envelope.Error == nil || envelope.Error.Code != "invalid_schema" {
+		t.Fatalf("error envelope = %s", raw)
+	}
+	if envelope.Error.Path != "changes[0].type" {
+		t.Fatalf("error path = %q, want changes[0].type; body=%s", envelope.Error.Path, raw)
+	}
+	if envelope.Error.Details["reason"] != "invalid_value" || envelope.Error.Details["next_action"] != "use_blackboard_retain_evidence" {
+		t.Fatalf("error details = %#v", envelope.Error.Details)
+	}
+}
+
+func TestBlackboardV2MCPAllowsEntityProductNameEndingInDesk(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	result, raw := callV2Tool(t, session, "blackboard_change", map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "sentineldesk-entity",
+		"changes": []any{map[string]any{
+			"op": "create", "key": "entity:sentineldesk", "type": "entity",
+			"record": map[string]any{
+				"status": "active", "kind": "service", "name": "SentinelDesk-AgentOps",
+				"description":  "SentinelDesk-AgentOps executes retrieved memory instructions.",
+				"scope_status": "in_scope",
+			},
+		}},
+	})
+	if result.IsError {
+		t.Fatalf("ordinary Entity product name was rejected: %s", raw)
+	}
+}
+
+func TestBlackboardV2MCPStillRejectsEntitySecrets(t *testing.T) {
+	for _, secret := range []string{
+		"OPS_EXPORT_TOKEN=FLAG-secret-value",
+		"sk-proj-1234567890abcdef",
+	} {
+		t.Run(secret[:2], func(t *testing.T) {
+			fixture := newV2MCPFixture(t)
+			session := fixture.session(t, &fixture.ownerGrant, nil)
+			result, raw := callV2Tool(t, session, "blackboard_change", map[string]any{
+				"schema": "semantic-change-batch/v2", "idempotency_key": "secret-entity",
+				"changes": []any{map[string]any{
+					"op": "create", "key": "entity:secret", "type": "entity",
+					"record": map[string]any{
+						"status": "active", "kind": "service", "name": "Sensitive service",
+						"description": secret, "scope_status": "in_scope",
+					},
+				}},
+			})
+			if !result.IsError || !bytes.Contains(raw, []byte(`"message":"Entity description must not contain secrets"`)) {
+				t.Fatalf("Entity secret was not rejected: %s", raw)
+			}
+		})
+	}
+}
+
+func TestBlackboardV2MCPExplainsRelationshipDirection(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	prepare := map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "direction-prepare",
+		"changes": []any{
+			map[string]any{"op": "create", "key": "objective:direction", "type": "objective", "record": map[string]any{"status": "open", "objective": "Check relationship direction."}},
+			map[string]any{"op": "create", "key": "entity:direction", "type": "entity", "record": map[string]any{"status": "active", "kind": "host", "name": "Direction target", "scope_status": "in_scope"}},
+		},
+	}
+	if result, raw := callV2Tool(t, session, "blackboard_change", prepare); result.IsError {
+		t.Fatalf("prepare records: %s", raw)
+	}
+	result, raw := callV2Tool(t, session, "blackboard_change", map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "direction-invalid",
+		"changes": []any{map[string]any{"op": "relate", "from": "objective:direction", "relation": "tests", "to": "entity:direction"}},
+	})
+	if !result.IsError {
+		t.Fatalf("invalid relationship direction succeeded: %s", raw)
+	}
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Error == nil {
+		t.Fatalf("decode relationship error: %v body=%s", err, raw)
+	}
+	if envelope.Error.Path != "changes[0].relation" || envelope.Error.Details["next_action"] != "reverse_or_replace_relationship_endpoints" {
+		t.Fatalf("relationship error = %#v", envelope.Error)
+	}
+	wantDirections := []any{"attempt -> entity", "attempt -> objective", "attempt -> fact", "attempt -> finding", "attempt -> solution"}
+	if !reflect.DeepEqual(envelope.Error.Details["allowed_directions"], wantDirections) {
+		t.Fatalf("relationship direction details = %#v", envelope.Error.Details)
+	}
+}
+
+func TestBlackboardV2MCPExplainsVerifiedSolutionImmutability(t *testing.T) {
+	fixture := newV2MCPFixtureForKind(t, project.KindCTFChallenge, task.TypeCTFChallenge)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	create := map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "solution-create",
+		"changes": []any{map[string]any{
+			"op": "create", "key": "solution:answer", "type": "solution",
+			"record": map[string]any{"status": "candidate", "kind": "answer", "summary": "Candidate answer", "value": "first"},
+		}},
+	}
+	if result, raw := callV2Tool(t, session, "blackboard_change", create); result.IsError {
+		t.Fatalf("create Solution: %s", raw)
+	}
+	verify := map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "solution-verify",
+		"changes": []any{map[string]any{"op": "transition", "key": "solution:answer", "version": 1, "status": "verified", "verification_summary": "Accepted by verifier."}},
+	}
+	if result, raw := callV2Tool(t, session, "blackboard_change", verify); result.IsError {
+		t.Fatalf("verify Solution: %s", raw)
+	}
+	result, raw := callV2Tool(t, session, "blackboard_change", map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "solution-mutate",
+		"changes": []any{map[string]any{"op": "update", "key": "solution:answer", "version": 2, "type": "solution", "record": map[string]any{"value": "second"}}},
+	})
+	if !result.IsError {
+		t.Fatalf("verified Solution mutation succeeded: %s", raw)
+	}
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Error == nil {
+		t.Fatalf("decode Solution error: %v body=%s", err, raw)
+	}
+	if envelope.Error.Path != "changes[0].record" || envelope.Error.Details["next_action"] != "create_candidate_then_supersede" {
+		t.Fatalf("Solution immutability error = %#v", envelope.Error)
+	}
+}
+
+func TestBlackboardV2MCPExplainsHowToCreateATestedAttempt(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	result, raw := callV2Tool(t, session, "blackboard_change", map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "untested-attempt",
+		"changes": []any{
+			map[string]any{
+				"op": "create", "key": "objective:target", "type": "objective",
+				"record": map[string]any{"status": "open", "objective": "Test the target"},
+			},
+			map[string]any{
+				"op": "create", "key": "attempt:untested", "type": "attempt",
+				"record": map[string]any{"status": "open", "summary": "Testing the target"},
+			},
+		},
+	})
+	if !result.IsError {
+		t.Fatalf("untested Runtime Attempt succeeded: %s", raw)
+	}
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode semantic error: %v", err)
+	}
+	if envelope.Error == nil || envelope.Error.Path != "changes[1]" {
+		t.Fatalf("semantic error = %s", raw)
+	}
+	if envelope.Error.Details["next_action"] != "add_tests_relation_in_same_batch" || envelope.Error.Details["required_relation"] != "tests" {
+		t.Fatalf("semantic details = %#v", envelope.Error.Details)
+	}
+}
+
+func TestBlackboardV2MCPExplainsConfirmedFactBasis(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	result, raw := callV2Tool(t, session, "blackboard_change", map[string]any{
+		"schema": "semantic-change-batch/v2", "idempotency_key": "unsupported-confirmed-fact",
+		"changes": []any{map[string]any{
+			"op": "create", "key": "fact:unsupported", "type": "fact",
+			"record": map[string]any{
+				"category": "validation", "summary": "The behavior is reproducible",
+				"confidence": "confirmed", "scope_status": "in_scope",
+			},
+		}},
+	})
+	if !result.IsError {
+		t.Fatalf("unsupported confirmed Fact succeeded: %s", raw)
+	}
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatalf("decode semantic error: %v", err)
+	}
+	if envelope.Error == nil || envelope.Error.Path != "changes[0].record.confidence" {
+		t.Fatalf("semantic error = %s", raw)
+	}
+	if envelope.Error.Details["next_action"] != "establish_basis_then_confirm" {
+		t.Fatalf("semantic details = %#v", envelope.Error.Details)
+	}
+	wantBasis := []any{"available_evidence", "confirmed_supporting_fact", "succeeded_producing_attempt"}
+	if !reflect.DeepEqual(envelope.Error.Details["accepted_basis"], wantBasis) {
+		t.Fatalf("accepted basis = %#v, want %#v", envelope.Error.Details["accepted_basis"], wantBasis)
 	}
 }
 
@@ -1034,6 +1477,252 @@ func TestBlackboardV2MCPToolInputSchemasContainOnlyTransitiveRootDefs(t *testing
 				t.Errorf("%s has unresolved $ref %q", tool.Name, match)
 			}
 		}
+	}
+}
+
+func TestBlackboardV2MCPAdvertisesCriticalWriteRulesAndExamples(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	listed, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("list tools: %v", err)
+	}
+	byName := make(map[string]*sdkmcp.Tool, len(listed.Tools))
+	for _, tool := range listed.Tools {
+		byName[tool.Name] = tool
+	}
+	rules := map[string][]string{
+		"blackboard_change":                {"cannot create Evidence", "transition", "tests relation"},
+		"blackboard_record_attempt_result": {"exactly one", "produced target"},
+		"blackboard_retain_evidence":       {"only way", "open Attempt"},
+	}
+	for name, fragments := range rules {
+		tool := byName[name]
+		if tool == nil {
+			t.Fatalf("missing tool %q", name)
+		}
+		for _, fragment := range fragments {
+			if !strings.Contains(tool.Description, fragment) {
+				t.Errorf("%s description does not explain %q: %q", name, fragment, tool.Description)
+			}
+		}
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("marshal %s schema: %v", name, err)
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("decode %s schema: %v", name, err)
+		}
+		examples, _ := schema["examples"].([]any)
+		if len(examples) == 0 {
+			t.Errorf("%s advertises no compact input example", name)
+		}
+	}
+}
+
+func TestBlackboardV2MCPReplaysSanitizedASEANWriteRegressions(t *testing.T) {
+	fixture := newV2MCPFixtureForKind(t, project.KindCTFChallenge, task.TypeCTFChallenge)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	rawCorpus, err := os.ReadFile(filepath.Join("testdata", "asean_blackboard_write_regressions.json"))
+	if err != nil {
+		t.Fatalf("read sanitized ASEAN corpus: %v", err)
+	}
+	rawManifest, err := os.ReadFile(filepath.Join("testdata", "asean_blackboard_write_export_manifest.json"))
+	if err != nil {
+		t.Fatalf("read independent ASEAN export manifest: %v", err)
+	}
+	type attempt struct {
+		Name            string         `json:"name"`
+		Tool            string         `json:"tool"`
+		Arguments       map[string]any `json:"arguments"`
+		SourceCallSeq   int            `json:"source_call_seq"`
+		SourceResultSeq int            `json:"source_result_seq"`
+		WantSuccess     bool           `json:"want_success"`
+		RepairAction    bool           `json:"repair_action"`
+		WantCode        string         `json:"want_code"`
+		WantPath        string         `json:"want_path"`
+		WantReason      string         `json:"want_reason"`
+		WantNextAction  string         `json:"want_next_action"`
+	}
+	var corpus struct {
+		DatasetID string `json:"dataset_id"`
+		Source    string `json:"source"`
+		Sequences []struct {
+			ID              string    `json:"id"`
+			Name            string    `json:"name"`
+			ExpectedOutcome string    `json:"expected_outcome"`
+			Attempts        []attempt `json:"attempts"`
+		} `json:"sequences"`
+		ExpectedMetrics struct {
+			SequenceCount         int `json:"sequence_count"`
+			CompletedSequences    int `json:"completed_sequences"`
+			UnrepairedSequences   int `json:"unrepaired_sequences"`
+			FirstAttemptSuccesses int `json:"first_attempt_successes"`
+			TotalRepairRounds     int `json:"total_repair_rounds"`
+			MaxRepairRounds       int `json:"max_repair_rounds"`
+		} `json:"expected_metrics"`
+	}
+	if err := json.Unmarshal(rawCorpus, &corpus); err != nil {
+		t.Fatalf("decode sanitized ASEAN corpus: %v", err)
+	}
+	var manifest struct {
+		Schema    string `json:"schema"`
+		DatasetID string `json:"dataset_id"`
+		Source    struct {
+			ProjectID            string `json:"project_id"`
+			TaskID               string `json:"task_id"`
+			FirstSeq             int    `json:"first_seq"`
+			LastSeq              int    `json:"last_seq"`
+			ExtractionQuery      string `json:"extraction_query"`
+			SelectedEventsSHA256 string `json:"selected_events_sha256"`
+		} `json:"source"`
+		SanitizedCorpusSHA256 string `json:"sanitized_corpus_sha256"`
+		Calls                 []struct {
+			SequenceID    string `json:"sequence_id"`
+			CallSeq       int    `json:"call_seq"`
+			ResultSeq     int    `json:"result_seq"`
+			CallEventID   string `json:"call_event_id"`
+			ResultEventID string `json:"result_event_id"`
+			ToolUseID     string `json:"tool_use_id"`
+		} `json:"calls"`
+	}
+	if err := json.Unmarshal(rawManifest, &manifest); err != nil {
+		t.Fatalf("decode independent ASEAN export manifest: %v", err)
+	}
+	if corpus.Source == "" || len(corpus.Sequences) < 5 {
+		t.Fatalf("sanitized ASEAN corpus has source=%q sequences=%d, want a source and at least 5 sequences", corpus.Source, len(corpus.Sequences))
+	}
+	if manifest.Schema != "blackboard-write-attempt-export/v1" || manifest.DatasetID == "" || manifest.DatasetID != corpus.DatasetID {
+		t.Fatalf("ASEAN export identity = schema:%q manifest:%q corpus:%q", manifest.Schema, manifest.DatasetID, corpus.DatasetID)
+	}
+	const projectID = "2c6e2a909712e39ef7c9ad61ba94980c"
+	const taskID = "6177cfc00d1eb56c06efd63ce7f781d0"
+	const selectedEventsSHA256 = "41bd6a03a8f0435053170d5e18f3d48ed2aa9f0adcee78608eb235fbb9d2f00f"
+	const extractionQuery = "GET /api/projects/{project_id}/tasks/{task_id}/events; select source call/result events by seq"
+	if manifest.Source.ProjectID != projectID || manifest.Source.TaskID != taskID || manifest.Source.FirstSeq != 17 || manifest.Source.LastSeq != 130 || manifest.Source.ExtractionQuery != extractionQuery || manifest.Source.SelectedEventsSHA256 != selectedEventsSHA256 {
+		t.Fatalf("ASEAN manifest does not identify the fixed database export: %#v", manifest.Source)
+	}
+	corpusDigest := fmt.Sprintf("%x", sha256.Sum256(rawCorpus))
+	if manifest.SanitizedCorpusSHA256 == "" || manifest.SanitizedCorpusSHA256 != corpusDigest {
+		t.Fatalf("ASEAN corpus digest = %q, manifest has %q", corpusDigest, manifest.SanitizedCorpusSHA256)
+	}
+	type sourcePair struct{ call, result int }
+	manifestCalls := make(map[sourcePair]string, len(manifest.Calls))
+	for _, call := range manifest.Calls {
+		if call.CallSeq < manifest.Source.FirstSeq || call.ResultSeq > manifest.Source.LastSeq || call.CallSeq >= call.ResultSeq || call.CallEventID == "" || call.ResultEventID == "" || call.ToolUseID == "" {
+			t.Fatalf("invalid ASEAN source call: %#v", call)
+		}
+		pair := sourcePair{call.CallSeq, call.ResultSeq}
+		if _, duplicate := manifestCalls[pair]; duplicate {
+			t.Fatalf("duplicate ASEAN source call pair: %#v", pair)
+		}
+		manifestCalls[pair] = call.SequenceID
+	}
+	completedSequences := 0
+	unrepairedSequences := 0
+	firstAttemptSuccesses := 0
+	totalRepairRounds := 0
+	maxRepairRounds := 0
+	usedSourceCalls := 0
+	for _, sequence := range corpus.Sequences {
+		t.Run(sequence.Name, func(t *testing.T) {
+			if sequence.ID == "" || len(sequence.Attempts) == 0 || (sequence.ExpectedOutcome != "completed" && sequence.ExpectedOutcome != "unrepaired") {
+				t.Fatal("write sequence has no source identity, attempts, or closed expected_outcome")
+			}
+			successIndex := -1
+			for attemptIndex, testCase := range sequence.Attempts {
+				pair := sourcePair{testCase.SourceCallSeq, testCase.SourceResultSeq}
+				if manifestCalls[pair] != sequence.ID {
+					t.Fatalf("attempt source pair %#v maps to manifest sequence %q, want %q", pair, manifestCalls[pair], sequence.ID)
+				}
+				usedSourceCalls++
+				result, raw := callV2Tool(t, session, testCase.Tool, testCase.Arguments)
+				if testCase.WantSuccess {
+					if result.IsError {
+						t.Fatalf("replay failed: %s", raw)
+					}
+					if testCase.RepairAction {
+						continue
+					}
+					if successIndex >= 0 {
+						t.Fatal("write sequence contains attempts after its first success")
+					}
+					successIndex = attemptIndex
+					continue
+				}
+				if !result.IsError {
+					t.Fatalf("replay unexpectedly succeeded: %s", raw)
+				}
+				var envelope struct {
+					Error *blackboardv2.Error `json:"error"`
+				}
+				if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Error == nil {
+					t.Fatalf("decode replay error: %v body=%s", err, raw)
+				}
+				if envelope.Error.Code != testCase.WantCode || envelope.Error.Path != testCase.WantPath {
+					t.Fatalf("replay error = %#v, want code=%q path=%q", envelope.Error, testCase.WantCode, testCase.WantPath)
+				}
+				if testCase.WantReason != "" && envelope.Error.Details["reason"] != testCase.WantReason {
+					t.Fatalf("replay reason = %#v, want %q", envelope.Error.Details, testCase.WantReason)
+				}
+				if testCase.WantNextAction != "" && envelope.Error.Details["next_action"] != testCase.WantNextAction {
+					t.Fatalf("replay next action = %#v, want %q", envelope.Error.Details, testCase.WantNextAction)
+				}
+			}
+			repairRounds := successIndex
+			if sequence.ExpectedOutcome == "completed" {
+				if successIndex < 0 {
+					t.Fatal("completed write sequence never completes")
+				}
+				completedSequences++
+				if successIndex == 0 {
+					firstAttemptSuccesses++
+				}
+			} else {
+				if successIndex >= 0 {
+					t.Fatal("unrepaired write sequence unexpectedly completes")
+				}
+				unrepairedSequences++
+				repairRounds = len(sequence.Attempts) - 1
+			}
+			totalRepairRounds += repairRounds
+			if repairRounds > maxRepairRounds {
+				maxRepairRounds = repairRounds
+			}
+		})
+	}
+	if usedSourceCalls != len(manifest.Calls) {
+		t.Fatalf("ASEAN corpus uses %d source calls, manifest contains %d", usedSourceCalls, len(manifest.Calls))
+	}
+	if len(corpus.Sequences) != corpus.ExpectedMetrics.SequenceCount || completedSequences != corpus.ExpectedMetrics.CompletedSequences || unrepairedSequences != corpus.ExpectedMetrics.UnrepairedSequences || firstAttemptSuccesses != corpus.ExpectedMetrics.FirstAttemptSuccesses || totalRepairRounds != corpus.ExpectedMetrics.TotalRepairRounds || maxRepairRounds != corpus.ExpectedMetrics.MaxRepairRounds {
+		t.Fatalf("ASEAN sequence metrics = sequences:%d completed:%d unrepaired:%d first_successes:%d repair_rounds:%d max_repair_rounds:%d; want %#v",
+			len(corpus.Sequences), completedSequences, unrepairedSequences, firstAttemptSuccesses, totalRepairRounds, maxRepairRounds, corpus.ExpectedMetrics)
+	}
+	t.Logf("ASEAN Agent write metrics: first-attempt success %d/%d; completed %d; unrepaired %d; total repair rounds %d; max repair rounds %d",
+		firstAttemptSuccesses, len(corpus.Sequences), completedSequences, unrepairedSequences, totalRepairRounds, maxRepairRounds)
+}
+
+func TestBlackboardV2MCPCheckpointEnforcesContractUTF8ByteLimit(t *testing.T) {
+	fixture := newV2MCPFixture(t)
+	session := fixture.session(t, &fixture.ownerGrant, nil)
+	result, raw := callV2Tool(t, session, "blackboard_checkpoint_attempt", map[string]any{
+		"idempotency_key": "mcp-checkpoint-utf8-limit",
+		"key":             "attempt:utf8-limit",
+		"version":         1,
+		"summary":         strings.Repeat("界", 342),
+	})
+	if !result.IsError {
+		t.Fatalf("oversized checkpoint unexpectedly succeeded: %s", raw)
+	}
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Error == nil {
+		t.Fatalf("decode UTF-8 byte-limit error: %v body=%s", err, raw)
+	}
+	if envelope.Error.Code != "invalid_schema" || envelope.Error.Path != "summary" || envelope.Error.Details["reason"] != "max_utf8_bytes" || envelope.Error.Details["expected"] != float64(1024) || envelope.Error.Details["actual"] != float64(1026) {
+		t.Fatalf("MCP UTF-8 byte-limit error = %#v", envelope.Error)
 	}
 }
 

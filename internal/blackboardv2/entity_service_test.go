@@ -486,6 +486,31 @@ func TestEntityClosedShapeRejectsSecretsUnknownFieldsAndInvalidLocators(t *testi
 			path:   "changes[0].record.credential_ref",
 		},
 		{
+			name:   "camel case token credential ref",
+			record: blackboardv2.EntityRecord{Status: "active", Kind: "identity", Name: "admin", ScopeStatus: "unknown", CredentialRef: "accessToken=live-value"},
+			path:   "changes[0].record.credential_ref",
+		},
+		{
+			name:   "camel case API key description",
+			record: blackboardv2.EntityRecord{Status: "active", Kind: "service", Name: "Admin API", Description: "myApiKey=live-value", ScopeStatus: "unknown"},
+			path:   "changes[0].record.description",
+		},
+		{
+			name:   "camel case password description",
+			record: blackboardv2.EntityRecord{Status: "active", Kind: "service", Name: "Database", Description: "dbPassword=live-value", ScopeStatus: "unknown"},
+			path:   "changes[0].record.description",
+		},
+		{
+			name:   "camel case secret description",
+			record: blackboardv2.EntityRecord{Status: "active", Kind: "service", Name: "OAuth client", Description: "clientSecret=live-value", ScopeStatus: "unknown"},
+			path:   "changes[0].record.description",
+		},
+		{
+			name:   "short secret key marker",
+			record: blackboardv2.EntityRecord{Status: "active", Kind: "identity", Name: "admin", ScopeStatus: "unknown", CredentialRef: "sk-x"},
+			path:   "changes[0].record.credential_ref",
+		},
+		{
 			name:   "secret name",
 			record: blackboardv2.EntityRecord{Status: "active", Kind: "identity", Name: "password=hunter2", ScopeStatus: "unknown"},
 			path:   "changes[0].record.name",
@@ -517,6 +542,21 @@ func TestEntityClosedShapeRejectsSecretsUnknownFieldsAndInvalidLocators(t *testi
 				t.Fatalf("Apply error = %#v, want semantic_validation on %s", err, tt.path)
 			}
 		})
+	}
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "accept-product-name-with-sk-hyphen",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:sentineldesk-agentops", Type: "entity",
+			Record: blackboardv2.EntityRecord{
+				Status: "active", Kind: "service", Name: "SentinelDesk-AgentOps",
+				Description: "The SentinelDesk-AgentOps service is in scope.", ScopeStatus: "in_scope",
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ordinary SentinelDesk-AgentOps prose was treated as a Secret: %v", err)
 	}
 
 	for _, raw := range []string{

@@ -192,6 +192,13 @@ func TestDecodeRejectsAbsentBaseRevisionAndDuplicateJSONKeys(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsNearIntegerBaseRevision(t *testing.T) {
+	raw := []byte(`{"schema":"runtime-attempt-result/v1","base_revision":1.0000000000000001,"attempt":{"key":"attempt:near-integer","create":true,"summary":"Preserve the exact wire number.","outcome":"failed"},"tested_targets":[{"key":"objective:near-integer","create_objective":{"objective":"Reject rounded revisions."}}],"produced_targets":[]}`)
+	if _, err := blackboardconclusion.Decode(raw); err == nil {
+		t.Fatal("Decode() accepted a near-integer base_revision")
+	}
+}
+
 func TestDecodeRejectsNullTargetArrays(t *testing.T) {
 	raw := []byte(`{"schema":"runtime-attempt-result/v1","base_revision":0,"attempt":{"key":"attempt:search","create":true,"summary":"Tested the search endpoint.","outcome":"failed"},"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test the search endpoint."}}],"produced_targets":null}`)
 	if _, err := blackboardconclusion.Decode(raw); err == nil {

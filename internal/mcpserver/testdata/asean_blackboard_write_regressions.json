@@ -1,0 +1,409 @@
+{
+  "dataset_id": "asean-sentineldesk-blackboard-writes-2026-08-22-v1",
+  "source": "sanitized replay payloads derived from fixed Blackboard call/result events in the ASEAN SentinelDesk-AgentOps Task export",
+  "expected_metrics": {
+    "sequence_count": 9,
+    "completed_sequences": 8,
+    "unrepaired_sequences": 1,
+    "first_attempt_successes": 4,
+    "total_repair_rounds": 9,
+    "max_repair_rounds": 3
+  },
+  "sequences": [
+    {
+      "id": "objective-create",
+      "name": "Objective succeeds on the first Agent write",
+      "expected_outcome": "completed",
+      "attempts": [
+        {
+          "name": "source call 17",
+          "source_call_seq": 17,
+          "source_result_seq": 18,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "obj-sentineldesk-hardening-init",
+            "changes": [{
+              "op": "create",
+              "key": "objective:secure-sentineldesk",
+              "type": "objective",
+              "record": {"status": "open", "objective": "Keep the sample support service working while preventing unsafe Agent actions."}
+            }]
+          },
+          "want_success": true
+        }
+      ]
+    },
+    {
+      "id": "fact-confirmation",
+      "name": "Unbased confirmed Fact needs one repair round",
+      "expected_outcome": "completed",
+      "attempts": [
+        {
+          "name": "source call 20 confirms without a basis",
+          "source_call_seq": 20,
+          "source_result_seq": 21,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "fact-vuln-chain-1",
+            "changes": [{
+              "op": "create",
+              "key": "fact:vuln-chain",
+              "type": "fact",
+              "record": {
+                "category": "vulnerability-analysis",
+                "summary": "A retrieved instruction can trigger an unsafe internal action.",
+                "body": "The sanitized source trace shows the untrusted-memory to internal-tool path.",
+                "confidence": "confirmed",
+                "scope_status": "in_scope"
+              }
+            }]
+          },
+          "want_code": "semantic_validation",
+          "want_path": "changes[0].record.confidence",
+          "want_next_action": "establish_basis_then_confirm"
+        },
+        {
+          "name": "source call 22 keeps the Fact tentative",
+          "source_call_seq": 22,
+          "source_result_seq": 23,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "fact-vuln-chain-1",
+            "changes": [{
+              "op": "create",
+              "key": "fact:vuln-chain",
+              "type": "fact",
+              "record": {
+                "category": "vulnerability-analysis",
+                "summary": "A retrieved instruction can trigger an unsafe internal action.",
+                "body": "The sanitized source trace shows the untrusted-memory to internal-tool path.",
+                "confidence": "tentative",
+                "scope_status": "in_scope"
+              }
+            }]
+          },
+          "want_success": true
+        }
+      ]
+    },
+    {
+      "id": "entity-create",
+      "name": "Entity creation needs three Agent repair rounds",
+      "expected_outcome": "completed",
+      "attempts": [
+        {
+          "name": "source call 94 uses an unsupported kind",
+          "source_call_seq": 94,
+          "source_result_seq": 95,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "bb-sentineldesk-create-records-1",
+            "changes": [{
+              "op": "create",
+              "key": "entity:service-sentineldesk",
+              "type": "entity",
+              "record": {"status": "active", "kind": "web-service", "name": "SentinelDesk Agent Ops", "description": "Sanitized support service.", "scope_status": "in_scope"}
+            }]
+          },
+          "want_code": "invalid_schema",
+          "want_path": "changes[0].record.kind",
+          "want_reason": "invalid_value"
+        },
+        {
+          "name": "source call 97 puts a secret assignment in description",
+          "source_call_seq": 97,
+          "source_result_seq": 98,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "bb-sentineldesk-create-records-1",
+            "changes": [{
+              "op": "create",
+              "key": "entity:service-sentineldesk",
+              "type": "entity",
+              "record": {"status": "active", "kind": "service", "name": "SentinelDesk Agent Ops", "description": "Sanitized trace marker OPS_EXPORT_TOKEN=redacted-value must not be stored.", "scope_status": "in_scope"}
+            }]
+          },
+          "want_code": "semantic_validation",
+          "want_path": "changes[0].record.description"
+        },
+        {
+          "name": "source call 100 repeats the secret in revised prose",
+          "source_call_seq": 100,
+          "source_result_seq": 101,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "bb-sentineldesk-create-records-2",
+            "changes": [{
+              "op": "create",
+              "key": "entity:service-sentineldesk",
+              "type": "entity",
+              "record": {"status": "active", "kind": "service", "name": "SentinelDesk Agent Ops", "description": "The revised sanitized prose still contains API_TOKEN=redacted-value and must fail.", "scope_status": "in_scope"}
+            }]
+          },
+          "want_code": "semantic_validation",
+          "want_path": "changes[0].record.description"
+        },
+        {
+          "name": "source call 102 removes secret material",
+          "source_call_seq": 102,
+          "source_result_seq": 103,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "bb-sentineldesk-create-entity-min-1",
+            "changes": [{
+              "op": "create",
+              "key": "entity:service-sentineldesk",
+              "type": "entity",
+              "record": {"status": "active", "kind": "service", "name": "SentinelDesk Agent Ops", "description": "Sanitized customer operations service used by the fixed regression trace.", "scope_status": "in_scope"}
+            }]
+          },
+          "want_success": true
+        }
+      ]
+    },
+    {
+      "id": "ctf-finding-attempt-persistence",
+      "name": "Pentest-only Finding and unlinked Attempts remain unrepaired",
+      "expected_outcome": "unrepaired",
+      "attempts": [
+        {
+          "name": "source call 105 tries a Finding in a CTF Project",
+          "source_call_seq": 105,
+          "source_result_seq": 106,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "bb-sentineldesk-create-finding-attempts-1",
+            "changes": [
+              {
+                "op": "create",
+                "key": "finding:found-capsule-ops-token-leak",
+                "type": "finding",
+                "record": {
+                  "status": "confirmed",
+                  "title": "Sanitized unsafe Agent action",
+                  "target": "SentinelDesk Agent Ops",
+                  "description": "A retrieved instruction reaches an internal action without the required authorization decision.",
+                  "impact": "An untrusted user can influence a privileged action.",
+                  "proof": "The fixed source trace records the Agent call and its result.",
+                  "recommendation": "Treat retrieved memory as data and authorize every privileged action.",
+                  "cvss_version": "3.1",
+                  "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+                }
+              },
+              {"op": "create", "key": "attempt:repro-capsule-token-leak", "type": "attempt", "record": {"status": "open", "summary": "Reproduce the sanitized unsafe action path."}},
+              {"op": "create", "key": "attempt:patch-and-verify", "type": "attempt", "record": {"status": "open", "summary": "Apply and verify the sanitized hardening procedure."}}
+            ]
+          },
+          "want_code": "project_kind_mismatch",
+          "want_path": "changes[0].type"
+        },
+        {
+          "name": "source call 108 removes the Finding but omits tested targets",
+          "source_call_seq": 108,
+          "source_result_seq": 109,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "bb-sentineldesk-create-attempts-1",
+            "changes": [
+              {"op": "create", "key": "attempt:repro-capsule-token-leak", "type": "attempt", "record": {"status": "open", "summary": "Reproduce the sanitized unsafe action path."}},
+              {"op": "create", "key": "attempt:patch-and-verify", "type": "attempt", "record": {"status": "open", "summary": "Apply and verify the sanitized hardening procedure."}}
+            ]
+          },
+          "want_code": "semantic_validation",
+          "want_path": "changes[1]",
+          "want_next_action": "add_tests_relation_in_same_batch"
+        }
+      ]
+    },
+    {
+      "id": "solution-create",
+      "name": "Solution succeeds on the first Agent write",
+      "expected_outcome": "completed",
+      "attempts": [
+        {
+          "name": "source call 111",
+          "source_call_seq": 111,
+          "source_result_seq": 112,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "bb-sentineldesk-create-solution-1",
+            "changes": [{
+              "op": "create",
+              "key": "solution:sentineldesk-hardening-patch",
+              "type": "solution",
+              "record": {
+                "status": "candidate",
+                "kind": "procedure",
+                "summary": "Treat retrieved memory as data and restrict internal tool dispatch.",
+                "value": "Validate retrieved instructions, use an allowlist for tool calls, and add authorization checks before operational exports."
+              }
+            }]
+          },
+          "want_success": true
+        }
+      ]
+    },
+    {
+      "id": "attempt-result",
+      "name": "Succeeded Attempt result needs two Contract repair rounds",
+      "expected_outcome": "completed",
+      "attempts": [
+        {
+          "name": "source call 113 mixes create and expected_version",
+          "source_call_seq": 113,
+          "source_result_seq": 114,
+          "tool": "blackboard_record_attempt_result",
+          "arguments": {
+            "idempotency_key": "bb-attempt-repro-1",
+            "result": {
+              "schema": "runtime-attempt-result/v1",
+              "base_revision": 4,
+              "attempt": {"key": "attempt:repro-capsule-token-leak", "create": true, "expected_version": 1, "summary": "Reproduced the sanitized unsafe Agent action path.", "outcome": "succeeded"},
+              "tested_targets": [{"key": "entity:service-sentineldesk", "expected_version": 1}]
+            }
+          },
+          "want_code": "invalid_schema",
+          "want_path": "result.attempt",
+          "want_reason": "invalid_union"
+        },
+        {
+          "name": "source call 115 omits a produced target",
+          "source_call_seq": 115,
+          "source_result_seq": 116,
+          "tool": "blackboard_record_attempt_result",
+          "arguments": {
+            "idempotency_key": "bb-attempt-repro-1",
+            "result": {
+              "schema": "runtime-attempt-result/v1",
+              "base_revision": 4,
+              "attempt": {"key": "attempt:repro-capsule-token-leak", "create": true, "summary": "Reproduced the sanitized unsafe Agent action path.", "outcome": "succeeded"},
+              "tested_targets": [{"key": "entity:service-sentineldesk", "expected_version": 1}]
+            }
+          },
+          "want_code": "invalid_schema",
+          "want_path": "result.produced_targets",
+          "want_reason": "missing_field"
+        },
+        {
+          "name": "source call 117 supplies the produced Fact",
+          "source_call_seq": 117,
+          "source_result_seq": 118,
+          "tool": "blackboard_record_attempt_result",
+          "arguments": {
+            "idempotency_key": "bb-attempt-repro-1",
+            "result": {
+              "schema": "runtime-attempt-result/v1",
+              "base_revision": 4,
+              "attempt": {"key": "attempt:repro-capsule-token-leak", "create": true, "summary": "Reproduced the sanitized unsafe Agent action path and retained its result.", "outcome": "succeeded"},
+              "tested_targets": [{"key": "entity:service-sentineldesk", "expected_version": 1}],
+              "produced_targets": [{"key": "fact:vuln-chain", "expected_version": 1}]
+            }
+          },
+          "want_success": true
+        }
+      ]
+    },
+    {
+      "id": "patch-attempt-result",
+      "name": "Patch Attempt result succeeds on the first Agent write",
+      "expected_outcome": "completed",
+      "attempts": [
+        {
+          "name": "source call 119",
+          "source_call_seq": 119,
+          "source_result_seq": 120,
+          "tool": "blackboard_record_attempt_result",
+          "arguments": {
+            "idempotency_key": "bb-attempt-patch-1",
+            "result": {
+              "schema": "runtime-attempt-result/v1",
+              "base_revision": 8,
+              "attempt": {"key": "attempt:patch-and-verify", "create": true, "summary": "Applied and verified the sanitized hardening procedure.", "outcome": "succeeded"},
+              "tested_targets": [{"key": "entity:service-sentineldesk", "expected_version": 1}],
+              "produced_targets": [{"key": "solution:sentineldesk-hardening-patch", "expected_version": 1}]
+            }
+          },
+          "want_success": true
+        }
+      ]
+    },
+    {
+      "id": "closeout",
+      "name": "Closeout needs a successful relationship repair and one retry",
+      "expected_outcome": "completed",
+      "attempts": [
+        {
+          "name": "source call 122 resolves the Objective before adding satisfies",
+          "source_call_seq": 122,
+          "source_result_seq": 123,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "bb-sentineldesk-closeout-1",
+            "changes": [
+              {"op": "transition", "key": "fact:vuln-chain", "version": 1, "status": "confirmed"},
+              {"op": "transition", "key": "solution:sentineldesk-hardening-patch", "version": 1, "status": "verified", "verification_summary": "The sanitized verification passed."},
+              {"op": "transition", "key": "objective:secure-sentineldesk", "version": 1, "status": "resolved", "resolution_summary": "The sanitized hardening objective is complete."}
+            ]
+          },
+          "want_code": "semantic_validation",
+          "want_path": "changes[2].status"
+        },
+        {
+          "name": "source call 124 adds the missing satisfies relationship",
+          "source_call_seq": 124,
+          "source_result_seq": 125,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "bb-sentineldesk-relate-satisfies-1",
+            "changes": [{"op": "relate", "from": "solution:sentineldesk-hardening-patch", "relation": "satisfies", "to": "objective:secure-sentineldesk"}]
+          },
+          "want_success": true,
+          "repair_action": true
+        },
+        {
+          "name": "source call 126 retries the closeout",
+          "source_call_seq": 126,
+          "source_result_seq": 127,
+          "tool": "blackboard_change",
+          "arguments": {
+            "schema": "semantic-change-batch/v2",
+            "idempotency_key": "bb-sentineldesk-closeout-1",
+            "changes": [
+              {"op": "transition", "key": "fact:vuln-chain", "version": 1, "status": "confirmed"},
+              {"op": "transition", "key": "solution:sentineldesk-hardening-patch", "version": 1, "status": "verified", "verification_summary": "The sanitized verification passed."},
+              {"op": "transition", "key": "objective:secure-sentineldesk", "version": 1, "status": "resolved", "resolution_summary": "The sanitized hardening objective is complete."}
+            ]
+          },
+          "want_success": true
+        }
+      ]
+    },
+    {
+      "id": "finish",
+      "name": "Finish succeeds on the first Agent write",
+      "expected_outcome": "completed",
+      "attempts": [
+        {
+          "name": "source call 129",
+          "source_call_seq": 129,
+          "source_result_seq": 130,
+          "tool": "blackboard_finish",
+          "arguments": {"idempotency_key": "bb-sentineldesk-finish-1"},
+          "want_success": true
+        }
+      ]
+    }
+  ]
+}

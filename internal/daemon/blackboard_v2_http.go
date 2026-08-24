@@ -7,10 +7,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 
 	"pentest/internal/blackboardv2"
+	"pentest/internal/blackboardv2input"
 	"pentest/internal/projectinterface"
 	"pentest/internal/report"
 )
@@ -112,18 +114,18 @@ func (server *Server) handleBlackboardV2Change(response http.ResponseWriter, req
 		writeBlackboardV2Error(response, err, nil)
 		return
 	}
-	var body struct {
-		Schema  string                `json:"schema"`
-		Changes []blackboardv2.Change `json:"changes"`
-	}
-	if decodeErr := decodeBlackboardV2JSON(request, &body); decodeErr != nil {
+	contractRaw, decodeErr := prepareBlackboardV2HTTPContractJSON(request, map[string]string{"idempotency_key": idempotencyKey})
+	if decodeErr != nil {
 		writeBlackboardV2Error(response, decodeErr, nil)
 		return
 	}
-	batch := blackboardv2.ChangeBatch{Schema: body.Schema, IdempotencyKey: idempotencyKey, Changes: body.Changes}
+	var batch blackboardv2.ChangeBatch
 	// Exact replay remains available after Finish/supersession; only live
 	// Continuations may attach synchronization.
 	server.serveBlackboardV2(response, request, principal, false, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
+		if contractErr := blackboardv2input.DecodeContractInput("changeBatch", false, contractRaw, &batch); contractErr != nil {
+			return nil, contractErr
+		}
 		if principal.operator {
 			return server.blackboardV2.Apply(ctx, principal.projectID, batch)
 		}
@@ -216,28 +218,17 @@ func (server *Server) handleBlackboardV2EvidenceRetain(response http.ResponseWri
 	}
 	// Transport carries Idempotency-Key; body must not restate authority or
 	// the transport idempotency field (parity with CLI daemon mode).
-	var body struct {
-		Key          string                      `json:"key"`
-		Version      int                         `json:"version,omitempty"`
-		Attempt      string                      `json:"attempt"`
-		SourcePath   string                      `json:"source_path"`
-		ArtifactType string                      `json:"artifact_type"`
-		Summary      string                      `json:"summary"`
-		MediaType    string                      `json:"media_type,omitempty"`
-		CapturedAt   string                      `json:"captured_at,omitempty"`
-		Links        []blackboardv2.EvidenceLink `json:"links,omitempty"`
-	}
-	if decodeErr := decodeBlackboardV2JSON(request, &body); decodeErr != nil {
+	contractRaw, decodeErr := prepareBlackboardV2HTTPContractJSON(request, map[string]string{"idempotency_key": idempotencyKey})
+	if decodeErr != nil {
 		writeBlackboardV2Error(response, decodeErr, nil)
 		return
 	}
-	req := blackboardv2.RetainEvidenceRequest{
-		IdempotencyKey: idempotencyKey, Key: body.Key, Version: body.Version, Attempt: body.Attempt,
-		SourcePath: body.SourcePath, ArtifactType: body.ArtifactType, Summary: body.Summary,
-		MediaType: body.MediaType, CapturedAt: body.CapturedAt, Links: body.Links,
-	}
+	var req blackboardv2.RetainEvidenceRequest
 	// Exact Evidence retain replay remains available after Finish/supersession.
 	server.serveBlackboardV2(response, request, principal, false, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
+		if contractErr := blackboardv2input.DecodeContractInput("retainEvidenceRequest", false, contractRaw, &req); contractErr != nil {
+			return nil, contractErr
+		}
 		return server.blackboardV2.RetainEvidenceForContinuation(ctx, principal.projectID, principal.continuationID, req)
 	})
 }
@@ -259,17 +250,20 @@ func (server *Server) handleBlackboardV2Checkpoint(response http.ResponseWriter,
 		writeBlackboardV2Error(response, err, nil)
 		return
 	}
-	var body struct {
-		Version int    `json:"version"`
-		Summary string `json:"summary"`
-	}
-	if decodeErr := decodeBlackboardV2JSON(request, &body); decodeErr != nil {
+	contractRaw, decodeErr := prepareBlackboardV2HTTPContractJSON(request, map[string]string{
+		"idempotency_key": idempotencyKey,
+		"key":             key,
+	})
+	if decodeErr != nil {
 		writeBlackboardV2Error(response, decodeErr, nil)
 		return
 	}
-	req := blackboardv2.CheckpointAttemptRequest{IdempotencyKey: idempotencyKey, Key: key, Version: body.Version, Summary: body.Summary}
+	var req blackboardv2.CheckpointAttemptRequest
 	// Exact checkpoint replay remains available after Finish/supersession.
 	server.serveBlackboardV2(response, request, principal, false, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
+		if contractErr := blackboardv2input.DecodeContractInput("checkpointAttemptRequest", false, contractRaw, &req); contractErr != nil {
+			return nil, contractErr
+		}
 		return server.blackboardV2.CheckpointAttemptForContinuation(ctx, principal.projectID, principal.continuationID, req)
 	})
 }
@@ -497,6 +491,62 @@ func decodeBlackboardV2JSON(request *http.Request, target any) *blackboardv2.Err
 		return blackboardV2HTTPError("invalid_schema", "request body must contain a single JSON value", "body")
 	}
 	return nil
+}
+
+func decodeBlackboardV2HTTPContractJSON(request *http.Request, schemaName string, transportFields map[string]string, sessionOwner bool, target any) *blackboardv2.Error {
+	contractRaw, prepareErr := prepareBlackboardV2HTTPContractJSON(request, transportFields)
+	if prepareErr != nil {
+		return prepareErr
+	}
+	return blackboardv2input.DecodeContractInput(schemaName, sessionOwner, contractRaw, target)
+}
+
+func prepareBlackboardV2HTTPContractJSON(request *http.Request, transportFields map[string]string) ([]byte, *blackboardv2.Error) {
+	raw, readErr := readBlackboardV2HTTPBody(request)
+	if readErr != nil {
+		return nil, readErr
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return nil, blackboardV2HTTPError("invalid_schema", "request body must contain one JSON object", "body")
+	}
+	for _, field := range []string{"actor_id", "continuation_id", "origin", "owner_id", "project_id", "session_id", "task_id"} {
+		if _, exists := fields[field]; exists {
+			return nil, &blackboardv2.Error{Code: "invalid_schema", Message: "HTTP body must not contain authority fields", Path: field, Details: map[string]any{"reason": "additional_field"}}
+		}
+	}
+	transportNames := make([]string, 0, len(transportFields))
+	for field := range transportFields {
+		transportNames = append(transportNames, field)
+	}
+	sort.Strings(transportNames)
+	for _, field := range transportNames {
+		value := transportFields[field]
+		if _, exists := fields[field]; exists {
+			return nil, &blackboardv2.Error{Code: "invalid_schema", Message: "HTTP body must not contain transport-owned fields", Path: field, Details: map[string]any{"reason": "additional_field"}}
+		}
+		encodedValue, _ := json.Marshal(value)
+		fields[field] = encodedValue
+	}
+	contractRaw, err := json.Marshal(fields)
+	if err != nil {
+		return nil, blackboardV2HTTPError("invalid_schema", "request body cannot be encoded", "body")
+	}
+	return contractRaw, nil
+}
+
+func readBlackboardV2HTTPBody(request *http.Request) ([]byte, *blackboardv2.Error) {
+	raw, err := io.ReadAll(io.LimitReader(request.Body, blackboardV2HTTPInputLimit+1))
+	if err != nil {
+		return nil, blackboardV2HTTPError("invalid_schema", "read request body: "+err.Error(), "body")
+	}
+	if len(raw) > blackboardV2HTTPInputLimit {
+		return nil, blackboardV2HTTPError("invalid_schema", "request body exceeds 4 MiB", "body")
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return nil, blackboardV2HTTPError("invalid_schema", "request body is required", "body")
+	}
+	return raw, nil
 }
 
 func writeBlackboardV2Success(response http.ResponseWriter, result any, sync *blackboardv2.SynchronizationAttachment) {

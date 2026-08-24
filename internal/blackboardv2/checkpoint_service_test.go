@@ -80,6 +80,14 @@ func TestCheckpointAttemptVersionsOnlyOwnedOpenAttemptAndDurablyReplays(t *testi
 	}
 }
 
+func TestCheckpointAttemptJSONRejectsNearIntegerVersion(t *testing.T) {
+	var request blackboardv2.CheckpointAttemptRequest
+	err := json.Unmarshal([]byte(`{"idempotency_key":"near-integer","key":"attempt:near-integer","version":1.0000000000000001,"summary":"Must stay exact"}`), &request)
+	if err == nil {
+		t.Fatalf("near-integer version decoded as %d", request.Version)
+	}
+}
+
 func TestCheckpointAttemptRejectsClosedShapeBoundsOwnershipAndStaleState(t *testing.T) {
 	for _, raw := range []string{
 		`{"idempotency_key":"checkpoint","key":"attempt:a","version":1,"summary":"compact","raw_output":"forbidden"}`,

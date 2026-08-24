@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -617,9 +618,29 @@ type SnapshotEvidence struct {
 type Error struct {
 	Code      string         `json:"code"`
 	Message   string         `json:"message"`
-	Path      string         `json:"path,omitempty"`
+	Path      string         `json:"path"`
 	Retryable bool           `json:"retryable"`
-	Details   map[string]any `json:"details,omitempty"`
+	Details   map[string]any `json:"details"`
+}
+
+// MarshalJSON keeps every semantic error inside the closed v2 Error Envelope.
+// Empty details remain an object rather than null so adapters expose one stable
+// shape for actionable and non-actionable failures.
+func (e Error) MarshalJSON() ([]byte, error) {
+	type errorBody struct {
+		Code      string         `json:"code"`
+		Message   string         `json:"message"`
+		Path      string         `json:"path"`
+		Retryable bool           `json:"retryable"`
+		Details   map[string]any `json:"details"`
+	}
+	details := e.Details
+	if details == nil {
+		details = map[string]any{}
+	}
+	return json.Marshal(errorBody{
+		Code: e.Code, Message: e.Message, Path: e.Path, Retryable: e.Retryable, Details: details,
+	})
 }
 
 func (e *Error) Error() string {
@@ -843,19 +864,8 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			s.writeMu.Unlock()
 		}
 	}()
-	if batch.Schema != changeBatchSchema {
-		return ChangeResult{}, semanticError("invalid_schema", "unsupported semantic change schema", "", nil)
-	}
-	if batch.IdempotencyKey == "" {
-		return ChangeResult{}, semanticError("semantic_validation", "idempotency_key is required", "idempotency_key", nil)
-	}
-	if batch.Changes == nil {
-		return ChangeResult{}, semanticError("semantic_validation", "changes must be a non-null array", "changes", nil)
-	}
-	for index, change := range batch.Changes {
-		if err := validateChangeDTOShape(change, index); err != nil {
-			return ChangeResult{}, err
-		}
+	if err := validateChangeBatchDTOShape(batch); err != nil {
+		return ChangeResult{}, err
 	}
 	requestHash, err := canonicalRequestHash(batch)
 	if err != nil {
@@ -1054,7 +1064,9 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 				return ChangeResult{}, err
 			}
 			if tested == 0 {
-				return ChangeResult{}, semanticError("semantic_validation", "Runtime-created Attempt requires a current tested target at batch end", runtimeCreatedAttempts[key], map[string]any{"key": key})
+				return ChangeResult{}, semanticError("semantic_validation", "Runtime-created Attempt requires a current tested target at batch end", runtimeCreatedAttempts[key], map[string]any{
+					"key": key, "required_relation": "tests", "next_action": "add_tests_relation_in_same_batch",
+				})
 			}
 		}
 
@@ -1079,7 +1091,11 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 				return ChangeResult{}, err
 			}
 			if !hasBasis {
-				return ChangeResult{}, semanticError("semantic_validation", "Runtime Fact confirmation requires an accepted semantic basis", runtimeConfirmedFacts[key], nil)
+				return ChangeResult{}, semanticError("semantic_validation", "Runtime Fact confirmation requires an accepted semantic basis", runtimeConfirmedFacts[key], map[string]any{
+					"key":            key,
+					"accepted_basis": []string{"available_evidence", "confirmed_supporting_fact", "succeeded_producing_attempt"},
+					"next_action":    "establish_basis_then_confirm",
+				})
 			}
 		}
 	}
@@ -1128,6 +1144,24 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 		}
 	}
 	return result, nil
+}
+
+func validateChangeBatchDTOShape(batch ChangeBatch) error {
+	if batch.Schema != changeBatchSchema {
+		return semanticError("invalid_schema", "unsupported semantic change schema", "", nil)
+	}
+	if batch.IdempotencyKey == "" {
+		return semanticError("semantic_validation", "idempotency_key is required", "idempotency_key", nil)
+	}
+	if batch.Changes == nil {
+		return semanticError("semantic_validation", "changes must be a non-null array", "changes", nil)
+	}
+	for index, change := range batch.Changes {
+		if err := validateChangeDTOShape(change, index); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func continuationOwnsCurrentWorkingPath(ctx context.Context, tx *sql.Tx, continuationID string) (current, pinned bool, err error) {
@@ -2729,7 +2763,22 @@ func validateRelationshipEndpoint(relation, fromType, toType, path string) error
 	if rule.Allows(fromType, toType) {
 		return nil
 	}
-	return semanticError("semantic_validation", rule.EndpointError, path, map[string]any{"relation": relation, "from_type": fromType, "to_type": toType})
+	details := map[string]any{
+		"relation": relation, "from_type": fromType, "to_type": toType,
+		"allowed_directions": relationshipAllowedDirections(relation),
+		"next_action":        "reverse_or_replace_relationship_endpoints",
+	}
+	return semanticError("semantic_validation", rule.EndpointError, path, details)
+}
+
+func relationshipAllowedDirections(relation string) []string {
+	directions := make([]string, 0)
+	for _, candidate := range blackboardv2grammar.Cases() {
+		if candidate.Relation == relation && candidate.Allowed {
+			directions = append(directions, candidate.From+" -> "+candidate.To)
+		}
+	}
+	return directions
 }
 
 func isOneOf(value string, allowed ...string) bool {
@@ -4530,14 +4579,13 @@ func validateCredentialRef(value, path string) error {
 	return nil
 }
 
+var (
+	secretAssignmentPattern = regexp.MustCompile(`(?i)(?:password|passwd|token|secret|api[_-]?key)\s*[:=]\s*\S+`)
+	secretKeyPattern        = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])sk-`)
+)
+
 func containsSecretMarker(value string) bool {
-	lower := strings.ToLower(value)
-	for _, marker := range []string{"password=", "passwd=", "token=", "secret=", "api_key=", "apikey=", "sk-"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
+	return secretAssignmentPattern.MatchString(value) || secretKeyPattern.MatchString(value)
 }
 
 func validateObjectiveRecord(record ObjectiveRecord, path string) error {

@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -39,6 +40,28 @@ func TestSessionBlackboardHTTPUsesOwnerLocalSharedV2Semantics(t *testing.T) {
 		t.Fatalf("create Project: %v", err)
 	}
 	base := "/api/v2/sessions/" + first.ID + "/blackboard"
+	invalid := sessionBlackboardRequest(t, server, http.MethodPost, base+"/changes", "operator-secret", "session-invalid-schema",
+		`{"schema":"semantic-change-batch/v2","changes":[],"actor_id":"runtime"}`)
+	var invalidEnvelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(invalid.body, &invalidEnvelope); err != nil || invalidEnvelope.Error == nil {
+		t.Fatalf("decode Session Schema error: %v body=%s", err, invalid.body)
+	}
+	if invalid.status != http.StatusBadRequest || invalidEnvelope.Error.Path != "actor_id" || invalidEnvelope.Error.Details["reason"] != "additional_field" {
+		t.Fatalf("Session Schema error = %d %#v", invalid.status, invalidEnvelope.Error)
+	}
+	invalidCheckpoint := sessionBlackboardRequest(t, server, http.MethodPost, base+"/attempts/attempt:invalid:checkpoint", "operator-secret", "session-invalid-checkpoint",
+		`{"version":"one","summary":"Checkpoint"}`)
+	var checkpointEnvelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(invalidCheckpoint.body, &checkpointEnvelope); err != nil || checkpointEnvelope.Error == nil {
+		t.Fatalf("decode Session checkpoint Schema error: %v body=%s", err, invalidCheckpoint.body)
+	}
+	if invalidCheckpoint.status != http.StatusBadRequest || checkpointEnvelope.Error.Path != "version" || checkpointEnvelope.Error.Details["reason"] != "invalid_type" {
+		t.Fatalf("Session checkpoint Schema error = %d %#v", invalidCheckpoint.status, checkpointEnvelope.Error)
+	}
 	seed := `{"schema":"semantic-change-batch/v2","changes":[` +
 		`{"op":"create","key":"entity:note","type":"entity","record":{"status":"active","kind":"host","name":"session.example"}},` +
 		`{"op":"create","key":"objective:remember","type":"objective","record":{"status":"open","objective":"Remember session state"}},` +

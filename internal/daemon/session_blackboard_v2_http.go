@@ -50,17 +50,12 @@ func (server *Server) handleSessionBlackboardV2Change(response http.ResponseWrit
 		writeBlackboardV2Error(response, err, nil)
 		return
 	}
-	var body struct {
-		Schema  string                `json:"schema"`
-		Changes []blackboardv2.Change `json:"changes"`
-	}
-	if decodeErr := decodeBlackboardV2JSON(request, &body); decodeErr != nil {
+	var batch blackboardv2.ChangeBatch
+	if decodeErr := decodeBlackboardV2HTTPContractJSON(request, "changeBatch", map[string]string{"idempotency_key": idempotencyKey}, true, &batch); decodeErr != nil {
 		writeBlackboardV2Error(response, decodeErr, nil)
 		return
 	}
-	result, applyErr := server.blackboardV2.ApplyForSession(request.Context(), sessionID, blackboardv2.ChangeBatch{
-		Schema: body.Schema, IdempotencyKey: idempotencyKey, Changes: body.Changes,
-	})
+	result, applyErr := server.blackboardV2.ApplyForSession(request.Context(), sessionID, batch)
 	if applyErr != nil {
 		writeBlackboardV2Error(response, asBlackboardV2Error(applyErr), nil)
 		return
@@ -152,17 +147,12 @@ func (server *Server) handleSessionBlackboardV2Checkpoint(response http.Response
 		writeBlackboardV2Error(response, err, nil)
 		return
 	}
-	var body struct {
-		Key     string `json:"key"`
-		Version int    `json:"version"`
-		Summary string `json:"summary"`
-	}
-	if decodeErr := decodeBlackboardV2JSON(request, &body); decodeErr != nil {
+	var checkpoint blackboardv2.CheckpointAttemptRequest
+	if decodeErr := decodeBlackboardV2HTTPContractJSON(request, "checkpointAttemptRequest", map[string]string{
+		"idempotency_key": idempotencyKey,
+		"key":             pathKey,
+	}, true, &checkpoint); decodeErr != nil {
 		writeBlackboardV2Error(response, decodeErr, nil)
-		return
-	}
-	if body.Key != "" && body.Key != pathKey {
-		writeBlackboardV2Error(response, blackboardV2HTTPError("invalid_schema", "checkpoint body key must match the path key", "key"), nil)
 		return
 	}
 	activeID, activeErr := server.activeSessionContinuationID(request.Context(), sessionID)
@@ -179,10 +169,10 @@ func (server *Server) handleSessionBlackboardV2Checkpoint(response http.Response
 		writeBlackboardV2Error(response, asBlackboardV2Error(authorityErr), nil)
 		return
 	}
-	summary := body.Summary
+	summary := checkpoint.Summary
 	result, applyErr := server.blackboardV2.ApplyForSessionAuthority(request.Context(), authority, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: idempotencyKey,
-		Changes: []blackboardv2.Change{{Op: "update", Key: pathKey, Version: body.Version, Type: "attempt", Record: blackboardv2.AttemptPatch{Summary: &summary}}},
+		Changes: []blackboardv2.Change{{Op: "update", Key: pathKey, Version: checkpoint.Version, Type: "attempt", Record: blackboardv2.AttemptPatch{Summary: &summary}}},
 	})
 	if applyErr != nil {
 		writeBlackboardV2Error(response, asBlackboardV2Error(applyErr), nil)

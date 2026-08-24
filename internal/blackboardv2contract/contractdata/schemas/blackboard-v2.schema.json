@@ -27,17 +27,29 @@
     },
     "version": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "maximum": 9007199254740991
     },
     "revision": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "maximum": 9007199254740991
     },
     "scopeStatus": {
       "enum": [
         "in_scope",
         "unknown",
         "out_of_scope"
+      ]
+    },
+    "entityKind": {
+      "enum": [
+        "host",
+        "service",
+        "endpoint",
+        "identity",
+        "file",
+        "function"
       ]
     },
     "recordType": {
@@ -49,6 +61,16 @@
         "finding",
         "solution",
         "evidence"
+      ]
+    },
+    "creatableRecordType": {
+      "enum": [
+        "entity",
+        "objective",
+        "attempt",
+        "fact",
+        "finding",
+        "solution"
       ]
     },
     "relationType": {
@@ -112,7 +134,7 @@
           "const": "active"
         },
         "kind": {
-          "$ref": "#/$defs/conciseText"
+          "$ref": "#/$defs/entityKind"
         },
         "name": {
           "$ref": "#/$defs/conciseText"
@@ -471,41 +493,6 @@
         }
       }
     },
-    "evidenceInputRecord": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "status",
-        "artifact_type",
-        "summary",
-        "source_path"
-      ],
-      "properties": {
-        "status": {
-          "enum": [
-            "available",
-            "missing"
-          ]
-        },
-        "artifact_type": {
-          "$ref": "#/$defs/conciseText"
-        },
-        "summary": {
-          "$ref": "#/$defs/semanticText"
-        },
-        "media_type": {
-          "$ref": "#/$defs/conciseText"
-        },
-        "source_path": {
-          "type": "string",
-          "minLength": 1
-        },
-        "captured_at": {
-          "type": "string",
-          "format": "date-time"
-        }
-      }
-    },
     "historicalEntityRecord": {
       "type": "object",
       "additionalProperties": false,
@@ -524,7 +511,7 @@
           ]
         },
         "kind": {
-          "$ref": "#/$defs/conciseText"
+          "$ref": "#/$defs/entityKind"
         },
         "name": {
           "$ref": "#/$defs/conciseText"
@@ -838,7 +825,7 @@
       "minProperties": 1,
       "properties": {
         "kind": {
-          "$ref": "#/$defs/conciseText"
+          "$ref": "#/$defs/entityKind"
         },
         "name": {
           "$ref": "#/$defs/conciseText"
@@ -989,7 +976,7 @@
           "const": "active"
         },
         "kind": {
-          "$ref": "#/$defs/conciseText"
+          "$ref": "#/$defs/entityKind"
         },
         "name": {
           "$ref": "#/$defs/conciseText"
@@ -1885,7 +1872,7 @@
           "$ref": "#/$defs/blackboardKey"
         },
         "type": {
-          "$ref": "#/$defs/recordType"
+          "$ref": "#/$defs/creatableRecordType"
         },
         "record": {
           "type": "object"
@@ -1984,22 +1971,6 @@
             "properties": {
               "record": {
                 "$ref": "#/$defs/solutionRecord"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "type": {
-                "const": "evidence"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "record": {
-                "$ref": "#/$defs/evidenceInputRecord"
               }
             }
           }
@@ -2579,6 +2550,17 @@
     },
     "changeBatch": {
       "description": "Atomic semantic-change-batch/v2: schema is always semantic-change-batch/v2; idempotency_key is required for exact replay; changes is a closed list of semantic ops. op is a verb: create creates a record; update patches a record; transition changes lifecycle status; relate/unrelate manage relationships; merge and supersede rewrite knowledge. Record types such as objective and attempt belong in type, never op. create requires key, type, and record.",
+      "examples": [
+        {
+          "schema": "semantic-change-batch/v2",
+          "idempotency_key": "attempt-with-tests",
+          "changes": [
+            {"op": "create", "key": "objective:sample", "type": "objective", "record": {"status": "open", "objective": "Test the sample target."}},
+            {"op": "create", "key": "attempt:sample", "type": "attempt", "record": {"status": "open", "summary": "Started the sample test."}},
+            {"op": "relate", "from": "attempt:sample", "relation": "tests", "to": "objective:sample"}
+          ]
+        }
+      ],
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -2800,6 +2782,16 @@
       "items": false
     },
     "retainEvidenceRequest": {
+      "examples": [
+        {
+          "idempotency_key": "retain-sample",
+          "key": "evidence:sample",
+          "attempt": "attempt:sample",
+          "source_path": "captures/sample.txt",
+          "artifact_type": "text",
+          "summary": "Captured sample response."
+        }
+      ],
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -2875,6 +2867,18 @@
       }
     },
     "attemptResultRequest": {
+      "examples": [
+        {
+          "idempotency_key": "attempt-result-sample",
+          "result": {
+            "schema": "runtime-attempt-result/v1",
+            "base_revision": 0,
+            "attempt": {"key": "attempt:sample", "create": true, "summary": "Tested the sample target.", "outcome": "failed"},
+            "tested_targets": [{"key": "objective:sample", "create_objective": {"objective": "Test the sample target."}}],
+            "produced_targets": []
+          }
+        }
+      ],
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -2913,7 +2917,17 @@
                 "expected_version": {"$ref": "#/$defs/version"},
                 "summary": {"$ref": "#/$defs/semanticText"},
                 "outcome": {"enum": ["succeeded", "failed", "blocked", "inconclusive"]}
-              }
+              },
+              "oneOf": [
+                {
+                  "required": ["create"],
+                  "not": {"required": ["expected_version"]}
+                },
+                {
+                  "required": ["expected_version"],
+                  "not": {"required": ["create"]}
+                }
+              ]
             },
             "tested_targets": {
               "type": "array",
@@ -2950,7 +2964,25 @@
                 }
               }
             }
-          }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "attempt": {
+                    "properties": {
+                      "outcome": {"const": "succeeded"}
+                    }
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "produced_targets": {"minItems": 1}
+                }
+              }
+            }
+          ]
         }
       }
     },

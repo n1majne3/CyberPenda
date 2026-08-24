@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"pentest/internal/blackboardv2"
+	"pentest/internal/jsonnumber"
 )
 
 const (
@@ -101,6 +102,67 @@ type RuntimeAttemptResult struct {
 	Attempt         RuntimeAttemptDescriptor `json:"attempt"`
 	TestedTargets   []RuntimeTestedTarget    `json:"tested_targets"`
 	ProducedTargets []RuntimeVersionedTarget `json:"produced_targets"`
+}
+
+// UnmarshalJSON accepts every JSON Schema integer form while preserving the
+// closed Runtime Attempt Result object. JSON Schema treats 1 and 1.0 as the
+// same integer, so the DTO must do the same.
+func (result *RuntimeAttemptResult) UnmarshalJSON(raw []byte) error {
+	normalized, err := normalizeRuntimeAttemptIntegers(raw)
+	if err != nil {
+		return err
+	}
+	type plain RuntimeAttemptResult
+	decoder := json.NewDecoder(bytes.NewReader(normalized))
+	decoder.DisallowUnknownFields()
+	var decoded plain
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return fmt.Errorf("Runtime Attempt Result must contain one JSON value")
+	}
+	*result = RuntimeAttemptResult(decoded)
+	return nil
+}
+
+func normalizeRuntimeAttemptIntegers(raw []byte) ([]byte, error) {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	if err := normalizeRuntimeAttemptIntegerValue(&value); err != nil {
+		return nil, err
+	}
+	return json.Marshal(value)
+}
+
+func normalizeRuntimeAttemptIntegerValue(value *any) error {
+	switch typed := (*value).(type) {
+	case json.Number:
+		number, err := jsonnumber.ExactInteger(typed, 9007199254740991)
+		if err != nil {
+			return err
+		}
+		*value = number
+	case []any:
+		for index := range typed {
+			if err := normalizeRuntimeAttemptIntegerValue(&typed[index]); err != nil {
+				return err
+			}
+		}
+	case map[string]any:
+		for key, child := range typed {
+			if err := normalizeRuntimeAttemptIntegerValue(&child); err != nil {
+				return err
+			}
+			typed[key] = child
+		}
+	}
+	return nil
 }
 
 type RuntimeAttemptDescriptor struct {

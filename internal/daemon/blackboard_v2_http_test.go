@@ -694,10 +694,13 @@ func TestBlackboardV2HTTPServiceParityForSuccessReplayConflictValidationAndClosu
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"update","key":"entity:parity","version":1,"type":"entity","record":{"name":"stale"}}]}`)
 	assertV2ErrorEnvelope(t, stale.status, stale.body, "version_conflict", http.StatusConflict)
 
-	// Semantic validation → 422 with closed error envelope (no 200+error).
+	// The closed Contract classifies record shape errors before Service validation.
 	invalid := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "http-invalid-entity",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:invalid","type":"entity","record":{"status":"active","kind":"host","name":"","scope_status":"in_scope"}}]}`)
-	assertV2ErrorEnvelope(t, invalid.status, invalid.body, "semantic_validation", http.StatusUnprocessableEntity)
+	invalidError := assertV2ErrorEnvelope(t, invalid.status, invalid.body, "invalid_schema", http.StatusBadRequest)
+	if invalidError.Path != "changes[0].record.name" {
+		t.Fatalf("invalid Entity path = %q", invalidError.Path)
+	}
 
 	// Project mismatch → 403 authority_denied without foreign data.
 	foreignBase := fixture.httpServer.URL + "/api/v2/projects/" + fixture.foreign.ID
@@ -1092,6 +1095,111 @@ func TestBlackboardV2HTTPStatusMappingStorageBusyInternalAndAuth(t *testing.T) {
 	assertV2ErrorEnvelope(t, conflictKey.status, conflictKey.body, "invalid_schema", http.StatusBadRequest)
 }
 
+func TestBlackboardV2HTTPChangeReturnsTheSameActionableSchemaErrorAsMCP(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	response := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "http-evidence-create",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"evidence:http","type":"evidence","record":{"status":"available","artifact_type":"text","summary":"Captured response","source_path":"captures/response.txt"}}]}`)
+	assertV2ErrorEnvelope(t, response.status, response.body, "invalid_schema", http.StatusBadRequest)
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(response.body, &envelope); err != nil || envelope.Error == nil {
+		t.Fatalf("decode HTTP Schema error: %v body=%s", err, response.body)
+	}
+	if envelope.Error.Path != "changes[0].type" || envelope.Error.Details["reason"] != "invalid_value" || envelope.Error.Details["next_action"] != "use_blackboard_retain_evidence" {
+		t.Fatalf("HTTP Schema error = %#v", envelope.Error)
+	}
+}
+
+func TestBlackboardV2HTTPChangeUsesContractErrorsForEveryRecordBranch(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	tests := []struct {
+		name, idempotencyKey, body, path, reason string
+	}{
+		{
+			name: "Entity create", idempotencyKey: "http-contract-entity-kind",
+			body: `{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:bad-kind","type":"entity","record":{"status":"active","kind":"application","name":"Bad kind","scope_status":"in_scope"}}]}`,
+			path: "changes[0].record.kind", reason: "invalid_value",
+		},
+		{
+			name: "Finding create", idempotencyKey: "http-contract-finding-status",
+			body: `{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"finding:bad-status","type":"finding","record":{"status":"open","title":"Bad status"}}]}`,
+			path: "changes[0].record.status", reason: "invalid_value",
+		},
+		{
+			name: "Solution create", idempotencyKey: "http-contract-solution-kind",
+			body: `{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"solution:bad-kind","type":"solution","record":{"status":"candidate","kind":"token","summary":"Bad kind"}}]}`,
+			path: "changes[0].record.kind", reason: "invalid_value",
+		},
+		{
+			name: "Entity update", idempotencyKey: "http-contract-update-field",
+			body: `{"schema":"semantic-change-batch/v2","changes":[{"op":"update","key":"entity:any","version":1,"type":"entity","record":{"status":"active"}}]}`,
+			path: "changes[0].record.status", reason: "additional_field",
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			response := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", testCase.idempotencyKey, testCase.body)
+			errorEnvelope := assertV2ErrorEnvelope(t, response.status, response.body, "invalid_schema", http.StatusBadRequest)
+			if errorEnvelope.Path != testCase.path || errorEnvelope.Details["reason"] != testCase.reason {
+				t.Fatalf("Contract error = %#v", errorEnvelope)
+			}
+		})
+	}
+}
+
+func TestBlackboardV2HTTPEvidenceReturnsAnExactUnknownFieldPath(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	response := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/evidence:retain", fixture.continuation.Token, "", "http-evidence-field",
+		`{"key":"evidence:http","attempt":"attempt:http","source_path":"proof.txt","artifact_type":"text","summary":"Proof","actor_id":"runtime"}`)
+	assertV2ErrorEnvelope(t, response.status, response.body, "invalid_schema", http.StatusBadRequest)
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(response.body, &envelope); err != nil || envelope.Error == nil {
+		t.Fatalf("decode HTTP Evidence Schema error: %v body=%s", err, response.body)
+	}
+	if envelope.Error.Path != "actor_id" || envelope.Error.Details["reason"] != "additional_field" {
+		t.Fatalf("HTTP Evidence Schema error = %#v", envelope.Error)
+	}
+}
+
+func TestBlackboardV2HTTPCheckpointReturnsAnExactFieldPath(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	response := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:http:checkpoint", fixture.continuation.Token, "", "http-checkpoint-field",
+		`{"version":"one","summary":"Checkpoint"}`)
+	assertV2ErrorEnvelope(t, response.status, response.body, "invalid_schema", http.StatusBadRequest)
+	var envelope struct {
+		Error *blackboardv2.Error `json:"error"`
+	}
+	if err := json.Unmarshal(response.body, &envelope); err != nil || envelope.Error == nil {
+		t.Fatalf("decode HTTP checkpoint Schema error: %v body=%s", err, response.body)
+	}
+	if envelope.Error.Path != "version" || envelope.Error.Details["reason"] != "invalid_type" {
+		t.Fatalf("HTTP checkpoint Schema error = %#v", envelope.Error)
+	}
+}
+
+func TestBlackboardV2HTTPCheckpointEnforcesContractUTF8ByteLimit(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	response := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:http:checkpoint", fixture.continuation.Token, "", "http-checkpoint-utf8-limit",
+		`{"version":1,"summary":"`+strings.Repeat("界", 342)+`"}`)
+	errorEnvelope := assertV2ErrorEnvelope(t, response.status, response.body, "invalid_schema", http.StatusBadRequest)
+	if errorEnvelope.Path != "summary" || errorEnvelope.Details["reason"] != "max_utf8_bytes" || errorEnvelope.Details["expected"] != float64(1024) || errorEnvelope.Details["actual"] != float64(1026) {
+		t.Fatalf("HTTP UTF-8 byte-limit error = %#v", errorEnvelope)
+	}
+}
+
+func TestBlackboardV2HTTPRejectsNearIntegerVersionBeforeSemanticHandling(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	response := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:missing:checkpoint", fixture.continuation.Token, "", "http-near-integer",
+		`{"version":1.0000000000000001,"summary":"Preserve the wire number."}`)
+	errorEnvelope := assertV2ErrorEnvelope(t, response.status, response.body, "invalid_schema", http.StatusBadRequest)
+	if errorEnvelope.Path != "version" {
+		t.Fatalf("near-integer reached semantic handling: %#v body=%s", errorEnvelope, response.body)
+	}
+}
+
 func TestBlackboardV2HTTPEvidenceCheckpointFinishParityAndNoAuthorityLeak(t *testing.T) {
 	fixture := newV2HTTPFixture(t)
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "http-work-open",
@@ -1219,12 +1327,40 @@ func TestBlackboardV2HTTPInvalidSchemaSyncAttachDistinguishesServiceFromTranspor
 	if bytes.Contains(queryBody, []byte(`"sync"`)) {
 		t.Fatalf("query-credential invalid_schema fabricated sync: %s", queryBody)
 	}
-	// Unknown body fields are transport invalid_schema after auth, still no sync.
-	unknownField := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "unknown-field-no-sync",
-		`{"schema":"semantic-change-batch/v2","changes":[],"project_id":"attacker"}`)
-	assertV2ErrorEnvelope(t, unknownField.status, unknownField.body, "invalid_schema", http.StatusBadRequest)
-	if bytes.Contains(unknownField.body, []byte(`"sync"`)) {
-		t.Fatalf("unknown-field body-parse invalid_schema fabricated sync: %s", unknownField.body)
+	// Make the peer behind again. The prior semantic failure consumed the first
+	// Pending delivery, so this independent revision proves the transport path.
+	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "sync-behind-unknown-field",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:behind-unknown-field","type":"entity","record":{"status":"active","kind":"host","name":"Behind unknown field","scope_status":"in_scope"}}]}`)
+	// Authority body fields are transport invalid_schema after auth, still no
+	// sync. The first rejection must leave Pending intact for the second one.
+	for _, authorityField := range []string{"project_id", "origin"} {
+		unknownField := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "authority-field-no-sync-"+authorityField,
+			`{"schema":"semantic-change-batch/v2","changes":[],"`+authorityField+`":"attacker"}`)
+		assertV2ErrorEnvelope(t, unknownField.status, unknownField.body, "invalid_schema", http.StatusBadRequest)
+		if bytes.Contains(unknownField.body, []byte(`"sync"`)) {
+			t.Fatalf("authority field %q fabricated sync: %s", authorityField, unknownField.body)
+		}
+	}
+	pendingProbe := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "pending-after-authority-rejections",
+		`{"schema":"semantic-change-batch/v1","changes":[]}`)
+	assertV2ErrorEnvelope(t, pendingProbe.status, pendingProbe.body, "invalid_schema", http.StatusBadRequest)
+	var pendingEnvelope struct {
+		Sync *blackboardv2.SynchronizationAttachment `json:"sync"`
+	}
+	if err := json.Unmarshal(pendingProbe.body, &pendingEnvelope); err != nil || pendingEnvelope.Sync == nil || pendingEnvelope.Sync.Revision != 2 {
+		t.Fatalf("authority-field rejections consumed Pending sync: %v body=%s", err, pendingProbe.body)
+	}
+}
+
+func TestBlackboardV2HTTPTransportFieldConflictPathIsDeterministic(t *testing.T) {
+	fixture := newV2HTTPFixture(t)
+	for replay := 0; replay < 100; replay++ {
+		response := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:any:checkpoint", fixture.continuation.Token, "", "transport-conflict",
+			`{"idempotency_key":"body-key","key":"attempt:any","version":1,"summary":"Checkpoint"}`)
+		errorEnvelope := assertV2ErrorEnvelope(t, response.status, response.body, "invalid_schema", http.StatusBadRequest)
+		if errorEnvelope.Path != "idempotency_key" || errorEnvelope.Details["reason"] != "additional_field" {
+			t.Fatalf("replay %d transport conflict = %#v", replay, errorEnvelope)
+		}
 	}
 }
 

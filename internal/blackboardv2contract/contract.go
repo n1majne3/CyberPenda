@@ -71,6 +71,26 @@ type Harness struct {
 	resolved    map[string]*jsonschema.Resolved
 }
 
+// InputExtensionError reports one closed Contract rule that JSON Schema
+// validators cannot enforce directly.
+type InputExtensionError struct {
+	Path     string
+	Reason   string
+	Expected int
+	Actual   int
+}
+
+func (e *InputExtensionError) Error() string {
+	return fmt.Sprintf("%s is %d UTF-8 bytes, maximum %d", e.Path, e.Actual, e.Expected)
+}
+
+// ValidateInputExtensions applies closed Contract rules represented by custom
+// Schema keywords. Every adapter must call it after ordinary JSON Schema
+// validation.
+func ValidateInputExtensions(value any) error {
+	return validateUTF8ByteLimits(value, "$", "")
+}
+
 // NewHarness loads and validates the embedded contract manifest.
 func NewHarness() (*Harness, error) {
 	manifestBytes, err := contractFiles.ReadFile("contractdata/manifest.json")
@@ -364,7 +384,7 @@ func (h *Harness) Validate(schemaName string, raw []byte) error {
 	if err := resolved.Validate(value); err != nil {
 		return fmt.Errorf("validate %s: %w", schemaName, err)
 	}
-	if err := validateUTF8ByteLimits(value, "$", ""); err != nil {
+	if err := ValidateInputExtensions(value); err != nil {
 		return fmt.Errorf("validate %s: %w", schemaName, err)
 	}
 	if schemaName == "migrationPlan" {
@@ -416,7 +436,13 @@ func validateUTF8ByteLimits(value any, path, recordType string) error {
 				recordType = declaredType
 			}
 		}
-		for name, child := range typed {
+		names := make([]string, 0, len(typed))
+		for name := range typed {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			child := typed[name]
 			childType := recordType
 			switch name {
 			case "entities":
@@ -448,7 +474,7 @@ func validateUTF8ByteLimits(value any, path, recordType string) error {
 					limit = 512
 				}
 				if limit > 0 && len([]byte(text)) > limit {
-					return fmt.Errorf("%s.%s is %d UTF-8 bytes, maximum %d", path, name, len([]byte(text)), limit)
+					return &InputExtensionError{Path: path + "." + name, Reason: "max_utf8_bytes", Expected: limit, Actual: len([]byte(text))}
 				}
 			}
 			if err := validateUTF8ByteLimits(child, path+"."+name, childType); err != nil {
@@ -459,7 +485,7 @@ func validateUTF8ByteLimits(value any, path, recordType string) error {
 		if len(typed) == 4 {
 			if relation, ok := typed[1].(string); ok && (relation == "supports" || relation == "contradicts" || relation == "depends_on") {
 				if reason, ok := typed[3].(string); ok && len([]byte(reason)) > 512 {
-					return fmt.Errorf("%s[3] is %d UTF-8 bytes, maximum 512", path, len([]byte(reason)))
+					return &InputExtensionError{Path: path + "[3]", Reason: "max_utf8_bytes", Expected: 512, Actual: len([]byte(reason))}
 				}
 			}
 		}
