@@ -353,8 +353,15 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     if (!container) return;
 
     function updateAutoFollow() {
-      conversationScrollTop.current = container!.scrollTop;
-      const pinned = isNearScrollBottom(container!);
+      const previousScrollTop = conversationScrollTop.current;
+      const nextScrollTop = container!.scrollTop;
+      conversationScrollTop.current = nextScrollTop;
+      // A small upward movement is an explicit reading action even when it
+      // remains inside the near-bottom threshold. Disable follow immediately
+      // so the next live Transcript delta cannot pull a page-long message back
+      // to the tail.
+      const movingAwayFromTail = nextScrollTop < previousScrollTop;
+      const pinned = !movingAwayFromTail && isNearScrollBottom(container!);
       if (programmaticAutoFollow.current) {
         if (!pinned && autoFollowRef.current) {
           container!.scrollTo?.({ top: container!.scrollHeight, behavior: "auto" });
@@ -370,8 +377,15 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       }
     }
 
-    const acceptOperatorScroll = () => {
+    const acceptOperatorScroll = (event: Event) => {
       programmaticAutoFollow.current = false;
+      // Browser wheel scrolling can update layout before the following scroll
+      // event reaches this listener. Record the upward reading intent here so
+      // an in-flight live Transcript update cannot win that race and repin.
+      if (event instanceof WheelEvent && event.deltaY < 0) {
+        autoFollowRef.current = false;
+        setAutoFollow(false);
+      }
     };
 
     container.addEventListener("scroll", updateAutoFollow, { passive: true });

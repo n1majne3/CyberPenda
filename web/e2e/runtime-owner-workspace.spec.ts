@@ -47,16 +47,24 @@ function transcriptEntries(count: number) {
   }));
 }
 
-async function routeRuntimeOwnerWorkspace(page: Page) {
+type TranscriptEntry = ReturnType<typeof transcriptEntries>[number];
+
+async function routeRuntimeOwnerWorkspace(page: Page, options: {
+  taskStatus?: "completed" | "running";
+  transcript?: TranscriptEntry[];
+} = {}) {
   const projects = navigationProjects();
   const initialNavigation = JSON.stringify({ revision: "revision-1", changed: true, projects });
   const unchangedNavigation = JSON.stringify({ revision: "revision-1", changed: false, projects: [] });
-  const transcript = JSON.stringify({
+  const initialTranscript = options.transcript ?? transcriptEntries(200);
+  const transcriptHasOlder = options.transcript === undefined;
+  const initialTranscriptBody = JSON.stringify({
     task_id: "task-0",
-    entries: transcriptEntries(200),
-    cursor: 200,
-    has_older: true,
+    entries: initialTranscript,
+    cursor: initialTranscript.at(-1)?.seq ?? 0,
+    has_older: transcriptHasOlder,
   });
+  const liveTranscript: TranscriptEntry[] = [];
   const requests: string[] = [];
   const navigationResponses: number[] = [];
   let navigationReads = 0;
@@ -71,9 +79,12 @@ async function routeRuntimeOwnerWorkspace(page: Page) {
     } else if (requestURL.pathname === "/api/sessions") {
       body = JSON.stringify({ sessions: [] });
     } else if (requestURL.pathname === "/api/projects/project-0/tasks/task-0") {
+      const running = options.taskStatus === "running";
       body = JSON.stringify({
         ...task(0, 0),
+        status: running ? "running" : "completed",
         goal: "Bounded Runtime Owner history",
+        runtime_activity: running ? { liveness: "live", turn_activity: "busy" } : { liveness: "offline" },
         runtime_controls: {
           native_resume_available: true,
           resume_available: true,
@@ -88,16 +99,26 @@ async function routeRuntimeOwnerWorkspace(page: Page) {
           runtime_profile_id: "profile-1",
           runtime_provider: "codex",
           runner: "sandbox",
-          status: "completed",
+          status: running ? "running" : "completed",
           started_at: "2026-08-01T00:00:00Z",
           updated_at: "2026-08-01T00:00:05Z",
-          ended_at: "2026-08-01T00:00:05Z",
+          ...(running ? {} : { ended_at: "2026-08-01T00:00:05Z" }),
         },
       });
     } else if (requestURL.pathname.endsWith("/timeline")) {
       body = JSON.stringify({ task_id: "task-0", items: [], cursor: 200, has_older: true });
     } else if (requestURL.pathname.endsWith("/transcript")) {
-      body = transcript;
+      const after = Number(requestURL.searchParams.get("after") ?? 0);
+      if (after > 0) {
+        body = JSON.stringify({
+          task_id: "task-0",
+          entries: liveTranscript.filter((entry) => entry.seq > after),
+          cursor: liveTranscript.at(-1)?.seq ?? initialTranscript.at(-1)?.seq ?? 0,
+          has_older: transcriptHasOlder,
+        });
+      } else {
+        body = initialTranscriptBody;
+      }
     } else if (requestURL.pathname.endsWith("/finish-readiness")) {
       body = JSON.stringify({ ready_to_finish: true, blockers: [] });
     } else if (requestURL.pathname === "/api/runtime-profiles") {
@@ -116,7 +137,10 @@ async function routeRuntimeOwnerWorkspace(page: Page) {
     requests,
     navigationResponses,
     initialNavigationBytes: new TextEncoder().encode(initialNavigation).byteLength,
-    transcriptBytes: new TextEncoder().encode(transcript).byteLength,
+    transcriptBytes: new TextEncoder().encode(initialTranscriptBody).byteLength,
+    appendTranscript(entry: TranscriptEntry) {
+      liveTranscript.push(entry);
+    },
   };
 }
 
@@ -148,4 +172,80 @@ test("long Runtime Owner history keeps DOM rows bounded and older history reacha
   expect(renderedRows).toBeGreaterThan(0);
   expect(renderedRows).toBeLessThan(80);
   expect(evidence.transcriptBytes).toBeLessThan(100_000);
+});
+
+test("a page-long final message stays at its beginning when a live Transcript entry arrives", async ({ page }) => {
+  const longMessage = Array.from({ length: 180 }, (_, index) => `Page-long message line ${index + 1}`).join("\n");
+  const finalMessage: TranscriptEntry = {
+    id: "entry-1",
+    seq: 1,
+    continuation: 1,
+    kind: "message",
+    role: "assistant",
+    text: longMessage,
+    created_at: "2026-08-01T00:00:00Z",
+  };
+  const evidence = await routeRuntimeOwnerWorkspace(page, {
+    taskStatus: "running",
+    transcript: [finalMessage],
+  });
+
+  await page.goto("/projects/project-0/tasks/task-0");
+  const viewport = page.getByTestId("conversation-workspace");
+  const message = page.getByTestId("transcript-message-bubble").filter({ hasText: "Page-long message line 1" });
+  await expect(message).toContainText("Page-long message line 180");
+  await expect.poll(() => message.evaluate((element) => element.scrollHeight)).toBeGreaterThan(
+    await viewport.evaluate((element) => element.clientHeight),
+  );
+
+  await page.getByRole("button", { name: "Scroll to latest (auto-follow on)" }).click();
+  await expect.poll(() => viewport.evaluate((element) =>
+    element.scrollHeight - element.clientHeight - element.scrollTop,
+  )).toBeLessThanOrEqual(2);
+
+  await viewport.hover();
+  await page.mouse.wheel(0, -80);
+  await expect(page.getByRole("button", { name: "Scroll to latest (auto-follow off)" })).toBeVisible();
+  const firstReadingPosition = await viewport.evaluate((element) => element.scrollTop);
+
+  evidence.appendTranscript({
+    id: "entry-2",
+    seq: 2,
+    continuation: 1,
+    kind: "message",
+    role: "user",
+    text: "First live Transcript entry",
+    created_at: "2026-08-01T00:00:01Z",
+  });
+  await expect(page.getByTestId("unseen-transcript-indicator")).toContainText("1 new message", { timeout: 3000 });
+  expect(await viewport.evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(firstReadingPosition + 2);
+
+  for (let step = 0; step < 20; step += 1) {
+    const atMessageStart = await Promise.all([
+      viewport.boundingBox(),
+      message.boundingBox(),
+    ]).then(([viewportBox, messageBox]) =>
+      viewportBox !== null && messageBox !== null && messageBox.y >= viewportBox.y - 2,
+    );
+    if (atMessageStart) break;
+    await page.mouse.wheel(0, -400);
+  }
+
+  const readingPosition = await viewport.evaluate((element) => element.scrollTop);
+  const [viewportBox, messageBox] = await Promise.all([viewport.boundingBox(), message.boundingBox()]);
+  expect(viewportBox).not.toBeNull();
+  expect(messageBox).not.toBeNull();
+  expect(Math.abs(messageBox!.y - viewportBox!.y)).toBeLessThan(40);
+
+  evidence.appendTranscript({
+    id: "entry-3",
+    seq: 3,
+    continuation: 1,
+    kind: "message",
+    role: "user",
+    text: "Second live Transcript entry",
+    created_at: "2026-08-01T00:00:02Z",
+  });
+  await expect(page.getByTestId("unseen-transcript-indicator")).toContainText("2 new messages", { timeout: 3000 });
+  expect(await viewport.evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(readingPosition + 2);
 });

@@ -16,6 +16,40 @@ function setDocumentVisibility(value: DocumentVisibilityState) {
   document.dispatchEvent(new Event("visibilitychange"));
 }
 
+function mockConversationViewport(options: {
+  scrollHeight: () => number;
+  clientHeight?: () => number;
+  scrollTo?: (this: HTMLElement, options: ScrollToOptions) => void;
+}) {
+  const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
+  const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
+  const scrollToDescriptor = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTo");
+  const clientHeight = options.clientHeight ?? (() => 600);
+  Object.defineProperty(HTMLElement.prototype, "scrollHeight", { get: options.scrollHeight, configurable: true });
+  Object.defineProperty(HTMLElement.prototype, "clientHeight", { get: clientHeight, configurable: true });
+  Object.defineProperty(Element.prototype, "scrollTo", {
+    configurable: true,
+    value: options.scrollTo ?? function (this: HTMLElement, scrollOptions: ScrollToOptions) {
+      this.scrollTop = Math.max(0, Math.min(scrollOptions.top ?? 0, this.scrollHeight - this.clientHeight));
+      this.dispatchEvent(new Event("scroll"));
+    },
+  });
+
+  return () => {
+    restoreProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDescriptor);
+    restoreProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor);
+    restoreProperty(Element.prototype, "scrollTo", scrollToDescriptor);
+  };
+}
+
+function restoreProperty(target: object, property: PropertyKey, descriptor?: PropertyDescriptor) {
+  if (descriptor) {
+    Object.defineProperty(target, property, descriptor);
+    return;
+  }
+  Reflect.deleteProperty(target, property);
+}
+
 function renderPage(initialEntry = "/projects/project-1/tasks/task-1", onSearch?: (search: string) => void) {
   return render(
     <StrictMode>
@@ -2310,25 +2344,84 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
     }
   });
 
+  it("does not pull the operator back after they start scrolling toward the beginning of a page-long last message", async () => {
+    vi.useFakeTimers();
+    const restoreViewport = mockConversationViewport({ scrollHeight: () => 2400 });
+    try {
+      const transcriptBody = {
+        task_id: "task-1",
+        entries: [{
+          id: "entry-1",
+          seq: 1,
+          continuation: 1,
+          kind: "message",
+          role: "assistant",
+          text: "A page-long final message",
+          created_at: "2026-01-01T00:00:00Z",
+        }],
+        cursor: 1,
+      };
+      stubTaskDetailApi(
+        { status: "running" },
+        undefined,
+        { task_id: "task-1", items: [], cursor: 0 },
+        transcriptBody,
+      );
+      renderPage();
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      const viewport = screen.getByTestId("conversation-workspace");
+      expect(viewport.scrollTop).toBe(1800);
+
+      await act(async () => {
+        viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -80 }));
+        viewport.scrollTop = 1720;
+        viewport.dispatchEvent(new Event("scroll"));
+      });
+      expect(screen.getByRole("button", { name: "Scroll to latest (auto-follow off)" })).toBeInTheDocument();
+
+      transcriptBody.entries = [
+        ...transcriptBody.entries,
+        {
+          id: "entry-2",
+          seq: 2,
+          continuation: 1,
+          kind: "message",
+          role: "assistant",
+          text: "A live delta after the operator started reading upward",
+          created_at: "2026-01-01T00:00:01Z",
+        },
+      ];
+      transcriptBody.cursor = 2;
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+
+      expect(viewport.scrollTop).toBe(1720);
+    } finally {
+      vi.useRealTimers();
+      restoreViewport();
+    }
+  });
+
   it("keeps initial auto-follow on when virtual rendering changes the scroll height", async () => {
-    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
     let scrollHeight = 14400;
     let grewAfterFirstPin = false;
+    const restoreViewport = mockConversationViewport({
+      scrollHeight: () => scrollHeight,
+      scrollTo(this: HTMLElement, options: ScrollToOptions) {
+        this.scrollTop = Math.max(0, Math.min(options.top ?? 0, scrollHeight - this.clientHeight));
+        if (!grewAfterFirstPin) {
+          grewAfterFirstPin = true;
+          scrollHeight += 452;
+        }
+        this.dispatchEvent(new Event("scroll"));
+      },
+    });
     try {
-      Object.defineProperty(HTMLElement.prototype, "scrollHeight", { get: () => scrollHeight, configurable: true });
-      Object.defineProperty(HTMLElement.prototype, "clientHeight", { get: () => 600, configurable: true });
-      Object.defineProperty(Element.prototype, "scrollTo", {
-        configurable: true,
-        value(this: HTMLElement, options: ScrollToOptions) {
-          this.scrollTop = Math.max(0, Math.min(options.top ?? 0, scrollHeight - this.clientHeight));
-          if (!grewAfterFirstPin) {
-            grewAfterFirstPin = true;
-            scrollHeight += 452;
-          }
-          this.dispatchEvent(new Event("scroll"));
-        },
-      });
       const entries = Array.from({ length: 200 }, (_, index) => ({
         id: `entry-${index + 1}`,
         seq: index + 1,
@@ -2347,33 +2440,14 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
       });
       expect(screen.getByRole("button", { name: "Scroll to latest (auto-follow on)" })).toBeInTheDocument();
     } finally {
-      if (scrollHeightDescriptor) {
-        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDescriptor);
-      } else {
-        delete (HTMLElement.prototype as unknown as { scrollHeight?: number }).scrollHeight;
-      }
-      if (clientHeightDescriptor) {
-        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor);
-      } else {
-        delete (HTMLElement.prototype as unknown as { clientHeight?: number }).clientHeight;
-      }
+      restoreViewport();
     }
   });
 
   it("keeps the latest Conversation rows mounted when variable-height content moves the bottom", async () => {
-    const scrollHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
-    const clientHeightDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientHeight");
     let scrollHeight = 14400;
+    const restoreViewport = mockConversationViewport({ scrollHeight: () => scrollHeight });
     try {
-      Object.defineProperty(HTMLElement.prototype, "scrollHeight", { get: () => scrollHeight, configurable: true });
-      Object.defineProperty(HTMLElement.prototype, "clientHeight", { get: () => 600, configurable: true });
-      Object.defineProperty(Element.prototype, "scrollTo", {
-        configurable: true,
-        value(this: HTMLElement, options: ScrollToOptions) {
-          this.scrollTop = Math.max(0, Math.min(options.top ?? 0, scrollHeight - this.clientHeight));
-          this.dispatchEvent(new Event("scroll"));
-        },
-      });
       const entries = Array.from({ length: 200 }, (_, index) => ({
         id: `entry-${index + 1}`,
         seq: index + 1,
@@ -2406,16 +2480,7 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
       });
       expect(screen.getByRole("button", { name: "Scroll to latest (auto-follow on)" })).toBeInTheDocument();
     } finally {
-      if (scrollHeightDescriptor) {
-        Object.defineProperty(HTMLElement.prototype, "scrollHeight", scrollHeightDescriptor);
-      } else {
-        delete (HTMLElement.prototype as unknown as { scrollHeight?: number }).scrollHeight;
-      }
-      if (clientHeightDescriptor) {
-        Object.defineProperty(HTMLElement.prototype, "clientHeight", clientHeightDescriptor);
-      } else {
-        delete (HTMLElement.prototype as unknown as { clientHeight?: number }).clientHeight;
-      }
+      restoreViewport();
     }
   });
 
