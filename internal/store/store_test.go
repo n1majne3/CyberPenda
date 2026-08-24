@@ -1253,6 +1253,16 @@ func TestMigration60BackfillsActiveRecoveryDirectiveKindsFromDispatchHistory(t *
 			 'superseded','superseded_by_recovery','2026-08-24T10:00:01Z','2026-08-24T10:00:01Z'),
 			('task-recovery','task-obligation','recovery','','task-new','task-session-new','task-request-recovery',
 			 'dispatch_requested','','2026-08-24T10:00:02Z','2026-08-24T10:00:02Z');
+		INSERT INTO pending_blackboard_conclusions
+			(id,task_id,source_request_id,source_request_correlation_exact,source_continuation_id,source_session_id,source_turn_id,
+			 state,source_work_watermark,semantic_persistence_watermark,created_at,updated_at)
+			VALUES ('task-obligation-no-history','task-2','task-request-no-history',1,'task-old-no-history','task-session-no-history','task-turn-no-history',
+			 'dispatch_requested',1,0,?,?);
+		INSERT INTO conclusion_dispatches
+			(id,obligation_id,kind,directive_kind,continuation_id,source_session_id,dispatch_request_id,delivery_state,
+			 terminal_outcome,created_at,updated_at)
+			VALUES ('task-recovery-no-history','task-obligation-no-history','recovery','','task-new-no-history','task-session-new-no-history',
+			 'task-request-recovery-no-history','dispatch_requested','','2026-08-24T10:00:02Z','2026-08-24T10:00:02Z');
 
 		INSERT INTO session_pending_blackboard_conclusions
 			(id,session_id,source_request_id,source_request_correlation_exact,source_continuation_id,source_session_id,source_turn_id,
@@ -1266,8 +1276,18 @@ func TestMigration60BackfillsActiveRecoveryDirectiveKindsFromDispatchHistory(t *
 			 'superseded','superseded_by_recovery','2026-08-24T10:00:01Z','2026-08-24T10:00:01Z'),
 			('session-recovery','session-obligation','recovery','','session-new','native-session-new','session-request-recovery',
 			 'dispatch_requested','','2026-08-24T10:00:02Z','2026-08-24T10:00:02Z');
+		INSERT INTO session_pending_blackboard_conclusions
+			(id,session_id,source_request_id,source_request_correlation_exact,source_continuation_id,source_session_id,source_turn_id,
+			 state,source_work_watermark,semantic_persistence_watermark,created_at,updated_at)
+			VALUES ('session-obligation-no-history','session-2','session-request-no-history',1,'session-old-no-history','native-session-no-history','session-turn-no-history',
+			 'dispatch_requested',1,0,?,?);
+		INSERT INTO session_conclusion_dispatches
+			(id,obligation_id,kind,directive_kind,continuation_id,source_session_id,dispatch_request_id,delivery_state,
+			 terminal_outcome,created_at,updated_at)
+			VALUES ('session-recovery-no-history','session-obligation-no-history','recovery','','session-new-no-history','native-session-new-no-history',
+			 'session-request-recovery-no-history','dispatch_requested','','2026-08-24T10:00:02Z','2026-08-24T10:00:02Z');
 		DELETE FROM schema_migrations WHERE version=60;
-	`, now, now, now, now); err != nil {
+	`, now, now, now, now, now, now, now, now); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -1285,7 +1305,9 @@ func TestMigration60BackfillsActiveRecoveryDirectiveKindsFromDispatchHistory(t *
 		want  string
 	}{
 		{table: "conclusion_dispatches", id: "task-recovery", want: "initial"},
+		{table: "conclusion_dispatches", id: "task-recovery-no-history", want: "initial"},
 		{table: "session_conclusion_dispatches", id: "session-recovery", want: "repair"},
+		{table: "session_conclusion_dispatches", id: "session-recovery-no-history", want: "initial"},
 	} {
 		var got string
 		if err := reopened.QueryRow(`SELECT directive_kind FROM `+test.table+` WHERE id=?`, test.id).Scan(&got); err != nil {
