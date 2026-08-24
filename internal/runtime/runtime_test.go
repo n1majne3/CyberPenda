@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -873,13 +874,15 @@ func TestDockerContainerStopConfirmationTimesOutWhileContainerRuns(t *testing.T)
 	if err := os.WriteFile(cidFile, []byte("ctr-running\n"), 0o600); err != nil {
 		t.Fatalf("write cidfile: %v", err)
 	}
-	docker := filepath.Join(dir, "docker")
-	if err := os.WriteFile(docker, []byte("#!/bin/sh\necho true\n"), 0o700); err != nil {
-		t.Fatalf("write docker stub: %v", err)
+	docker, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve portable container CLI double: %v", err)
 	}
+	t.Setenv(alwaysRunningContainerCLIEnv, "1")
 
-	if err := runtime.ConfirmDockerContainerExited(docker, cidFile, 80*time.Millisecond); err == nil {
-		t.Fatal("expected timeout while container is still running")
+	err = runtime.ConfirmDockerContainerExited(docker, cidFile, 80*time.Millisecond)
+	if got, want := fmt.Sprint(err), "container ctr-running did not stop before timeout"; got != want {
+		t.Fatalf("stop confirmation error = %q, want %q", got, want)
 	}
 }
 

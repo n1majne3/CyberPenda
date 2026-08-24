@@ -1358,7 +1358,7 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 		if tempReady {
 			return nil, nil
 		}
-		return publisher.writer(stagingRoot, tempName)
+		return publisher.writer()
 	})
 	if err != nil {
 		return err
@@ -1368,7 +1368,7 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 		if tempReady {
 			return nil, nil
 		}
-		return publisher.writer(stagingRoot, tempName)
+		return publisher.writer()
 	})
 	if err != nil {
 		return err
@@ -1376,7 +1376,7 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 	tempReady = tempReady || previousAdopted
 	var legacyDestination func() (*os.File, error)
 	if !tempReady {
-		legacyDestination = func() (*os.File, error) { return publisher.writer(stagingRoot, tempName) }
+		legacyDestination = publisher.writer
 	}
 	legacyAdopted, err := s.sweepLegacyEvidenceTemps(ctx, projectID, *row, destinationRoot, legacyDestination)
 	if err != nil {
@@ -1387,7 +1387,7 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 		if source == nil {
 			return semanticError("evidence_source_changed", "Evidence source is required to rebuild an incomplete journaled temp", "source_path", nil)
 		}
-		temp, err := publisher.writer(stagingRoot, tempName)
+		temp, err := publisher.writer()
 		if err != nil {
 			return err
 		}
@@ -1502,7 +1502,6 @@ type evidencePublisher struct {
 	file     *os.File
 	token    string
 	identity string
-	writerFD *os.File
 }
 
 func (s *Service) acquireEvidencePublisher(ctx context.Context, root *os.Root, projectID, continuationID, key string, row *evidenceRequestRow) (*evidencePublisher, error) {
@@ -1580,18 +1579,14 @@ func (s *Service) acquireEvidencePublisher(ctx context.Context, root *os.Root, p
 	return &evidencePublisher{file: file, token: token, identity: identity}, nil
 }
 
-func (publisher *evidencePublisher) writer(root *os.Root, name string) (*os.File, error) {
-	if publisher.writerFD != nil {
-		return publisher.writerFD, nil
-	}
+func (publisher *evidencePublisher) writer() (*os.File, error) {
 	if err := publisher.file.Chmod(0o600); err != nil {
 		return nil, fmt.Errorf("make journaled Evidence temp writable: %w", err)
 	}
 	// Write through the publisher handle itself: it carries the exclusive
 	// publication lock (LockFileEx byte-range lock on Windows), and a second
 	// handle to the same file would collide with the locked range.
-	publisher.writerFD = publisher.file
-	return publisher.writerFD, nil
+	return publisher.file, nil
 }
 
 func (publisher *evidencePublisher) validate(ctx context.Context, db *store.DB, root *os.Root, projectID, continuationID, key string, row evidenceRequestRow) error {
@@ -1614,11 +1609,6 @@ func (publisher *evidencePublisher) validate(ctx context.Context, db *store.DB, 
 }
 
 func (publisher *evidencePublisher) close() {
-	// writerFD is the publisher handle itself when writes went through the
-	// locked handle, so avoid closing the same *os.File twice.
-	if publisher.writerFD != nil && publisher.writerFD != publisher.file {
-		_ = publisher.writerFD.Close()
-	}
 	if publisher.file != nil {
 		unlockAndCloseEvidencePublisher(publisher.file)
 		publisher.file = nil
