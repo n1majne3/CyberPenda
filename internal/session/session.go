@@ -203,6 +203,16 @@ const (
 	ConclusionDispatchKindRecovery            = owner.ConclusionDispatchKindRecovery
 )
 
+// ConclusionDirectiveKind is the semantic control instruction carried by a
+// dispatch. Recovery changes delivery lineage, not directive semantics.
+type ConclusionDirectiveKind = owner.ConclusionDirectiveKind
+
+const (
+	ConclusionDirectiveKindInitial             = owner.ConclusionDirectiveKindInitial
+	ConclusionDirectiveKindRepair              = owner.ConclusionDirectiveKindRepair
+	ConclusionDirectiveKindVersionRegeneration = owner.ConclusionDirectiveKindVersionRegeneration
+)
+
 // ConclusionDispatchState is the delivery lifecycle of one immutable dispatch.
 type ConclusionDispatchState = owner.ConclusionDispatchState
 

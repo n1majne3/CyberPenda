@@ -260,6 +260,17 @@ const (
 	ConclusionDispatchKindRecovery            ConclusionDispatchKind = "recovery"
 )
 
+// ConclusionDirectiveKind is the semantic control instruction carried by one
+// Conclusion Dispatch. Runtime recovery changes the immutable delivery
+// lineage, but it does not change this instruction.
+type ConclusionDirectiveKind string
+
+const (
+	ConclusionDirectiveKindInitial             ConclusionDirectiveKind = "initial"
+	ConclusionDirectiveKindRepair              ConclusionDirectiveKind = "repair"
+	ConclusionDirectiveKindVersionRegeneration ConclusionDirectiveKind = "version_regeneration"
+)
+
 // ConclusionDispatchState is the immutable attempt's own delivery lifecycle.
 // Only dispatch_requested, awaiting_result, and validated are active: the
 // storage partial unique index permits at most one active dispatch per
@@ -319,6 +330,22 @@ func ValidConclusionRecoveryReason(reason ConclusionRecoveryReason) bool {
 	switch reason {
 	case ConclusionRecoveryRuntimeOwnershipNotProven, ConclusionRecoveryWritableReplacementUnavailable,
 		ConclusionRecoveryAcceptanceAmbiguous, ConclusionRecoveryDispatchFailed,
+		ConclusionRecoveryLegacyCorrelationUnproven:
+		return true
+	default:
+		return false
+	}
+}
+
+// ConclusionRecoveryRequiresRuntimeBinding reports whether an operator retry
+// must create a new dispatch on a proven live replacement Runtime. An
+// acceptance-ambiguous delivery is deliberately excluded because it cannot be
+// retried safely at all.
+func ConclusionRecoveryRequiresRuntimeBinding(reason ConclusionRecoveryReason) bool {
+	switch reason {
+	case ConclusionRecoveryRuntimeOwnershipNotProven,
+		ConclusionRecoveryWritableReplacementUnavailable,
+		ConclusionRecoveryDispatchFailed,
 		ConclusionRecoveryLegacyCorrelationUnproven:
 		return true
 	default:

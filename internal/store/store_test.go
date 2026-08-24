@@ -1208,19 +1208,19 @@ func TestMigration53ConvertsLegacyReceiptsIntoObligationsAndDispatches(t *testin
 			canonical, resultHash, applyKey, work, semantic, automaticTurns, repairCount, versionCount, retryCount)
 	}
 
-	var kind, continuationID, dispatchRequestID, controlTurnID, deliveryState, sendStartedAt, terminalOutcome string
+	var kind, directiveKind, continuationID, dispatchRequestID, controlTurnID, deliveryState, sendStartedAt, terminalOutcome string
 	var baseRevision int
-	if err := reopened.QueryRow(`SELECT kind,continuation_id,dispatch_request_id,control_turn_id,base_revision,delivery_state,
+	if err := reopened.QueryRow(`SELECT kind,directive_kind,continuation_id,dispatch_request_id,control_turn_id,base_revision,delivery_state,
 		send_started_at,terminal_outcome FROM conclusion_dispatches WHERE obligation_id='legacy-validated'`).Scan(
-		&kind, &continuationID, &dispatchRequestID, &controlTurnID, &baseRevision, &deliveryState,
+		&kind, &directiveKind, &continuationID, &dispatchRequestID, &controlTurnID, &baseRevision, &deliveryState,
 		&sendStartedAt, &terminalOutcome); err != nil {
 		t.Fatal(err)
 	}
-	if kind != "retry" || continuationID != "continuation-legacy" || dispatchRequestID != "dispatch-legacy" ||
+	if kind != "retry" || directiveKind != "repair" || continuationID != "continuation-legacy" || dispatchRequestID != "dispatch-legacy" ||
 		controlTurnID != "control-legacy" || baseRevision != 9 || deliveryState != "validated" ||
 		sendStartedAt != "2026-07-27T12:00:30Z" || terminalOutcome != "" {
-		t.Fatalf("migrated dispatch lost binding: kind=%q continuation=%q request=%q control=%q base=%d state=%q sent=%q outcome=%q",
-			kind, continuationID, dispatchRequestID, controlTurnID, baseRevision, deliveryState, sendStartedAt, terminalOutcome)
+		t.Fatalf("migrated dispatch lost binding: kind=%q directive=%q continuation=%q request=%q control=%q base=%d state=%q sent=%q outcome=%q",
+			kind, directiveKind, continuationID, dispatchRequestID, controlTurnID, baseRevision, deliveryState, sendStartedAt, terminalOutcome)
 	}
 
 	// The Session retry-keys table now references the obligation table.
@@ -1230,6 +1230,92 @@ func TestMigration53ConvertsLegacyReceiptsIntoObligationsAndDispatches(t *testin
 	}
 	if !strings.Contains(obligationFK, "session_pending_blackboard_conclusions") {
 		t.Fatalf("session retry keys still reference the legacy receipt table: %s", obligationFK)
+	}
+}
+
+func TestMigration60BackfillsActiveRecoveryDirectiveKindsFromDispatchHistory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := "2026-08-24T10:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO pending_blackboard_conclusions
+			(id,task_id,source_request_id,source_request_correlation_exact,source_continuation_id,source_session_id,source_turn_id,
+			 state,source_work_watermark,semantic_persistence_watermark,explicit_retry_count,created_at,updated_at)
+			VALUES ('task-obligation','task-1','task-request',1,'task-old','task-session-old','task-turn',
+			 'dispatch_requested',1,0,1,?,?);
+		INSERT INTO conclusion_dispatches
+			(id,obligation_id,kind,directive_kind,continuation_id,source_session_id,dispatch_request_id,delivery_state,
+			 terminal_outcome,created_at,updated_at)
+			VALUES ('task-initial','task-obligation','initial','initial','task-old','task-session-old','task-request-initial',
+			 'superseded','superseded_by_recovery','2026-08-24T10:00:01Z','2026-08-24T10:00:01Z'),
+			('task-recovery','task-obligation','recovery','','task-new','task-session-new','task-request-recovery',
+			 'dispatch_requested','','2026-08-24T10:00:02Z','2026-08-24T10:00:02Z');
+		INSERT INTO pending_blackboard_conclusions
+			(id,task_id,source_request_id,source_request_correlation_exact,source_continuation_id,source_session_id,source_turn_id,
+			 state,source_work_watermark,semantic_persistence_watermark,created_at,updated_at)
+			VALUES ('task-obligation-no-history','task-2','task-request-no-history',1,'task-old-no-history','task-session-no-history','task-turn-no-history',
+			 'dispatch_requested',1,0,?,?);
+		INSERT INTO conclusion_dispatches
+			(id,obligation_id,kind,directive_kind,continuation_id,source_session_id,dispatch_request_id,delivery_state,
+			 terminal_outcome,created_at,updated_at)
+			VALUES ('task-recovery-no-history','task-obligation-no-history','recovery','','task-new-no-history','task-session-new-no-history',
+			 'task-request-recovery-no-history','dispatch_requested','','2026-08-24T10:00:02Z','2026-08-24T10:00:02Z');
+
+		INSERT INTO session_pending_blackboard_conclusions
+			(id,session_id,source_request_id,source_request_correlation_exact,source_continuation_id,source_session_id,source_turn_id,
+			 state,source_work_watermark,semantic_persistence_watermark,explicit_retry_count,created_at,updated_at)
+			VALUES ('session-obligation','session-1','session-request',1,'session-old','native-session-old','session-turn',
+			 'dispatch_requested',1,0,1,?,?);
+		INSERT INTO session_conclusion_dispatches
+			(id,obligation_id,kind,directive_kind,continuation_id,source_session_id,dispatch_request_id,delivery_state,
+			 terminal_outcome,created_at,updated_at)
+			VALUES ('session-repair','session-obligation','repair','repair','session-old','native-session-old','session-request-repair',
+			 'superseded','superseded_by_recovery','2026-08-24T10:00:01Z','2026-08-24T10:00:01Z'),
+			('session-recovery','session-obligation','recovery','','session-new','native-session-new','session-request-recovery',
+			 'dispatch_requested','','2026-08-24T10:00:02Z','2026-08-24T10:00:02Z');
+		INSERT INTO session_pending_blackboard_conclusions
+			(id,session_id,source_request_id,source_request_correlation_exact,source_continuation_id,source_session_id,source_turn_id,
+			 state,source_work_watermark,semantic_persistence_watermark,created_at,updated_at)
+			VALUES ('session-obligation-no-history','session-2','session-request-no-history',1,'session-old-no-history','native-session-no-history','session-turn-no-history',
+			 'dispatch_requested',1,0,?,?);
+		INSERT INTO session_conclusion_dispatches
+			(id,obligation_id,kind,directive_kind,continuation_id,source_session_id,dispatch_request_id,delivery_state,
+			 terminal_outcome,created_at,updated_at)
+			VALUES ('session-recovery-no-history','session-obligation-no-history','recovery','','session-new-no-history','native-session-new-no-history',
+			 'session-request-recovery-no-history','dispatch_requested','','2026-08-24T10:00:02Z','2026-08-24T10:00:02Z');
+		DELETE FROM schema_migrations WHERE version=60;
+	`, now, now, now, now, now, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	for _, test := range []struct {
+		table string
+		id    string
+		want  string
+	}{
+		{table: "conclusion_dispatches", id: "task-recovery", want: "initial"},
+		{table: "conclusion_dispatches", id: "task-recovery-no-history", want: "initial"},
+		{table: "session_conclusion_dispatches", id: "session-recovery", want: "repair"},
+		{table: "session_conclusion_dispatches", id: "session-recovery-no-history", want: "initial"},
+	} {
+		var got string
+		if err := reopened.QueryRow(`SELECT directive_kind FROM `+test.table+` WHERE id=?`, test.id).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != test.want {
+			t.Errorf("%s directive_kind = %q, want %q", test.id, got, test.want)
+		}
 	}
 }
 

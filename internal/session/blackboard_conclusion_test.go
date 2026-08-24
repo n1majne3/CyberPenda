@@ -31,6 +31,13 @@ func TestSessionBlackboardConclusionRestartRecoveryAndRetryAreOwnerScoped(t *tes
 	if err != nil {
 		t.Fatalf("create Session continuation: %v", err)
 	}
+	continuation, err = service.UpdateContinuationRuntimeMetadata(continuation.ID, "", "provider-session-1", "")
+	if err != nil {
+		t.Fatalf("bind Session Runtime metadata: %v", err)
+	}
+	if _, err := service.UpdateContinuationStatus(continuation.ID, RuntimeStatusRunning); err != nil {
+		t.Fatalf("mark Session Continuation running: %v", err)
+	}
 	otherContinuation, err := service.CreateContinuation(second.ID, "profile-1", "codex", RunnerSandbox)
 	if err != nil {
 		t.Fatalf("create other Session continuation: %v", err)
@@ -62,8 +69,11 @@ func TestSessionBlackboardConclusionRestartRecoveryAndRetryAreOwnerScoped(t *tes
 	}
 
 	retryAt := latest.NextEligibleAt.Add(time.Nanosecond)
-	retried, won, err := service.RetryLatestBlackboardConclusion(first.ID, "session-retry-1", retryAt)
-	if err != nil || !won || retried.InternalState != BlackboardConclusionReceiptPending {
+	retried, won, initial, err := service.RetryLatestBlackboardConclusionForRuntime(
+		first.ID, "session-retry-1", continuation.ID, continuation.NativeSessionID, 0, retryAt,
+	)
+	if err != nil || !won || !initial || retried.InternalState != BlackboardConclusionReceiptDispatchRequested ||
+		retried.DispatchKind != ConclusionDispatchKindInitial {
 		t.Fatalf("Session retry = %#v won=%v err=%v", retried, won, err)
 	}
 	replayed, won, err := service.RetryLatestBlackboardConclusion(first.ID, "session-retry-1", retryAt)
@@ -72,6 +82,62 @@ func TestSessionBlackboardConclusionRestartRecoveryAndRetryAreOwnerScoped(t *tes
 	}
 	if _, err := service.LatestBlackboardConclusion(second.ID); err != nil {
 		t.Fatalf("read unrelated Session conclusion: %v", err)
+	}
+}
+
+func TestSessionRuntimeRetryPersistsInitialDispatchKindForRestart(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	service := NewService(db, filepath.Join(root, "sessions"))
+	found, err := service.Create(CreateRequest{
+		Input: "Retry undispatched conclusion", BlackboardConclusionMode: BlackboardConclusionModeAssisted,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err := service.CreateContinuation(found.ID, "profile-1", "codex", RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	original, err = service.UpdateContinuationRuntimeMetadata(original.ID, "", "session-original", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, _, err := service.RecordBlackboardConclusionCheckpoint(
+		found.ID, original.ID, "work-request-undispatched", original.NativeSessionID, "work-turn-undispatched",
+		RuntimeTurnSelection{ModelProviderID: "provider-1", Model: "model-1"},
+		SemanticDebtWatermarks{SourceWork: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 24, 12, 0, 0, 0, time.UTC)
+	if _, changed, err := service.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
+		receipt.ID, ConclusionRecoveryRuntimeOwnershipNotProven, now, 0,
+	); err != nil || !changed {
+		t.Fatalf("mark recovery: changed=%v err=%v", changed, err)
+	}
+	replacement, err := service.CreateReplacementContinuation(original, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err = service.UpdateContinuationRuntimeMetadata(replacement.ID, "", "session-replacement", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UpdateContinuationStatus(replacement.ID, RuntimeStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	retried, won, initial, err := service.RetryLatestBlackboardConclusionForRuntime(
+		found.ID, "session-initial-runtime-retry", replacement.ID, replacement.NativeSessionID, 0, now,
+	)
+	if err != nil || !won || !initial || retried.DispatchKind != ConclusionDispatchKindInitial ||
+		retried.ContinuationID != replacement.ID || retried.SourceSessionID != replacement.NativeSessionID {
+		t.Fatalf("Session initial Runtime retry=%#v won=%v initial=%v err=%v", retried, won, initial, err)
 	}
 }
 

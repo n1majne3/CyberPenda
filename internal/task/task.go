@@ -270,6 +270,16 @@ const (
 	ConclusionDispatchKindRecovery            = owner.ConclusionDispatchKindRecovery
 )
 
+// ConclusionDirectiveKind is the semantic control instruction carried by a
+// dispatch. Recovery changes delivery lineage, not directive semantics.
+type ConclusionDirectiveKind = owner.ConclusionDirectiveKind
+
+const (
+	ConclusionDirectiveKindInitial             = owner.ConclusionDirectiveKindInitial
+	ConclusionDirectiveKindRepair              = owner.ConclusionDirectiveKindRepair
+	ConclusionDirectiveKindVersionRegeneration = owner.ConclusionDirectiveKindVersionRegeneration
+)
+
 // ConclusionDispatchState is the delivery lifecycle of one immutable dispatch.
 type ConclusionDispatchState = owner.ConclusionDispatchState
 
@@ -331,13 +341,14 @@ type BlackboardConclusionReceipt struct {
 	RecoveryReason string `json:"recovery_reason,omitempty"`
 	// ActiveDispatchID and DispatchKind expose the active Conclusion Dispatch
 	// so recovery can create a new dispatch without rewriting history.
-	ActiveDispatchID    string                 `json:"-"`
-	DispatchKind        ConclusionDispatchKind `json:"-"`
-	ValidationReason    string                 `json:"validation_reason,omitempty"`
-	ValidationFieldPath string                 `json:"validation_field_path,omitempty"`
-	ValidationExpected  string                 `json:"validation_expected,omitempty"`
-	CreatedAt           time.Time              `json:"created_at"`
-	UpdatedAt           time.Time              `json:"updated_at"`
+	ActiveDispatchID    string                  `json:"-"`
+	DispatchKind        ConclusionDispatchKind  `json:"-"`
+	DirectiveKind       ConclusionDirectiveKind `json:"-"`
+	ValidationReason    string                  `json:"validation_reason,omitempty"`
+	ValidationFieldPath string                  `json:"validation_field_path,omitempty"`
+	ValidationExpected  string                  `json:"validation_expected,omitempty"`
+	CreatedAt           time.Time               `json:"created_at"`
+	UpdatedAt           time.Time               `json:"updated_at"`
 }
 
 // View projects internal coordinator progress into the compact Task API

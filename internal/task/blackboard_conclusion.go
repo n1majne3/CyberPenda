@@ -122,6 +122,7 @@ func receiptFromConclusion(rec conclusion.BlackboardConclusionReceipt) Blackboar
 		RecoveryReason:           rec.RecoveryReason,
 		ActiveDispatchID:         rec.ActiveDispatchID,
 		DispatchKind:             rec.DispatchKind,
+		DirectiveKind:            rec.DirectiveKind,
 		ValidationReason:         rec.ValidationReason,
 		ValidationFieldPath:      rec.ValidationFieldPath,
 		ValidationExpected:       rec.ValidationExpected,
@@ -281,6 +282,23 @@ func (s *Service) RetryLatestBlackboardConclusion(taskID, idempotencyKey string,
 		return BlackboardConclusionReceipt{}, false, mapConclusionError(err)
 	}
 	return receiptFromConclusion(rec), won, nil
+}
+
+// RetryLatestBlackboardConclusionForRuntime binds a Runtime-recovery retry to
+// one daemon-proven live replacement Runtime. Initial reports that no prior
+// Conclusion Dispatch existed for the obligation.
+func (s *Service) RetryLatestBlackboardConclusionForRuntime(taskID, idempotencyKey, continuationID, sessionID string, baseRevision int, now time.Time) (BlackboardConclusionReceipt, bool, bool, error) {
+	rec, won, initial, err := s.conclusions().RetryLatestBlackboardConclusionForRuntime(
+		taskID, idempotencyKey, conclusion.RetryRuntimeBinding{
+			ContinuationID: continuationID,
+			SessionID:      sessionID,
+			BaseRevision:   baseRevision,
+		}, now,
+	)
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, false, mapConclusionError(err)
+	}
+	return receiptFromConclusion(rec), won, initial, nil
 }
 
 func (s *Service) BlackboardConclusionByDispatchRequestID(dispatchRequestID string) (BlackboardConclusionReceipt, error) {
