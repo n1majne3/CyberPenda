@@ -1945,14 +1945,18 @@ func syncEvidenceDirectory(root *os.Root) error {
 	if err != nil {
 		return fmt.Errorf("open managed Evidence directory for sync: %w", err)
 	}
-	defer directory.Close()
 	// Windows cannot fsync a directory handle (golang/go#47366); the rename
 	// already made the published file visible, so skip the durability sync.
 	if runtime.GOOS == "windows" {
+		_ = directory.Close()
 		return nil
 	}
 	if err := directory.Sync(); err != nil {
+		_ = directory.Close()
 		return fmt.Errorf("sync managed Evidence directory: %w", err)
+	}
+	if err := directory.Close(); err != nil {
+		return fmt.Errorf("close managed Evidence directory: %w", err)
 	}
 	return nil
 }
