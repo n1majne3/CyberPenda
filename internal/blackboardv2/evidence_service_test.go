@@ -1020,12 +1020,6 @@ func TestReservedAndPublishedRetainResumeAfterProducingAttemptTerminal(t *testin
 }
 
 func TestRetainEvidenceRestartRecoversDeterministicJournaledTempAtEveryPublicationBoundary(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// The journal asserts slash-form internal paths (the "/retained/" and
-		// "/.evidence-staging/" contract). The product stores OS-native
-		// separators on Windows; Linux CI enforces the slash contract.
-		t.Skip("internal Evidence paths use OS separators on Windows")
-	}
 	for _, point := range []blackboardv2.EvidenceFailurePoint{
 		blackboardv2.EvidenceFailureBeforeTempCopy,
 		blackboardv2.EvidenceFailureMidTempCopy,
@@ -1313,12 +1307,6 @@ func TestConcurrentExactRetainRetryCannotReplaceActivePublisherTemp(t *testing.T
 }
 
 func TestPrivateStagingCannotCollideWithClaimedStageLikeOrRetainFinalNames(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		// The journal asserts slash-form internal paths (the "/retained/" and
-		// "/.evidence-staging/" contract). The product stores OS-native
-		// separators on Windows; Linux CI enforces the slash contract.
-		t.Skip("internal Evidence paths use OS separators on Windows")
-	}
 	fixture := newEvidenceV2Fixture(t, "Evidence Namespace Collision")
 	payload := strings.Repeat("namespace-collision-proof-", 4096)
 	fixture.writeSource(t, "foo", payload)

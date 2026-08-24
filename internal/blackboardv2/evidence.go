@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -703,6 +704,14 @@ func fileIdentity(path string, info os.FileInfo) string {
 	return identity
 }
 
+// internalEvidencePath builds a slash-form relative Evidence path. Journal
+// columns and path comparisons use forward slashes on every platform; using
+// filepath.Join directly would persist backslashes in rows on Windows and
+// break the "/retained/" and "/.evidence-staging/" contract.
+func internalEvidencePath(elements ...string) string {
+	return filepath.ToSlash(filepath.Join(elements...))
+}
+
 func plannedEvidenceInternalPath(projectID, digest, sourcePath string) (string, error) {
 	if len(digest) != 64 {
 		return "", fmt.Errorf("invalid Evidence digest")
@@ -712,8 +721,8 @@ func plannedEvidenceInternalPath(projectID, digest, sourcePath string) (string, 
 		name = "artifact"
 	}
 	projectDigest := sha256.Sum256([]byte(projectID))
-	path := filepath.Join("projects", hex.EncodeToString(projectDigest[:]), "retained", digest, name)
-	if clean := filepath.Clean(path); clean != path || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	path := internalEvidencePath("projects", hex.EncodeToString(projectDigest[:]), "retained", digest, name)
+	if clean := pathpkg.Clean(path); clean != path || pathpkg.IsAbs(clean) || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("planned Evidence path escapes managed storage")
 	}
 	return path, nil
@@ -723,15 +732,16 @@ func plannedEvidenceTempPath(internalPath, continuationID, key, requestHash stri
 	if len(requestHash) != 64 || continuationID == "" || key == "" {
 		return "", fmt.Errorf("invalid Evidence request hash")
 	}
-	marker := string(filepath.Separator) + "retained" + string(filepath.Separator)
+	internalPath = filepath.ToSlash(internalPath)
+	const marker = "/retained/"
 	index := strings.Index(internalPath, marker)
 	if index <= 0 {
 		return "", fmt.Errorf("planned Evidence path lacks its retained namespace")
 	}
 	projectRoot := internalPath[:index]
 	scope := sha256.Sum256([]byte(continuationID + "\x00" + key))
-	path := filepath.Join(projectRoot, ".evidence-staging", hex.EncodeToString(scope[:]), requestHash)
-	if clean := filepath.Clean(path); clean != path || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || strings.Contains(clean, marker) {
+	path := internalEvidencePath(projectRoot, ".evidence-staging", hex.EncodeToString(scope[:]), requestHash)
+	if clean := pathpkg.Clean(path); clean != path || pathpkg.IsAbs(clean) || strings.HasPrefix(clean, "../") || strings.Contains(clean, marker) {
 		return "", fmt.Errorf("planned Evidence temp path escapes private staging")
 	}
 	return path, nil
@@ -741,20 +751,21 @@ func migration27EvidenceTempPath(internalPath, continuationID, key, requestHash 
 	if len(requestHash) != 64 || continuationID == "" || key == "" {
 		return "", fmt.Errorf("invalid Evidence request hash")
 	}
-	marker := string(filepath.Separator) + "retained" + string(filepath.Separator)
+	internalPath = filepath.ToSlash(internalPath)
+	const marker = "/retained/"
 	index := strings.Index(internalPath, marker)
 	if index <= 0 {
 		return "", fmt.Errorf("planned Evidence path lacks its retained namespace")
 	}
-	return filepath.Join(internalPath[:index], ".evidence-staging", hex.EncodeToString([]byte(continuationID)), hex.EncodeToString([]byte(key)), requestHash), nil
+	return internalEvidencePath(internalPath[:index], ".evidence-staging", hex.EncodeToString([]byte(continuationID)), hex.EncodeToString([]byte(key)), requestHash), nil
 }
 
 func filesystemSafeEvidencePath(path string) bool {
-	clean := filepath.Clean(path)
-	if clean != path || clean == "." || clean == ".." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	clean := pathpkg.Clean(path)
+	if clean != path || clean == "." || clean == ".." || pathpkg.IsAbs(clean) || strings.HasPrefix(clean, "../") {
 		return false
 	}
-	for _, component := range strings.Split(clean, string(filepath.Separator)) {
+	for _, component := range strings.Split(clean, "/") {
 		if component == "" || component == "." || component == ".." || len(component) > 255 {
 			return false
 		}
@@ -767,7 +778,7 @@ func semanticEvidencePath(projectID, internalPath, digest string) (string, error
 	if err != nil {
 		return "", err
 	}
-	if filepath.Clean(internalPath) != planned {
+	if pathpkg.Clean(filepath.ToSlash(internalPath)) != planned {
 		return "", fmt.Errorf("stored Evidence path does not match its Project and digest")
 	}
 	return filepath.ToSlash(filepath.Join("artifacts", "retained", digest, filepath.Base(internalPath))), nil
@@ -1136,6 +1147,8 @@ func (s *Service) verifyJournaledEvidenceTemp(tempPath, digest string, size int6
 }
 
 func (s *Service) evidencePublicationRecoveryExists(ctx context.Context, projectID, continuationID, key string, row evidenceRequestRow) (bool, bool, error) {
+	row.migration27Temp = filepath.ToSlash(row.migration27Temp)
+	row.previousTemp = filepath.ToSlash(row.previousTemp)
 	root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
 	if err != nil {
 		return false, false, fmt.Errorf("open managed Artifact Root: %w", err)
@@ -1197,7 +1210,7 @@ func (s *Service) evidencePublicationRecoveryExists(ctx context.Context, project
 		if !isHistoricalEvidenceTempName(entry.Name()) {
 			continue
 		}
-		candidatePath := filepath.Join(filepath.Dir(row.internalPath), entry.Name())
+		candidatePath := internalEvidencePath(filepath.Dir(row.internalPath), entry.Name())
 		claimed, err := s.evidenceManagedPathClaimed(ctx, projectID, candidatePath)
 		if err != nil {
 			return false, false, err
@@ -1692,7 +1705,7 @@ func (s *Service) sweepLegacyEvidenceTemps(ctx context.Context, projectID string
 		if !isHistoricalEvidenceTempName(name) {
 			return false, nil
 		}
-		candidatePath := filepath.Join(filepath.Dir(row.internalPath), name)
+		candidatePath := internalEvidencePath(filepath.Dir(row.internalPath), name)
 		claimed, err := evidenceManagedPathClaimedBy(ctx, tx, projectID, candidatePath)
 		return !claimed, err
 	})
@@ -1706,6 +1719,7 @@ func (s *Service) sweepLegacyEvidenceTemps(ctx context.Context, projectID string
 }
 
 func (s *Service) recoverPreviousEvidenceTemp(ctx context.Context, projectID string, row evidenceRequestRow, root *os.Root, destination func() (*os.File, error)) (bool, error) {
+	row.previousTemp = filepath.ToSlash(row.previousTemp)
 	if row.previousTemp == "" || row.previousTemp == row.tempPath || filepath.Dir(row.previousTemp) != filepath.Dir(row.internalPath) {
 		return false, nil
 	}
@@ -1738,6 +1752,7 @@ func (s *Service) recoverPreviousEvidenceTemp(ctx context.Context, projectID str
 }
 
 func (s *Service) recoverMigration27EvidenceTemp(root *os.Root, continuationID, key string, row evidenceRequestRow, destination func() (*os.File, error)) (bool, error) {
+	row.migration27Temp = filepath.ToSlash(row.migration27Temp)
 	expected, err := migration27EvidenceTempPath(row.internalPath, continuationID, key, row.requestHash)
 	if err != nil || row.migration27Temp == "" || row.migration27Temp == row.tempPath || row.migration27Temp != expected || !filesystemSafeEvidencePath(row.migration27Temp) {
 		return false, nil
