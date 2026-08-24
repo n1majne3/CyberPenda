@@ -949,8 +949,9 @@ func migrations() []migration {
 }
 
 // migration60SQL separates immutable delivery lineage from the semantic
-// control instruction. Existing recovery rows retain an empty directive kind;
-// the owner engine derives their legacy meaning from prior dispatch history.
+// control instruction. Existing recovery rows derive their directive from the
+// nearest earlier non-recovery dispatch; rows without history default to the
+// initial directive.
 const migration60SQL = `
 ALTER TABLE conclusion_dispatches ADD COLUMN directive_kind TEXT NOT NULL DEFAULT ''
 	CHECK (directive_kind IN ('','initial','repair','version_regeneration'));
