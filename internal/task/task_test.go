@@ -1336,7 +1336,23 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 	if err != nil || won || replayedRetry.ID != pending.ID || replayedRetry.InternalState != task.BlackboardConclusionReceiptDispatchRequested {
 		t.Fatalf("pending recovery retry replay = %#v, won=%v, err=%v", replayedRetry, won, err)
 	}
-	dispatched := rearmed
+	replacement, err := svc.CreateReplacementContinuation(continuation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err = svc.UpdateContinuationRuntimeMetadata(replacement.ID, "", "session-2", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.UpdateContinuationStatus(replacement.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	dispatched, reboundWon, err := svc.CreateRecoveryConclusionDispatch(
+		pending.ID, replacement.ID, "session-2", now.Add(6*time.Minute),
+	)
+	if err != nil || !reboundWon || dispatched.DispatchKind != task.ConclusionDispatchKindInitial {
+		t.Fatalf("rebound initial retry = %#v, created=%v, err=%v", dispatched, reboundWon, err)
+	}
 	_, _, _ = svc.MarkBlackboardConclusionSendStarted(dispatched.DispatchRequestID, now.Add(6*time.Minute))
 	_, _, _ = svc.MarkBlackboardConclusionAwaiting(dispatched.DispatchRequestID, "control-after-recovery")
 	exhausted, dispatchedRepair, err := svc.HandleBlackboardConclusionFailure(dispatched.DispatchRequestID,

@@ -1550,10 +1550,14 @@ func (e *Engine) CreateRecoveryConclusionDispatches(taskID, oldContinuationID, r
 				return nil, err
 			}
 		}
+		dispatchKind, kindErr := e.recoveryConclusionDispatchKindTx(tx, obligation, dispatch)
+		if kindErr != nil {
+			return nil, kindErr
+		}
 		number := e.conclusionDispatchSequence(tx, obligation.ID) + 1
 		requestID := blackboardConclusionAttemptRequestID("recovery", replacementContinuationID, obligation.SourceTurnID, number, "")
 		nowDispatch := ConclusionDispatch{
-			ID: e.Dialect.NewID(), ObligationID: obligation.ID, Kind: ConclusionDispatchKindRecovery,
+			ID: e.Dialect.NewID(), ObligationID: obligation.ID, Kind: dispatchKind,
 			ContinuationID: replacementContinuationID, SourceSessionID: replacementSessionID,
 			DispatchRequestID: requestID, BaseRevision: dispatchBaseRevision(dispatch),
 			DeliveryState: ConclusionDispatchRequested, CreatedAt: now, UpdatedAt: now,
@@ -1639,10 +1643,14 @@ func (e *Engine) CreateRecoveryConclusionDispatch(obligationID, continuationID, 
 			return BlackboardConclusionReceipt{}, false, err
 		}
 	}
+	dispatchKind, err := e.recoveryConclusionDispatchKindTx(tx, obligation, dispatch)
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, err
+	}
 	number := e.conclusionDispatchSequence(tx, obligation.ID) + 1
 	requestID := blackboardConclusionAttemptRequestID("recovery", continuationID, obligation.SourceTurnID, number, "")
 	nowDispatch := ConclusionDispatch{
-		ID: e.Dialect.NewID(), ObligationID: obligation.ID, Kind: ConclusionDispatchKindRecovery,
+		ID: e.Dialect.NewID(), ObligationID: obligation.ID, Kind: dispatchKind,
 		ContinuationID: continuationID, SourceSessionID: sessionID,
 		DispatchRequestID: requestID, BaseRevision: dispatchBaseRevision(dispatch),
 		DeliveryState: ConclusionDispatchRequested, CreatedAt: now, UpdatedAt: now,
@@ -1680,6 +1688,35 @@ func (e *Engine) CreateRecoveryConclusionDispatch(obligationID, continuationID, 
 		return BlackboardConclusionReceipt{}, false, fmt.Errorf("commit recovery Conclusion Dispatch: %w", err)
 	}
 	return view, true, nil
+}
+
+func (e *Engine) recoveryConclusionDispatchKindTx(tx *sql.Tx, obligation PendingBlackboardConclusion, active *ConclusionDispatch) (ConclusionDispatchKind, error) {
+	if active != nil && active.Kind != ConclusionDispatchKindRecovery {
+		return active.Kind, nil
+	}
+	var stored string
+	err := tx.QueryRow(`SELECT kind FROM `+e.Dialect.DispatchesTable+`
+		WHERE obligation_id=? AND kind<>? ORDER BY created_at DESC,id DESC LIMIT 1`,
+		obligation.ID, string(ConclusionDispatchKindRecovery)).Scan(&stored)
+	if err == nil {
+		return ConclusionDispatchKind(stored), nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("read recovery Conclusion Dispatch semantic kind: %w", err)
+	}
+	switch obligation.State {
+	case BlackboardConclusionReceiptPending, BlackboardConclusionReceiptDispatchRequested, BlackboardConclusionReceiptAwaitingResult:
+		if obligation.ExplicitRetryCount > 0 {
+			return ConclusionDispatchKindRetry, nil
+		}
+		return ConclusionDispatchKindInitial, nil
+	case BlackboardConclusionReceiptRepairDispatchRequested:
+		return ConclusionDispatchKindRepair, nil
+	case BlackboardConclusionReceiptVersionSyncRequested, BlackboardConclusionReceiptVersionRegenerationDispatchRequested:
+		return ConclusionDispatchKindVersionRegeneration, nil
+	default:
+		return ConclusionDispatchKindRecovery, nil
+	}
 }
 
 // --- internal helpers ---

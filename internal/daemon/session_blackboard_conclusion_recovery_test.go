@@ -249,6 +249,30 @@ func TestSessionInitialRuntimeRetryRemainsInitialAfterRestart(t *testing.T) {
 	if err != nil || !won || !initial || retried.DispatchKind != session.ConclusionDispatchKindInitial {
 		t.Fatalf("persist initial retry=%#v won=%v initial=%v err=%v", retried, won, initial, err)
 	}
+	replacement, err := server.sessions.CreateReplacementContinuation(continuation, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.blackboardV2.RebindSessionContinuation(
+		context.Background(), found.ID, continuation.ID, replacement.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err = server.sessions.UpdateContinuationRuntimeMetadata(
+		replacement.ID, "", "assisted-session", "/sessions/assisted-session.jsonl",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.sessions.UpdateContinuationStatus(replacement.ID, session.RuntimeStatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	rebound, created, err := server.sessions.CreateRecoveryConclusionDispatch(
+		retried.ID, replacement.ID, replacement.NativeSessionID, now.Add(time.Second),
+	)
+	if err != nil || !created || rebound.DispatchKind != session.ConclusionDispatchKindInitial {
+		t.Fatalf("rebind initial retry=%#v created=%v err=%v", rebound, created, err)
+	}
 	if err := server.Close(); err != nil {
 		t.Fatal(err)
 	}
