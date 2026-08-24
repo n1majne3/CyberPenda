@@ -283,6 +283,16 @@ func (s *Service) RetryLatestBlackboardConclusion(taskID, idempotencyKey string,
 	return receiptFromConclusion(rec), won, nil
 }
 
+// RetryLatestBlackboardConclusionFailClosedOnDispatchFailure retries only when
+// the transaction confirms that no replacement Runtime binding is required.
+func (s *Service) RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(taskID, idempotencyKey string, now time.Time) (BlackboardConclusionReceipt, bool, error) {
+	rec, won, err := s.conclusions().RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(taskID, idempotencyKey, now)
+	if err != nil {
+		return BlackboardConclusionReceipt{}, false, mapConclusionError(err)
+	}
+	return receiptFromConclusion(rec), won, nil
+}
+
 // RetryLatestBlackboardConclusionForRuntime binds a dispatch_failed retry to
 // one daemon-proven live replacement Runtime. Initial reports that no prior
 // Conclusion Dispatch existed for the obligation.

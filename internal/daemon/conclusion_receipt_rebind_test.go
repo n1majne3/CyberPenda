@@ -104,6 +104,87 @@ func newAuthorizedAssistedConclusionRecoveryServer(t *testing.T) (*Server, task.
 	return server, created, continuation
 }
 
+func prepareDispatchFailedReplacement(t *testing.T, providerSessionID string) (*Server, task.Task, task.BlackboardConclusionReceipt) {
+	t.Helper()
+	server, created, original := newAuthorizedAssistedConclusionRecoveryServer(t)
+	receipt, _, err := server.tasks.RecordBlackboardConclusionCheckpoint(
+		created.ID, original.ID, "work-request-runtime-proof", "session-original", "turn-runtime-proof",
+		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"},
+		task.SemanticDebtWatermarks{SourceWork: 1},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, changed, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
+		receipt.ID, task.ConclusionRecoveryDispatchFailed, time.Now().UTC(), 0,
+	); err != nil || !changed {
+		t.Fatalf("mark action_required: changed=%v err=%v", changed, err)
+	}
+	replacement, err := server.tasks.CreateReplacementContinuation(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(
+		context.Background(), original.ID, replacement.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	const replacementSessionID = "session-replacement-proof"
+	if _, err := server.tasks.UpdateContinuationRuntimeMetadata(replacement.ID, "", replacementSessionID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(original.ID, task.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(replacement.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	if providerSessionID != "" {
+		provider := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+			SessionID: providerSessionID,
+			Capabilities: runtimeplugin.Capabilities{
+				PersistentSession: true, SendTurn: true, AssistedConclusion: true,
+			},
+		})
+		if err := server.providerSessions.bind(created.ID, provider); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return server, created, receipt
+}
+
+func TestRetryDispatchFailedConclusionRequiresMatchingLiveRuntime(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		providerSessionID string
+	}{
+		{name: "provider missing"},
+		{name: "native session mismatch", providerSessionID: "session-other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, created, receipt := prepareDispatchFailedReplacement(t, test.providerSessionID)
+			request := httptest.NewRequest(http.MethodPost,
+				"/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry",
+				bytes.NewBufferString(`{}`))
+			request.Header.Set("Idempotency-Key", "retry-without-runtime-proof")
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+
+			if response.Code != http.StatusConflict {
+				t.Fatalf("retry status=%d body=%s, want conflict", response.Code, response.Body.String())
+			}
+			latest, err := server.tasks.LatestBlackboardConclusion(created.ID)
+			if err != nil || latest == nil || latest.ExplicitRetryCount != 0 ||
+				latest.InternalState != task.BlackboardConclusionReceiptActionRequired {
+				t.Fatalf("failed-closed conclusion=%#v err=%v", latest, err)
+			}
+			if history, err := server.tasks.ConclusionDispatches(receipt.ID); err != nil || len(history) != 0 {
+				t.Fatalf("failed-closed dispatch history=%#v err=%v", history, err)
+			}
+		})
+	}
+}
+
 func TestRetryDispatchFailedConclusionWithoutBlackboardAuthorityFailsClosed(t *testing.T) {
 	server, created, original := newAssistedConclusionRecoveryServer(t)
 

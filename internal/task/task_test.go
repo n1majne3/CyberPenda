@@ -1343,6 +1343,43 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 	}
 }
 
+func TestRetryLatestBlackboardConclusionFailsClosedWhenDispatchFailureAppearsBeforeTransaction(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
+		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	receipt, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID,
+		"work-request-race", "session-dead", "turn-race",
+		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"},
+		task.SemanticDebtWatermarks{SourceWork: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 24, 10, 0, 0, 0, time.UTC)
+	if _, changed, err := svc.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
+		receipt.ID, task.ConclusionRecoveryDispatchFailed, now, 0,
+	); err != nil || !changed {
+		t.Fatalf("mark dispatch_failed: changed=%v err=%v", changed, err)
+	}
+
+	retried, won, err := svc.RetryLatestBlackboardConclusionFailClosedOnDispatchFailure(created.ID, "stale-adapter-retry", now)
+	if !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) || won {
+		t.Fatalf("retry without proven Runtime = %#v, won=%v, err=%v", retried, won, err)
+	}
+	latest, latestErr := svc.LatestBlackboardConclusion(created.ID)
+	if latestErr != nil || latest == nil || latest.InternalState != task.BlackboardConclusionReceiptActionRequired ||
+		latest.RecoveryReason != string(task.ConclusionRecoveryDispatchFailed) || latest.ExplicitRetryCount != 0 {
+		t.Fatalf("failed-closed conclusion = %#v, err=%v", latest, latestErr)
+	}
+	if dispatches, historyErr := svc.ConclusionDispatches(receipt.ID); historyErr != nil || len(dispatches) != 0 {
+		t.Fatalf("failed-closed dispatch history = %#v, err=%v", dispatches, historyErr)
+	}
+}
+
 func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
