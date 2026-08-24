@@ -41,10 +41,24 @@ func renameRetrying(rename func(oldpath, newpath string) error, oldpath, newpath
 	}
 }
 
-// renameBundleDir moves a skill bundle directory inside the library, retrying
-// transient Windows access-denied failures (antivirus/indexer handles).
-func renameBundleDir(oldpath, newpath string) error {
-	return renameRetrying(os.Rename, oldpath, newpath, runtime.GOOS == "windows", time.Sleep)
+type bundleFileOperations struct {
+	rename          func(oldpath, newpath string) error
+	removeAll       func(path string) error
+	retryPermission bool
+	sleep           func(time.Duration)
+}
+
+func defaultBundleFileOperations() bundleFileOperations {
+	return bundleFileOperations{
+		rename:          os.Rename,
+		removeAll:       os.RemoveAll,
+		retryPermission: runtime.GOOS == "windows",
+		sleep:           time.Sleep,
+	}
+}
+
+func (ops bundleFileOperations) renameDir(oldpath, newpath string) error {
+	return renameRetrying(ops.rename, oldpath, newpath, ops.retryPermission, ops.sleep)
 }
 
 type PublishRequest struct {
@@ -72,13 +86,14 @@ type Service struct {
 	db          *store.DB
 	libraryRoot string
 	importer    Importer
+	bundleFiles bundleFileOperations
 }
 
 func NewService(db *store.DB, libraryRoot string, importers ...Importer) *Service {
 	if strings.TrimSpace(libraryRoot) == "" {
 		libraryRoot = filepath.Join(".", "skills")
 	}
-	svc := &Service{db: db, libraryRoot: libraryRoot}
+	svc := &Service{db: db, libraryRoot: libraryRoot, bundleFiles: defaultBundleFileOperations()}
 	if len(importers) > 0 {
 		svc.importer = importers[0]
 	}
@@ -113,28 +128,31 @@ func (s *Service) Publish(ctx context.Context, req PublishRequest) (Skill, error
 	hadLive := false
 	if _, err := os.Lstat(live); err == nil {
 		hadLive = true
-		if err := renameBundleDir(live, backup); err != nil {
+		if err := s.bundleFiles.renameDir(live, backup); err != nil {
 			return Skill{}, fmt.Errorf("stage existing live skill: %w", err)
 		}
 	} else if !os.IsNotExist(err) {
 		return Skill{}, fmt.Errorf("inspect live skill: %w", err)
 	}
 
-	restore := func() {
-		_ = os.RemoveAll(live)
-		if hadLive {
-			_ = os.Rename(backup, live)
+	restore := func() error {
+		if err := s.bundleFiles.removeAll(live); err != nil {
+			return fmt.Errorf("remove failed live Skill: %w", err)
 		}
+		if hadLive {
+			if err := s.bundleFiles.renameDir(backup, live); err != nil {
+				return fmt.Errorf("restore previous live Skill: %w", err)
+			}
+		}
+		return nil
 	}
-	if err := renameBundleDir(staging, live); err != nil {
-		restore()
-		return Skill{}, fmt.Errorf("promote skill bundle: %w", err)
+	if err := s.bundleFiles.renameDir(staging, live); err != nil {
+		return Skill{}, errors.Join(fmt.Errorf("promote skill bundle: %w", err), restore())
 	}
 
 	stored, err := s.upsertMetadata(meta)
 	if err != nil {
-		restore()
-		return Skill{}, err
+		return Skill{}, errors.Join(err, restore())
 	}
 	if hadLive {
 		_ = os.RemoveAll(backup)

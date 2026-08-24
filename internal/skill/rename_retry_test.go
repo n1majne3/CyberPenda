@@ -1,10 +1,16 @@
 package skill
 
 import (
+	"context"
 	"errors"
 	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"pentest/internal/store"
 )
 
 func TestRenameRetryingRetriesTransientPermissionDenied(t *testing.T) {
@@ -81,5 +87,94 @@ func TestRenameRetryingDoesNotRetryWhenDisabled(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("rename calls = %d, want 1 (retry disabled)", calls)
+	}
+}
+
+func TestPublishRestoresPreviousLiveSkillAfterTransientRollbackDenial(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open Store: %v", err)
+	}
+	svc := NewService(db, filepath.Join(t.TempDir(), "skills"))
+	ctx := context.Background()
+	if _, err := svc.Publish(ctx, PublishRequest{
+		Metadata: Metadata{ID: "recon-helper", Name: "Recon Helper"},
+		Files:    map[string]string{"SKILL.md": "version one"},
+	}); err != nil {
+		t.Fatalf("publish initial Skill: %v", err)
+	}
+	livePath := svc.bundlePath("recon-helper")
+
+	originalRename := svc.bundleFiles.rename
+	restoreAttempts := 0
+	svc.bundleFiles.retryPermission = true
+	svc.bundleFiles.sleep = func(time.Duration) {}
+	svc.bundleFiles.rename = func(oldpath, newpath string) error {
+		if strings.Contains(filepath.Base(oldpath), ".backup-") && newpath == livePath {
+			restoreAttempts++
+			if restoreAttempts == 1 {
+				return &fs.PathError{Op: "rename", Path: oldpath, Err: fs.ErrPermission}
+			}
+		}
+		return originalRename(oldpath, newpath)
+	}
+
+	// Force metadata persistence to fail after the replacement bundle reaches
+	// the live path. Publication must restore the previous live Skill.
+	if err := db.Close(); err != nil {
+		t.Fatalf("close Store before failed update: %v", err)
+	}
+	if _, err := svc.Publish(ctx, PublishRequest{
+		Metadata: Metadata{ID: "recon-helper", Name: "Recon Helper Updated"},
+		Files:    map[string]string{"SKILL.md": "version two"},
+	}); err == nil {
+		t.Fatal("expected metadata persistence failure")
+	}
+
+	content, err := os.ReadFile(filepath.Join(livePath, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("read restored live Skill: %v", err)
+	}
+	if string(content) != "version one" {
+		t.Fatalf("restored live Skill = %q, want version one", content)
+	}
+	if restoreAttempts != 2 {
+		t.Fatalf("restore attempts = %d, want 2 after one transient denial", restoreAttempts)
+	}
+}
+
+func TestPublishReturnsRollbackFailure(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open Store: %v", err)
+	}
+	svc := NewService(db, filepath.Join(t.TempDir(), "skills"))
+	ctx := context.Background()
+	if _, err := svc.Publish(ctx, PublishRequest{
+		Metadata: Metadata{ID: "recon-helper", Name: "Recon Helper"},
+		Files:    map[string]string{"SKILL.md": "version one"},
+	}); err != nil {
+		t.Fatalf("publish initial Skill: %v", err)
+	}
+	livePath := svc.bundlePath("recon-helper")
+
+	originalRename := svc.bundleFiles.rename
+	svc.bundleFiles.retryPermission = false
+	svc.bundleFiles.rename = func(oldpath, newpath string) error {
+		if strings.Contains(filepath.Base(oldpath), ".backup-") && newpath == livePath {
+			return &fs.PathError{Op: "rename", Path: oldpath, Err: fs.ErrPermission}
+		}
+		return originalRename(oldpath, newpath)
+	}
+
+	if err := db.Close(); err != nil {
+		t.Fatalf("close Store before failed update: %v", err)
+	}
+	_, err = svc.Publish(ctx, PublishRequest{
+		Metadata: Metadata{ID: "recon-helper", Name: "Recon Helper Updated"},
+		Files:    map[string]string{"SKILL.md": "version two"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "restore previous live Skill") {
+		t.Fatalf("publish error = %v, want reported rollback failure", err)
 	}
 }

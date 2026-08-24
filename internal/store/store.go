@@ -945,7 +945,153 @@ func migrations() []migration {
 		newMigration(58, "challenge_operation_recovery_settlement", migration58SQL, migration58Up),
 		newMigration(59, "project_approval_workflows", migration59SQL, migration59Up),
 		newMigration(60, "blackboard_conclusion_directive_kind", migration60SQL, migration60Up),
+		newMigration(61, "slash_form_evidence_path_identities", migration61SQL, migration61Up),
 	}
+}
+
+// migration61SQL records the canonical slash-form identity cutover for
+// Evidence journal paths. The data rewrite is implemented in migration61Up so
+// it can detect and merge Windows path aliases without losing payload state.
+const migration61SQL = `-- Canonicalize legacy Windows Evidence path identities and merge aliases.`
+
+type migration61EvidencePayload struct {
+	projectID      string
+	managedPath    string
+	sha256         string
+	size           int64
+	state          string
+	gcContinuation string
+	gcIdempotency  string
+	createdAt      string
+	updatedAt      string
+}
+
+// normalizeLegacyWindowsEvidencePath converts only paths whose internal root
+// was written with Windows separators. A backslash inside a slash-form Linux
+// filename remains data rather than being reinterpreted as a separator.
+func normalizeLegacyWindowsEvidencePath(value string) string {
+	if strings.HasPrefix(value, `projects\`) {
+		return strings.ReplaceAll(value, `\`, "/")
+	}
+	return value
+}
+
+func migration61Up(tx *sql.Tx) error {
+	payloadRows, err := tx.Query(`
+		SELECT project_id,managed_internal_path,sha256,size_bytes,state,
+		       gc_continuation_id,gc_idempotency_key,created_at,updated_at
+		FROM blackboard_v2_evidence_payloads
+		ORDER BY project_id,managed_internal_path`)
+	if err != nil {
+		return fmt.Errorf("read legacy Evidence payload identities: %w", err)
+	}
+	var payloads []migration61EvidencePayload
+	byIdentity := map[string]int{}
+	for payloadRows.Next() {
+		var row migration61EvidencePayload
+		if err := payloadRows.Scan(
+			&row.projectID, &row.managedPath, &row.sha256, &row.size, &row.state,
+			&row.gcContinuation, &row.gcIdempotency, &row.createdAt, &row.updatedAt,
+		); err != nil {
+			_ = payloadRows.Close()
+			return fmt.Errorf("scan legacy Evidence payload identity: %w", err)
+		}
+		row.managedPath = normalizeLegacyWindowsEvidencePath(row.managedPath)
+		identity := row.projectID + "\x00" + row.managedPath
+		if index, ok := byIdentity[identity]; ok {
+			existing := &payloads[index]
+			if existing.sha256 != row.sha256 || existing.size != row.size {
+				_ = payloadRows.Close()
+				return fmt.Errorf("conflicting Evidence payload aliases for Project %q path %q", row.projectID, row.managedPath)
+			}
+			if row.createdAt < existing.createdAt {
+				existing.createdAt = row.createdAt
+			}
+			if row.updatedAt > existing.updatedAt {
+				existing.updatedAt = row.updatedAt
+			}
+			if existing.state == "active" || row.state == "active" {
+				existing.state = "active"
+				existing.gcContinuation = ""
+				existing.gcIdempotency = ""
+			} else if row.gcContinuation+"\x00"+row.gcIdempotency < existing.gcContinuation+"\x00"+existing.gcIdempotency {
+				existing.gcContinuation = row.gcContinuation
+				existing.gcIdempotency = row.gcIdempotency
+			}
+			continue
+		}
+		byIdentity[identity] = len(payloads)
+		payloads = append(payloads, row)
+	}
+	if err := payloadRows.Err(); err != nil {
+		_ = payloadRows.Close()
+		return fmt.Errorf("iterate legacy Evidence payload identities: %w", err)
+	}
+	if err := payloadRows.Close(); err != nil {
+		return fmt.Errorf("close legacy Evidence payload identities: %w", err)
+	}
+
+	type requestPathRow struct {
+		projectID, continuationID, key                     string
+		managedPath, tempPath, previousTemp, migrationTemp string
+	}
+	requestRows, err := tx.Query(`
+		SELECT project_id,continuation_id,idempotency_key,managed_internal_path,
+		       temp_internal_path,previous_temp_internal_path,migration27_temp_internal_path
+		FROM blackboard_v2_evidence_requests`)
+	if err != nil {
+		return fmt.Errorf("read legacy Evidence request paths: %w", err)
+	}
+	var requests []requestPathRow
+	for requestRows.Next() {
+		var row requestPathRow
+		if err := requestRows.Scan(
+			&row.projectID, &row.continuationID, &row.key, &row.managedPath,
+			&row.tempPath, &row.previousTemp, &row.migrationTemp,
+		); err != nil {
+			_ = requestRows.Close()
+			return fmt.Errorf("scan legacy Evidence request paths: %w", err)
+		}
+		row.managedPath = normalizeLegacyWindowsEvidencePath(row.managedPath)
+		row.tempPath = normalizeLegacyWindowsEvidencePath(row.tempPath)
+		row.previousTemp = normalizeLegacyWindowsEvidencePath(row.previousTemp)
+		row.migrationTemp = normalizeLegacyWindowsEvidencePath(row.migrationTemp)
+		requests = append(requests, row)
+	}
+	if err := requestRows.Err(); err != nil {
+		_ = requestRows.Close()
+		return fmt.Errorf("iterate legacy Evidence request paths: %w", err)
+	}
+	if err := requestRows.Close(); err != nil {
+		return fmt.Errorf("close legacy Evidence request paths: %w", err)
+	}
+
+	if _, err := tx.Exec(`DELETE FROM blackboard_v2_evidence_payloads`); err != nil {
+		return fmt.Errorf("clear aliased Evidence payload identities: %w", err)
+	}
+	for _, payload := range payloads {
+		if _, err := tx.Exec(`
+			INSERT INTO blackboard_v2_evidence_payloads
+				(project_id,managed_internal_path,sha256,size_bytes,state,gc_continuation_id,gc_idempotency_key,created_at,updated_at)
+			VALUES (?,?,?,?,?,?,?,?,?)`,
+			payload.projectID, payload.managedPath, payload.sha256, payload.size, payload.state,
+			payload.gcContinuation, payload.gcIdempotency, payload.createdAt, payload.updatedAt,
+		); err != nil {
+			return fmt.Errorf("store canonical Evidence payload identity: %w", err)
+		}
+	}
+	for _, request := range requests {
+		if _, err := tx.Exec(`
+			UPDATE blackboard_v2_evidence_requests
+			SET managed_internal_path=?,temp_internal_path=?,previous_temp_internal_path=?,migration27_temp_internal_path=?
+			WHERE project_id=? AND continuation_id=? AND idempotency_key=?`,
+			request.managedPath, request.tempPath, request.previousTemp, request.migrationTemp,
+			request.projectID, request.continuationID, request.key,
+		); err != nil {
+			return fmt.Errorf("store canonical Evidence request paths: %w", err)
+		}
+	}
+	return execStatements(tx, migration61SQL)
 }
 
 // migration60SQL separates immutable delivery lineage from the semantic
@@ -2986,7 +3132,7 @@ func migration28Up(tx *sql.Tx) error {
 func fixedEvidenceStagingPath(managedPath, continuationID, key, requestHash string) (string, error) {
 	// Evidence journal paths are slash-form contracts, but rows written by
 	// pre-fix Windows builds may hold backslashes; normalize before parsing.
-	managedPath = filepath.ToSlash(managedPath)
+	managedPath = normalizeLegacyWindowsEvidencePath(filepath.ToSlash(managedPath))
 	const marker = "/retained/"
 	index := strings.Index(managedPath, marker)
 	if index <= 0 || len(requestHash) != 64 {

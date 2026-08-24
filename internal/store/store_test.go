@@ -13,7 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/project"
 	"pentest/internal/store"
+	"pentest/internal/task"
 )
 
 // TestOpenRunsMigrationsIdempotently guards against re-running migrations on an
@@ -1320,6 +1322,132 @@ func TestMigration60BackfillsActiveRecoveryDirectiveKindsFromDispatchHistory(t *
 		if got != test.want {
 			t.Errorf("%s directive_kind = %q, want %q", test.id, got, test.want)
 		}
+	}
+}
+
+func TestMigration61NormalizesLegacyWindowsEvidencePathIdentities(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projects := project.NewService(db)
+	createdProject, err := projects.Create("Evidence path migration", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := task.NewService(db, projects)
+	createdTask, err := tasks.Create(task.CreateRequest{
+		ProjectID: createdProject.ID,
+		Type:      task.TypePentest,
+		Goal:      "preserve Evidence ownership",
+		Runner:    task.RunnerHost,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyContinuation, err := tasks.CreateContinuation(createdTask.ID, "profile", "fake", task.RunnerHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalContinuation, err := tasks.CreateContinuation(createdTask.ID, "profile", "fake", task.RunnerHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	digest := strings.Repeat("a", 64)
+	requestHash := strings.Repeat("b", 64)
+	canonicalManaged := "projects/project-hash/retained/" + digest + "/proof.txt"
+	canonicalTemp := "projects/project-hash/.evidence-staging/request/" + requestHash
+	canonicalPrevious := "projects/project-hash/retained/" + digest + "/.proof.txt.stage-old"
+	canonicalMigration27 := "projects/project-hash/.evidence-staging/legacy/" + requestHash
+	legacyManaged := strings.ReplaceAll(canonicalManaged, "/", `\`)
+	legacyTemp := strings.ReplaceAll(canonicalTemp, "/", `\`)
+	legacyPrevious := strings.ReplaceAll(canonicalPrevious, "/", `\`)
+	legacyMigration27 := strings.ReplaceAll(canonicalMigration27, "/", `\`)
+	now := "2026-08-24T12:00:00Z"
+	if _, err := db.Exec(`
+		INSERT INTO blackboard_v2_evidence_payloads
+			(project_id,managed_internal_path,sha256,size_bytes,state,created_at,updated_at)
+		VALUES (?,?,?,?, 'active',?,?)`, createdProject.ID, legacyManaged, digest, 5, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO blackboard_v2_evidence_payloads
+			(project_id,managed_internal_path,sha256,size_bytes,state,gc_continuation_id,gc_idempotency_key,created_at,updated_at)
+		VALUES (?,?,?,?, 'gc',?,?,?,?)`, createdProject.ID, canonicalManaged, digest, 5, canonicalContinuation.ID, "canonical-request", now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO blackboard_v2_evidence_requests
+			(project_id,continuation_id,idempotency_key,request_hash,source_identity,source_sha256,source_size_bytes,
+			 managed_internal_path,temp_internal_path,previous_temp_internal_path,migration27_temp_internal_path,
+			 payload_owned,status,result_json,created_at,updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'completed','{}',?,?)`,
+		createdProject.ID, legacyContinuation.ID, "legacy-request", requestHash, "legacy-source", digest, 5,
+		legacyManaged, legacyTemp, legacyPrevious, legacyMigration27, 1, now, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO blackboard_v2_evidence_requests
+			(project_id,continuation_id,idempotency_key,request_hash,source_identity,source_sha256,source_size_bytes,
+			 managed_internal_path,temp_internal_path,previous_temp_internal_path,migration27_temp_internal_path,
+			 payload_owned,status,result_json,created_at,updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'completed','{}',?,?)`,
+		createdProject.ID, canonicalContinuation.ID, "canonical-request", requestHash, "canonical-source", digest, 5,
+		canonicalManaged, canonicalTemp, canonicalPrevious, canonicalMigration27, 1, now, now,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version=61`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	var payloadCount int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_evidence_payloads WHERE project_id=?`, createdProject.ID).Scan(&payloadCount); err != nil {
+		t.Fatal(err)
+	}
+	if payloadCount != 1 {
+		t.Fatalf("normalized Evidence payload identities = %d, want 1", payloadCount)
+	}
+	var managedPath, state, gcContinuationID, gcKey string
+	if err := reopened.QueryRow(`SELECT managed_internal_path,state,gc_continuation_id,gc_idempotency_key FROM blackboard_v2_evidence_payloads WHERE project_id=?`, createdProject.ID).Scan(&managedPath, &state, &gcContinuationID, &gcKey); err != nil {
+		t.Fatal(err)
+	}
+	if managedPath != canonicalManaged || state != "active" || gcContinuationID != "" || gcKey != "" {
+		t.Fatalf("normalized Evidence payload = path %q state %q gc=(%q,%q)", managedPath, state, gcContinuationID, gcKey)
+	}
+
+	rows, err := reopened.Query(`SELECT managed_internal_path,temp_internal_path,previous_temp_internal_path,migration27_temp_internal_path FROM blackboard_v2_evidence_requests WHERE project_id=? ORDER BY idempotency_key`, createdProject.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	requestCount := 0
+	for rows.Next() {
+		requestCount++
+		var gotManaged, gotTemp, gotPrevious, gotMigration27 string
+		if err := rows.Scan(&gotManaged, &gotTemp, &gotPrevious, &gotMigration27); err != nil {
+			t.Fatal(err)
+		}
+		if gotManaged != canonicalManaged || gotTemp != canonicalTemp || gotPrevious != canonicalPrevious || gotMigration27 != canonicalMigration27 {
+			t.Errorf("normalized Evidence request paths = (%q,%q,%q,%q)", gotManaged, gotTemp, gotPrevious, gotMigration27)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if requestCount != 2 {
+		t.Fatalf("normalized Evidence requests = %d, want 2", requestCount)
 	}
 }
 
