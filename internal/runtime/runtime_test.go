@@ -162,6 +162,7 @@ func TestHarnessRebindContinuationFinalizesReplacementTurn(t *testing.T) {
 }
 
 func TestCommandRuntimeAdapterExecutesProviderProcessAndStreamsOutput(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
 	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: "codex", Runner: task.RunnerHost})
@@ -222,6 +223,7 @@ func TestCommandRuntimeAdapterExecutesProviderProcessAndStreamsOutput(t *testing
 }
 
 func TestCommandRuntimeAdapterRecordsNativeSessionFromClaudeInitOutput(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
 	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: "claude", Runner: task.RunnerHost})
@@ -265,6 +267,7 @@ func TestCommandRuntimeAdapterRecordsNativeSessionFromClaudeInitOutput(t *testin
 }
 
 func TestCommandRuntimeAdapterRecordsNativeSessionFromPiSessionHeader(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
 	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: "pi", Runner: task.RunnerHost})
@@ -320,6 +323,7 @@ func (slowFakeAdapter) Run(ctx context.Context, goal string, emit func(task.Even
 // TestHarnessStopEndsActiveRun proves Stop cancels the active continuation and
 // the task ends in the stopped status.
 func TestCommandRuntimeAdapterContinuesAfterOversizedStdoutLine(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
 	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: "codex", Runner: task.RunnerHost})
@@ -575,6 +579,7 @@ func TestHarnessStopAndWaitConfirmsRuntimeResourcesExited(t *testing.T) {
 }
 
 func TestCommandRuntimeAdapterCancellationReturnsContextCanceled(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "long command", Runner: task.RunnerHost})
@@ -609,6 +614,7 @@ func TestCommandRuntimeAdapterCancellationReturnsContextCanceled(t *testing.T) {
 }
 
 func TestDockerSandboxAdapterRecordsContainerAndStopsByID(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "sandbox task", Runner: task.RunnerSandbox})
@@ -690,6 +696,7 @@ func TestDockerSandboxAdapterRecordsContainerAndStopsByID(t *testing.T) {
 }
 
 func TestDockerSandboxAdapterCreatesMissingRequiredBridgeNetworkBeforeContainerStart(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")
 	networkPath := filepath.Join(dir, "network-created")
@@ -742,6 +749,7 @@ func TestDockerSandboxAdapterCreatesMissingRequiredBridgeNetworkBeforeContainerS
 }
 
 func TestDockerSandboxAdapterRejectsRequiredNetworkWithUnsafeConfiguration(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")
 	docker := filepath.Join(dir, "docker")
@@ -780,6 +788,7 @@ func TestDockerSandboxAdapterRejectsRequiredNetworkWithUnsafeConfiguration(t *te
 }
 
 func TestDockerSandboxAdapterRemovesContainerWhenCanceledBeforeStart(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "docker.log")
 	docker := filepath.Join(dir, "docker")
@@ -831,6 +840,7 @@ func TestDockerSandboxAdapterRemovesContainerWhenCanceledBeforeStart(t *testing.
 }
 
 func TestDockerContainerStopConfirmationTreatsRemovedContainerAsExited(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	cidFile := filepath.Join(dir, "container.cid")
 	if err := os.WriteFile(cidFile, []byte("ctr-123\n"), 0o600); err != nil {
@@ -874,6 +884,7 @@ func TestDockerContainerStopConfirmationTimesOutWhileContainerRuns(t *testing.T)
 }
 
 func TestDockerContainerCleanupTreatsMissingContainerAsSuccess(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	docker := filepath.Join(dir, "docker")
 	script := "#!/bin/sh\n" +

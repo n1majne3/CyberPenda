@@ -2984,13 +2984,16 @@ func migration28Up(tx *sql.Tx) error {
 }
 
 func fixedEvidenceStagingPath(managedPath, continuationID, key, requestHash string) (string, error) {
-	marker := string(filepath.Separator) + "retained" + string(filepath.Separator)
+	// Evidence journal paths are slash-form contracts, but rows written by
+	// pre-fix Windows builds may hold backslashes; normalize before parsing.
+	managedPath = filepath.ToSlash(managedPath)
+	const marker = "/retained/"
 	index := strings.Index(managedPath, marker)
 	if index <= 0 || len(requestHash) != 64 {
 		return "", fmt.Errorf("invalid retained Evidence path")
 	}
 	scope := sha256.Sum256([]byte(continuationID + "\x00" + key))
-	return filepath.Join(managedPath[:index], ".evidence-staging", hex.EncodeToString(scope[:]), requestHash), nil
+	return filepath.ToSlash(filepath.Join(managedPath[:index], ".evidence-staging", hex.EncodeToString(scope[:]), requestHash)), nil
 }
 
 const migration27SQL = `

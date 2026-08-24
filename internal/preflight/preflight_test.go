@@ -12,6 +12,7 @@ import (
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
+	"pentest/internal/runner"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
@@ -488,6 +489,13 @@ func TestRunFailsWhenEnabledSkillBundleIsMissing(t *testing.T) {
 }
 
 func TestRunListsEnabledSkillsWithoutAddingCredentialRequirements(t *testing.T) {
+	if _, err := runner.DetectEngine(context.Background(), "docker", nil); err != nil {
+		// The test asserts an overall-passing preflight, which needs a live
+		// container engine. Windows CI runners ship the docker CLI without a
+		// running engine; GitHub's linux runners have one, so Linux CI still
+		// exercises this assertion.
+		t.Skip("test requires a live container engine (docker info failed)")
+	}
 	svc := newTestServices(t)
 	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
 	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).

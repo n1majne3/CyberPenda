@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -12,6 +13,9 @@ import (
 // persisting projected runtime config files. These files can carry resolved
 // model credentials, so they must always be written owner-read/write only.
 func TestWriteJSONConfigFileUsesSecurePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX owner-only permission bits (0600) do not exist on Windows")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"path/filepath"
 	"testing"
 
 	"pentest/internal/runtimeprofile"
@@ -28,7 +29,9 @@ func TestProjectedHermesHomeMapsSandboxTaskBind(t *testing.T) {
 			"sandbox:test", "hermes", "--yolo", "acp",
 		},
 	})
-	want := "/host/runs/task-1/runtime-home/hermes"
+	// The projected host path uses host-native separators (filepath.Join),
+	// so the wanted value must be converted for the running GOOS.
+	want := filepath.FromSlash("/host/runs/task-1/runtime-home/hermes")
 	if got := ProjectedHermesHome(adapter); got != want {
 		t.Fatalf("ProjectedHermesHome = %q, want %q", got, want)
 	}

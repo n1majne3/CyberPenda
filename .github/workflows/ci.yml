@@ -72,6 +72,9 @@ jobs:
       - name: Verify native executable
         shell: cmd
         run: if not exist pentestd.exe exit /b 1
+      - name: Go tests
+        shell: bash
+        run: make test-ci-windows
 
   app-image:
     runs-on: ubuntu-latest

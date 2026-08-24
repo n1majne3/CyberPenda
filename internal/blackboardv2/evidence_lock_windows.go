@@ -38,3 +38,11 @@ func unlockAndCloseEvidencePublisher(file *os.File) {
 	)
 	_ = file.Close()
 }
+
+// evidenceLockViolation reports whether err is a byte-range lock conflict.
+// LockFileEx blocks other handles' I/O over the locked range even inside the
+// same process, so a fresh read of an actively-journaled evidence file fails
+// this way and must be treated as publication-in-progress, not integrity data.
+func evidenceLockViolation(err error) bool {
+	return errors.Is(err, windows.ERROR_LOCK_VIOLATION)
+}

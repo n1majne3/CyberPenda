@@ -1,0 +1,4 @@
+# Normalize all text to LF on checkout so Windows runners and developers see
+# byte-identical inputs to content-sensitive tests (script templates, corpus
+# digests, Makefile assertions). Binary files are detected automatically.
+* text=auto eol=lf

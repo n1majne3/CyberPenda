@@ -474,6 +474,7 @@ func TestFirstSignalFiresOnEitherClosedOrTerminated(t *testing.T) {
 // no longer collapses to a bare "exit status 1": the captured stderr is
 // appended to the returned error while the *exec.ExitError stays unwrappable.
 func TestDockerCLISandboxBridgeCreateSurfacesStderr(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()
 	docker := filepath.Join(dir, "docker")
 	script := "#!/bin/sh\n" +
