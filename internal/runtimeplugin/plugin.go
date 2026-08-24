@@ -74,6 +74,22 @@ type ConfigProjection struct {
 	Primitive     string `json:"primitive"`
 	ConfigPath    string `json:"config_path,omitempty"`
 	MCPConfigPath string `json:"mcp_config_path,omitempty"`
+	// ManagedKeys declares the provider-native config keys this plugin
+	// re-derives at every projection. Profile Config Import refuses changes
+	// to them and points at the structured field that owns each key.
+	ManagedKeys []ManagedKey `json:"managed_keys,omitempty"`
+}
+
+// ManagedKey is one re-derived config key and the structured field that owns
+// it. Key is a dotted config path within the projected main config file
+// (for example "permissions.allow" or "env.ANTHROPIC_BASE_URL"); a path
+// segment "*" marks every child key under that prefix. Condition
+// "model_provider_resolved" limits enforcement to profiles that resolve a
+// Model Provider, because CyberPenda only derives those keys then.
+type ManagedKey struct {
+	Key       string `json:"key"`
+	Field     string `json:"field"`
+	Condition string `json:"condition,omitempty"`
 }
 
 type LaunchTemplate struct {
@@ -136,6 +152,13 @@ var transcriptParsers = map[string]bool{
 	"hermes_acp":           true,
 }
 
+var managedKeyConditions = map[string]bool{
+	"":                        true,
+	"model_provider_resolved": true,
+}
+
+var managedKeyPathPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_*-]+)*$`)
+
 func Validate(plugin Plugin) error {
 	if plugin.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("%w: schema_version must be %d", ErrInvalidPlugin, SchemaVersion)
@@ -151,6 +174,26 @@ func Validate(plugin Plugin) error {
 	}
 	if !projectionPrimitives[plugin.ConfigProjection.Primitive] {
 		return fmt.Errorf("%w: unknown config projection primitive %q", ErrInvalidPlugin, plugin.ConfigProjection.Primitive)
+	}
+	seenManagedKeys := map[string]bool{}
+	for _, managed := range plugin.ConfigProjection.ManagedKeys {
+		key := strings.TrimSpace(managed.Key)
+		if key == "" {
+			return fmt.Errorf("%w: managed config key path is required", ErrInvalidPlugin)
+		}
+		if !managedKeyPathPattern.MatchString(key) {
+			return fmt.Errorf("%w: invalid managed config key path %q", ErrInvalidPlugin, key)
+		}
+		if strings.TrimSpace(managed.Field) == "" {
+			return fmt.Errorf("%w: managed config key %q has no owning structured field", ErrInvalidPlugin, key)
+		}
+		if !managedKeyConditions[managed.Condition] {
+			return fmt.Errorf("%w: unknown managed config key condition %q", ErrInvalidPlugin, managed.Condition)
+		}
+		if seenManagedKeys[key] {
+			return fmt.Errorf("%w: duplicate managed config key %q", ErrInvalidPlugin, key)
+		}
+		seenManagedKeys[key] = true
 	}
 	if plugin.ModelProvider.Requirement == "" {
 		plugin.ModelProvider.Requirement = "none"

@@ -468,6 +468,14 @@ _Avoid_: all-protocol list, runtime plugin editor
 A previewable task-local config output produced from structured profile fields during **Config Projection**.
 _Avoid_: source of truth, raw profile
 
+**Custom Config File**:
+The per-**Runtime Profile** provider-native raw configuration that holds only keys structured fields cannot express. **Config Projection** deep-merges it over the **Generated Runtime Config**, and structured fields always win conflicts.
+_Avoid_: full config replacement, opaque override, host config edit
+
+**Managed Config Key**:
+A provider-native config key that CyberPenda re-derives at every **Config Projection**, declared per **Runtime Plugin Manifest**. **Profile Config Import** refuses to change it and points to the structured field that owns it.
+_Avoid_: locked key, forbidden setting
+
 **MCP Configuration**:
 Structured runtime interface configuration that defines available project-facing MCP servers for a **Runtime Profile**.
 _Avoid_: raw JSON blob, unvalidated tool config
@@ -481,8 +489,8 @@ A user-added MCP server that is available to a **Runtime** but is not trusted as
 _Avoid_: trusted project interface, built-in server
 
 **Profile Config Import**:
-An advanced action that parses edited runtime config back into structured **Runtime Profile** fields.
-_Avoid_: raw config save, opaque override
+An advanced action that parses an edited runtime config back into structured **Runtime Profile** fields, mapping what structured fields express and storing the remainder in the **Custom Config File**. It refuses **Managed Config Key** changes and secret-shaped values.
+_Avoid_: raw config save, opaque override, host config edit
 
 **Task Runtime Configuration**:
 The task-specific copy of runtime settings captured from a **Runtime Profile** for launching a **Task**, including any **Launch Model Override** applied at launch.

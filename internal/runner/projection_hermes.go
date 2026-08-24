@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"pentest/internal/modelprovider"
 	"pentest/internal/runtimeprofile"
 )
@@ -53,7 +55,10 @@ func projectHermesHome(layout Layout, profile runtimeprofile.Profile, req Projec
 	}
 
 	configPath := filepath.Join(layout.ProviderHome, "config.yaml")
-	configYAML := buildHermesConfigYAML(profile, projected, mcpServers, string(effort))
+	configYAML, err := applyHermesConfigOverlay(profile, buildHermesConfigYAML(profile, projected, mcpServers, string(effort)))
+	if err != nil {
+		return ConfigProjection{}, err
+	}
 	if err := os.WriteFile(configPath, []byte(configYAML), 0o600); err != nil {
 		return ConfigProjection{}, fmt.Errorf("write hermes config: %w", err)
 	}
@@ -88,8 +93,36 @@ func projectHermesHome(layout Layout, profile runtimeprofile.Profile, req Projec
 	return ConfigProjection{ConfigPath: configPath, Config: preview}, nil
 }
 
-// ensureHermesSkillsDir leaves a PrepareSandboxSkills symlink in place. MkdirAll
-// follows a broken host-side /task/skills link and then fails with EEXIST.
+// applyHermesConfigOverlay deep-merges the Custom Config File over the
+// generated Hermes config.yaml text and re-encodes YAML with comments lost
+// only where the overlay rewrote the subtree. Structured keys always win.
+func applyHermesConfigOverlay(profile runtimeprofile.Profile, generatedYAML string) (string, error) {
+	if strings.TrimSpace(profile.Fields.CustomConfigFile) == "" {
+		return generatedYAML, nil
+	}
+	var generated map[string]any
+	if err := yaml.Unmarshal([]byte(generatedYAML), &generated); err != nil {
+		return "", fmt.Errorf("parse generated hermes config: %w", err)
+	}
+	if generated == nil {
+		generated = map[string]any{}
+	}
+	merged, err := applyConfigOverlay(profile.Provider, generated, profile.Fields.CustomConfigFile)
+	if err != nil {
+		return "", fmt.Errorf("apply custom config file: %w", err)
+	}
+	var b strings.Builder
+	encoder := yaml.NewEncoder(&b)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(merged); err != nil {
+		return "", fmt.Errorf("encode merged hermes config: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return "", fmt.Errorf("finalize merged hermes config: %w", err)
+	}
+	return b.String(), nil
+}
+
 func ensureHermesSkillsDir(providerHome string) error {
 	skillsDir := filepath.Join(providerHome, "skills")
 	if _, err := os.Lstat(skillsDir); err == nil {

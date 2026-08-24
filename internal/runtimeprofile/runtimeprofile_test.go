@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
 )
@@ -20,7 +21,28 @@ func newTestService(t *testing.T) *runtimeprofile.Service {
 			t.Fatalf("close store: %v", err)
 		}
 	})
-	return runtimeprofile.NewService(db)
+	service := runtimeprofile.NewService(db)
+	// Managed Config Keys come from the Runtime Plugin Manifests, exactly as
+	// the daemon injects them.
+	registry := runtimeplugin.MustBuiltinRegistry()
+	declarations := map[runtimeprofile.Provider][]runtimeprofile.ManagedKeyDeclaration{}
+	for _, id := range registry.IDs() {
+		plugin, ok := registry.Get(id)
+		if !ok || len(plugin.ConfigProjection.ManagedKeys) == 0 {
+			continue
+		}
+		list := make([]runtimeprofile.ManagedKeyDeclaration, 0, len(plugin.ConfigProjection.ManagedKeys))
+		for _, managed := range plugin.ConfigProjection.ManagedKeys {
+			list = append(list, runtimeprofile.ManagedKeyDeclaration{
+				Key:       managed.Key,
+				Field:     managed.Field,
+				Condition: managed.Condition,
+			})
+		}
+		declarations[runtimeprofile.Provider(id)] = list
+	}
+	service.SetManagedKeyDeclarations(declarations)
+	return service
 }
 
 func TestCreateDefaultsToManualKind(t *testing.T) {
@@ -214,7 +236,7 @@ func TestUpdatePreservesUntouchedFields(t *testing.T) {
 	}
 
 	// Update only the name; fields omitted so the existing structured fields stay.
-	updated, err := service.Update(created.ID, "Codex Renamed", "", runtimeprofile.Fields{}, false)
+	updated, err := service.Update(created.ID, "Codex Renamed", "", runtimeprofile.Fields{}, false, false)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -241,7 +263,7 @@ func TestUpdateReplacesFieldsWhenTouched(t *testing.T) {
 	}
 
 	newFields := runtimeprofile.Fields{Model: "gpt-5.5"}
-	updated, err := service.Update(created.ID, "Codex", "", newFields, true)
+	updated, err := service.Update(created.ID, "Codex", "", newFields, true, false)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -274,6 +296,7 @@ func TestUpdateClearsInlineAPIKeysWhenModelProviderSelected(t *testing.T) {
 		"",
 		runtimeprofile.Fields{ModelProviderID: "mimo", ModelOverride: "mimo-v2-flash"},
 		true,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -299,7 +322,7 @@ func TestUpdateRejectsBlankName(t *testing.T) {
 
 	// Blank name keeps the existing name rather than erroring, since the HTTP
 	// layer treats blank as "omit". Verify it stays the original name.
-	updated, err := service.Update(created.ID, "   ", "", runtimeprofile.Fields{}, false)
+	updated, err := service.Update(created.ID, "   ", "", runtimeprofile.Fields{}, false, false)
 	if err != nil {
 		t.Fatalf("update with blank name should preserve name, got: %v", err)
 	}
@@ -315,7 +338,7 @@ func TestUpdateRejectsUnknownProvider(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	_, err = service.Update(created.ID, "Original", "not-real", runtimeprofile.Fields{}, false)
+	_, err = service.Update(created.ID, "Original", "not-real", runtimeprofile.Fields{}, false, false)
 	if !errors.Is(err, runtimeprofile.ErrUnknownProvider) {
 		t.Fatalf("expected ErrUnknownProvider, got %v", err)
 	}

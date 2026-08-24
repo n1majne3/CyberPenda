@@ -623,14 +623,15 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 
 func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string) (taskLaunchPlan, error) {
 	server.logTaskLaunchStage(created, "build_plan")
-	profile, err := server.profiles.Get(created.RuntimeProfileID)
+	profile, err := server.resolveTaskRuntimeProfile(created)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
 	if server.blackboardV2Continuity != nil && runner.BlackboardV2SupportsProvider(profile.Provider) {
 		return server.prepareBlackboardV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, profile)
 	}
-	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, nil)
+	seed := &taskLaunchPlan{ResolvedProfile: profile}
+	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, seed)
 }
 
 func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string, profile runtimeprofile.Profile) (taskLaunchPlan, error) {
@@ -721,7 +722,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	var capturedModelSnapshot *modelprovider.Snapshot
 	var materializedCredentials map[string]string
 	var globalSnapshot *runner.GlobalModelProviderSnapshot
-	if captured != nil {
+	if captured != nil && strings.TrimSpace(captured.ResolvedProfile.ID) != "" && captured.GlobalModelProviderSnapshot != nil {
 		profile = captured.ResolvedProfile
 		skillBundles = append([]skill.Bundle(nil), captured.SkillBundles...)
 		capturedModelSnapshot = captured.ModelSnapshot
@@ -729,9 +730,13 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		globalSnapshot = captured.GlobalModelProviderSnapshot
 	} else {
 		var err error
-		profile, err = server.profiles.Get(created.RuntimeProfileID)
-		if err != nil {
-			return taskLaunchPlan{}, err
+		if captured != nil && strings.TrimSpace(captured.ResolvedProfile.ID) != "" {
+			profile = captured.ResolvedProfile
+		} else {
+			profile, err = server.resolveTaskRuntimeProfile(created)
+			if err != nil {
+				return taskLaunchPlan{}, err
+			}
 		}
 		// Non-v2 / first-pass path: list before any projection so Pi never
 		// re-enters modelProviders.Service mid-transaction.
@@ -760,7 +765,10 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, LaunchReasoningEffort: launchReasoningEffort, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal}, nil
 	}
-	if captured == nil {
+	// Do not re-enter SQLite from BindGrant: that callback runs under
+	// CreateContinuation's open transaction. Load skills only on the
+	// first-pass path that has not already captured them.
+	if captured == nil || captured.GlobalModelProviderSnapshot == nil {
 		var err error
 		skillBundles, err = server.skills.EnabledSkillBundles(profile.ID)
 		if err != nil {
@@ -1105,6 +1113,11 @@ func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile
 		"runner":             created.Runner,
 		"generated_config":   generatedConfig,
 	}
+	// The imported Custom Config File is captured so continuations reproduce the
+	// same effective config even if the profile's Custom Config File changes.
+	// Empty is captured too: a launch with no overlay must not pick up a later
+	// profile edit.
+	captured["custom_config_file"] = profile.Fields.CustomConfigFile
 	if modelSnapshot != nil {
 		captured["model_provider_snapshot"] = modelSnapshot
 	}
@@ -3608,6 +3621,27 @@ func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, 
 	if strings.TrimSpace(input.ReasoningEffort) != "" {
 		config["reasoning_effort"] = string(requestedEffort)
 	}
+	// Carry the captured Custom Config File forward so a later turn
+	// selection on the same profile does not drop the overlay that launch
+	// pinned. An explicit switch to another profile captures that
+	// profile's overlay instead.
+	if _, present := config["custom_config_file"]; !present {
+		if requestedProfile.ID == found.RuntimeProfileID {
+			versions, versionErr := server.tasks.RuntimeConfigVersions(found.ID)
+			copied := false
+			if versionErr == nil && len(versions) > 0 {
+				if previous, ok := versions[len(versions)-1].Config["custom_config_file"].(string); ok {
+					config["custom_config_file"] = previous
+					copied = true
+				}
+			}
+			if !copied {
+				config["custom_config_file"] = requestedProfile.Fields.CustomConfigFile
+			}
+		} else {
+			config["custom_config_file"] = requestedProfile.Fields.CustomConfigFile
+		}
+	}
 	recorded, err := server.tasks.RecordRuntimeConfig(found.ID, requestedProfile.ID, config)
 	if err != nil {
 		writeTaskError(response, err)
@@ -4046,21 +4080,37 @@ func (server *Server) resolveTaskRuntimeProfile(found task.Task) (runtimeprofile
 	if err != nil {
 		return runtimeprofile.Profile{}, err
 	}
+	var capturedOverlay string
+	var capturedOverlayPresent bool
 	if len(versions) > 0 {
 		latest := versions[len(versions)-1]
 		if strings.TrimSpace(latest.RuntimeProfileID) != "" {
 			profileID = latest.RuntimeProfileID
 		}
+		if overlay, ok := latest.Config["custom_config_file"].(string); ok {
+			capturedOverlay = overlay
+			capturedOverlayPresent = true
+		}
 	}
 	profile, err := server.profiles.Get(profileID)
 	if err == nil {
+		if capturedOverlayPresent {
+			profile.Fields.CustomConfigFile = capturedOverlay
+		}
 		return profile, nil
 	}
 	// A Task's captured Task Runtime Configuration is self-contained, so a
 	// deleted Runtime Profile must not make the Task unreadable. Fall back to
 	// the Task's own launch Runtime Profile; when that is also gone, resolve
 	// to a zero profile so render paths degrade instead of failing the page.
-	return server.profileOrFallback(profileID, found.RuntimeProfileID)
+	fallback, fallbackErr := server.profileOrFallback(profileID, found.RuntimeProfileID)
+	if fallbackErr != nil {
+		return runtimeprofile.Profile{}, fallbackErr
+	}
+	if capturedOverlayPresent {
+		fallback.Fields.CustomConfigFile = capturedOverlay
+	}
+	return fallback, nil
 }
 
 // profileOrFallback resolves id, then fallbackID when id's Runtime Profile was
