@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -1943,6 +1944,12 @@ func syncEvidenceDirectory(root *os.Root) error {
 	directory, err := root.Open(".")
 	if err != nil {
 		return fmt.Errorf("open managed Evidence directory for sync: %w", err)
+	}
+	// Windows cannot fsync a directory handle (golang/go#47366); the rename
+	// already made the published file visible, so skip the durability sync.
+	if runtime.GOOS == "windows" {
+		_ = directory.Close()
+		return nil
 	}
 	if err := directory.Sync(); err != nil {
 		_ = directory.Close()
