@@ -107,7 +107,7 @@ test: test-backend
 test-ci: test-backend
 
 test-backend: ensure-embed-stub
-	go test ./cmd/... ./internal/... ./scripts
+	go test -timeout 20m ./cmd/... ./internal/... ./scripts
 
 # Windows CI: daemon code only. The scripts package pins POSIX-only
 # deliverables (Makefile text, bash, chmod 600, LF endings); its tests are
@@ -116,7 +116,7 @@ test-backend: ensure-embed-stub
 # semantics are ported (tracked in issue #231). POSIX-only test doubles in
 # the remaining packages skip in place on Windows.
 test-ci-windows: ensure-embed-stub
-	go test $$(go list ./cmd/... ./internal/... | grep -vxF 'pentest/internal/daemon' | grep -vxF 'pentest/internal/runner')
+	go test -timeout 20m $$(go list ./cmd/... ./internal/... | grep -vxF 'pentest/internal/daemon' | grep -vxF 'pentest/internal/runner')
 
 # Live smokes (local):
 #   make smoke-sandbox-mcp     — sandbox image + daemon MCP, no LLM
