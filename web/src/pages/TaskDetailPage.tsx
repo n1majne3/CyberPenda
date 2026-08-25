@@ -419,7 +419,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       const container = conversationViewport.current;
       if (container) settleConversationBottom(container);
     }
-  }, [activeView, history.transcript.length, settleConversationBottom]);
+    // autoFollow is a dependency because enabling follow re-renders with the
+    // end-anchored virtual window; the synchronous settle in scrollToLatest
+    // ran on the previous layout and must be repeated on the taller one.
+  }, [activeView, autoFollow, history.transcript.length, settleConversationBottom]);
 
   // Virtualized rendering window for the conversation transcript (#202): DOM
   // size stays bounded while older history pages accumulate in state. The

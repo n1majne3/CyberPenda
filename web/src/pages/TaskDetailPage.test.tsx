@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useEffect } from "react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
@@ -656,6 +656,37 @@ describe("TaskDetailPage", () => {
 
     await user.click(screen.getByRole("button", { name: "Scroll Timeline to bottom" }));
     expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ top: 9000 }));
+  });
+
+  it("re-settles the conversation bottom after scroll-to-latest re-anchors the window", async () => {
+    const user = userEvent.setup();
+    stubTaskDetailApi();
+    const scrollTo = vi.fn();
+    const restoreViewport = mockConversationViewport({ scrollHeight: () => 20000, scrollTo });
+
+    try {
+      renderPage();
+
+      const workspace = await screen.findByTestId("conversation-workspace");
+      // Reading upward ends auto-follow so the button click must restore it.
+      fireEvent.wheel(workspace, { deltaY: -120 });
+      await waitFor(() =>
+        screen.getByRole("button", { name: /scroll to latest \(auto-follow off\)/i }),
+      );
+      const callsBeforeClick = scrollTo.mock.calls.length;
+
+      await user.click(screen.getByRole("button", { name: /scroll to latest/i }));
+
+      // The click settles synchronously on the pre-render layout; flipping
+      // auto-follow re-renders with the end-anchored window, and the settle
+      // effect must run again so the view lands on the real bottom.
+      await waitFor(() => {
+        expect(scrollTo.mock.calls.length).toBeGreaterThan(callsBeforeClick + 1);
+      });
+      expect(scrollTo).toHaveBeenLastCalledWith(expect.objectContaining({ top: 20000 }));
+    } finally {
+      restoreViewport();
+    }
   });
 
   it("shows the latest continuation summary when present", async () => {

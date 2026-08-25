@@ -75,12 +75,14 @@ export function useVirtualWindow(options: {
     return { startIndex: 0, endIndex: itemCount, spacerBefore: 0, spacerAfter: 0, virtualized: false };
   }
   const height = viewportHeight > 0 ? viewportHeight : estimateHeight * 10;
-  if (anchorEnd) {
-    // Transcript rows have variable heights. While auto-follow is active, the
-    // real scrollTop can be much larger than the estimated total height. Do
-    // not derive an item index from that unstable ratio. Keep one bounded
-    // window anchored to the final items instead.
-    const windowSize = Math.ceil(height / estimateHeight) + OVERSCAN * 2;
+  const windowSize = Math.ceil(height / estimateHeight) + OVERSCAN * 2;
+  const derivedStart = Math.max(0, Math.floor(scrollTop / estimateHeight) - OVERSCAN);
+  // Transcript rows have variable heights. A tall tail row (a long final
+  // output) makes the real bottom scrollTop far larger than the estimated
+  // total, so the ratio-derived start can reach or pass the end and the slice
+  // would render nothing while the layout collapses onto bare spacers. Once
+  // the derived window reaches the end, anchor it to the final items instead.
+  if (anchorEnd || derivedStart + windowSize >= itemCount) {
     const startIndex = Math.max(0, itemCount - windowSize);
     return {
       startIndex,
@@ -90,12 +92,11 @@ export function useVirtualWindow(options: {
       virtualized: true,
     };
   }
-  const startIndex = Math.max(0, Math.floor(scrollTop / estimateHeight) - OVERSCAN);
   const endIndex = Math.min(itemCount, Math.ceil((scrollTop + height) / estimateHeight) + OVERSCAN);
   return {
-    startIndex,
+    startIndex: derivedStart,
     endIndex,
-    spacerBefore: startIndex * estimateHeight,
+    spacerBefore: derivedStart * estimateHeight,
     spacerAfter: (itemCount - endIndex) * estimateHeight,
     virtualized: true,
   };
