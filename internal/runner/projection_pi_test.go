@@ -18,6 +18,11 @@ import (
 
 func TestProjectPiConfigWritesModelsAndAuth(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+	// copyHostPiModels falls back to the host home when no global projection
+	// exists; isolate both Unix and Windows home variables so this test locks
+	// the generated fallback document, not the developer's ~/.pi.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
 	if err != nil {
@@ -134,6 +139,7 @@ func TestProjectPiConfigWritesModelsAndAuth(t *testing.T) {
 func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
 	if err != nil {
@@ -214,6 +220,7 @@ func TestProjectPiConfigMergesHostSettingsPackages(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 	hostHome := t.TempDir()
 	t.Setenv("HOME", hostHome)
+	t.Setenv("USERPROFILE", hostHome)
 
 	hostPiDir := filepath.Join(hostHome, ".pi", "agent")
 	if err := os.MkdirAll(hostPiDir, 0o700); err != nil {
@@ -749,4 +756,127 @@ func TestProjectedConfigTextMatchesPiLaunchReadyGlobals(t *testing.T) {
 			t.Fatalf("preview missing launched provider %q: shown=%#v launched=%#v", id, shown.Providers, launched.Providers)
 		}
 	}
+}
+
+// TestProjectPiModelsDeclareReasoningCapability locks the Requested Reasoning
+// Effort contract: Pi clamps set_thinking_level to "off" and omits
+// reasoning_effort from provider requests when a models.json entry lacks
+// reasoning metadata. Every projected model entry, in both the global
+// projection path and the single-provider legacy path, must declare reasoning
+// support and identity-map xhigh/max so the complete CyberPenda effort
+// vocabulary (low, medium, high, xhigh, max) passes through to the provider.
+func TestProjectPiModelsDeclareReasoningCapability(t *testing.T) {
+	assertReasoningEntries := func(t *testing.T, modelsPath, providerID string) {
+		t.Helper()
+		modelsRaw, err := os.ReadFile(modelsPath)
+		if err != nil {
+			t.Fatalf("read models.json: %v", err)
+		}
+		var doc struct {
+			Providers map[string]struct {
+				Models []struct {
+					ID               string         `json:"id"`
+					Reasoning        bool           `json:"reasoning"`
+					ThinkingLevelMap map[string]any `json:"thinkingLevelMap"`
+				} `json:"models"`
+			} `json:"providers"`
+		}
+		if err := json.Unmarshal(modelsRaw, &doc); err != nil {
+			t.Fatalf("decode models.json: %v", err)
+		}
+		provider, ok := doc.Providers[providerID]
+		if !ok {
+			t.Fatalf("missing provider %q in %#v", providerID, doc.Providers)
+		}
+		if len(provider.Models) == 0 {
+			t.Fatalf("provider %q has no models", providerID)
+		}
+		for _, model := range provider.Models {
+			if !model.Reasoning {
+				t.Fatalf("model %q must declare reasoning:true: %#v", model.ID, model)
+			}
+			if model.ThinkingLevelMap["xhigh"] != "xhigh" || model.ThinkingLevelMap["max"] != "max" {
+				t.Fatalf("model %q must identity-map xhigh/max: %#v", model.ID, model.ThinkingLevelMap)
+			}
+		}
+	}
+
+	t.Run("global projection", func(t *testing.T) {
+		db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		providers := modelprovider.NewService(db)
+		primary, err := providers.Create(modelprovider.CreateRequest{
+			Name:    "Reasoning Gateway",
+			BaseURL: "https://reasoning.example.test/v1",
+			Protocols: []modelprovider.Protocol{
+				modelprovider.ProtocolOpenAIChatCompletions,
+			},
+			Catalog: modelprovider.Catalog{
+				Manual:       []string{"gpt-reasoning", "gpt-reasoning-large"},
+				DefaultModel: "gpt-reasoning",
+			},
+		})
+		if err != nil {
+			t.Fatalf("create primary: %v", err)
+		}
+		t.Setenv(primary.APIKeyEnv, "sk-reasoning-test")
+
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-reasoning", runtimeprofile.ProviderPi)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		profile := runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields: runtimeprofile.Fields{
+				ModelProviderID: primary.ID,
+			},
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+			ModelProviders: providers,
+		}); err != nil {
+			t.Fatalf("project config: %v", err)
+		}
+		assertReasoningEntries(t, filepath.Join(layout.ProviderHome, "agent", "models.json"), primary.ID)
+	})
+
+	t.Run("legacy single provider", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("USERPROFILE", t.TempDir())
+		db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		creds := credential.NewService(db)
+		if _, err := creds.Upsert("anthropic-key", credential.ScopeGlobal, "", credential.Source{
+			Kind:  credential.SourceEnv,
+			Value: "ANTHROPIC_API_KEY",
+		}, false); err != nil {
+			t.Fatalf("upsert binding: %v", err)
+		}
+
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-legacy", runtimeprofile.ProviderPi)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		profile := runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields: runtimeprofile.Fields{
+				Model:          "claude-sonnet-4",
+				Endpoint:       "https://proxy.example.test/anthropic",
+				CredentialRefs: []string{"anthropic-key"},
+			},
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+			Owner:       owner.NewTaskContract("task-pi-legacy", "project-1", layout.Workdir),
+			Credentials: creds,
+		}); err != nil {
+			t.Fatalf("project config: %v", err)
+		}
+		assertReasoningEntries(t, filepath.Join(layout.ProviderHome, "agent", "models.json"), "custom")
+	})
 }

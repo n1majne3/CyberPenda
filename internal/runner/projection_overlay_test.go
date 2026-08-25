@@ -180,6 +180,11 @@ func TestHermesConfigYAMLOverlayMergesExtraKeys(t *testing.T) {
 }
 
 func TestPiModelsJSONOverlayMergesCustomModels(t *testing.T) {
+	// Without global projection the host ~/.pi/agent/models.json is copied;
+	// isolate both Unix and Windows home variables so the overlay lands on the
+	// generated fallback document.
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 	layout, _ := projectForTest(t, runtimeprofile.ProviderPi)
 	profile := runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderPi,

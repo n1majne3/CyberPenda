@@ -1011,6 +1011,19 @@ func redactCodexAuth(auth map[string]string) map[string]any {
 	return out
 }
 
+// piModelEntry projects one models.json model entry. Pi clamps
+// set_thinking_level to "off" — and reasoning_effort never reaches the
+// provider request — for entries without reasoning metadata. The identity
+// xhigh/max mapping is required because Pi treats those two levels as
+// unavailable unless thinkingLevelMap declares them.
+func piModelEntry(modelID string) map[string]any {
+	return map[string]any{
+		"id":               modelID,
+		"reasoning":        true,
+		"thinkingLevelMap": map[string]any{"xhigh": "xhigh", "max": "max"},
+	}
+}
+
 func buildPiModels(profile runtimeprofile.Profile, materialized map[string]string) map[string]any {
 	providerID := piProviderID(profile)
 
@@ -1025,7 +1038,7 @@ func buildPiModels(profile runtimeprofile.Profile, materialized map[string]strin
 		provider["apiKey"] = apiKeyRef
 	}
 	if profile.Fields.Model != "" {
-		provider["models"] = []map[string]any{{"id": profile.Fields.Model}}
+		provider["models"] = []map[string]any{piModelEntry(profile.Fields.Model)}
 	}
 
 	return map[string]any{
@@ -1214,7 +1227,7 @@ func buildPiModelsFromProjected(projected []piProjectedProvider) map[string]any 
 	for _, entry := range projected {
 		models := make([]map[string]any, 0, len(entry.Models))
 		for _, modelID := range entry.Models {
-			models = append(models, map[string]any{"id": modelID})
+			models = append(models, piModelEntry(modelID))
 		}
 		provider := map[string]any{
 			"baseUrl": strings.TrimRight(entry.Endpoint.BaseURL, "/"),
