@@ -110,9 +110,17 @@ export function ModelProvidersPage() {
     }
   }
 
-  // Initial load. load() is async, so every setState it dispatches runs after an
-  // await (never synchronous in the effect body); the rule cannot prove that, so
-  // it is suppressed for this canonical fetch-on-mount pattern.
+  async function loadCapabilityCacheStatus() {
+    try {
+      const status = await apiGet<{ refreshed_at?: string }>("/api/model-capability-cache");
+      setCacheRefreshedAt(status.refreshed_at ?? "");
+    } catch {
+      // Cache status is advisory; the form still works without it.
+    }
+  }
+
+  // Initial load. Both async loaders dispatch state updates only after an await;
+  // the rule cannot prove that for this canonical fetch-on-mount pattern.
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
     void load();
@@ -148,10 +156,7 @@ export function ModelProvidersPage() {
   const models = Array.from(new Set([...baseModels, ...manualModels, ...extraModels])).sort();
   const catalogModelKey = models.join("\0");
   useEffect(() => {
-    if (!catalogModelKey) {
-      setCacheHints({});
-      return;
-    }
+    if (!catalogModelKey) return;
     const ids = catalogModelKey.split("\0").filter(Boolean);
     let cancelled = false;
     apiPost<{ limits?: Record<string, { context_window?: number; max_output_tokens?: number }> }>(
@@ -230,15 +235,6 @@ export function ModelProvidersPage() {
       setError((e as Error).message);
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function loadCapabilityCacheStatus() {
-    try {
-      const status = await apiGet<{ refreshed_at?: string }>("/api/model-capability-cache");
-      setCacheRefreshedAt(status.refreshed_at ?? "");
-    } catch {
-      // Cache status is advisory; the form still works without it.
     }
   }
 
