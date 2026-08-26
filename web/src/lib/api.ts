@@ -452,6 +452,7 @@ export interface ModelProvider {
     manual?: string[];
     refreshed?: string[];
     default_model?: string;
+    limits?: Record<string, { context_window?: number; max_output_tokens?: number }>;
   };
   created_at?: string;
   updated_at?: string;

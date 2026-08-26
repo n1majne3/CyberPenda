@@ -24,6 +24,16 @@ func projectForTest(t *testing.T, provider runtimeprofile.Provider) (runner.Layo
 	return layout, func() {}
 }
 
+// isolatePiHostHome points HOME and USERPROFILE at one empty temp dir so
+// copyHostPiModels cannot read the developer's ~/.pi.
+func isolatePiHostHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
+}
+
 func readJSONFile(t *testing.T, path string) map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -180,11 +190,8 @@ func TestHermesConfigYAMLOverlayMergesExtraKeys(t *testing.T) {
 }
 
 func TestPiModelsJSONOverlayMergesCustomModels(t *testing.T) {
-	// Without global projection the host ~/.pi/agent/models.json is copied;
-	// isolate both Unix and Windows home variables so the overlay lands on the
-	// generated fallback document.
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("USERPROFILE", t.TempDir())
+	// Without Global Model Projection the host ~/.pi/agent/models.json is copied.
+	isolatePiHostHome(t)
 	layout, _ := projectForTest(t, runtimeprofile.ProviderPi)
 	profile := runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderPi,

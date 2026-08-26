@@ -1,5 +1,10 @@
 import type { CredentialBinding, ModelProvider } from "@/lib/api";
 
+export type CatalogLimitFields = {
+  context_window?: string;
+  max_output_tokens?: string;
+};
+
 export type ModelProviderForm = {
   name: string;
   base_url: string;
@@ -7,7 +12,9 @@ export type ModelProviderForm = {
   endpoint_base_urls: Record<string, string>;
   manual_models: string;
   default_model: string;
+  refreshed_models?: string[];
   api_key: string;
+  limits?: Record<string, CatalogLimitFields>;
 };
 
 export function canSubmitModelProvider(
@@ -43,11 +50,17 @@ export function providerToModelProviderForm(provider: ModelProvider, binding?: C
     endpoint_base_urls: endpointBaseURLs,
     manual_models: (provider.catalog?.manual ?? []).join("\n"),
     default_model: provider.catalog?.default_model ?? "",
+    refreshed_models: provider.catalog?.refreshed ?? [],
     api_key: binding?.source.kind === "literal" && binding.source.value === "[configured]" ? "[configured]" : "",
+    limits: catalogLimitsToForm(provider.catalog?.limits),
   };
 }
 
 export function buildModelProviderPayload(form: ModelProviderForm) {
+  const limits = formLimitsPayload(form.limits, [
+    ...splitLines(form.manual_models),
+    ...(form.refreshed_models ?? []),
+  ]);
   return {
     name: form.name,
     base_url: normalizedBaseURL(form.base_url),
@@ -58,8 +71,46 @@ export function buildModelProviderPayload(form: ModelProviderForm) {
     catalog: {
       manual: splitLines(form.manual_models),
       default_model: form.default_model || undefined,
+      ...(limits ? { limits } : {}),
     },
   };
+}
+
+function catalogLimitsToForm(
+  limits?: Record<string, { context_window?: number; max_output_tokens?: number }>,
+): Record<string, CatalogLimitFields> {
+  const out: Record<string, CatalogLimitFields> = {};
+  for (const [id, value] of Object.entries(limits ?? {})) {
+    out[id] = {
+      context_window: value.context_window ? String(value.context_window) : "",
+      max_output_tokens: value.max_output_tokens ? String(value.max_output_tokens) : "",
+    };
+  }
+  return out;
+}
+
+function formLimitsPayload(
+  limits: Record<string, CatalogLimitFields> | undefined,
+  modelIDs: string[],
+): Record<string, { context_window?: number; max_output_tokens?: number }> | undefined {
+  const known = new Set(modelIDs);
+  const out: Record<string, { context_window?: number; max_output_tokens?: number }> = {};
+  for (const id of known) {
+    const row = limits?.[id];
+    const window = parseLimit(row?.context_window);
+    const output = parseLimit(row?.max_output_tokens);
+    if (window || output) {
+      out[id] = {};
+      if (window) out[id].context_window = window;
+      if (output) out[id].max_output_tokens = output;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function parseLimit(raw?: string): number | undefined {
+  const value = Number.parseInt((raw ?? "").trim(), 10);
+  return Number.isInteger(value) && value >= 1 ? value : undefined;
 }
 
 export function endpointValidationErrors(

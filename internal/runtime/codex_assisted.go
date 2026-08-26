@@ -103,7 +103,9 @@ func (s *CodexProviderSession) InterruptThenReplace(ctx context.Context, request
 // normalizer.
 func (s *CodexProviderSession) HandleEvent(event SandboxBridgeEvent, emit ProviderSessionEmit) {
 	method := strings.ToLower(strings.TrimSpace(event.Method))
-	if !strings.HasPrefix(method, "item/") {
+	if strings.HasPrefix(method, "item/") {
+		s.emitCodexRuntimeOutput(event, emit)
+	} else {
 		actualEmit := emit
 		if actualEmit == nil {
 			s.providerSessionAdapter.mu.Lock()
@@ -129,6 +131,50 @@ func (s *CodexProviderSession) HandleEvent(event SandboxBridgeEvent, emit Provid
 	if assistedEvent, ok := parseCodexAssistedEvent(method, event.Params); ok {
 		s.acceptCodexAssisted(assistedEvent)
 	}
+}
+
+func (s *CodexProviderSession) emitCodexRuntimeOutput(event SandboxBridgeEvent, emit ProviderSessionEmit) {
+	if strings.ToLower(strings.TrimSpace(event.Method)) != "item/completed" || len(event.Params) == 0 {
+		return
+	}
+	params := map[string]any{}
+	if json.Unmarshal(event.Params, &params) != nil {
+		return
+	}
+	item, ok := params["item"].(map[string]any)
+	if !ok {
+		return
+	}
+	switch strings.ToLower(providerJSONValue(item, "type")) {
+	case "agentmessage":
+		if providerJSONValue(item, "text") == "" {
+			return
+		}
+	case "commandexecution", "mcptoolcall", "filechange", "websearch":
+	default:
+		return
+	}
+	if emit == nil {
+		s.mu.Lock()
+		emit = s.eventSink
+		s.mu.Unlock()
+	}
+	if emit == nil {
+		return
+	}
+	sessionID := providerJSONValue(params, "threadId", "thread_id")
+	if sessionID == "" {
+		sessionID = s.SessionID()
+	}
+	turnID := providerJSONValue(params, "turnId", "turn_id")
+	if turnID == "" {
+		turnID = s.currentTurn()
+	}
+	emit(task.EventKindRuntimeOutput, task.EventPayload{
+		"provider": s.provider, "provider_event": event.Method,
+		"session_id": sessionID, "provider_turn_id": turnID,
+		"stream": "codex_app_server", "text": string(event.Params),
+	})
 }
 
 func (s *CodexProviderSession) acceptCodexAssisted(event codexAssistedEvent) {

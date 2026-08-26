@@ -18,11 +18,9 @@ import (
 
 func TestProjectPiConfigWritesModelsAndAuth(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
-	// copyHostPiModels falls back to the host home when no global projection
-	// exists; isolate both Unix and Windows home variables so this test locks
-	// the generated fallback document, not the developer's ~/.pi.
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("USERPROFILE", t.TempDir())
+	// copyHostPiModels falls back to the host home when no Global Model
+	// Projection exists.
+	isolatePiHostHome(t)
 
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
 	if err != nil {
@@ -138,8 +136,7 @@ func TestProjectPiConfigWritesModelsAndAuth(t *testing.T) {
 // into the pi agent settings.json packages field, so pi installs them on launch.
 func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("USERPROFILE", t.TempDir())
+	isolatePiHostHome(t)
 
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
 	if err != nil {
@@ -218,9 +215,7 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 // settings.json packages list.
 func TestProjectPiConfigMergesHostSettingsPackages(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
-	hostHome := t.TempDir()
-	t.Setenv("HOME", hostHome)
-	t.Setenv("USERPROFILE", hostHome)
+	hostHome := isolatePiHostHome(t)
 
 	hostPiDir := filepath.Join(hostHome, ".pi", "agent")
 	if err := os.MkdirAll(hostPiDir, 0o700); err != nil {
@@ -587,7 +582,7 @@ func TestProjectPiConfigHostModelsIgnoredWhenGlobalProjectionAvailable(t *testin
 		}
 	}
 	if ids == nil {
-		t.Fatalf("expected projected_model_provider_ids when global projection ran, got %#v", projection.Config["projected_model_provider_ids"])
+		t.Fatalf("expected projected_model_provider_ids when Global Model Projection ran, got %#v", projection.Config["projected_model_provider_ids"])
 	}
 	if len(ids) != 0 {
 		t.Fatalf("expected empty projected set, got %#v", ids)
@@ -761,8 +756,8 @@ func TestProjectedConfigTextMatchesPiLaunchReadyGlobals(t *testing.T) {
 // TestProjectPiModelsDeclareReasoningCapability locks the Requested Reasoning
 // Effort contract: Pi clamps set_thinking_level to "off" and omits
 // reasoning_effort from provider requests when a models.json entry lacks
-// reasoning metadata. Every projected model entry, in both the global
-// projection path and the single-provider legacy path, must declare reasoning
+// reasoning metadata. Every projected model entry, in both the Global Model
+// Projection path and the single-provider legacy path, must declare reasoning
 // support and identity-map xhigh/max so the complete CyberPenda effort
 // vocabulary (low, medium, high, xhigh, max) passes through to the provider.
 func TestProjectPiModelsDeclareReasoningCapability(t *testing.T) {
@@ -801,7 +796,7 @@ func TestProjectPiModelsDeclareReasoningCapability(t *testing.T) {
 		}
 	}
 
-	t.Run("global projection", func(t *testing.T) {
+	t.Run("Global Model Projection", func(t *testing.T) {
 		db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
 		if err != nil {
 			t.Fatalf("open store: %v", err)
@@ -844,8 +839,7 @@ func TestProjectPiModelsDeclareReasoningCapability(t *testing.T) {
 
 	t.Run("legacy single provider", func(t *testing.T) {
 		t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
-		t.Setenv("HOME", t.TempDir())
-		t.Setenv("USERPROFILE", t.TempDir())
+		isolatePiHostHome(t)
 		db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
 		if err != nil {
 			t.Fatalf("open store: %v", err)
@@ -879,4 +873,79 @@ func TestProjectPiModelsDeclareReasoningCapability(t *testing.T) {
 		}
 		assertReasoningEntries(t, filepath.Join(layout.ProviderHome, "agent", "models.json"), "custom")
 	})
+}
+
+func TestProjectPiModelsWriteResolvedContextWindowAndMaxTokens(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	providers := modelprovider.NewService(db)
+	created, err := providers.Create(modelprovider.CreateRequest{
+		Name:    "Limits Gateway",
+		BaseURL: "https://limits.example.test/v1",
+		Protocols: []modelprovider.Protocol{
+			modelprovider.ProtocolOpenAIChatCompletions,
+		},
+		Catalog: modelprovider.Catalog{
+			Manual:       []string{"cached-model", "override-model"},
+			DefaultModel: "cached-model",
+			Limits: map[string]modelprovider.CatalogLimits{
+				"override-model": {ContextWindow: 999999, MaxOutputTokens: 1111},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(created.APIKeyEnv, "sk-limits")
+	cache := modelprovider.NewCapabilityCache(map[string]modelprovider.CatalogLimits{
+		"cached-model": {ContextWindow: 200000, MaxOutputTokens: 32000},
+	}, "", nil)
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-limits", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderPi,
+		Fields:   runtimeprofile.Fields{ModelProviderID: created.ID},
+	}, runner.ProjectionRequest{
+		ModelProviders:  providers,
+		CapabilityCache: cache,
+	}); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "agent", "models.json"))
+	if err != nil {
+		t.Fatalf("read models.json: %v", err)
+	}
+	var doc struct {
+		Providers map[string]struct {
+			Models []struct {
+				ID            string `json:"id"`
+				ContextWindow int    `json:"contextWindow"`
+				MaxTokens     int    `json:"maxTokens"`
+			} `json:"models"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byID := map[string]struct {
+		ContextWindow int
+		MaxTokens     int
+	}{}
+	for _, model := range doc.Providers[created.ID].Models {
+		byID[model.ID] = struct {
+			ContextWindow int
+			MaxTokens     int
+		}{model.ContextWindow, model.MaxTokens}
+	}
+	if byID["cached-model"].ContextWindow != 200000 || byID["cached-model"].MaxTokens != 32000 {
+		t.Fatalf("cache model = %#v", byID["cached-model"])
+	}
+	if byID["override-model"].ContextWindow != 999999 || byID["override-model"].MaxTokens != 1111 {
+		t.Fatalf("override model = %#v", byID["override-model"])
+	}
 }

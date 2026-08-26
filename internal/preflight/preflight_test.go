@@ -1120,6 +1120,55 @@ func TestRunPreviewsSelectedEndpointBaseURLWithoutSecrets(t *testing.T) {
 	}
 }
 
+func TestRunReportsCatalogAndCacheLimitSourcesWithoutFailing(t *testing.T) {
+	svc := newTestServices(t)
+	cache := modelprovider.NewCapabilityCache(map[string]modelprovider.CatalogLimits{
+		"glm": {ContextWindow: 200000, MaxOutputTokens: 32000},
+	}, "", nil)
+	svc.preflight.WithCapabilityCache(cache)
+	t.Setenv("GLM_API_KEY", "sk-test")
+	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
+		Name:    "GLM",
+		BaseURL: "https://api.example.test/v1",
+		Endpoints: []modelprovider.Endpoint{
+			{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://api.example.test/api/anthropic"},
+		},
+		Catalog: modelprovider.Catalog{
+			Manual:       []string{"glm"},
+			DefaultModel: "glm",
+			Limits:       map[string]modelprovider.CatalogLimits{"glm": {ContextWindow: 1048576}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	profile, err := svc.profiles.Create("Claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+		ModelProviderID: provider.ID,
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	result := svc.preflight.Run(context.Background(), preflight.Request{RuntimeProfileID: profile.ID, ProjectID: "p1"})
+	if !result.Pass {
+		t.Fatalf("expected pass, got %#v", result.Checks)
+	}
+	if result.ModelProvider.ContextWindow != 1048576 || result.ModelProvider.ContextWindowSource != modelprovider.LimitSourceCatalog {
+		t.Fatalf("window preview = %#v", result.ModelProvider)
+	}
+	if result.ModelProvider.MaxOutputTokens != 32000 || result.ModelProvider.MaxOutputTokensSource != modelprovider.LimitSourceCapabilityCache {
+		t.Fatalf("output preview = %#v", result.ModelProvider)
+	}
+	// The preview is non-secret: the materialized API key value must never
+	// appear anywhere in the encoded result.
+	encoded, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("encode result: %v", err)
+	}
+	if strings.Contains(string(encoded), "sk-preview-secret-value") {
+		t.Fatalf("preflight preview leaked API key value: %s", encoded)
+	}
+}
+
 // TestRunFailsWhenProtocolPinHasNoCompatibleEndpoint locks the contract that a
 // strict Runtime Profile protocol pin surfaces as a Preflight failure when the
 // provider no longer has a compatible endpoint, rather than silently falling

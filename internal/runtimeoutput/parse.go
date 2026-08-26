@@ -42,15 +42,21 @@ func ParseRecord(record map[string]any, opts ParseOptions, createdAt time.Time) 
 		}
 	}
 
-	recordType := stringValue(record, "type")
+	recordType := strings.ToLower(stringValue(record, "type"))
 	switch recordType {
 	case "system":
 		if isIgnorableSystemRecord(record) {
 			return nil
 		}
 		return parseMessageRecord(record, opts, roleFromType(recordType), createdAt)
-	case "assistant", "user", "message", "assistant_message", "agent_message", "response.output_text", "output_text", "message_delta", "content_block_delta":
+	case "assistant", "user", "message", "assistant_message", "agent_message", "agentmessage", "response.output_text", "output_text", "message_delta", "content_block_delta":
 		return parseMessageRecord(record, opts, roleFromType(recordType), createdAt)
+	case "commandexecution":
+		return parseCodexCommandExecution(record, createdAt)
+	case "mcptoolcall":
+		return parseCodexMCPToolCall(record, createdAt)
+	case "usermessage", "reasoning":
+		return nil
 	case "tool_call", "function_call", "tool_use":
 		return []Turn{toolUseTurn(record, createdAt)}
 	case "tool_result", "function_call_output":
@@ -142,6 +148,72 @@ func parseContentBlocks(content []any, opts ParseOptions, role string, createdAt
 		}
 	}
 	return turns
+}
+
+func parseCodexCommandExecution(record map[string]any, createdAt time.Time) []Turn {
+	command := firstText(record, "command")
+	output := firstText(record, "aggregatedOutput", "aggregated_output", "output")
+	id := firstText(record, "id")
+	if command == "" && output == "" && id == "" {
+		return nil
+	}
+	use := Turn{
+		Kind:         KindToolUse,
+		Role:         roleAssistant,
+		Tool:         "command_execution",
+		ToolCallID:   id,
+		Input:        nilIfEmpty(map[string]any{"command": command}),
+		Details:      nilIfEmpty(map[string]any{"command": command}),
+		ContentIndex: -1,
+		CreatedAt:    createdAt,
+	}
+	status := strings.ToLower(firstText(record, "status"))
+	if output == "" && (status == "" || status == "inprogress" || status == "in_progress") {
+		return []Turn{use}
+	}
+	return []Turn{use, Turn{
+		Kind:         KindToolResult,
+		Role:         roleTool,
+		Tool:         "command_execution",
+		ToolCallID:   id,
+		Output:       output,
+		ContentIndex: -1,
+		CreatedAt:    createdAt,
+	}}
+}
+
+func parseCodexMCPToolCall(record map[string]any, createdAt time.Time) []Turn {
+	name := firstText(record, "tool", "toolName", "tool_name", "name")
+	if name == "" {
+		return nil
+	}
+	if !strings.HasPrefix(name, "mcp__") {
+		if server := firstText(record, "server", "serverName", "server_name"); server != "" {
+			name = "mcp__" + server + "__" + name
+		}
+	}
+	id := firstText(record, "id")
+	use := Turn{
+		Kind:         KindToolUse,
+		Role:         roleAssistant,
+		Tool:         name,
+		ToolCallID:   id,
+		ContentIndex: -1,
+		CreatedAt:    createdAt,
+	}
+	status := strings.ToLower(firstText(record, "status"))
+	if status == "" || status == "inprogress" || status == "in_progress" {
+		return []Turn{use}
+	}
+	return []Turn{use, Turn{
+		Kind:         KindToolResult,
+		Role:         roleTool,
+		Tool:         name,
+		ToolCallID:   id,
+		Output:       firstText(record, "aggregatedOutput", "aggregated_output", "output", "result", "content"),
+		ContentIndex: -1,
+		CreatedAt:    createdAt,
+	}}
 }
 
 func toolUseTurn(record map[string]any, createdAt time.Time) Turn {

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -57,6 +58,9 @@ type ProjectionRequest struct {
 	// under. Preview rendering uses it to show redacted placeholders from
 	// metadata only — no credential value ever enters preview text.
 	CredentialEnvNames []string
+	// CapabilityCache resolves Model Context Window and Max Output Tokens
+	// when a Catalog override is empty. Nil means no cache lookup.
+	CapabilityCache modelprovider.CapabilityLookup
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -102,6 +106,7 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 			ProjectID:           req.Owner.ProjectID,
 			CheckEnv:            true,
 			LaunchModelOverride: req.LaunchModelOverride,
+			CapabilityCache:     req.CapabilityCache,
 		})
 		if err != nil {
 			return ConfigProjection{}, err
@@ -351,6 +356,7 @@ func resolvePreviewProfile(profile runtimeprofile.Profile, req ProjectionRequest
 		Credentials:         req.Credentials,
 		CheckEnv:            false,
 		LaunchModelOverride: req.LaunchModelOverride,
+		CapabilityCache:     req.CapabilityCache,
 	})
 	if err != nil || snapshot.ModelProviderID == "" {
 		return profile
@@ -542,7 +548,11 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 	}
 
 	configPath := filepath.Join(layout.ProviderHome, "config.toml")
-	configTOML, err := applyCodexConfigOverlay(profile, buildCodexConfigTOML(profile, mcpServers))
+	catalogPath, err := writeCodexModelCatalog(layout, profile, req)
+	if err != nil {
+		return ConfigProjection{}, err
+	}
+	configTOML, err := applyCodexConfigOverlay(profile, buildCodexConfigTOML(profile, mcpServers, req, catalogPath))
 	if err != nil {
 		return ConfigProjection{}, err
 	}
@@ -659,10 +669,10 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	var modelsDoc map[string]any
 	var authDoc map[string]map[string]string
 	if len(projected) > 0 {
-		modelsDoc = buildPiModelsFromProjected(projected)
+		modelsDoc = buildPiModelsFromProjected(projected, req)
 		authDoc = buildPiAuthFromProjected(projected, materialized)
 	} else {
-		modelsDoc = buildPiModels(profile, materialized)
+		modelsDoc = buildPiModels(profile, materialized, req)
 		authDoc = buildPiAuth(profile, materialized)
 	}
 	modelsDoc, err = applyConfigOverlay(profile.Provider, modelsDoc, profile.Fields.CustomConfigFile)
@@ -946,12 +956,89 @@ func cloneMaterializedCredentials(source map[string]string) map[string]string {
 	return cloned
 }
 
-func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimeprofile.MCPServer) string {
+func writeCodexModelCatalog(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (string, error) {
+	modelID := strings.TrimSpace(profile.Fields.Model)
+	if req.ModelSnapshot != nil && strings.TrimSpace(req.ModelSnapshot.Model) != "" {
+		modelID = strings.TrimSpace(req.ModelSnapshot.Model)
+	}
+	if override := strings.TrimSpace(req.LaunchModelOverride); override != "" {
+		modelID = override
+	}
+	limits := resolveLaunchModelLimits(profile, req)
+	if modelID == "" || (limits.ContextWindow < 1 && limits.MaxOutputTokens < 1) {
+		return "", nil
+	}
+	hostPath := filepath.Join(layout.ProviderHome, "model_catalog.json")
+	if err := writeJSONConfigFile(hostPath, buildCodexModelCatalog(modelID, limits)); err != nil {
+		return "", fmt.Errorf("write codex model catalog: %w", err)
+	}
+	if req.Sandbox {
+		return "/task/runtime-home/codex/model_catalog.json", nil
+	}
+	return hostPath, nil
+}
+
+func buildCodexModelCatalog(modelID string, limits modelprovider.ResolvedLimits) map[string]any {
+	contextWindow := limits.ContextWindow
+	if contextWindow < 1 {
+		contextWindow = 128000
+	}
+	entry := map[string]any{
+		"slug":                    modelID,
+		"display_name":            modelID,
+		"base_instructions":       "You are Codex, a coding agent.",
+		"default_reasoning_level": "high",
+		"supported_reasoning_levels": []any{
+			map[string]any{"effort": "low", "description": "Low reasoning effort"},
+			map[string]any{"effort": "medium", "description": "Medium reasoning effort"},
+			map[string]any{"effort": "high", "description": "High reasoning effort"},
+			map[string]any{"effort": "xhigh", "description": "Extra high reasoning effort"},
+			map[string]any{"effort": "max", "description": "Maximum reasoning effort"},
+		},
+		"shell_type":                           "shell_command",
+		"visibility":                           "list",
+		"supported_in_api":                     true,
+		"priority":                             0,
+		"include_skills_usage_instructions":    false,
+		"include_plugin_usage_instructions":    false,
+		"include_apps_usage_instructions":      false,
+		"supports_reasoning_summaries":         true,
+		"supports_reasoning_summary_parameter": true,
+		"default_reasoning_summary":            "none",
+		"support_verbosity":                    false,
+		"default_verbosity":                    "low",
+		"apply_patch_tool_type":                "freeform",
+		"web_search_tool_type":                 "text_and_image",
+		"truncation_policy":                    map[string]any{"mode": "tokens", "limit": 10000},
+		"supports_parallel_tool_calls":         true,
+		"supports_image_detail_original":       false,
+		"context_window":                       contextWindow,
+		"max_context_window":                   contextWindow,
+		"effective_context_window_percent":     95,
+		"experimental_supported_tools":         []any{},
+		"input_modalities":                     []any{"text"},
+		"supports_search_tool":                 false,
+		"use_responses_lite":                   false,
+	}
+	return map[string]any{"models": []any{entry}}
+}
+
+func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimeprofile.MCPServer, req ProjectionRequest, modelCatalogPath string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "approval_policy = %q\n", "never")
 	fmt.Fprintf(&b, "sandbox_mode = %q\n", "danger-full-access")
 	if profile.Fields.Model != "" {
 		fmt.Fprintf(&b, "model = %q\n", profile.Fields.Model)
+	}
+	limits := resolveLaunchModelLimits(profile, req)
+	if limits.ContextWindow >= 1 {
+		fmt.Fprintf(&b, "model_context_window = %d\n", limits.ContextWindow)
+	}
+	if limits.MaxOutputTokens >= 1 {
+		fmt.Fprintf(&b, "model_max_output_tokens = %d\n", limits.MaxOutputTokens)
+	}
+	if strings.TrimSpace(modelCatalogPath) != "" {
+		fmt.Fprintf(&b, "model_catalog_json = %q\n", modelCatalogPath)
 	}
 
 	endpoint := strings.TrimSpace(profile.Fields.Endpoint)
@@ -999,6 +1086,41 @@ func buildCodexAuth(materialized map[string]string) map[string]string {
 	return auth
 }
 
+func resolveLaunchModelLimits(profile runtimeprofile.Profile, req ProjectionRequest) modelprovider.ResolvedLimits {
+	modelID := strings.TrimSpace(profile.Fields.Model)
+	if req.ModelSnapshot != nil && strings.TrimSpace(req.ModelSnapshot.Model) != "" {
+		modelID = strings.TrimSpace(req.ModelSnapshot.Model)
+	}
+	if override := strings.TrimSpace(req.LaunchModelOverride); override != "" {
+		modelID = override
+	}
+	return modelprovider.ResolveLimits(modelID, launchModelCatalog(profile, req), req.CapabilityCache)
+}
+
+func launchModelCatalog(profile runtimeprofile.Profile, req ProjectionRequest) modelprovider.Catalog {
+	providerID := strings.TrimSpace(profile.Fields.ModelProviderID)
+	if req.ModelSnapshot != nil && strings.TrimSpace(req.ModelSnapshot.ModelProviderID) != "" {
+		providerID = strings.TrimSpace(req.ModelSnapshot.ModelProviderID)
+	}
+	if providerID == "" {
+		return modelprovider.Catalog{}
+	}
+	if req.GlobalModelProviderSnapshot != nil {
+		for _, provider := range req.GlobalModelProviderSnapshot.Providers {
+			if provider.ID == providerID {
+				return provider.Catalog
+			}
+		}
+	}
+	if req.ModelProviders != nil {
+		provider, err := req.ModelProviders.Get(providerID)
+		if err == nil {
+			return provider.Catalog
+		}
+	}
+	return modelprovider.Catalog{}
+}
+
 func redactCodexAuth(auth map[string]string) map[string]any {
 	out := make(map[string]any, len(auth))
 	for key, value := range auth {
@@ -1016,15 +1138,23 @@ func redactCodexAuth(auth map[string]string) map[string]any {
 // provider request — for entries without reasoning metadata. The identity
 // xhigh/max mapping is required because Pi treats those two levels as
 // unavailable unless thinkingLevelMap declares them.
-func piModelEntry(modelID string) map[string]any {
-	return map[string]any{
+func piModelEntry(modelID string, catalog modelprovider.Catalog, cache modelprovider.CapabilityLookup) map[string]any {
+	entry := map[string]any{
 		"id":               modelID,
 		"reasoning":        true,
 		"thinkingLevelMap": map[string]any{"xhigh": "xhigh", "max": "max"},
 	}
+	resolved := modelprovider.ResolveLimits(modelID, catalog, cache)
+	if resolved.ContextWindow >= 1 {
+		entry["contextWindow"] = resolved.ContextWindow
+	}
+	if resolved.MaxOutputTokens >= 1 {
+		entry["maxTokens"] = resolved.MaxOutputTokens
+	}
+	return entry
 }
 
-func buildPiModels(profile runtimeprofile.Profile, materialized map[string]string) map[string]any {
+func buildPiModels(profile runtimeprofile.Profile, materialized map[string]string, req ProjectionRequest) map[string]any {
 	providerID := piProviderID(profile)
 
 	provider := map[string]any{}
@@ -1038,7 +1168,7 @@ func buildPiModels(profile runtimeprofile.Profile, materialized map[string]strin
 		provider["apiKey"] = apiKeyRef
 	}
 	if profile.Fields.Model != "" {
-		provider["models"] = []map[string]any{piModelEntry(profile.Fields.Model)}
+		provider["models"] = []map[string]any{piModelEntry(profile.Fields.Model, launchModelCatalog(profile, req), req.CapabilityCache)}
 	}
 
 	return map[string]any{
@@ -1222,12 +1352,12 @@ func mergePiProjectedCredentials(materialized map[string]string, projected []piP
 	return out, nil
 }
 
-func buildPiModelsFromProjected(projected []piProjectedProvider) map[string]any {
+func buildPiModelsFromProjected(projected []piProjectedProvider, req ProjectionRequest) map[string]any {
 	providers := make(map[string]any, len(projected))
 	for _, entry := range projected {
 		models := make([]map[string]any, 0, len(entry.Models))
 		for _, modelID := range entry.Models {
-			models = append(models, piModelEntry(modelID))
+			models = append(models, piModelEntry(modelID, entry.Provider.Catalog, req.CapabilityCache))
 		}
 		provider := map[string]any{
 			"baseUrl": strings.TrimRight(entry.Endpoint.BaseURL, "/"),
@@ -1472,6 +1602,10 @@ func buildClaudeEnv(profile runtimeprofile.Profile, req ProjectionRequest) (map[
 	}
 	for key, value := range materialized {
 		env[key] = value
+	}
+	limits := resolveLaunchModelLimits(profile, req)
+	if limits.MaxOutputTokens >= 1 && strings.TrimSpace(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]) == "" {
+		env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = strconv.Itoa(limits.MaxOutputTokens)
 	}
 	if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" {
 		value := strings.TrimSpace(os.Getenv(req.ModelSnapshot.APIKeyEnv))

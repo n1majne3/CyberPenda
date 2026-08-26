@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"pentest/internal/credential"
+	"pentest/internal/modelprovider"
 	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -84,6 +85,35 @@ func TestProjectClaudeSettingsWritesEnvAndMaterializedCredentials(t *testing.T) 
 	}
 	if previewEnv["ANTHROPIC_AUTH_TOKEN"] != "[REDACTED]" {
 		t.Fatalf("expected redacted token in preview, got %#v", previewEnv["ANTHROPIC_AUTH_TOKEN"])
+	}
+}
+
+func TestProjectClaudeSettingsWritesResolvedMaxOutputTokens(t *testing.T) {
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-claude-limits", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	cache := modelprovider.NewCapabilityCache(map[string]modelprovider.CatalogLimits{
+		"claude-sonnet": {ContextWindow: 200000, MaxOutputTokens: 64000},
+	}, "", nil)
+	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Fields:   runtimeprofile.Fields{Model: "claude-sonnet"},
+	}, runner.ProjectionRequest{CapabilityCache: cache}); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var settings struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if settings.Env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] != "64000" {
+		t.Fatalf("max output env = %#v", settings.Env)
 	}
 }
 

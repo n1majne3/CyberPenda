@@ -42,9 +42,10 @@ var validProtocols = map[Protocol]bool{
 }
 
 type Catalog struct {
-	Manual       []string `json:"manual,omitempty"`
-	Refreshed    []string `json:"refreshed,omitempty"`
-	DefaultModel string   `json:"default_model,omitempty"`
+	Manual       []string                 `json:"manual,omitempty"`
+	Refreshed    []string                 `json:"refreshed,omitempty"`
+	DefaultModel string                   `json:"default_model,omitempty"`
+	Limits       map[string]CatalogLimits `json:"limits,omitempty"`
 }
 
 type Endpoint struct {
@@ -89,6 +90,7 @@ var (
 	ErrInvalidEndpointBaseURL    = errors.New("model provider endpoint base URL is invalid")
 	ErrInUse                     = errors.New("model provider is referenced by a runtime profile")
 	ErrCatalogResponseTooLarge   = errors.New("model catalog response exceeds size limit")
+	ErrInvalidCatalogLimits      = errors.New("model catalog limits are invalid")
 )
 
 // NewCatalogHTTPClient returns the bounded production client for Model
@@ -121,10 +123,14 @@ func (s *Service) Create(req CreateRequest) (Provider, error) {
 		BaseURL:   baseURL,
 		Protocols: protocolsForEndpoints(endpoints),
 		Endpoints: endpoints,
-		Catalog:   normalizeCatalog(req.Catalog),
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+	catalog, err := normalizeCatalog(req.Catalog)
+	if err != nil {
+		return Provider{}, err
+	}
+	created.Catalog = catalog
 	created.APIKeyEnv = APIKeyEnv(created.ID)
 	if err := s.insert(created); err != nil {
 		return Provider{}, err
@@ -203,7 +209,11 @@ func (s *Service) Update(id string, req UpdateRequest) (Provider, error) {
 		existing.Endpoints = endpoints
 	}
 	if req.Catalog != nil {
-		existing.Catalog = mergeCatalog(existing.Catalog, *req.Catalog)
+		merged, err := mergeCatalog(existing.Catalog, *req.Catalog)
+		if err != nil {
+			return Provider{}, err
+		}
+		existing.Catalog = merged
 	}
 	existing = withEndpointCompatibility(existing)
 	existing.UpdatedAt = time.Now().UTC()
@@ -428,7 +438,11 @@ func scanProvider(row interface{ Scan(dest ...any) error }) (Provider, error) {
 		return Provider{}, fmt.Errorf("parse updated_at: %w", errParse)
 	}
 	provider.APIKeyEnv = APIKeyEnv(provider.ID)
-	provider.Catalog = normalizeCatalog(provider.Catalog)
+	catalog, catalogErr := normalizeCatalog(provider.Catalog)
+	if catalogErr != nil {
+		return Provider{}, catalogErr
+	}
+	provider.Catalog = catalog
 	provider, err = normalizeScannedProvider(provider)
 	if err != nil {
 		return Provider{}, err
@@ -703,20 +717,31 @@ func APIKeyEnv(providerID string) string {
 	return strings.Join(nonEmpty, "_") + "_API_KEY"
 }
 
-func mergeCatalog(existing, incoming Catalog) Catalog {
-	incoming = normalizeCatalog(incoming)
+func mergeCatalog(existing, incoming Catalog) (Catalog, error) {
+	incoming = incomingCatalogForMerge(incoming)
 	next := Catalog{
 		Manual:       incoming.Manual,
 		Refreshed:    existing.Refreshed,
 		DefaultModel: incoming.DefaultModel,
+		Limits:       existing.Limits,
 	}
 	if len(incoming.Refreshed) > 0 {
 		next.Refreshed = incoming.Refreshed
 	}
+	if incoming.Limits != nil {
+		next.Limits = incoming.Limits
+	}
 	return normalizeCatalog(next)
 }
 
-func normalizeCatalog(catalog Catalog) Catalog {
+func incomingCatalogForMerge(incoming Catalog) Catalog {
+	incoming.Manual = uniqueSortedStrings(incoming.Manual)
+	incoming.Refreshed = uniqueSortedStrings(incoming.Refreshed)
+	incoming.DefaultModel = strings.TrimSpace(incoming.DefaultModel)
+	return incoming
+}
+
+func normalizeCatalog(catalog Catalog) (Catalog, error) {
 	catalog.Manual = uniqueSortedStrings(catalog.Manual)
 	catalog.Refreshed = uniqueSortedStrings(catalog.Refreshed)
 	refreshed := set(catalog.Refreshed)
@@ -728,7 +753,39 @@ func normalizeCatalog(catalog Catalog) Catalog {
 	}
 	catalog.Manual = manual
 	catalog.DefaultModel = strings.TrimSpace(catalog.DefaultModel)
-	return catalog
+	known := set(catalog.Models())
+	if len(catalog.Limits) == 0 {
+		catalog.Limits = nil
+		return catalog, nil
+	}
+	next := make(map[string]CatalogLimits, len(catalog.Limits))
+	for id, limits := range catalog.Limits {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if !known[id] {
+			return Catalog{}, fmt.Errorf("%w: unknown model %q", ErrInvalidCatalogLimits, id)
+		}
+		if limits.ContextWindow < 0 || limits.MaxOutputTokens < 0 {
+			return Catalog{}, fmt.Errorf("%w: model %q", ErrInvalidCatalogLimits, id)
+		}
+		cleaned := CatalogLimits{}
+		if limits.ContextWindow >= 1 {
+			cleaned.ContextWindow = limits.ContextWindow
+		}
+		if limits.MaxOutputTokens >= 1 {
+			cleaned.MaxOutputTokens = limits.MaxOutputTokens
+		}
+		if cleaned.hasAny() {
+			next[id] = cleaned
+		}
+	}
+	if len(next) == 0 {
+		next = nil
+	}
+	catalog.Limits = next
+	return catalog, nil
 }
 
 func mergeRefreshed(catalog Catalog, refreshed []string) Catalog {
@@ -736,8 +793,14 @@ func mergeRefreshed(catalog Catalog, refreshed []string) Catalog {
 		Manual:       catalog.Manual,
 		Refreshed:    uniqueSortedStrings(refreshed),
 		DefaultModel: catalog.DefaultModel,
+		Limits:       catalog.Limits,
 	}
-	return normalizeCatalog(next)
+	normalized, err := normalizeCatalog(next)
+	if err != nil {
+		next.Limits = nil
+		normalized, _ = normalizeCatalog(next)
+	}
+	return normalized
 }
 
 func uniqueSortedStrings(values []string) []string {

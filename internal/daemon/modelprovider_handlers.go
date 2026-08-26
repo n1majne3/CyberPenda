@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+	"time"
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
@@ -161,6 +163,58 @@ func (server *Server) materializeModelProviderCredential(envName string) (string
 	return value, true
 }
 
+func (server *Server) handleGetModelCapabilityCache(response http.ResponseWriter, request *http.Request) {
+	refreshedAt, count := time.Time{}, 0
+	if server.capabilityCache != nil {
+		refreshedAt, count = server.capabilityCache.Status()
+	}
+	payload := struct {
+		RefreshedAt string `json:"refreshed_at,omitempty"`
+		EntryCount  int    `json:"entry_count"`
+	}{EntryCount: count}
+	if !refreshedAt.IsZero() {
+		payload.RefreshedAt = refreshedAt.Format(time.RFC3339Nano)
+	}
+	writeJSON(response, http.StatusOK, payload)
+}
+
+func (server *Server) handleLookupModelCapabilityCache(response http.ResponseWriter, request *http.Request) {
+	var input struct {
+		IDs []string `json:"ids"`
+	}
+	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	limits := map[string]modelprovider.CatalogLimits{}
+	if server.capabilityCache != nil {
+		for _, id := range input.IDs {
+			id = strings.TrimSpace(id)
+			if id == "" {
+				continue
+			}
+			if got, ok := server.capabilityCache.Lookup(id); ok {
+				limits[id] = got
+			}
+		}
+	}
+	writeJSON(response, http.StatusOK, struct {
+		Limits map[string]modelprovider.CatalogLimits `json:"limits"`
+	}{Limits: limits})
+}
+
+func (server *Server) handleRefreshModelCapabilityCache(response http.ResponseWriter, request *http.Request) {
+	if server.capabilityCache == nil {
+		writeError(response, http.StatusInternalServerError, "model capability cache is unavailable")
+		return
+	}
+	if err := server.capabilityCache.Refresh(request.Context()); err != nil {
+		writeError(response, http.StatusBadGateway, err.Error())
+		return
+	}
+	server.handleGetModelCapabilityCache(response, request)
+}
+
 func writeModelProviderError(response http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, modelprovider.ErrNotFound):
@@ -170,6 +224,8 @@ func writeModelProviderError(response http.ResponseWriter, err error) {
 		errors.Is(err, modelprovider.ErrInvalidProtocol),
 		errors.Is(err, modelprovider.ErrDuplicateEndpointProtocol),
 		errors.Is(err, modelprovider.ErrInvalidEndpointBaseURL):
+		writeError(response, http.StatusBadRequest, err.Error())
+	case errors.Is(err, modelprovider.ErrInvalidCatalogLimits):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, modelprovider.ErrInUse):
 		writeError(response, http.StatusConflict, err.Error())

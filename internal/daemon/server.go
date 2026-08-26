@@ -106,6 +106,7 @@ type Server struct {
 	runtimeExtensions       *runtimeextension.Registry
 	profiles                *runtimeprofile.Service
 	modelProviders          *modelprovider.Service
+	capabilityCache         *modelprovider.CapabilityCache
 	skills                  *skill.Service
 	creds                   *credential.Service
 	modelRefreshClient      *http.Client
@@ -198,6 +199,10 @@ func NewServer(config Config) (*Server, error) {
 		return refs
 	})
 	modelProviders := modelprovider.NewService(db)
+	capabilityOverlayDir := ""
+	if config.DBPath != "" && config.DBPath != ":memory:" {
+		capabilityOverlayDir = filepath.Dir(config.DBPath)
+	}
 	skillsRoot := strings.TrimSpace(config.SkillsRoot)
 	var tempSkillsRoot string
 	if skillsRoot == "" {
@@ -258,6 +263,7 @@ func NewServer(config Config) (*Server, error) {
 	if modelRefreshClient == nil {
 		modelRefreshClient = modelprovider.NewCatalogHTTPClient()
 	}
+	capabilityCache := modelprovider.LoadCapabilityCache(capabilityOverlayDir, modelRefreshClient)
 	server := &Server{
 		mux:                http.NewServeMux(),
 		version:            config.Version,
@@ -269,12 +275,14 @@ func NewServer(config Config) (*Server, error) {
 		runtimeExtensions:  runtimeExtensions,
 		profiles:           profiles,
 		modelProviders:     modelProviders,
+		capabilityCache:    capabilityCache,
 		skills:             skills,
 		creds:              creds,
 		modelRefreshClient: modelRefreshClient,
 		preflight: preflight.NewService(profiles, creds, skills).
 			WithModelProviders(modelProviders, runtimePlugins).
-			WithRuntimeExtensions(runtimeExtensions),
+			WithRuntimeExtensions(runtimeExtensions).
+			WithCapabilityCache(capabilityCache),
 		tasks:                   tasks,
 		steering:                steering.NewService(db),
 		sessionRoot:             sessionRoot(config, runtimeRoot),
@@ -880,6 +888,9 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("PATCH /api/model-providers/{id}", server.handleUpdateModelProvider)
 	server.mux.HandleFunc("DELETE /api/model-providers/{id}", server.handleDeleteModelProvider)
 	server.mux.HandleFunc("POST /api/model-providers/{id}/refresh-models", server.handleRefreshModelProviderModels)
+	server.mux.HandleFunc("GET /api/model-capability-cache", server.handleGetModelCapabilityCache)
+	server.mux.HandleFunc("POST /api/model-capability-cache/lookup", server.handleLookupModelCapabilityCache)
+	server.mux.HandleFunc("POST /api/model-capability-cache/refresh", server.handleRefreshModelCapabilityCache)
 	server.mux.HandleFunc("GET /api/runtime-plugins", server.handleListRuntimePlugins)
 	server.mux.HandleFunc("GET /api/runtime-plugins/{plugin_id}", server.handleGetRuntimePlugin)
 	server.mux.HandleFunc("GET /api/runtime-extensions", server.handleListRuntimeExtensions)
@@ -1373,6 +1384,7 @@ func (server *Server) previewProjectionRequest(profiles ...runtimeprofile.Profil
 		GlobalModelProviderSnapshot: snapshot,
 		DaemonAddr:                  server.listenAddr,
 		CredentialEnvNames:          server.credentialEnvNames(),
+		CapabilityCache:             server.capabilityCache,
 	}
 	// Resolve the preview ModelSnapshot so the editor shows every env the
 	// launch projection materializes, including the Model Provider API-key
@@ -1381,9 +1393,10 @@ func (server *Server) previewProjectionRequest(profiles ...runtimeprofile.Profil
 		profile := profiles[0]
 		if strings.TrimSpace(profile.Fields.ModelProviderID) != "" && server.modelProviders != nil {
 			if resolved, err := modelprovider.Resolve(modelprovider.ResolveRequest{
-				Profile:   profile,
-				Providers: server.modelProviders,
-				Plugins:   server.runtimePlugins,
+				Profile:         profile,
+				Providers:       server.modelProviders,
+				Plugins:         server.runtimePlugins,
+				CapabilityCache: server.capabilityCache,
 			}); err == nil && resolved.ModelProviderID != "" {
 				req.ModelSnapshot = &resolved
 			}
