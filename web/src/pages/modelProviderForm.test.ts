@@ -88,6 +88,41 @@ describe("canSubmitModelProvider", () => {
     });
   });
 
+  it("round-trips catalog limit overrides and omits empty follow-cache fields", () => {
+    const payload = buildModelProviderPayload({
+      name: "Limits",
+      base_url: "https://api.example.test/v1",
+      protocols: ["openai_chat_completions"],
+      endpoint_base_urls: {},
+      manual_models: "gpt-reasoning\ncached-model",
+      default_model: "gpt-reasoning",
+      refreshed_models: [],
+      api_key: "sk-test",
+      limits: {
+        "gpt-reasoning": { context_window: "1048576", max_output_tokens: "128000" },
+        "cached-model": { context_window: "", max_output_tokens: "" },
+      },
+    });
+    expect(payload.catalog).toEqual({
+      manual: ["gpt-reasoning", "cached-model"],
+      default_model: "gpt-reasoning",
+      limits: { "gpt-reasoning": { context_window: 1048576, max_output_tokens: 128000 } },
+    });
+
+    const form = providerToModelProviderForm({
+      id: "limits",
+      name: "Limits",
+      base_url: "https://api.example.test/v1",
+      api_key_env: "LIMITS_API_KEY",
+      catalog: {
+        manual: ["gpt-reasoning"],
+        default_model: "gpt-reasoning",
+        limits: { "gpt-reasoning": { context_window: 1048576, max_output_tokens: 128000 } },
+      },
+    });
+    expect(form.limits["gpt-reasoning"]).toEqual({ context_window: "1048576", max_output_tokens: "128000" });
+  });
+
   it("hydrates forms from endpoint-backed providers without provider-level protocols", () => {
     const form = providerToModelProviderForm({
       id: "split",

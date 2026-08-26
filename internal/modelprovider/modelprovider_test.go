@@ -680,6 +680,57 @@ func seedLegacyProvider(db *store.DB, id, baseURL string, protocols []modelprovi
 	return err
 }
 
+func TestCatalogLimitOverridesPersistAndSurviveNameRefresh(t *testing.T) {
+	svc := modelprovider.NewService(newStore(t))
+	created, err := svc.Create(modelprovider.CreateRequest{
+		Name:      "Gateway",
+		BaseURL:   "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIChatCompletions},
+		Catalog: modelprovider.Catalog{
+			Manual:       []string{"gpt-reasoning", "local-only"},
+			DefaultModel: "gpt-reasoning",
+			Limits: map[string]modelprovider.CatalogLimits{
+				"gpt-reasoning": {ContextWindow: 1048576, MaxOutputTokens: 128000},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if created.Catalog.Limits["gpt-reasoning"].ContextWindow != 1048576 {
+		t.Fatalf("stored limits = %#v", created.Catalog.Limits)
+	}
+
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewBufferString(`{"data":[{"id":"gpt-reasoning"},{"id":"new-model"}]}`)),
+			Header:     http.Header{},
+		}, nil
+	})}
+	t.Setenv(created.APIKeyEnv, "sk-test")
+	refreshed, err := svc.RefreshModels(context.Background(), created.ID, client)
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if refreshed.Catalog.Limits["gpt-reasoning"].MaxOutputTokens != 128000 {
+		t.Fatalf("refresh dropped override: %#v", refreshed.Catalog.Limits)
+	}
+	if _, ok := refreshed.Catalog.Limits["local-only"]; ok {
+		t.Fatalf("removed model kept limits: %#v", refreshed.Catalog.Limits)
+	}
+
+	if _, err := svc.Create(modelprovider.CreateRequest{
+		Name: "Bad Limits",
+		Catalog: modelprovider.Catalog{
+			Manual: []string{"m1"},
+			Limits: map[string]modelprovider.CatalogLimits{"missing": {ContextWindow: 1000}},
+		},
+	}); !errors.Is(err, modelprovider.ErrInvalidCatalogLimits) {
+		t.Fatalf("unknown id error = %v", err)
+	}
+}
+
 func ptr(s string) *string { return &s }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

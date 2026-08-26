@@ -1175,6 +1175,55 @@ func TestProviderSessionAdaptersParseProtocolNotificationsAsRedactedEvents(t *te
 	}
 }
 
+func TestCodexProviderSessionProjectsVisibleRuntimeOutput(t *testing.T) {
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: &fakeProviderTransport{}, SessionID: "thread-1", ActiveTurnID: "turn-1",
+	})
+	var kinds []task.EventKind
+	var events []task.EventPayload
+	emit := func(kind task.EventKind, payload task.EventPayload) {
+		kinds = append(kinds, kind)
+		events = append(events, payload)
+	}
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/completed",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"item-msg","text":"VPN检测未通过"}}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/completed",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"commandExecution","id":"item-cmd","command":"curl http://10.0.100.58","aggregatedOutput":"curl: (52) Empty reply from server\n","status":"failed","exitCode":52}}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/agentMessage/delta",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-msg","delta":"VPN"}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/completed",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"userMessage","id":"item-user","content":[{"type":"text","text":"operator prompt"}]}}`),
+	}, emit)
+
+	if len(events) != 2 {
+		t.Fatalf("runtime events = %#v", events)
+	}
+	for i, kind := range kinds {
+		if kind != task.EventKindRuntimeOutput {
+			t.Fatalf("kind[%d] = %q", i, kind)
+		}
+		if events[i]["provider"] != "codex" || events[i]["stream"] != "codex_app_server" {
+			t.Fatalf("payload[%d] = %#v", i, events[i])
+		}
+		if _, leaked := events[i]["params"]; leaked {
+			t.Fatalf("runtime output leaked protocol params: %#v", events[i])
+		}
+	}
+	if text, _ := events[0]["text"].(string); !strings.Contains(text, "VPN检测未通过") {
+		t.Fatalf("assistant text = %q", events[0]["text"])
+	}
+	if text, _ := events[1]["text"].(string); !strings.Contains(text, "curl http://10.0.100.58") || !strings.Contains(text, "Empty reply") {
+		t.Fatalf("command text = %q", events[1]["text"])
+	}
+}
+
 func TestClaudeProviderSessionProjectsVisibleRuntimeOutput(t *testing.T) {
 	var kinds []task.EventKind
 	var events []task.EventPayload

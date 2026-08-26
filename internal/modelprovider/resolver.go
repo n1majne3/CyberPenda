@@ -30,18 +30,23 @@ type ResolveRequest struct {
 	ProjectID           string
 	CheckEnv            bool
 	LaunchModelOverride string
+	CapabilityCache     CapabilityLookup
 }
 
 type Snapshot struct {
-	ModelProviderID   string   `json:"model_provider_id"`
-	ModelProviderName string   `json:"model_provider_name"`
-	EndpointBaseURL   string   `json:"endpoint_base_url"`
-	BaseURL           string   `json:"base_url"`
-	Protocol          Protocol `json:"protocol"`
-	Model             string   `json:"model"`
-	APIKeyEnv         string   `json:"api_key_env"`
-	APIKeySource      string   `json:"api_key_source"`
-	ProjectionTarget  string   `json:"projection_target"`
+	ModelProviderID       string   `json:"model_provider_id"`
+	ModelProviderName     string   `json:"model_provider_name"`
+	EndpointBaseURL       string   `json:"endpoint_base_url"`
+	BaseURL               string   `json:"base_url"`
+	Protocol              Protocol `json:"protocol"`
+	Model                 string   `json:"model"`
+	APIKeyEnv             string   `json:"api_key_env"`
+	APIKeySource          string   `json:"api_key_source"`
+	ProjectionTarget      string   `json:"projection_target"`
+	ContextWindow         int      `json:"context_window,omitempty"`
+	MaxOutputTokens       int      `json:"max_output_tokens,omitempty"`
+	ContextWindowSource   string   `json:"context_window_source,omitempty"`
+	MaxOutputTokensSource string   `json:"max_output_tokens_source,omitempty"`
 }
 
 var (
@@ -87,16 +92,21 @@ func Resolve(req ResolveRequest) (Snapshot, error) {
 	if req.CheckEnv && !apiKeySourceAvailable(req.Credentials, req.ProjectID, provider.APIKeyEnv) {
 		return Snapshot{}, fmt.Errorf("%w: %s", ErrMissingAPIKeyEnv, provider.APIKeyEnv)
 	}
+	limits := ResolveLimits(model, provider.Catalog, req.CapabilityCache)
 	return Snapshot{
-		ModelProviderID:   provider.ID,
-		ModelProviderName: provider.Name,
-		EndpointBaseURL:   endpoint.BaseURL,
-		BaseURL:           endpoint.BaseURL,
-		Protocol:          protocol,
-		Model:             model,
-		APIKeyEnv:         provider.APIKeyEnv,
-		APIKeySource:      "generated_env",
-		ProjectionTarget:  plugin.ConfigProjection.Primitive,
+		ModelProviderID:       provider.ID,
+		ModelProviderName:     provider.Name,
+		EndpointBaseURL:       endpoint.BaseURL,
+		BaseURL:               endpoint.BaseURL,
+		Protocol:              protocol,
+		Model:                 model,
+		APIKeyEnv:             provider.APIKeyEnv,
+		APIKeySource:          "generated_env",
+		ProjectionTarget:      plugin.ConfigProjection.Primitive,
+		ContextWindow:         limits.ContextWindow,
+		MaxOutputTokens:       limits.MaxOutputTokens,
+		ContextWindowSource:   limits.ContextWindowSource,
+		MaxOutputTokensSource: limits.MaxOutputTokensSource,
 	}, nil
 }
 

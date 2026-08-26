@@ -59,6 +59,7 @@ type Config struct {
 	AutoCompactThreshold int
 	AutoCompactWindow    int
 	MaxOutputTokens      int
+	ContextWindow        int
 }
 
 // HostedEvaluationBootstrap is the complete normal-domain bootstrap request
@@ -84,6 +85,8 @@ type HostedEvaluationBootstrap struct {
 		ReasoningEffort string
 		Env             map[string]string
 		Credentials     map[string]string
+		ContextWindow   int
+		MaxOutputTokens int
 	}
 }
 
@@ -145,6 +148,11 @@ func ConfigFromEnv(env map[string]string) (Config, error) {
 		return Config{}, ErrInvalidConfig
 	}
 	config.MaxOutputTokens = maxOutput
+	contextWindow, err := optionalHostedInt(env["CYBERPENDA_CONTEXT_WINDOW"], 1, MaxHostedMaxOutputTokens)
+	if err != nil {
+		return Config{}, ErrInvalidConfig
+	}
+	config.ContextWindow = contextWindow
 	modelURL, err := url.Parse(config.ModelBaseURL)
 	if err != nil || modelURL.Scheme != "http" || modelURL.User != nil || modelURL.RawQuery != "" || modelURL.Fragment != "" ||
 		!strings.HasSuffix(strings.ToLower(modelURL.Hostname()), ".tsecbench.gw") {
@@ -193,6 +201,10 @@ func evaluationFromConfig(config Config) HostedEvaluationBootstrap {
 	}
 	if config.MaxOutputTokens > 0 {
 		evaluation.Runtime.Env[ClaudeMaxOutputTokens] = strconv.Itoa(config.MaxOutputTokens)
+		evaluation.Runtime.MaxOutputTokens = config.MaxOutputTokens
+	}
+	if config.ContextWindow > 0 {
+		evaluation.Runtime.ContextWindow = config.ContextWindow
 	}
 	evaluation.Runtime.Credentials = map[string]string{"BENCHMARK_TOKEN": config.BenchmarkToken}
 	return evaluation

@@ -54,15 +54,19 @@ type RuntimeExtensionPreview struct {
 }
 
 type ModelProviderPreview struct {
-	ModelProviderID   string `json:"model_provider_id,omitempty"`
-	ModelProviderName string `json:"model_provider_name,omitempty"`
-	EndpointBaseURL   string `json:"endpoint_base_url,omitempty"`
-	BaseURL           string `json:"base_url,omitempty"`
-	Protocol          string `json:"protocol,omitempty"`
-	Model             string `json:"model,omitempty"`
-	APIKeyEnv         string `json:"api_key_env,omitempty"`
-	APIKeySource      string `json:"api_key_source,omitempty"`
-	ProjectionTarget  string `json:"projection_target,omitempty"`
+	ModelProviderID       string `json:"model_provider_id,omitempty"`
+	ModelProviderName     string `json:"model_provider_name,omitempty"`
+	EndpointBaseURL       string `json:"endpoint_base_url,omitempty"`
+	BaseURL               string `json:"base_url,omitempty"`
+	Protocol              string `json:"protocol,omitempty"`
+	Model                 string `json:"model,omitempty"`
+	APIKeyEnv             string `json:"api_key_env,omitempty"`
+	APIKeySource          string `json:"api_key_source,omitempty"`
+	ProjectionTarget      string `json:"projection_target,omitempty"`
+	ContextWindow         int    `json:"context_window,omitempty"`
+	MaxOutputTokens       int    `json:"max_output_tokens,omitempty"`
+	ContextWindowSource   string `json:"context_window_source,omitempty"`
+	MaxOutputTokensSource string `json:"max_output_tokens_source,omitempty"`
 }
 
 // Result is the full preflight outcome for a task launch.
@@ -125,6 +129,7 @@ type Service struct {
 	modelProviders    modelprovider.ProviderGetter
 	runtimePlugins    *runtimeplugin.Registry
 	runtimeExtensions *runtimeextension.Registry
+	capabilityCache   modelprovider.CapabilityLookup
 	// containerRunner probes the host container CLI. Nil uses the real CLI.
 	containerRunner runner.CommandRunner
 	// hermesACPProbe checks that a host Hermes binary exposes the ACP extra.
@@ -149,6 +154,11 @@ func (s *Service) WithModelProviders(providers modelprovider.ProviderGetter, plu
 
 func (s *Service) WithRuntimeExtensions(registry *runtimeextension.Registry) *Service {
 	s.runtimeExtensions = registry
+	return s
+}
+
+func (s *Service) WithCapabilityCache(cache modelprovider.CapabilityLookup) *Service {
+	s.capabilityCache = cache
 	return s
 }
 
@@ -250,20 +260,25 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 			ProjectID:           request.ProjectID,
 			CheckEnv:            true,
 			LaunchModelOverride: request.LaunchModelOverride,
+			CapabilityCache:     s.capabilityCache,
 		})
 		if err != nil {
 			result.add(Check{Name: "model_provider", Status: CheckFail, Detail: err.Error()})
 		} else if snapshot.ModelProviderID != "" {
 			result.ModelProvider = &ModelProviderPreview{
-				ModelProviderID:   snapshot.ModelProviderID,
-				ModelProviderName: snapshot.ModelProviderName,
-				EndpointBaseURL:   snapshot.EndpointBaseURL,
-				BaseURL:           snapshot.BaseURL,
-				Protocol:          string(snapshot.Protocol),
-				Model:             snapshot.Model,
-				APIKeyEnv:         snapshot.APIKeyEnv,
-				APIKeySource:      snapshot.APIKeySource,
-				ProjectionTarget:  snapshot.ProjectionTarget,
+				ModelProviderID:       snapshot.ModelProviderID,
+				ModelProviderName:     snapshot.ModelProviderName,
+				EndpointBaseURL:       snapshot.EndpointBaseURL,
+				BaseURL:               snapshot.BaseURL,
+				Protocol:              string(snapshot.Protocol),
+				Model:                 snapshot.Model,
+				APIKeyEnv:             snapshot.APIKeyEnv,
+				APIKeySource:          snapshot.APIKeySource,
+				ProjectionTarget:      snapshot.ProjectionTarget,
+				ContextWindow:         snapshot.ContextWindow,
+				MaxOutputTokens:       snapshot.MaxOutputTokens,
+				ContextWindowSource:   snapshot.ContextWindowSource,
+				MaxOutputTokensSource: snapshot.MaxOutputTokensSource,
 			}
 			result.add(Check{Name: "model_provider", Status: CheckPass, Detail: fmt.Sprintf("%s via %s", snapshot.Model, snapshot.APIKeyEnv)})
 		}

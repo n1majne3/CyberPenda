@@ -649,6 +649,7 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 			Profile: profile, Providers: server.modelProviders, Plugins: server.runtimePlugins,
 			Credentials: server.creds, ProjectID: created.ProjectID, CheckEnv: true,
 			LaunchModelOverride: launchModelOverride,
+			CapabilityCache:     server.capabilityCache,
 		})
 		if err != nil {
 			return taskLaunchPlan{}, err
@@ -826,6 +827,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		ModelSnapshot:               capturedModelSnapshot,
 		LaunchModelOverride:         launchModelOverride,
 		SkillBundles:                skillBundles,
+		CapabilityCache:             server.capabilityCache,
 	}
 	var projection runner.ConfigProjection
 	if v2 {

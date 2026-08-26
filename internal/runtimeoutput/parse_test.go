@@ -72,6 +72,48 @@ func TestParseRecordOmitsThinkingWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestParseRecordCodexAppServerItems(t *testing.T) {
+	at := time.Date(2026, 8, 26, 5, 2, 55, 0, time.UTC)
+	message := runtimeoutput.ParseRecord(map[string]any{
+		"threadId": "thread-1",
+		"turnId":   "turn-1",
+		"item": map[string]any{
+			"type": "agentMessage",
+			"id":   "item-msg",
+			"text": "VPN检测未通过，请检查靶场VPN网络配置。",
+		},
+	}, runtimeoutput.ParseOptions{}, at)
+	if len(message) != 1 || message[0].Kind != runtimeoutput.KindText || message[0].Role != "assistant" {
+		t.Fatalf("agentMessage turns = %#v", message)
+	}
+	if message[0].Text != "VPN检测未通过，请检查靶场VPN网络配置。" {
+		t.Fatalf("agentMessage text = %q", message[0].Text)
+	}
+
+	command := runtimeoutput.ParseRecord(map[string]any{
+		"item": map[string]any{
+			"type":             "commandExecution",
+			"id":               "item-cmd",
+			"command":          "curl -sS http://10.0.100.58",
+			"aggregatedOutput": "curl: (52) Empty reply from server\n",
+			"status":           "failed",
+			"exitCode":         52,
+		},
+	}, runtimeoutput.ParseOptions{}, at)
+	if len(command) != 2 {
+		t.Fatalf("commandExecution turns = %#v", command)
+	}
+	if command[0].Kind != runtimeoutput.KindToolUse || command[0].Tool != "command_execution" || command[0].ToolCallID != "item-cmd" {
+		t.Fatalf("tool use = %#v", command[0])
+	}
+	if command[0].Input["command"] != "curl -sS http://10.0.100.58" {
+		t.Fatalf("tool input = %#v", command[0].Input)
+	}
+	if command[1].Kind != runtimeoutput.KindToolResult || command[1].Output != "curl: (52) Empty reply from server\n" {
+		t.Fatalf("tool result = %#v", command[1])
+	}
+}
+
 func TestParseLinePlainTextFallback(t *testing.T) {
 	at := time.Now().UTC()
 	turns, fallback := runtimeoutput.ParseLine("plain runtime line", at, runtimeoutput.ParseOptions{IncludeThinking: true})

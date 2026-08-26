@@ -49,7 +49,9 @@ const emptyForm: Form = {
   endpoint_base_urls: {},
   manual_models: "",
   default_model: "",
+  refreshed_models: [],
   api_key: "",
+  limits: {},
 };
 
 export function ModelProvidersPage() {
@@ -65,6 +67,9 @@ export function ModelProvidersPage() {
   const [saving, setSaving] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
   const [query, setQuery] = useState("");
+  const [cacheHints, setCacheHints] = useState<Record<string, { context_window?: number; max_output_tokens?: number }>>({});
+  const [cacheRefreshedAt, setCacheRefreshedAt] = useState("");
+  const [cacheRefreshing, setCacheRefreshing] = useState(false);
   const savedNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const selected = providers.find((p) => p.id === selectedId) ?? null;
   const selectedBinding = selected ? bindings.find((binding) => binding.credential_ref === selected.api_key_env) : undefined;
@@ -111,6 +116,7 @@ export function ModelProvidersPage() {
   useEffect(() => {
     /* eslint-disable react-hooks/set-state-in-effect */
     void load();
+    void loadCapabilityCacheStatus();
     /* eslint-enable react-hooks/set-state-in-effect */
   }, []);
 
@@ -140,6 +146,28 @@ export function ModelProvidersPage() {
   const manualModels = splitLines(form.manual_models);
   const extraModels = form.default_model ? [form.default_model] : [];
   const models = Array.from(new Set([...baseModels, ...manualModels, ...extraModels])).sort();
+  const catalogModelKey = models.join("\0");
+  useEffect(() => {
+    if (!catalogModelKey) {
+      setCacheHints({});
+      return;
+    }
+    const ids = catalogModelKey.split("\0").filter(Boolean);
+    let cancelled = false;
+    apiPost<{ limits?: Record<string, { context_window?: number; max_output_tokens?: number }> }>(
+      "/api/model-capability-cache/lookup",
+      { ids },
+    )
+      .then((data) => {
+        if (!cancelled) setCacheHints(data.limits ?? {});
+      })
+      .catch(() => {
+        if (!cancelled) setCacheHints({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [catalogModelKey, cacheRefreshedAt]);
 
   const filteredProviders = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -202,6 +230,29 @@ export function ModelProvidersPage() {
       setError((e as Error).message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function loadCapabilityCacheStatus() {
+    try {
+      const status = await apiGet<{ refreshed_at?: string }>("/api/model-capability-cache");
+      setCacheRefreshedAt(status.refreshed_at ?? "");
+    } catch {
+      // Cache status is advisory; the form still works without it.
+    }
+  }
+
+  async function refreshCapabilityCache() {
+    setCacheRefreshing(true);
+    setError(null);
+    try {
+      const status = await apiPost<{ refreshed_at?: string }>("/api/model-capability-cache/refresh");
+      setCacheRefreshedAt(status.refreshed_at ?? "");
+      setCacheHints({});
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setCacheRefreshing(false);
     }
   }
 
@@ -430,6 +481,10 @@ export function ModelProvidersPage() {
                     <RefreshCw className="h-4 w-4" /> Refresh models
                   </Button>
                 )}
+                <Button variant="outline" onClick={() => void refreshCapabilityCache()} disabled={cacheRefreshing}>
+                  <RefreshCw className={`h-4 w-4 ${cacheRefreshing ? "animate-spin" : ""}`} />
+                  Refresh capability cache
+                </Button>
                 {selected && !creating && (
                   <Button variant="destructive" onClick={() => setConfirmDelete(selected)}>
                     <Trash2 className="h-4 w-4" /> Delete
@@ -602,7 +657,7 @@ export function ModelProvidersPage() {
                     spellCheck={false}
                     className="min-h-[72px] font-mono text-xs"
                   />
-                  <p className="mt-1 text-[11px] text-muted-foreground">One model id per line.</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">One model id per line. Empty window/max fields follow the models.dev cache.</p>
                 </div>
                 <div>
                   <Label htmlFor="provider-default-model">Default model</Label>
@@ -615,6 +670,44 @@ export function ModelProvidersPage() {
                     <option value="">No default</option>
                     {models.map((model) => <option key={model} value={model}>{model}</option>)}
                   </Select>
+                  {models.length > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {cacheRefreshedAt && (
+                        <p className="text-[11px] text-muted-foreground">
+                          Capability cache updated {cacheRefreshedAt}.
+                        </p>
+                      )}
+                      {models.map((model) => {
+                        const override = form.limits?.[model] ?? {};
+                        const hint = cacheHints[model];
+                        return (
+                          <div key={model} className="grid grid-cols-2 gap-2">
+                            <div className="col-span-2 text-[11px] font-mono text-muted-foreground">{model}</div>
+                            <Input
+                              inputMode="numeric"
+                              placeholder={hint?.context_window ? String(hint.context_window) : "Context window"}
+                              value={override.context_window ?? ""}
+                              onChange={(e) => setForm({
+                                ...form,
+                                limits: { ...(form.limits ?? {}), [model]: { ...override, context_window: e.target.value } },
+                              })}
+                              aria-label={`${model} context window`}
+                            />
+                            <Input
+                              inputMode="numeric"
+                              placeholder={hint?.max_output_tokens ? String(hint.max_output_tokens) : "Max output"}
+                              value={override.max_output_tokens ?? ""}
+                              onChange={(e) => setForm({
+                                ...form,
+                                limits: { ...(form.limits ?? {}), [model]: { ...override, max_output_tokens: e.target.value } },
+                              })}
+                              aria-label={`${model} max output tokens`}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                   {selected && (
                     <div className="mt-3 space-y-2 text-sm">
                       <div className="text-xs text-muted-foreground">

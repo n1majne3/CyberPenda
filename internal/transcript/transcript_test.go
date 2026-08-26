@@ -72,6 +72,34 @@ func TestBuildParsesPiSessionStreamRegardlessOfAdapterName(t *testing.T) {
 	}
 }
 
+func TestBuildParsesCodexAppServerItemsFromProviderSession(t *testing.T) {
+	createdAt := time.Now().UTC()
+	subject := transcript.Subject{ID: "session-1", Title: "VPN health check", CreatedAt: createdAt}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "provider-session:thread-1"}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex",
+			"stream":   "codex_app_server",
+			"text":     `{"threadId":"thread-1","turnId":"turn-1","item":{"type":"commandExecution","id":"item-cmd","command":"curl -sS http://10.0.100.58","aggregatedOutput":"curl: (52) Empty reply from server\n","status":"failed"}}`,
+		}, CreatedAt: createdAt.Add(time.Second)},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex",
+			"stream":   "codex_app_server",
+			"text":     `{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"item-msg","text":"VPN检测未通过"}}`,
+		}, CreatedAt: createdAt.Add(2 * time.Second)},
+	}
+
+	got := transcript.Build(subject, events)
+	requireEntry(t, got, "ev-2-tool-call", "tool_call", "assistant", "")
+	requireEntry(t, got, "ev-2-tool-result", "tool_result", "tool", "curl: (52) Empty reply from server\n")
+	requireEntry(t, got, "ev-3-message", "message", "assistant", "VPN检测未通过")
+	for _, entry := range got {
+		if entry.Kind == "runtime_output" {
+			t.Fatalf("codex item collapsed to runtime fallback: %#v", entry)
+		}
+	}
+}
+
 func TestBuildProjectsNativeSteerControlsWithoutDuplicatingConversationMessage(t *testing.T) {
 	subject := transcript.Subject{ID: "task-1", Title: "Inspect target", CreatedAt: time.Now().UTC()}
 	events := []transcript.Event{

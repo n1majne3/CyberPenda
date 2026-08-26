@@ -1034,7 +1034,7 @@ func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile
 		}
 		return string(raw), nil
 	case runtimeprofile.ProviderCodex:
-		return buildCodexConfigTOML(profile, servers), nil
+		return buildCodexConfigTOML(profile, servers, req, ""), nil
 	case runtimeprofile.ProviderHermes:
 		effort, err := runtimeprofile.NormalizeReasoningEffort(profile.Fields.ReasoningEffort)
 		if err != nil {
@@ -1042,9 +1042,9 @@ func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile
 		}
 		return buildHermesConfigYAML(profile, projected, servers, string(effort)), nil
 	case runtimeprofile.ProviderPi:
-		models := buildPiModels(profile, nil)
+		models := buildPiModels(profile, nil, req)
 		if len(projected) > 0 {
-			models = buildPiModelsFromProjected(projected)
+			models = buildPiModelsFromProjected(projected, req)
 		}
 		raw, err := json.MarshalIndent(models, "", "  ")
 		if err != nil {

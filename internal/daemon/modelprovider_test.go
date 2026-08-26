@@ -546,3 +546,50 @@ func TestDeleteModelProviderInUseListsProfilesUntilDetached(t *testing.T) {
 		t.Fatalf("expected cleared provider reference, got %#v", survived.Fields)
 	}
 }
+
+func TestModelCapabilityCacheHTTPLookupAndFailedRefreshPreserveOverlay(t *testing.T) {
+	server, err := daemon.NewServer(daemon.Config{Version: "test-version", DBPath: t.TempDir() + "/pentest.db", DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	lookup := httptest.NewRequest(http.MethodPost, "/api/model-capability-cache/lookup", bytes.NewReader([]byte(`{"ids":["deepseek-v4-flash","missing-model"]}`)))
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, lookup)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("lookup status %d body %s", resp.Code, resp.Body.String())
+	}
+	var body struct {
+		Limits map[string]struct {
+			ContextWindow   int `json:"context_window"`
+			MaxOutputTokens int `json:"max_output_tokens"`
+		} `json:"limits"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode lookup: %v", err)
+	}
+	if body.Limits["deepseek-v4-flash"].ContextWindow < 1 {
+		t.Fatalf("bundled cache miss for deepseek-v4-flash: %#v", body.Limits)
+	}
+	if _, ok := body.Limits["missing-model"]; ok {
+		t.Fatalf("unknown id should be omitted: %#v", body.Limits)
+	}
+
+	failing, err := daemon.NewServer(daemon.Config{
+		Version: "test-version", DBPath: t.TempDir() + "/pentest.db", DisableBuiltinSkills: true,
+		ModelRefreshClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader("no"))}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatalf("NewServer failing: %v", err)
+	}
+	t.Cleanup(func() { _ = failing.Close() })
+	refresh := httptest.NewRequest(http.MethodPost, "/api/model-capability-cache/refresh", nil)
+	failResp := httptest.NewRecorder()
+	failing.ServeHTTP(failResp, refresh)
+	if failResp.Code == http.StatusOK {
+		t.Fatal("expected failed refresh")
+	}
+}

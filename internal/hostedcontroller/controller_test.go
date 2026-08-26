@@ -133,6 +133,7 @@ func TestHostedConfigurationAcceptsOptionalCompactThresholdAndMaxOutputTokens(t 
 	env["CYBERPENDA_AUTO_COMPACT_THRESHOLD"] = "80"
 	env["CYBERPENDA_AUTO_COMPACT_WINDOW"] = "786432"
 	env["CYBERPENDA_MAX_OUTPUT_TOKENS"] = "393216"
+	env["CYBERPENDA_CONTEXT_WINDOW"] = "1048576"
 
 	config, err := hostedcontroller.ConfigFromEnv(env)
 	if err != nil {
@@ -147,6 +148,9 @@ func TestHostedConfigurationAcceptsOptionalCompactThresholdAndMaxOutputTokens(t 
 	if config.MaxOutputTokens != 393216 {
 		t.Fatalf("Max Output Tokens = %d, want 393216", config.MaxOutputTokens)
 	}
+	if config.ContextWindow != 1048576 {
+		t.Fatalf("Context Window = %d, want 1048576", config.ContextWindow)
+	}
 
 	evaluation := hostedcontroller.EvaluationForConfig(config)
 	if evaluation.Runtime.Env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] != "80" {
@@ -158,6 +162,9 @@ func TestHostedConfigurationAcceptsOptionalCompactThresholdAndMaxOutputTokens(t 
 	if evaluation.Runtime.Env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] != "393216" {
 		t.Fatalf("max output env = %#v, want CLAUDE_CODE_MAX_OUTPUT_TOKENS=393216", evaluation.Runtime.Env)
 	}
+	if evaluation.Runtime.MaxOutputTokens != 393216 || evaluation.Runtime.ContextWindow != 1048576 {
+		t.Fatalf("catalog overrides = output %d window %d", evaluation.Runtime.MaxOutputTokens, evaluation.Runtime.ContextWindow)
+	}
 	if evaluation.Runtime.Env["BENCHMARK_BASE_URL"] != env["BENCHMARK_BASE_URL"] {
 		t.Fatalf("BENCHMARK_BASE_URL was dropped: %#v", evaluation.Runtime.Env)
 	}
@@ -168,7 +175,7 @@ func TestHostedConfigurationOmitsCompactAndMaxOutputEnvWhenUnset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.AutoCompactThreshold != 0 || config.AutoCompactWindow != 0 || config.MaxOutputTokens != 0 {
+	if config.AutoCompactThreshold != 0 || config.AutoCompactWindow != 0 || config.MaxOutputTokens != 0 || config.ContextWindow != 0 {
 		t.Fatalf("omitted knobs = threshold %d window %d output %d, want 0", config.AutoCompactThreshold, config.AutoCompactWindow, config.MaxOutputTokens)
 	}
 	evaluation := hostedcontroller.EvaluationForConfig(config)

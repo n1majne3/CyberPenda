@@ -69,10 +69,21 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootst
 		ID        string `json:"id"`
 		APIKeyEnv string `json:"api_key_env"`
 	}
+	catalog := map[string]any{"manual": []string{evaluation.Runtime.Model}, "default_model": evaluation.Runtime.Model}
+	if evaluation.Runtime.ContextWindow > 0 || evaluation.Runtime.MaxOutputTokens > 0 {
+		limits := map[string]any{}
+		if evaluation.Runtime.ContextWindow > 0 {
+			limits["context_window"] = evaluation.Runtime.ContextWindow
+		}
+		if evaluation.Runtime.MaxOutputTokens > 0 {
+			limits["max_output_tokens"] = evaluation.Runtime.MaxOutputTokens
+		}
+		catalog["limits"] = map[string]any{evaluation.Runtime.Model: limits}
+	}
 	if err := app.request(ctx, http.MethodPost, "/api/model-providers", map[string]any{
 		"name":      "TSecBench Hosted Model",
 		"endpoints": []map[string]string{{"protocol": evaluation.Runtime.ModelProtocol, "base_url": evaluation.Runtime.ModelBaseURL}},
-		"catalog":   map[string]any{"manual": []string{evaluation.Runtime.Model}, "default_model": evaluation.Runtime.Model},
+		"catalog":   catalog,
 	}, &provider); err != nil {
 		return HostedEvaluationReference{}, fmt.Errorf("create hosted Model Provider: %w", err)
 	}

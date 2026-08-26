@@ -316,6 +316,7 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 		RuntimeExtensions: server.runtimeExtensions, SkillBundles: skillBundles,
 		LaunchModelOverride: selection.Model,
 		Sandbox:             run == session.RunnerSandbox,
+		CapabilityCache:     server.capabilityCache,
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, launchProfile, projectionRequest)
 	if err != nil {
@@ -435,6 +436,7 @@ func (server *Server) resolveSessionModelSnapshot(profile runtimeprofile.Profile
 		Profile: profile, Providers: server.modelProviders, Plugins: server.runtimePlugins,
 		Credentials: server.creds, ProjectID: "", CheckEnv: true,
 		LaunchModelOverride: input.selectedModel(),
+		CapabilityCache:     server.capabilityCache,
 	})
 	if err != nil {
 		return nil, err

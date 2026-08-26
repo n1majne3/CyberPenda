@@ -252,6 +252,26 @@ _Avoid_: refreshed model, provider metadata
 An explicit user-triggered management action that fetches model names from a **Model Provider** using a `/v1/models` model-list path and updates the **Model Catalog**.
 _Avoid_: background polling, task-launch discovery, runtime introspection
 
+**Model Context Window**:
+The total token capacity used for one catalog model after Catalog override, **Model Capability Cache**, or Runtime native fallback.
+_Avoid_: Hosted Auto Compact Window, context file size
+
+**Model Max Output Tokens**:
+The maximum completion reservation used for one catalog model after Catalog override, **Model Capability Cache**, or Runtime native fallback.
+_Avoid_: Hosted Max Output Tokens, compact window
+
+**Model Capability Cache**:
+A bundled, optionally refreshed, non-authoritative table of known model identifiers to **Model Context Window** and **Model Max Output Tokens**, sourced from models.dev.
+_Avoid_: Model Catalog, Runtime Plugin table, family heuristic
+
+**Model Catalog Limit Override**:
+Optional per-identifier window and max-output numbers stored on a **Model Catalog**. They beat the **Model Capability Cache** and survive catalog name refresh and cache refresh.
+_Avoid_: Runtime Profile field, inferred model family limit
+
+**Model Capability Cache Refresh**:
+An explicit user-triggered management action that replaces the daemon overlay of the **Model Capability Cache** from models.dev. A failed refresh preserves the previous cache.
+_Avoid_: Model Catalog Refresh, Task Launch fetch, Preflight download
+
 **Model Catalog Refresh URL**:
 The derived non-secret URL used by **Model Catalog Refresh**. It is not user-configured; it is derived from an OpenAI-family **Model Provider Endpoint** origin and the model-list path is always `/v1/models`.
 _Avoid_: custom catalog base URL, runtime endpoint, protocol endpoint
@@ -669,7 +689,7 @@ The bounded set of general-purpose tools preinstalled in the **TSecBench Hosted 
 _Avoid_: full Sandbox image, runtime package installation, per-challenge image
 
 **Hosted Model Configuration**:
-The operator-supplied Runtime family, model protocol, converted gateway base URL, model identifier, model API key, optional **Reasoning Effort**, optional **Hosted Auto Compact Threshold**, optional **Hosted Auto Compact Window**, and optional **Hosted Max Output Tokens** used by one **Hosted Evaluation Run**. These values enter through stable `CYBERPENDA_*` environment names and are translated into normal Model Provider, Credential Binding, and Runtime Profile inputs during bootstrap. Compatibility is strict: Codex accepts only `openai_responses`, Claude Code accepts only `anthropic_messages`, and Pi and Hermes accept `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
+The operator-supplied Runtime family, model protocol, converted gateway base URL, model identifier, model API key, optional **Reasoning Effort**, optional **Hosted Auto Compact Threshold**, optional **Hosted Auto Compact Window**, optional **Hosted Max Output Tokens**, and optional **Model Context Window** used by one **Hosted Evaluation Run**. These values enter through stable `CYBERPENDA_*` environment names and are translated into normal Model Provider, Credential Binding, and Runtime Profile inputs during bootstrap. Compatibility is strict: Codex accepts only `openai_responses`, Claude Code accepts only `anthropic_messages`, and Pi and Hermes accept `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
 _Avoid_: vendor-specific environment contract, model discovery, persisted hosted profile
 
 **Hosted Auto Compact Threshold**:
@@ -918,6 +938,12 @@ _Avoid_: transcript, export, source of truth
 - A successful **Model Provider Migration** removes migrated legacy model-service fields from the source **Runtime Profile**.
 - A **Model Provider** may define a **Model Catalog**.
 - A **Model Catalog** stores model identifiers, not full provider response objects.
+- A **Model Catalog** may store optional **Model Catalog Limit Overrides** keyed by model identifier.
+- **Config Projection** resolves **Model Context Window** and **Model Max Output Tokens** as Catalog override, then **Model Capability Cache**, then Runtime native fallback.
+- Missing window or max-output values do not fail **Preflight**.
+- **Model Catalog Refresh** does not invent window or max-output values and preserves existing **Model Catalog Limit Overrides** for identifiers that remain.
+- **Model Capability Cache Refresh** does not change Catalog names or operator overrides.
+- **Model Capability Cache** lookup uses an exact model identifier, then a unique case-insensitive final-segment match; an ambiguous suffix with different limits is a miss.
 - A **Model Catalog** may be edited manually or updated through **Model Catalog Refresh**.
 - A **Model Catalog** may include manually entered model identifiers that were not returned by **Model Catalog Refresh**.
 - **Manual Model Entries** are preserved when **Model Catalog Refresh** updates refreshed model identifiers.
@@ -1565,9 +1591,9 @@ _Avoid_: transcript, export, source of truth
 - The **TSecBench Hosted Image** does not depend on launching a nested Sandbox Runner; resolved: selected Runtimes and tools execute through the **Container Host Runner** and the image assumes no Docker Socket, privileged mode, or nested container engine.
 - The hosted daemon does not expose its Web UI to the Challenge Platform network; resolved: retain embedded UI resources but bind the daemon only to container loopback.
 - The **TSecBench Hosted Image** does not copy the existing full Sandbox tool inventory; resolved: build on Kali Rolling with a **Hosted Tool Baseline**, and let the Runtime implement missing challenge-specific capability from the available environment.
-- Hosted model input does not use Runtime-specific or vendor-specific environment contracts; resolved: the TSecBench page supplies `CYBERPENDA_RUNTIME`, `CYBERPENDA_MODEL_PROTOCOL`, `CYBERPENDA_MODEL_BASE_URL`, `CYBERPENDA_MODEL`, `CYBERPENDA_MODEL_API_KEY`, optional `CYBERPENDA_REASONING_EFFORT`, optional `CYBERPENDA_TASK_GOAL_APPENDIX`, optional `CYBERPENDA_AUTO_COMPACT_THRESHOLD`, optional `CYBERPENDA_AUTO_COMPACT_WINDOW`, and optional `CYBERPENDA_MAX_OUTPUT_TOKENS` as the hosted page contract.
+- Hosted model input does not use Runtime-specific or vendor-specific environment contracts; resolved: the TSecBench page supplies `CYBERPENDA_RUNTIME`, `CYBERPENDA_MODEL_PROTOCOL`, `CYBERPENDA_MODEL_BASE_URL`, `CYBERPENDA_MODEL`, `CYBERPENDA_MODEL_API_KEY`, optional `CYBERPENDA_REASONING_EFFORT`, optional `CYBERPENDA_TASK_GOAL_APPENDIX`, optional `CYBERPENDA_AUTO_COMPACT_THRESHOLD`, optional `CYBERPENDA_AUTO_COMPACT_WINDOW`, optional `CYBERPENDA_MAX_OUTPUT_TOKENS`, and optional `CYBERPENDA_CONTEXT_WINDOW` as the hosted page contract.
 - Hosted Claude compact is not missing when a 1M-context request returns HTTP 400; resolved: compact exists, but the default threshold plus the reserved completion can exceed 1048576 after a large tool result. Optional `CYBERPENDA_AUTO_COMPACT_THRESHOLD` (1-100) becomes `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. Optional `CYBERPENDA_AUTO_COMPACT_WINDOW` becomes `CLAUDE_CODE_AUTO_COMPACT_WINDOW`. DeepSeek documents 786432 for that window.
-- Hosted max completion is not inferred from the model family; resolved: optional `CYBERPENDA_MAX_OUTPUT_TOKENS` becomes `CLAUDE_CODE_MAX_OUTPUT_TOKENS`. DeepSeek hosted runs should set 393216 (384K). 786432 plus 393216 exceeds 1048576, so those runs should set the **Hosted Auto Compact Window** to 524288.
+- Hosted max completion is not inferred from the model family; resolved: optional `CYBERPENDA_MAX_OUTPUT_TOKENS` becomes `CLAUDE_CODE_MAX_OUTPUT_TOKENS` and a **Model Catalog Limit Override**. Optional `CYBERPENDA_CONTEXT_WINDOW` becomes a **Model Catalog Limit Override**. DeepSeek hosted runs should set 393216 (384K). 786432 plus 393216 exceeds 1048576, so those runs should set the **Hosted Auto Compact Window** to 524288.
 - Hosted **Reasoning Effort** is not read from `CLAUDE_CODE_EFFORT_LEVEL` or Runtime Custom Arguments; resolved: optional `CYBERPENDA_REASONING_EFFORT` becomes the hosted Runtime Profile **Reasoning Effort**, and an omitted value resolves to `high`.
 - A hosted extra prompt is not a replacement Task Goal; resolved: optional `CYBERPENDA_TASK_GOAL_APPENDIX` is appended after the required hosted Task Goal.
 - Hosted image size is not judged from its expanded layer size; resolved: the exported and gzip-compressed Docker archive must remain below 3 GB, and the build fails when it does not.
