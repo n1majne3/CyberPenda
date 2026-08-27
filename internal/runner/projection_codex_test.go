@@ -284,7 +284,7 @@ func TestProjectCodexConfigMultiAgentExplicitOffProjectsOffKeys(t *testing.T) {
 		t.Fatalf("parse projected config: %v\n%s", err, config)
 	}
 	features, ok := parsed["features"].(map[string]any)
-	if !ok || features["multi_agent"] != false {
+	if !ok || features["multi_agent"] != false || features["multi_agent_v2"] != false {
 		t.Fatalf("features = %#v in:\n%s", parsed["features"], config)
 	}
 	agents, ok := parsed["agents"].(map[string]any)
@@ -296,6 +296,35 @@ func TestProjectCodexConfigMultiAgentExplicitOffProjectsOffKeys(t *testing.T) {
 	}
 	if _, has := agents["max_depth"]; has {
 		t.Fatalf("expected no agent depth cap when off, got:\n%s", config)
+	}
+}
+
+func TestProjectCodexConfigMultiAgentExplicitOffWinsV2Overlay(t *testing.T) {
+	disabled := false
+	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{
+		Model:           "gpt-test",
+		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{Enabled: &disabled},
+		CustomConfigFile: `
+[features.multi_agent_v2]
+enabled = true
+max_concurrent_threads_per_session = 11
+
+[agents]
+enabled = true
+`,
+	})
+
+	var parsed map[string]any
+	if err := toml.Unmarshal([]byte(config), &parsed); err != nil {
+		t.Fatalf("parse projected config: %v\n%s", err, config)
+	}
+	features, ok := parsed["features"].(map[string]any)
+	if !ok || features["multi_agent"] != false || features["multi_agent_v2"] != false {
+		t.Fatalf("structured off must override the V2 overlay, got %#v", parsed["features"])
+	}
+	agents, ok := parsed["agents"].(map[string]any)
+	if !ok || agents["enabled"] != false {
+		t.Fatalf("structured off must override agents.enabled, got %#v", parsed["agents"])
 	}
 }
 

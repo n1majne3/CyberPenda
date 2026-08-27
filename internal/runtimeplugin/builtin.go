@@ -80,12 +80,13 @@ func BuiltinPlugins() []Plugin {
 					{Key: "model_catalog_json", Field: "model", Condition: "model_provider_resolved"},
 					{Key: "model_provider", Field: "model_provider_id", Condition: "model_provider_resolved"},
 					{Key: "model_providers.*", Field: "model_provider_id", Condition: "model_provider_resolved"},
-					// In-turn multi-agent tools are re-derived at every
-					// projection from the codex_multi_agent structured field.
-					{Key: "features.multi_agent", Field: "codex_multi_agent"},
-					{Key: "agents.enabled", Field: "codex_multi_agent"},
-					{Key: "agents.max_concurrent_threads_per_session", Field: "codex_multi_agent"},
-					{Key: "agents.max_depth", Field: "codex_multi_agent"},
+					// In-turn multi-agent keys are managed when the
+					// codex_multi_agent structured field projects them.
+					{Key: "features.multi_agent", Field: "codex_multi_agent", Condition: "projected"},
+					{Key: "features.multi_agent_v2", Field: "codex_multi_agent", Condition: "projected"},
+					{Key: "agents.enabled", Field: "codex_multi_agent", Condition: "projected"},
+					{Key: "agents.max_concurrent_threads_per_session", Field: "codex_multi_agent", Condition: "projected"},
+					{Key: "agents.max_depth", Field: "codex_multi_agent", Condition: "projected"},
 				},
 			},
 			Launch: LaunchTemplate{

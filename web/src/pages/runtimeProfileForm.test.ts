@@ -253,6 +253,37 @@ describe("runtimeProfileForm", () => {
     });
   });
 
+  it("omits the Codex-only multi-agent control for another runtime", () => {
+    const fields = buildProfileFields(
+      {
+        name: "pi",
+        provider: "pi",
+        binary_path: "",
+        model: "",
+        endpoint: "",
+        model_provider_id: "",
+        model_provider_protocol: "",
+        model_override: "",
+        reasoning_effort: "high",
+        custom_args: "",
+        env: "",
+        api_key_env: "",
+        api_key: "",
+        runtime_extensions: [],
+        mcp_servers: "",
+        default_runner: "sandbox",
+        sandbox_image: "",
+        credential_refs: "",
+        codex_multi_agent_state: "on",
+        codex_multi_agent_max_threads: "4",
+        codex_multi_agent_max_depth: "2",
+      },
+      plugins,
+    );
+
+    expect(fields.codex_multi_agent).toBeUndefined();
+  });
+
   it("persists the enabled multi-agent control without empty caps and the explicit off choice", () => {
     const fields = buildProfileFields(
       {

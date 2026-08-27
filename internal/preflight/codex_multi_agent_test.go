@@ -125,3 +125,124 @@ func TestRunOmitsCodexMultiAgentPreviewForOtherRuntimes(t *testing.T) {
 		t.Fatalf("expected no codex multi-agent preview for pi profile, got %#v", result.CodexMultiAgent)
 	}
 }
+
+func TestRunPreviewsCodexMultiAgentFromCustomConfigFile(t *testing.T) {
+	svc := newTestServices(t)
+	profile := newCodexMultiAgentProfile(t, svc, nil)
+	profile, err := svc.profiles.Update(profile.ID, "", "", runtimeprofile.Fields{
+		ModelProviderID: profile.Fields.ModelProviderID,
+		CustomConfigFile: `
+[features]
+multi_agent = true
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 7
+max_depth = 3
+`,
+	}, true, false)
+	if err != nil {
+		t.Fatalf("add custom config: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if result.CodexMultiAgent == nil || result.CodexMultiAgent.State != "on" {
+		t.Fatalf("expected merged custom config to preview on, got %#v", result.CodexMultiAgent)
+	}
+	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 7 || result.CodexMultiAgent.MaxDepth != 3 {
+		t.Fatalf("expected merged caps, got %#v", result.CodexMultiAgent)
+	}
+}
+
+func TestRunPreviewsOverlayCapsWhenStructuredControlLeavesThemUnset(t *testing.T) {
+	svc := newTestServices(t)
+	enabled := true
+	profile := newCodexMultiAgentProfile(t, svc, &runtimeprofile.CodexMultiAgent{Enabled: &enabled})
+	profile, err := svc.profiles.Update(profile.ID, "", "", runtimeprofile.Fields{
+		ModelProviderID: profile.Fields.ModelProviderID,
+		CodexMultiAgent: profile.Fields.CodexMultiAgent,
+		CustomConfigFile: `
+[agents]
+max_concurrent_threads_per_session = 9
+max_depth = 4
+`,
+	}, true, false)
+	if err != nil {
+		t.Fatalf("add custom caps: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if result.CodexMultiAgent == nil || result.CodexMultiAgent.State != "on" {
+		t.Fatalf("expected structured on preview, got %#v", result.CodexMultiAgent)
+	}
+	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 9 || result.CodexMultiAgent.MaxDepth != 4 {
+		t.Fatalf("expected overlay caps, got %#v", result.CodexMultiAgent)
+	}
+}
+
+func TestRunPreviewsMultiAgentV2CapsFromFinalConfig(t *testing.T) {
+	svc := newTestServices(t)
+	profile := newCodexMultiAgentProfile(t, svc, nil)
+	profile, err := svc.profiles.Update(profile.ID, "", "", runtimeprofile.Fields{
+		ModelProviderID: profile.Fields.ModelProviderID,
+		CustomConfigFile: `
+[features.multi_agent_v2]
+enabled = true
+max_concurrent_threads_per_session = 11
+
+[agents]
+enabled = false
+max_depth = 5
+`,
+	}, true, false)
+	if err != nil {
+		t.Fatalf("add V2 config: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if result.CodexMultiAgent == nil || result.CodexMultiAgent.State != "on" {
+		t.Fatalf("V2 must take precedence over agents.enabled, got %#v", result.CodexMultiAgent)
+	}
+	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 11 || result.CodexMultiAgent.MaxDepth != 0 {
+		t.Fatalf("expected V2 cap without the V1-only depth, got %#v", result.CodexMultiAgent)
+	}
+}
+
+func TestRunDoesNotEnableMultiAgentV2FromCapsAlone(t *testing.T) {
+	svc := newTestServices(t)
+	profile := newCodexMultiAgentProfile(t, svc, nil)
+	profile, err := svc.profiles.Update(profile.ID, "", "", runtimeprofile.Fields{
+		ModelProviderID: profile.Fields.ModelProviderID,
+		CustomConfigFile: `
+[features.multi_agent_v2]
+max_concurrent_threads_per_session = 11
+`,
+	}, true, false)
+	if err != nil {
+		t.Fatalf("add V2 caps without enabled: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if result.CodexMultiAgent == nil || result.CodexMultiAgent.State != "inherit" {
+		t.Fatalf("V2 caps alone must not enable the feature, got %#v", result.CodexMultiAgent)
+	}
+	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 0 || result.CodexMultiAgent.MaxDepth != 0 {
+		t.Fatalf("inactive V2 caps must not be reported, got %#v", result.CodexMultiAgent)
+	}
+}

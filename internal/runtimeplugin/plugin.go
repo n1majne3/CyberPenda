@@ -74,9 +74,9 @@ type ConfigProjection struct {
 	Primitive     string `json:"primitive"`
 	ConfigPath    string `json:"config_path,omitempty"`
 	MCPConfigPath string `json:"mcp_config_path,omitempty"`
-	// ManagedKeys declares the provider-native config keys this plugin
-	// re-derives at every projection. Profile Config Import refuses changes
-	// to them and points at the structured field that owns each key.
+	// ManagedKeys declares provider-native config keys this plugin can derive.
+	// Profile Config Import refuses changes according to each declaration's
+	// condition and points at the structured field that owns the key.
 	ManagedKeys []ManagedKey `json:"managed_keys,omitempty"`
 }
 
@@ -85,7 +85,8 @@ type ConfigProjection struct {
 // (for example "permissions.allow" or "env.ANTHROPIC_BASE_URL"); a path
 // segment "*" marks every child key under that prefix. Condition
 // "model_provider_resolved" limits enforcement to profiles that resolve a
-// Model Provider, because CyberPenda only derives those keys then.
+// Model Provider. "projected" limits enforcement to paths present in the
+// current structured baseline; an empty condition is unconditional.
 type ManagedKey struct {
 	Key       string `json:"key"`
 	Field     string `json:"field"`
@@ -156,6 +157,7 @@ var transcriptParsers = map[string]bool{
 var managedKeyConditions = map[string]bool{
 	"":                        true,
 	"model_provider_resolved": true,
+	"projected":               true,
 }
 
 var managedKeyPathPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+(\.[A-Za-z0-9_*-]+)*$`)

@@ -151,16 +151,19 @@ func TestGeneratedConfigPreviewsCodexMultiAgent(t *testing.T) {
 
 func TestImportProfileConfigRefusesMultiAgentManagedKeyChanges(t *testing.T) {
 	service := newTestService(t)
-	created, err := service.Create("Codex Import", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	disabled := false
+	created, err := service.Create("Codex Import", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{Enabled: &disabled},
+	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	// The baseline mirrors the generated off projection.
-	seed := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n\n[features]\nmulti_agent = false\n\n[agents]\nenabled = false\n"
+	// The explicit off control owns the projected V1 and V2 off keys.
+	seed := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n\n[features]\nmulti_agent = false\nmulti_agent_v2 = false\n\n[agents]\nenabled = false\n"
 	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return seed, nil })
 
-	edited := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n\n[features]\nmulti_agent = true\n\n[agents]\nenabled = false\n\n[agents.researcher]\ndescription = \"Role.\"\n"
+	edited := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n\n[features]\nmulti_agent = true\nmulti_agent_v2 = true\n\n[agents]\nenabled = false\n\n[agents.researcher]\ndescription = \"Role.\"\n"
 	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
 	if err == nil {
 		t.Fatal("expected multi-agent managed key refusal")
@@ -170,11 +173,18 @@ func TestImportProfileConfigRefusesMultiAgentManagedKeyChanges(t *testing.T) {
 		t.Fatalf("error = %v (%T), want ImportConfigError", err, err)
 	}
 	found := false
+	foundV2 := false
 	for _, keyErr := range refusal.Errors {
 		if keyErr.Key == "features.multi_agent" {
 			found = true
 			if keyErr.Field != "codex_multi_agent" {
 				t.Fatalf("refusal field = %q, want codex_multi_agent", keyErr.Field)
+			}
+		}
+		if keyErr.Key == "features.multi_agent_v2" {
+			foundV2 = true
+			if keyErr.Field != "codex_multi_agent" {
+				t.Fatalf("V2 refusal field = %q, want codex_multi_agent", keyErr.Field)
 			}
 		}
 		if strings.HasPrefix(keyErr.Key, "agents.researcher") {
@@ -184,17 +194,69 @@ func TestImportProfileConfigRefusesMultiAgentManagedKeyChanges(t *testing.T) {
 	if !found {
 		t.Fatalf("expected features.multi_agent refusal, got %#v", refusal.Errors)
 	}
+	if !foundV2 {
+		t.Fatalf("expected features.multi_agent_v2 refusal, got %#v", refusal.Errors)
+	}
 
 	// An unchanged multi-agent block imports; unmanaged sibling keys survive in
 	// the remainder. A managed leaf that lands inside a table with surviving
 	// siblings may linger in the stored overlay text — the projection deep
 	// merge keeps structured values authoritative, so the line is inert.
-	unchanged := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n\n[features]\nmulti_agent = false\nweb_search_cached = true\n\n[agents]\nenabled = false\n"
+	unchanged := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n\n[features]\nmulti_agent = false\nmulti_agent_v2 = false\nweb_search_cached = true\n\n[agents]\nenabled = false\n"
 	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: unchanged})
 	if err != nil {
 		t.Fatalf("unchanged multi-agent keys must import, got %v", err)
 	}
 	if !strings.Contains(result.Profile.Fields.CustomConfigFile, "web_search_cached") {
 		t.Fatalf("unmanaged remainder must stay, got %q", result.Profile.Fields.CustomConfigFile)
+	}
+}
+
+func TestProviderOnlyUpdateClearsCodexMultiAgent(t *testing.T) {
+	svc := newMultiAgentTestService(t)
+	enabled := true
+	created, err := svc.Create("codex-switch", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{Enabled: &enabled},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	updated, err := svc.Update(created.ID, "", runtimeprofile.ProviderPi, runtimeprofile.Fields{}, false, false)
+	if err != nil {
+		t.Fatalf("provider-only update: %v", err)
+	}
+	if updated.Provider != runtimeprofile.ProviderPi {
+		t.Fatalf("provider = %q, want pi", updated.Provider)
+	}
+	if updated.Fields.CodexMultiAgent != nil {
+		t.Fatalf("provider switch must clear Codex-only control, got %#v", updated.Fields.CodexMultiAgent)
+	}
+}
+
+func TestImportProfileConfigPreservesLegacyMultiAgentOverlayWhileInheriting(t *testing.T) {
+	service := newTestService(t)
+	created, err := service.Create("Codex Legacy Overlay", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		CustomConfigFile: "[features]\nmulti_agent = true\n\n[agents]\nenabled = true\nmax_depth = 3\n",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) {
+		return "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n", nil
+	})
+
+	edited := "approval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\n\n[features]\nmulti_agent = true\n\n[agents]\nenabled = true\nmax_depth = 3\n"
+	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
+	if err != nil {
+		t.Fatalf("unchanged legacy overlay must import: %v", err)
+	}
+	if result.Profile.Fields.CodexMultiAgent != nil {
+		t.Fatalf("legacy overlay must not become an explicit structured choice, got %#v", result.Profile.Fields.CodexMultiAgent)
+	}
+	for _, want := range []string{"multi_agent = true", "enabled = true", "max_depth = 3"} {
+		if !strings.Contains(result.Profile.Fields.CustomConfigFile, want) {
+			t.Fatalf("legacy overlay lost %q: %s", want, result.Profile.Fields.CustomConfigFile)
+		}
 	}
 }

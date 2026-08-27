@@ -301,9 +301,11 @@ func (s *Service) ImportConfig(id string, request ImportConfigRequest) (ImportCo
 	return ImportConfigResult{Profile: updated, MappedKeys: mapped}, nil
 }
 
-// refuseImportProblems collects managed-key *changes* and secret-shaped
-// values from the parsed document. Unchanged managed keys matching the
-// projected baseline are not a change. Nil means the document is importable.
+// refuseImportProblems collects active managed-key changes and secret-shaped
+// values from the parsed document. A declaration with the "projected"
+// condition is active only when the structured baseline projects that path;
+// absent paths remain overlay-owned. Unchanged active keys are not a change.
+// Nil means the document is importable.
 func (s *Service) refuseImportProblems(profile Profile, doc, baseline map[string]any, generatedPaths []string) *ImportConfigError {
 	var problems []ImportConfigKeyError
 	managed := s.managedKeys[profile.Provider]
@@ -318,7 +320,7 @@ func (s *Service) refuseImportProblems(profile Profile, doc, baseline map[string
 				if prefix != "" {
 					path = prefix + "." + key
 				}
-				if declaration, matched := managedKeyForPath(managed, path, resolved); matched {
+				if declaration, matched := managedKeyForPath(managed, path, resolved); matched && managedKeyActive(declaration, baseline, path) {
 					if !managedValueUnchanged(baseline, path, value) {
 						problems = append(problems, ImportConfigKeyError{
 							Key:     path,
@@ -601,7 +603,7 @@ func stripUnchangedManagedKeys(remaining map[string]any, declarations []managedK
 			if prefix != "" {
 				path = prefix + "." + key
 			}
-			if _, matched := managedKeyForPath(declarations, path, resolved); matched {
+			if declaration, matched := managedKeyForPath(declarations, path, resolved); matched && managedKeyActive(declaration, baseline, path) {
 				if managedValueUnchanged(baseline, path, value) {
 					// Hermes plugins.enabled keeps operator-added entries
 					// in the remainder. Every other managed array is a
@@ -649,6 +651,14 @@ func stripUnchangedManagedKeys(remaining map[string]any, declarations []managedK
 	}
 	walk("", remaining)
 	return strippedKeys, stripped
+}
+
+func managedKeyActive(declaration managedKeyDeclaration, baseline map[string]any, path string) bool {
+	if declaration.Condition != "projected" {
+		return true
+	}
+	_, projected := lookupPath(baseline, path)
+	return projected
 }
 
 // managedKeyForPath reports whether the dotted path is covered by a managed

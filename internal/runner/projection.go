@@ -1082,7 +1082,8 @@ func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimepr
 // on for models whose metadata does not already select a multi-agent
 // version; an explicit off projects both off keys because Codex releases
 // have shipped with the feature default-on, so an absent key cannot carry an
-// operator's off decision. An unset cap is not written, so a Custom Config
+// operator's off decision. Off also disables multi_agent_v2 because Codex
+// resolves V2 before agents.enabled. An unset cap is not written, so a Custom Config
 // File may supply it — the same fill-in behavior as other conditional
 // managed keys such as model_context_window.
 func appendCodexMultiAgentTOML(b *strings.Builder, profile runtimeprofile.Profile) {
@@ -1093,6 +1094,11 @@ func appendCodexMultiAgentTOML(b *strings.Builder, profile runtimeprofile.Profil
 	enabled := settings.Enabled != nil && *settings.Enabled
 	b.WriteString("\n[features]\n")
 	fmt.Fprintf(b, "multi_agent = %t\n", enabled)
+	if !enabled {
+		// Codex resolves V2 before agents.enabled, so an explicit operator off
+		// must disable both tool generations.
+		b.WriteString("multi_agent_v2 = false\n")
+	}
 	b.WriteString("\n[agents]\n")
 	fmt.Fprintf(b, "enabled = %t\n", enabled)
 	if enabled {

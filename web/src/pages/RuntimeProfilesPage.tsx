@@ -1047,6 +1047,9 @@ function ProfileEditor({
                 provider,
                 api_key_env: form.api_key_env || defaultAPIKeyEnv(provider, plugins) || "",
                 runtime_extensions: compatibleRuntimeExtensionRefs(form.runtime_extensions, provider, extensions),
+                codex_multi_agent_state: provider === "codex" ? form.codex_multi_agent_state : "inherit",
+                codex_multi_agent_max_threads: provider === "codex" ? form.codex_multi_agent_max_threads : "",
+                codex_multi_agent_max_depth: provider === "codex" ? form.codex_multi_agent_max_depth : "",
               });
             }}
           >

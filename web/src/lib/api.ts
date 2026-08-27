@@ -433,7 +433,7 @@ export interface RuntimeProfile {
     mcp_servers?: { name?: string; mode?: string; command?: string; url?: string; args?: string[]; env?: Record<string, string> }[];
     default_runner?: string;
     sandbox_image?: string;
-    /** Codex-only in-turn multi-agent tools control; unset means off. */
+    /** Codex-only in-turn multi-agent tools control; unset inherits the Codex default. */
     codex_multi_agent?: {
       enabled?: boolean;
       max_concurrent_threads_per_session?: number;

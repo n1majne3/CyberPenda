@@ -44,6 +44,7 @@ func TestCodexPluginDeclaresMultiAgentManagedKeysAndField(t *testing.T) {
 	}
 	for _, key := range []string{
 		"features.multi_agent",
+		"features.multi_agent_v2",
 		"agents.enabled",
 		"agents.max_concurrent_threads_per_session",
 		"agents.max_depth",

@@ -97,6 +97,7 @@ describe("runtimeProfilePreview", () => {
       codexPlugin,
     );
     expect(off.config_toml).toContain("multi_agent = false");
+    expect(off.config_toml).toContain("multi_agent_v2 = false");
     expect(off.config_toml).toContain("enabled = false");
 
     const on = enrichPreviewWithModelProvider(

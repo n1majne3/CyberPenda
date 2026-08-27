@@ -189,7 +189,7 @@ export function buildProfileFields(form: RuntimeProfileFormInput, plugins: Runti
   // unknown state) stores nothing so Config Projection writes no multi-agent
   // keys and Codex's own feature default applies.
   const multiAgentState = form.codex_multi_agent_state;
-  if (multiAgentState === "on" || multiAgentState === "off") {
+  if (form.provider === "codex" && (multiAgentState === "on" || multiAgentState === "off")) {
     const multiAgent: NonNullable<RuntimeProfileFields["codex_multi_agent"]> = {
       enabled: multiAgentState === "on",
     };
