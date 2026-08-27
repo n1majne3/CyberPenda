@@ -1617,13 +1617,18 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 			break
 		}
 	}
+	steeringControl, steeringControlErr := server.latestSteeringControl(owner.KindTask, found.ID)
+	if steeringControlErr == nil {
+		controls.NativeSteerRequestID = steeringControl.requestID
+		controls.NativeSteerState = steeringControl.state
+		controls.NativeSteerErrorCode = steeringControl.errorCode
+		controls.NativeSteerError = steeringControl.error
+	}
 	if session, bound := server.providerSessions.get(found.ID); bound {
-		_, outcome, _ := nativeSteerStateForTask(found.ID, server.tasks)
-		if selectedMode, modeErr := nativeSteerMode(session.Capabilities()); modeErr == nil {
+		if selectedMode, modeErr := nativeSteerModeForSession(session, false); modeErr == nil {
 			controls.NativeSteerAvailable = active
 			controls.NativeSteerMode = string(selectedMode)
-			controls.NativeSteerState = outcome
-			if outcome == "requested" || outcome == "acknowledged" || outcome == "settled" || outcome == "started" {
+			if steeringControl.nonTerminal {
 				controls.NativeSteerAvailable = false
 			}
 			controls.InterruptSteerAvailable = controls.NativeSteerAvailable
@@ -1633,14 +1638,6 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		} else {
 			controls.NativeSteerReason = modeErr.Error()
 			controls.InterruptSteerReason = controls.NativeSteerReason
-		}
-		if events, eventsErr := server.tasks.Events(found.ID); eventsErr == nil {
-			for index := len(events) - 1; index >= 0; index-- {
-				if requestID, ok := events[index].Payload["request_id"].(string); ok && requestID != "" && events[index].Kind == task.EventKindConversation && events[index].Payload["delivery"] == "native_steer" {
-					controls.NativeSteerRequestID = requestID
-					break
-				}
-			}
 		}
 		if controls.NativeSteerState == "" && active {
 			controls.NativeSteerState = "idle"
@@ -1690,25 +1687,6 @@ func providerPermissionRequestsForTask(events []task.Event) []task.ProviderPermi
 		return left.CreatedAt.Compare(right.CreatedAt)
 	})
 	return result
-}
-
-func nativeSteerStateForTask(taskID string, tasks *task.Service) (runtime.ProviderSessionMode, string, string) {
-	events, err := tasks.Events(taskID)
-	if err != nil {
-		return "", "", ""
-	}
-	var requestID string
-	for _, event := range events {
-		if event.Kind != task.EventKindConversation || event.Payload["delivery"] != "native_steer" {
-			continue
-		}
-		requestID, _ = event.Payload["request_id"].(string)
-	}
-	if requestID == "" {
-		return "", "", ""
-	}
-	mode, outcome, sessionID := nativeSteerState(events, requestID)
-	return mode, outcome, sessionID
 }
 
 func (server *Server) handleTaskEvents(response http.ResponseWriter, request *http.Request) {
@@ -2922,23 +2900,53 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
-	if session, ok := server.providerSessions.get(taskID); ok {
-		server.handleProviderSessionSteer(response, request, found, session)
-		return
-	}
-
-	var input struct {
-		Directive string `json:"directive"`
-		taskContinuationSelectionInput
-	}
+	var input nativeSteerRequest
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if input.Directive == "" {
-		writeError(response, http.StatusBadRequest, "steering directive is required")
+	input.RequestID = strings.TrimSpace(input.RequestID)
+	if input.RequestID == "" {
+		input.RequestID = strings.TrimSpace(request.Header.Get("Idempotency-Key"))
+	}
+	if input.RequestID == "" {
+		input.RequestID = newNativeSteerRequestID()
+	}
+	input.Message = strings.TrimSpace(input.Message)
+	if input.Message == "" {
+		input.Message = strings.TrimSpace(input.Directive)
+	}
+	if input.Message == "" {
+		writeError(response, http.StatusBadRequest, "steer message is required")
 		return
 	}
+	adapter := taskSteeringAdapter(server, found.ID, server.taskConclusionSettlementForID(found.ID))
+	clientSelectionIdentity := canonicalSteeringClientSelectionIdentity(input.ModelProviderID, input.selectedModel(), input.ReasoningEffort)
+	replayIdentity := steeringReplayIdentity{
+		requestID: input.RequestID, operatorMessage: input.Message,
+		clientSelectionIdentity: clientSelectionIdentity,
+		modelProviderID:         input.ModelProviderID, model: input.selectedModel(),
+		requestedReasoningEffort: input.ReasoningEffort,
+	}
+	if record, replayed, replayErr := server.findAcceptedSteeringReplayByIdentity(adapter, replayIdentity); replayErr != nil || replayed {
+		if replayErr != nil {
+			var conflict *steeringRequestConflictError
+			if errors.As(replayErr, &conflict) {
+				writeError(response, http.StatusConflict, conflict.Error())
+			} else {
+				writeTaskError(response, replayErr)
+			}
+			return
+		}
+		writeTaskAcceptedSteering(response, record, "")
+		return
+	}
+	if providerSession, ok := server.providerSessions.get(taskID); ok {
+		server.handleProviderSessionSteer(response, request, found, providerSession, input)
+		return
+	}
+
+	input.Directive = input.Message
 	if profile, profileErr := server.resolveTaskRuntimeProfile(found); profileErr != nil {
 		writeError(response, http.StatusInternalServerError, "load runtime profile")
 		return
@@ -3062,27 +3070,8 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	})
 }
 
-func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, request *http.Request, found task.Task, session runtime.ProviderSession) {
-	var input nativeSteerRequest
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	input.RequestID = strings.TrimSpace(input.RequestID)
-	if input.RequestID == "" {
-		input.RequestID = strings.TrimSpace(request.Header.Get("Idempotency-Key"))
-	}
-	if input.RequestID == "" {
-		input.RequestID = newNativeSteerRequestID()
-	}
-	input.Message = strings.TrimSpace(input.Message)
-	if input.Message == "" {
-		input.Message = strings.TrimSpace(input.Directive)
-	}
-	if input.Message == "" {
-		writeError(response, http.StatusBadRequest, "steer message is required")
-		return
-	}
+func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, request *http.Request, found task.Task, session runtime.ProviderSession, input nativeSteerRequest) {
+	clientSelectionIdentity := canonicalSteeringClientSelectionIdentity(input.ModelProviderID, input.selectedModel(), input.ReasoningEffort)
 	// Runtime Plugin / Runtime Profile switches need Config Projection and a
 	// restart. Model Provider changes stay native for Pi when the provider was
 	// projected at startup (ADR 0015); Codex/Claude still restart.
@@ -3098,39 +3087,35 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		writeError(response, http.StatusConflict, "native steer requires an active Task")
 		return
 	}
-	mode, err := nativeSteerMode(session.Capabilities())
+
+	currentSelection, err := server.currentTurnSelection(found)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "resolve current turn selection")
+		return
+	}
+	runtimeProfile, err := server.resolveTaskRuntimeProfile(found)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "resolve Runtime Provider")
+		return
+	}
+	settlement := server.taskConclusionSettlementForID(found.ID)
+	prepared, err := prepareAcceptedNativeSteer(
+		request.Context(), session,
+		providerSelectionRequiresReplacement(runtimeProfile.Provider, currentSelection, selection),
+		input.ForceReplace, settlement,
+	)
 	if err != nil {
 		writeError(response, http.StatusConflict, err.Error())
 		return
 	}
-	if nativeSteerOperation(session, mode) == nil {
+	if nativeSteerOperation(session, prepared.Mode) == nil {
 		writeError(response, http.StatusConflict, "provider session does not support native steer")
 		return
 	}
-
-	// Repeated requests with the same request identity return the durable
-	// current outcome and never create a second queue item. Conflicting content
-	// under the same identity returns a conflict.
-	if record, err := server.steering.ByRequestID(owner.KindTask, found.ID, input.RequestID); err == nil {
-		if conflict := steeringConflictMessage(record, input.Message, selection, owner.SteeringMode(mode)); conflict != "" {
-			writeError(response, http.StatusConflict, conflict)
-			return
-		}
-		sessionID := record.SessionID
-		if sessionID == "" {
-			sessionID = session.SessionID()
-		}
-		writeJSON(response, http.StatusAccepted, struct {
-			RequestID string                      `json:"request_id"`
-			SessionID string                      `json:"session_id"`
-			Mode      runtime.ProviderSessionMode `json:"mode"`
-			Outcome   string                      `json:"outcome"`
-		}{RequestID: input.RequestID, SessionID: sessionID, Mode: runtime.ProviderSessionMode(record.Mode), Outcome: steeringOutcomeFromRecord(record)})
-		return
-	} else if !errors.Is(err, steering.ErrNotFound) {
-		writeError(response, http.StatusInternalServerError, "load accepted steering")
-		return
-	}
+	mode := prepared.Mode
+	expectedProviderTurnID := prepared.ExpectedProviderTurnID
+	releaseSteeringRequest := server.steering.AcquireRequest(owner.KindTask, found.ID, input.RequestID)
+	defer releaseSteeringRequest()
 
 	// Durable acceptance (#194, #200): the operator message and the dispatch
 	// record commit atomically before the request returns 202. The accepted
@@ -3144,15 +3129,20 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		"model_provider_id": selection.ModelProviderID, "model": selection.Model,
 		"requested_reasoning_effort": selection.RequestedReasoningEffort,
 	}
-	adapter := taskSteeringAdapter(server, found.ID, server.taskConclusionSettlementForID(found.ID))
-	_, err = server.acceptSteeringDurably(request.Context(), adapter, steering.AcceptRequest{
+	if expectedProviderTurnID != "" {
+		conversationPayload["provider_turn_id"] = expectedProviderTurnID
+	}
+	record, _, err := server.acceptSteeringOrReplay(request.Context(), taskSteeringAdapter(server, found.ID, settlement), steering.AcceptRequest{
 		RequestID:                input.RequestID,
+		ClientSelectionIdentity:  clientSelectionIdentity,
+		OperatorMessage:          input.Message,
 		Message:                  input.Message,
 		Mode:                     owner.SteeringMode(mode),
 		ModelProviderID:          selection.ModelProviderID,
 		Model:                    selection.Model,
 		RequestedReasoningEffort: selection.RequestedReasoningEffort,
 		SessionID:                session.SessionID(),
+		ExpectedProviderTurnID:   expectedProviderTurnID,
 	}, func(tx *sql.Tx) (string, error) {
 		event, eventErr := server.tasks.AppendEventTx(tx, found.ID, task.EventKindConversation, conversationPayload)
 		if eventErr != nil {
@@ -3160,37 +3150,29 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		}
 		return event.ID, nil
 	})
-	if errors.Is(err, steering.ErrDuplicateRequest) {
-		// A concurrent duplicate committed first. The same identity rules
-		// apply: matching content replays the durable outcome, conflicting
-		// content is a conflict.
-		replayed, replayErr := server.steering.ByRequestID(owner.KindTask, found.ID, input.RequestID)
-		if replayErr != nil {
-			writeError(response, http.StatusInternalServerError, "load accepted steering")
-			return
-		}
-		if conflict := steeringConflictMessage(replayed, input.Message, selection, owner.SteeringMode(mode)); conflict != "" {
-			writeError(response, http.StatusConflict, conflict)
-			return
-		}
-		writeJSON(response, http.StatusAccepted, struct {
-			RequestID string                      `json:"request_id"`
-			SessionID string                      `json:"session_id"`
-			Mode      runtime.ProviderSessionMode `json:"mode"`
-			Outcome   string                      `json:"outcome"`
-		}{RequestID: input.RequestID, SessionID: replayed.SessionID, Mode: runtime.ProviderSessionMode(replayed.Mode), Outcome: steeringOutcomeFromRecord(replayed)})
-		return
-	}
 	if err != nil {
+		var conflict *steeringRequestConflictError
+		if errors.As(err, &conflict) {
+			writeError(response, http.StatusConflict, conflict.Error())
+			return
+		}
 		writeTaskError(response, err)
 		return
+	}
+	writeTaskAcceptedSteering(response, record, session.SessionID())
+}
+
+func writeTaskAcceptedSteering(response http.ResponseWriter, record *owner.SteeringRecord, fallbackSessionID string) {
+	sessionID := strings.TrimSpace(record.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(fallbackSessionID)
 	}
 	writeJSON(response, http.StatusAccepted, struct {
 		RequestID string                      `json:"request_id"`
 		SessionID string                      `json:"session_id"`
 		Mode      runtime.ProviderSessionMode `json:"mode"`
 		Outcome   string                      `json:"outcome"`
-	}{RequestID: input.RequestID, SessionID: session.SessionID(), Mode: mode, Outcome: "accepted"})
+	}{RequestID: record.RequestID, SessionID: sessionID, Mode: runtime.ProviderSessionMode(record.Mode), Outcome: steeringOutcomeFromRecord(record)})
 }
 
 // nativeSteerOperationFunc is one provider session steer operation selected by
@@ -3282,27 +3264,6 @@ func (server *Server) executeNativeSteerOperation(ctx context.Context, found tas
 		},
 		failOwnerExecution: true,
 	})
-}
-
-// steerReasonFromFailureCode maps the redacted provider failure presentation
-// onto the closed Accepted Steering reason vocabulary. The projected event
-// error_code keeps the presentation code; the durable record stores the closed
-// reason.
-func steerReasonFromFailureCode(code string) owner.SteeringFailureReason {
-	switch code {
-	case "session_closed":
-		return owner.SteeringReasonSessionClosed
-	case "control_conflict":
-		return owner.SteeringReasonControlConflict
-	case "unsupported_reasoning_effort":
-		return owner.SteeringReasonUnsupportedReasoningEffort
-	case "provider_rejected":
-		return owner.SteeringReasonProviderRejected
-	case "provider_control_unavailable":
-		return owner.SteeringReasonProviderControlUnavailable
-	default:
-		return owner.SteeringReasonProviderRejected
-	}
 }
 
 type providerPermissionResponseRequest struct {
@@ -3936,32 +3897,6 @@ func nativeSteerIdempotencyConflict(prior task.Event, message string, selection 
 		return "steer request id already belongs to a different turn selection"
 	}
 	return ""
-}
-
-// nativeSteerFailurePresentation maps provider operation failures to stable,
-// redacted public codes/messages. Raw provider text never crosses this seam.
-func nativeSteerFailurePresentation(operationErr error) (code, message string) {
-	switch {
-	case errors.Is(operationErr, context.DeadlineExceeded):
-		return "timeout", "native steer timed out"
-	case errors.Is(operationErr, context.Canceled):
-		return "server_closing", "native steer canceled"
-	case errors.Is(operationErr, runtime.ErrProviderSessionClosed):
-		return "session_closed", "provider session is closed"
-	case errors.Is(operationErr, runtime.ErrProviderSessionControlConflict):
-		return "control_conflict", "provider session control conflict"
-	}
-	raw := ""
-	if cause := errors.Unwrap(operationErr); cause != nil {
-		raw = cause.Error()
-	} else if operationErr != nil {
-		raw = operationErr.Error()
-	}
-	lower := strings.ToLower(raw)
-	if strings.Contains(lower, "effort") || strings.Contains(lower, "reasoning") {
-		return "unsupported_reasoning_effort", "requested reasoning effort is not supported"
-	}
-	return "provider_rejected", "provider rejected the turn"
 }
 
 func configString(config map[string]any, key string) string {

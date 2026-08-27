@@ -5,6 +5,7 @@ import type { TaskTranscriptEntry } from "@/lib/api";
 // the client only renders what the server already parsed.
 
 export function collapsedTranscriptTitle(entry: TaskTranscriptEntry): string {
+  if (entry.kind === "thinking") return "Reasoning";
   if (entry.kind === "tool_call") {
     const toolName = entry.tool_name || "Tool";
     const preview = toolInputPreview(entry);

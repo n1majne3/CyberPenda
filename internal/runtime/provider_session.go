@@ -46,10 +46,35 @@ var (
 	ErrProviderSessionClosed = errors.New("provider session is closed")
 	// ErrInvalidProviderSessionRequest reports missing stable request identity.
 	ErrInvalidProviderSessionRequest = errors.New("invalid provider session request")
+	// ErrProviderTurnUnavailable reports an in-turn operation without a live
+	// provider Runtime Turn to target.
+	ErrProviderTurnUnavailable = errors.New("provider Runtime Turn is unavailable")
+	// ErrProviderTurnChanged reports an in-turn operation whose expected Turn
+	// is no longer the provider session's active Turn.
+	ErrProviderTurnChanged = errors.New("provider Runtime Turn changed")
+	// ErrProviderTurnNotSteerable reports an active provider Turn whose kind
+	// explicitly rejects same-turn operator input, such as review or compact.
+	ErrProviderTurnNotSteerable = errors.New("active provider Runtime Turn is not steerable")
+	// ErrProviderMethodUnavailable reports a provider App Server that does not
+	// implement the requested native method.
+	ErrProviderMethodUnavailable = errors.New("provider method is unavailable")
 	// ErrProviderSessionRequestConflict reports reuse of a request id with a
 	// different operation payload.
 	ErrProviderSessionRequestConflict = errors.New("provider session request id is already bound to different content")
 )
+
+// ProviderTurnChangedError preserves the redacted expected/active identities
+// needed for deterministic steering recovery without exposing provider text.
+type ProviderTurnChangedError struct {
+	ExpectedTurnID string
+	ActiveTurnID   string
+}
+
+func (e *ProviderTurnChangedError) Error() string {
+	return fmt.Sprintf("expected provider Turn %q, active Turn is %q", e.ExpectedTurnID, e.ActiveTurnID)
+}
+
+func (e *ProviderTurnChangedError) Is(target error) bool { return target == ErrProviderTurnChanged }
 
 // ProviderSessionRequestConflictError identifies an idempotency-key payload
 // mismatch without exposing the payload itself.
@@ -155,6 +180,32 @@ type ProviderSession interface {
 	Close(context.Context) error
 }
 
+// ProviderSessionTurnState is one atomic snapshot of the provider session's
+// control and active Runtime Turn identity.
+type ProviderSessionTurnState struct {
+	SessionID      string
+	ActiveTurnID   string
+	ActiveTurnKind RuntimeTurnKind
+	ControlBusy    bool
+}
+
+// TurnBusy reports whether a control RPC or provider Runtime Turn is active.
+func (state ProviderSessionTurnState) TurnBusy() bool {
+	return state.ControlBusy || strings.TrimSpace(state.ActiveTurnID) != ""
+}
+
+// ProviderSessionTurnStateReporter exposes the active Turn identity required
+// to bind a durable same-turn Steering request.
+type ProviderSessionTurnStateReporter interface {
+	TurnState() ProviderSessionTurnState
+}
+
+// ProviderSessionTurnBusyReporter retains compatibility for provider handles
+// that report liveness without exposing active Turn identity.
+type ProviderSessionTurnBusyReporter interface {
+	TurnBusy() bool
+}
+
 // ProviderSessionContinuationBinder updates the request-level Continuation pin
 // on a Task-owned transport without replacing the provider session.
 type ProviderSessionContinuationBinder interface {
@@ -165,6 +216,7 @@ type ProviderSessionContinuationBinder interface {
 type FakeProviderSessionConfig struct {
 	SessionID         string
 	ActiveTurnID      string
+	ActiveTurnKind    RuntimeTurnKind
 	Capabilities      runtimeplugin.Capabilities
 	ManualAcknowledge bool
 	Failures          map[ProviderSessionMode]error
@@ -217,12 +269,21 @@ func NewFakeProviderSession(config FakeProviderSessionConfig) *FakeProviderSessi
 	if id == "" {
 		id = "fake-session"
 	}
+	activeTurnID := strings.TrimSpace(config.ActiveTurnID)
+	activeTurnKind := config.ActiveTurnKind
+	if activeTurnID != "" && activeTurnKind == "" {
+		activeTurnKind = RuntimeTurnKindWork
+	}
+	providerTurnKind := map[string]RuntimeTurnKind{}
+	if activeTurnID != "" {
+		providerTurnKind[activeTurnID] = activeTurnKind
+	}
 	return &FakeProviderSession{
 		id: id, capabilities: config.Capabilities,
-		activeTurnID: strings.TrimSpace(config.ActiveTurnID), turnNumber: 1,
+		activeTurnID: activeTurnID, turnNumber: 1,
 		manualAck: config.ManualAcknowledge, failures: config.Failures,
 		calls: map[string]*providerSessionCall{}, acknowledge: map[string]chan struct{}{},
-		requestTurnKind: map[string]RuntimeTurnKind{}, providerTurnKind: map[string]RuntimeTurnKind{},
+		requestTurnKind: map[string]RuntimeTurnKind{}, providerTurnKind: providerTurnKind,
 		requestLineage: map[string]ProviderSessionTurnLineage{}, providerLineage: map[string]ProviderSessionTurnLineage{},
 	}
 }
@@ -386,6 +447,19 @@ func (s *FakeProviderSession) InterruptThenReplace(ctx context.Context, request 
 }
 
 func (s *FakeProviderSession) SteerInTurn(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
+	s.mu.Lock()
+	activeTurnID := strings.TrimSpace(s.activeTurnID)
+	s.mu.Unlock()
+	if activeTurnID == "" {
+		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: ProviderSessionModeInTurnSteer, Cause: ErrProviderTurnUnavailable}
+	}
+	if expected := strings.TrimSpace(request.ProviderTurnID); expected == "" {
+		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: ProviderSessionModeInTurnSteer, Cause: ErrInvalidProviderSessionRequest}
+	} else if expected != activeTurnID {
+		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: ProviderSessionModeInTurnSteer, Cause: &ProviderTurnChangedError{
+			ExpectedTurnID: expected, ActiveTurnID: activeTurnID,
+		}}
+	}
 	return s.operate(ctx, ProviderSessionModeInTurnSteer, ProviderSessionCapabilityInTurnSteer, request, emit)
 }
 
@@ -405,6 +479,7 @@ func (s *FakeProviderSession) Close(context.Context) error {
 		return ErrProviderSessionControlConflict
 	}
 	s.closed = true
+	s.activeTurnID = ""
 	s.offline = true
 	// Explicit Close is operator Stop/cleanup, not unexpected exit.
 	s.unexpectedOffline = false
@@ -431,6 +506,21 @@ func (s *FakeProviderSession) ControlBusy() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activeCall != ""
+}
+
+// TurnBusy reports whether a fake control call or provider Runtime Turn is active.
+func (s *FakeProviderSession) TurnBusy() bool {
+	return s.TurnState().TurnBusy()
+}
+
+// TurnState returns one atomic fake provider Turn snapshot.
+func (s *FakeProviderSession) TurnState() ProviderSessionTurnState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return ProviderSessionTurnState{
+		SessionID: s.id, ActiveTurnID: s.activeTurnID,
+		ActiveTurnKind: s.providerTurnKind[s.activeTurnID], ControlBusy: s.activeCall != "",
+	}
 }
 
 // SessionClosed reports whether Close has completed on this handle.
@@ -523,10 +613,12 @@ func (s *FakeProviderSession) operate(ctx context.Context, mode ProviderSessionM
 		s.activeTurnID = turnID
 	}
 	s.requestTurnKind[request.RequestID] = request.TurnKind
-	s.providerTurnKind[turnID] = request.TurnKind
 	lineage := providerSessionTurnLineage(request, turnID)
 	s.requestLineage[request.RequestID] = lineage
-	s.providerLineage[turnID] = lineage
+	if mode != ProviderSessionModeInTurnSteer {
+		s.providerTurnKind[turnID] = request.TurnKind
+		s.providerLineage[turnID] = lineage
+	}
 	var ack chan struct{}
 	if s.manualAck && modeNeedsAcknowledgement(mode) {
 		ack = make(chan struct{})

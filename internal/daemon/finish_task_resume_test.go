@@ -161,6 +161,13 @@ func (s *forceBusySession) ControlBusy() bool {
 	return s.finishBoundSession.ControlBusy()
 }
 
+func (s *forceBusySession) TurnBusy() bool {
+	if s.busy {
+		return true
+	}
+	return s.finishBoundSession.TurnBusy()
+}
+
 func newFinishTaskFixture(t *testing.T, factory ProviderSessionFactory) (*Server, task.Task, modelprovider.Provider) {
 	t.Helper()
 	return newFinishTaskFixtureAt(t, t.TempDir(), factory)
@@ -223,6 +230,27 @@ func launchFinishTask(t *testing.T, server *Server, created task.Task) {
 		t.Fatal(err)
 	}
 	waitForHarnessActive(t, server, created.ID, true)
+	bound, ok := server.providerSessions.get(created.ID)
+	if !ok {
+		t.Fatal("provider session was not bound after launch")
+	}
+	emitter, ok := bound.(interface {
+		EmitObservation(runtime.ProviderSessionObservation) error
+	})
+	if !ok {
+		t.Fatalf("finish fixture provider session %T cannot complete its initial Turn", bound)
+	}
+	state := providerSessionTurnState(bound)
+	if strings.TrimSpace(state.ActiveTurnID) == "" {
+		t.Fatal("finish fixture launch did not create an active provider Turn")
+	}
+	if err := emitter.EmitObservation(runtime.ProviderSessionObservation{
+		Kind:           runtime.ProviderSessionObservationTurnCompleted,
+		ProviderTurnID: state.ActiveTurnID,
+		Status:         "completed",
+	}); err != nil {
+		t.Fatalf("complete initial provider Turn: %v", err)
+	}
 	waitForLiveIdle(t, server, created)
 }
 

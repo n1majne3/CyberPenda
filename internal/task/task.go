@@ -457,6 +457,8 @@ type RuntimeControls struct {
 	NativeSteerMode       string `json:"native_steer_mode,omitempty"`
 	NativeSteerState      string `json:"native_steer_state,omitempty"`
 	NativeSteerRequestID  string `json:"native_steer_request_id,omitempty"`
+	NativeSteerErrorCode  string `json:"native_steer_error_code,omitempty"`
+	NativeSteerError      string `json:"native_steer_error,omitempty"`
 	NativeSteerReason     string `json:"native_steer_reason,omitempty"`
 	ResumeAvailable       bool   `json:"resume_available"`
 	// FinishAvailable is true only when Runtime Activity is live and idle.

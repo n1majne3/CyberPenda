@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"pentest/internal/owner"
@@ -34,28 +35,70 @@ var ErrInvalidReason = errors.New("invalid accepted steering reason")
 // AcceptRequest is the owner-neutral durable payload of one accepted steer.
 // Raw provider text never enters this record.
 type AcceptRequest struct {
-	RequestID                string
+	RequestID string
+	// OperatorMessage is the canonical Conversation text used for idempotency.
+	// Message may additionally contain provider-only attachment path context.
+	// ClientSelectionIdentity is the canonical identity of the raw
+	// client-controlled Model Provider, model, and Requested Reasoning Effort.
+	// Empty means a legacy record whose raw selection identity is unknown.
+	ClientSelectionIdentity  string
+	OperatorMessage          string
 	Message                  string
 	Mode                     owner.SteeringMode
 	ModelProviderID          string
 	Model                    string
 	RequestedReasoningEffort string
 	SessionID                string
+	ExpectedProviderTurnID   string
 }
 
 // Service persists Accepted Steering records. Task and Session owners share
 // the same table and the same transition vocabulary.
 type Service struct {
-	db *store.DB
+	db           *store.DB
+	requestMu    sync.Mutex
+	requestLocks map[string]*steeringRequestLock
+}
+
+type steeringRequestLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 func NewService(db *store.DB) *Service {
-	return &Service{db: db}
+	return &Service{db: db, requestLocks: make(map[string]*steeringRequestLock)}
 }
 
-const steeringRecordColumns = `id, owner_kind, owner_id, request_id, message, mode, model_provider_id, model,
+// AcquireRequest serializes acceptance side effects for one owner/request
+// identity. SQLite still enforces the durable uniqueness constraint; this guard
+// prevents Session attachment staging from creating duplicate projection Events
+// while two identical HTTP requests race inside one daemon.
+func (s *Service) AcquireRequest(kind owner.Kind, ownerID, requestID string) func() {
+	key := string(kind) + "\x00" + strings.TrimSpace(ownerID) + "\x00" + strings.TrimSpace(requestID)
+	s.requestMu.Lock()
+	lock := s.requestLocks[key]
+	if lock == nil {
+		lock = &steeringRequestLock{}
+		s.requestLocks[key] = lock
+	}
+	lock.refs++
+	s.requestMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		s.requestMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.requestLocks, key)
+		}
+		s.requestMu.Unlock()
+	}
+}
+
+const steeringRecordColumns = `id, owner_kind, owner_id, request_id, client_selection_identity, operator_message, message, mode, model_provider_id, model,
 	requested_reasoning_effort, state, queue_order, conversation_event_id, continuation_id, session_id,
-	send_started_at, result_json, error_code, error_message, created_at, updated_at`
+	expected_provider_turn_id, send_started_at, result_json, error_code, error_message, created_at, updated_at`
 
 // Accept durably records one Accepted Steering request together with its
 // conversation projection in one transaction. The projection callback appends
@@ -69,7 +112,10 @@ func (s *Service) Accept(ctx context.Context, kind owner.Kind, ownerID string, i
 	if strings.TrimSpace(ownerID) == "" || strings.TrimSpace(input.RequestID) == "" || strings.TrimSpace(input.Message) == "" {
 		return nil, fmt.Errorf("Accepted Steering requires owner, request identity, and message")
 	}
-	if input.Mode != owner.SteeringModeInTurnSteer && input.Mode != owner.SteeringModeInterruptThenReplace {
+	if strings.TrimSpace(input.OperatorMessage) == "" {
+		input.OperatorMessage = input.Message
+	}
+	if input.Mode != owner.SteeringModeSendTurn && input.Mode != owner.SteeringModeInTurnSteer && input.Mode != owner.SteeringModeInterruptThenReplace {
 		return nil, fmt.Errorf("invalid Accepted Steering mode %q", input.Mode)
 	}
 	now := time.Now().UTC()
@@ -88,15 +134,16 @@ func (s *Service) Accept(ctx context.Context, kind owner.Kind, ownerID string, i
 	}
 	id := newID()
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO accepted_steering (id, owner_kind, owner_id, request_id, message, mode, model_provider_id, model,
+		INSERT INTO accepted_steering (id, owner_kind, owner_id, request_id, client_selection_identity, operator_message, message, mode, model_provider_id, model,
 			requested_reasoning_effort, state, queue_order, conversation_event_id, continuation_id, session_id,
-			send_started_at, result_json, error_code, error_message, created_at, updated_at)
-		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(MAX(queue_order), 0) + 1, ?, '', ?, '', '{}', '', '', ?, ?
+			expected_provider_turn_id, send_started_at, result_json, error_code, error_message, created_at, updated_at)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(MAX(queue_order), 0) + 1, ?, '', ?, ?, '', '{}', '', '', ?, ?
 			FROM accepted_steering WHERE owner_kind = ? AND owner_id = ?`,
-		id, string(kind), ownerID, strings.TrimSpace(input.RequestID), strings.TrimSpace(input.Message),
-		string(input.Mode), strings.TrimSpace(input.ModelProviderID), strings.TrimSpace(input.Model),
+		id, string(kind), ownerID, strings.TrimSpace(input.RequestID), strings.TrimSpace(input.ClientSelectionIdentity),
+		strings.TrimSpace(input.OperatorMessage), strings.TrimSpace(input.Message), string(input.Mode),
+		strings.TrimSpace(input.ModelProviderID), strings.TrimSpace(input.Model),
 		strings.TrimSpace(input.RequestedReasoningEffort), string(owner.SteeringPending),
-		conversationEventID, strings.TrimSpace(input.SessionID),
+		conversationEventID, strings.TrimSpace(input.SessionID), strings.TrimSpace(input.ExpectedProviderTurnID),
 		now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
 		string(kind), ownerID,
 	); err != nil {
@@ -125,6 +172,22 @@ func (s *Service) ByRequestID(kind owner.Kind, ownerID, requestID string) (*owne
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load Accepted Steering: %w", err)
+	}
+	return record, nil
+}
+
+// Latest returns the newest durable Accepted Steering record for one Runtime
+// Owner. Runtime Controls use this record as their source of truth; owner Events
+// are only Timeline and Conversation projections.
+func (s *Service) Latest(kind owner.Kind, ownerID string) (*owner.SteeringRecord, error) {
+	record, err := scanSteeringRecord(s.db.QueryRow(`SELECT `+steeringRecordColumns+`
+		FROM accepted_steering WHERE owner_kind=? AND owner_id=? ORDER BY queue_order DESC LIMIT 1`,
+		string(kind), ownerID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load latest Accepted Steering: %w", err)
 	}
 	return record, nil
 }
@@ -192,7 +255,10 @@ func (s *Service) MarkDispatchStarted(ctx context.Context, id, continuationID st
 
 // MarkApplied records the terminal delivered outcome with the redacted
 // provider result as delivery evidence.
-func (s *Service) MarkApplied(ctx context.Context, id string, result map[string]any) (*owner.SteeringRecord, error) {
+func (s *Service) MarkApplied(ctx context.Context, id string, mode owner.SteeringMode, result map[string]any) (*owner.SteeringRecord, error) {
+	if mode != owner.SteeringModeSendTurn && mode != owner.SteeringModeInTurnSteer && mode != owner.SteeringModeInterruptThenReplace {
+		return nil, fmt.Errorf("invalid applied Accepted Steering mode %q", mode)
+	}
 	evidence, err := json.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("encode Accepted Steering result: %w", err)
@@ -203,11 +269,12 @@ func (s *Service) MarkApplied(ctx context.Context, id string, result map[string]
 		}
 		stamp := time.Now().UTC().Format(time.RFC3339Nano)
 		if _, err := tx.ExecContext(ctx, `UPDATE accepted_steering
-			SET state=?, result_json=?, updated_at=? WHERE id=?`,
-			string(owner.SteeringApplied), string(evidence), stamp, id); err != nil {
+			SET state=?, mode=?, result_json=?, updated_at=? WHERE id=?`,
+			string(owner.SteeringApplied), string(mode), string(evidence), stamp, id); err != nil {
 			return err
 		}
 		current.State = owner.SteeringApplied
+		current.Mode = mode
 		current.Result = result
 		current.UpdatedAt = time.Now().UTC()
 		return nil
@@ -337,10 +404,11 @@ func (s *Service) transition(ctx context.Context, id string, apply steeringTrans
 
 // steeringScan is the raw row shape of the accepted_steering table.
 type steeringScan struct {
-	id, ownerKind, ownerID, requestID, message, mode                       string
-	modelProviderID, model, requestedReasoningEffort, state                string
-	queueOrder                                                             int
-	conversationEventID, continuationID, sessionID                         string
+	id, ownerKind, ownerID, requestID, clientSelectionIdentity               string
+	operatorMessage, message, mode, modelProviderID, model                   string
+	requestedReasoningEffort, state                                          string
+	queueOrder                                                               int
+	conversationEventID, continuationID, sessionID, expectedProviderTurnID   string
 	sendStartedAt, resultJSON, errorCode, errorMessage, createdAt, updatedAt string
 }
 
@@ -350,6 +418,8 @@ func (scan *steeringScan) decode() (*owner.SteeringRecord, error) {
 		OwnerKind:                owner.Kind(scan.ownerKind),
 		OwnerID:                  scan.ownerID,
 		RequestID:                scan.requestID,
+		ClientSelectionIdentity:  scan.clientSelectionIdentity,
+		OperatorMessage:          scan.operatorMessage,
 		Message:                  scan.message,
 		Mode:                     owner.SteeringMode(scan.mode),
 		ModelProviderID:          scan.modelProviderID,
@@ -360,6 +430,7 @@ func (scan *steeringScan) decode() (*owner.SteeringRecord, error) {
 		ConversationEventID:      scan.conversationEventID,
 		ContinuationID:           scan.continuationID,
 		SessionID:                scan.sessionID,
+		ExpectedProviderTurnID:   scan.expectedProviderTurnID,
 		ErrorCode:                owner.SteeringFailureReason(scan.errorCode),
 		ErrorMessage:             scan.errorMessage,
 	}
@@ -385,10 +456,10 @@ func (scan *steeringScan) decode() (*owner.SteeringRecord, error) {
 
 func (scan *steeringScan) targets() []any {
 	return []any{
-		&scan.id, &scan.ownerKind, &scan.ownerID, &scan.requestID, &scan.message, &scan.mode,
+		&scan.id, &scan.ownerKind, &scan.ownerID, &scan.requestID, &scan.clientSelectionIdentity, &scan.operatorMessage, &scan.message, &scan.mode,
 		&scan.modelProviderID, &scan.model, &scan.requestedReasoningEffort, &scan.state,
 		&scan.queueOrder, &scan.conversationEventID, &scan.continuationID, &scan.sessionID,
-		&scan.sendStartedAt, &scan.resultJSON, &scan.errorCode, &scan.errorMessage, &scan.createdAt, &scan.updatedAt,
+		&scan.expectedProviderTurnID, &scan.sendStartedAt, &scan.resultJSON, &scan.errorCode, &scan.errorMessage, &scan.createdAt, &scan.updatedAt,
 	}
 }
 

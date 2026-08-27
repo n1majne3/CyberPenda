@@ -31,7 +31,7 @@ func TestCodexNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testin
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
 		SessionID: "codex-thread-1",
 		Capabilities: runtimeplugin.Capabilities{
-			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
+			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, InTurnSteer: true,
 		},
 	})
 	closed := make(chan struct{})
@@ -147,6 +147,9 @@ func TestCodexNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testin
 	for _, event := range eventsAfter {
 		if event.Kind == task.EventKindConversation && event.Payload["request_id"] == "turn-select-1" {
 			conversationCount++
+			if event.Payload["mode"] != string(runtime.ProviderSessionModeInterruptThenReplace) {
+				t.Fatalf("selection-changing steer mode = %#v, want interrupt_then_replace", event.Payload["mode"])
+			}
 			if event.Payload["model_provider_id"] != provider.ID {
 				t.Fatalf("conversation missing model_provider_id: %#v", event.Payload)
 			}
@@ -412,6 +415,7 @@ func TestCodexNativeSteerUnsupportedEffortFailsTurnWithoutDowngrade(t *testing.T
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
 		},
 		Failures: map[runtime.ProviderSessionMode]error{
+			runtime.ProviderSessionModeSendTurn:             errUnsupportedEffortForTest,
 			runtime.ProviderSessionModeInterruptThenReplace: errUnsupportedEffortForTest,
 		},
 	})
@@ -1141,6 +1145,7 @@ func TestClaudeNativeSteerUnsupportedEffortFailsTurnWithoutDowngrade(t *testing.
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
 		},
 		Failures: map[runtime.ProviderSessionMode]error{
+			runtime.ProviderSessionModeSendTurn:             errUnsupportedEffortForTest,
 			runtime.ProviderSessionModeInterruptThenReplace: errUnsupportedEffortForTest,
 		},
 	})
@@ -1265,7 +1270,7 @@ func sessionIDOf(session runtime.ProviderSession) string {
 // natively (no Config Projection restart) and carries the full turn selection.
 func TestPiNativeSteerAcceptsCrossProviderWithoutRestart(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID: "pi-session-1",
+		SessionID: "pi-session-1", ActiveTurnID: "pi-work-turn-1", ActiveTurnKind: runtime.RuntimeTurnKindWork,
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, InTurnSteer: true,
 		},
@@ -1370,6 +1375,9 @@ func TestPiNativeSteerAcceptsCrossProviderWithoutRestart(t *testing.T) {
 	if last.RequestedReasoningEffort != "xhigh" {
 		t.Fatalf("effort = %q, want xhigh", last.RequestedReasoningEffort)
 	}
+	if last.ProviderTurnID != "pi-work-turn-1" {
+		t.Fatalf("replacement request fence = %q, want pi-work-turn-1", last.ProviderTurnID)
+	}
 
 	versionsAfter, err := server.tasks.RuntimeConfigVersions(created.ID)
 	if err != nil {
@@ -1395,6 +1403,9 @@ func TestPiNativeSteerAcceptsCrossProviderWithoutRestart(t *testing.T) {
 			}
 			if event.Payload["delivery"] != "native_steer" {
 				t.Fatalf("delivery = %#v", event.Payload["delivery"])
+			}
+			if event.Payload["mode"] != string(runtime.ProviderSessionModeInterruptThenReplace) {
+				t.Fatalf("Pi selection-changing mode = %#v, want interrupt_then_replace", event.Payload["mode"])
 			}
 		}
 	}

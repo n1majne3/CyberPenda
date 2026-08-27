@@ -84,6 +84,30 @@ func TestSessionRuntimePlanUsesNativeResumeArgvWithoutAProviderBridge(t *testing
 	}
 }
 
+func TestSessionPiProjectedProviderAllowedUsesLatestRuntimeConfig(t *testing.T) {
+	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	created, err := server.sessions.Create(session.CreateRequest{Input: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.sessions.CreateContinuation(created.ID, "profile-pi", string(runtimeprofile.ProviderPi), session.RunnerSandbox, map[string]any{
+		"model_provider_id":            "provider-a",
+		"projected_model_provider_ids": []string{"provider-a", "provider-b"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !server.sessionPiProjectedProviderAllowed(created.ID, "provider-b") {
+		t.Fatal("projected Session Pi provider was rejected")
+	}
+	if server.sessionPiProjectedProviderAllowed(created.ID, "provider-c") {
+		t.Fatal("unprojected Session Pi provider was accepted")
+	}
+}
+
 func TestSessionPiSandboxUsesTheSharedBootstrapWrapper(t *testing.T) {
 	server, err := NewServer(Config{
 		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(), DisableBuiltinSkills: true,

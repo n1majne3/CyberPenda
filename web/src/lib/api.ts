@@ -298,6 +298,10 @@ export interface SessionRuntimeControls {
   native_resume_available: boolean;
   native_steer_available: boolean;
   native_steer_mode?: string;
+  native_steer_state?: string;
+  native_steer_request_id?: string;
+  native_steer_error_code?: string;
+  native_steer_error?: string;
   queue_steer_available: boolean;
   interrupt_steer_available: boolean;
   native_session_captured: boolean;
@@ -672,6 +676,8 @@ export interface RuntimeControls {
   native_steer_mode?: "in_turn_steer" | "interrupt_then_replace" | string;
   native_steer_state?: "idle" | "requested" | "acknowledged" | "settled" | "started" | "applied" | "failed" | string;
   native_steer_request_id?: string;
+  native_steer_error_code?: string;
+  native_steer_error?: string;
   native_steer_reason?: string;
   resume_available: boolean;
   /** True only when Runtime Activity is live and idle. */

@@ -24,7 +24,6 @@ type blockedControlSession struct {
 	*runtime.FakeProviderSession
 	controlStarted chan struct{}
 	releaseControl chan struct{}
-	steerStarted   chan struct{}
 }
 
 func (s *blockedControlSession) Capabilities() runtimeplugin.Capabilities {
@@ -49,15 +48,6 @@ func (s *blockedControlSession) SendTurn(ctx context.Context, request runtime.Pr
 	return s.FakeProviderSession.SendTurn(ctx, request, emit)
 }
 
-func (s *blockedControlSession) SteerInTurn(ctx context.Context, request runtime.ProviderSessionRequest, emit runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error) {
-	select {
-	case <-s.steerStarted:
-	default:
-		close(s.steerStarted)
-	}
-	return s.FakeProviderSession.SendTurn(ctx, request, emit)
-}
-
 func newBlockedControlFixture(t *testing.T) (*Server, string, task.Task, *blockedControlSession) {
 	t.Helper()
 	return newBlockedControlFixtureAt(t, t.TempDir())
@@ -73,7 +63,6 @@ func newBlockedControlFixtureAt(t *testing.T, root string) (*Server, string, tas
 				FakeProviderSession: fake,
 				controlStarted:      make(chan struct{}),
 				releaseControl:      make(chan struct{}),
-				steerStarted:        make(chan struct{}),
 			}
 			return blocked
 		},
@@ -120,10 +109,9 @@ func TestSteerReturnsAcceptedWhileProviderControlTurnBlocked(t *testing.T) {
 	if conversation.Payload["outcome"] != "pending" || conversation.Payload["delivery"] != "native_steer" {
 		t.Fatalf("accepted steer event = %#v, want pending native_steer", conversation.Payload)
 	}
-	select {
-	case <-blocked.steerStarted:
-		t.Fatal("steer applied before the control Turn completed")
-	case <-time.After(50 * time.Millisecond):
+	time.Sleep(50 * time.Millisecond)
+	if got := len(blocked.FakeProviderSession.LastRequests()); got != 1 {
+		t.Fatalf("steer applied before the control Turn completed: requests=%d", got)
 	}
 
 	// Release the control Turn: the conclusion settles, then the accepted
@@ -140,11 +128,6 @@ func TestSteerReturnsAcceptedWhileProviderControlTurnBlocked(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForAssistedProviderRequests(t, blocked.FakeProviderSession, 3)
-	select {
-	case <-blocked.steerStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("accepted steering was not applied after the control Turn completed")
-	}
 	applied := blocked.FakeProviderSession.LastRequests()[2]
 	if applied.RequestID != "steer-while-blocked" || applied.Message != "Continue the inspection." {
 		t.Fatalf("applied steering request = %#v", applied)
@@ -246,10 +229,8 @@ func TestPendingSteerSurvivesConcurrentStopWithoutLosingMessage(t *testing.T) {
 	if conversation.Payload["outcome"] != "pending" {
 		t.Fatalf("stopped steer outcome = %v, want pending", conversation.Payload["outcome"])
 	}
-	select {
-	case <-blocked.steerStarted:
-		t.Fatal("pending steering applied after Stop")
-	default:
+	if got := len(blocked.FakeProviderSession.LastRequests()); got != 2 {
+		t.Fatalf("pending steering applied after Stop: requests=%d", got)
 	}
 }
 

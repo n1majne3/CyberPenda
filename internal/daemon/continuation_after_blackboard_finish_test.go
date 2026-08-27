@@ -170,6 +170,28 @@ func (s *unbindableFinishSession) BindContinuation(continuationID string) error 
 	return errors.New("binding rejected")
 }
 
+func (s *unbindableFinishSession) TurnState() runtime.ProviderSessionTurnState {
+	reporter, ok := s.ProviderSession.(runtime.ProviderSessionTurnStateReporter)
+	if !ok {
+		return runtime.ProviderSessionTurnState{SessionID: s.SessionID()}
+	}
+	return reporter.TurnState()
+}
+
+func (s *unbindableFinishSession) TurnBusy() bool {
+	return s.TurnState().TurnBusy()
+}
+
+func (s *unbindableFinishSession) EmitObservation(observation runtime.ProviderSessionObservation) error {
+	emitter, ok := s.ProviderSession.(interface {
+		EmitObservation(runtime.ProviderSessionObservation) error
+	})
+	if !ok {
+		return errors.New("provider session cannot emit observations")
+	}
+	return emitter.EmitObservation(observation)
+}
+
 func TestPostFinishSteerRaceWithBlackboardFinishSettlesToWritableContinuation(t *testing.T) {
 	session, adapter := newFinishSessionPair("post-finish-race")
 	factory := &finishSessionFactory{session: session, adapter: adapter}

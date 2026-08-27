@@ -323,13 +323,9 @@ func (b *HostSessionBridge) readLoop(reader io.Reader) {
 			continue
 		}
 		if event.ID != "" {
-			var responseErr error
-			if len(event.Error) > 0 && string(event.Error) != "null" {
-				responseErr = &SandboxBridgeRPCError{RequestID: event.ID}
-			}
 			b.finish(event.ID, SandboxBridgeResponse{
 				JSONRPC: event.JSONRPC, ID: event.ID, Result: event.Result, Error: event.Error,
-			}, responseErr)
+			}, nil)
 			continue
 		}
 		if b.config.ProtocolEmit != nil {

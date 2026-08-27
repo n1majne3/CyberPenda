@@ -170,7 +170,8 @@ func TestRuntimeActivityLiveIdleAndBusyForSandboxProviders(t *testing.T) {
 			server, created, mp := newRuntimeActivityFixture(t, provider, task.RunnerSandbox, factory)
 			launchActivityTask(t, server, created)
 
-			// After launch turn settles, health is live/idle independent of Task status.
+			// The launch RPC can settle before the provider Runtime Turn. Activity
+			// must remain live/busy until the matching provider terminal observation.
 			// Wait for status to leave pending — harness mark-running can lag under
 			// package-parallel load (CI: status=pending for Pi).
 			deadline := time.Now().Add(5 * time.Second)
@@ -179,7 +180,7 @@ func TestRuntimeActivityLiveIdleAndBusyForSandboxProviders(t *testing.T) {
 				body = getTaskActivity(t, server, created.ProjectID, created.ID)
 				if body.Status == "running" &&
 					body.RuntimeActivity.Liveness == "live" &&
-					body.RuntimeActivity.TurnActivity == "idle" {
+					body.RuntimeActivity.TurnActivity == "busy" {
 					break
 				}
 				time.Sleep(10 * time.Millisecond)
@@ -187,8 +188,25 @@ func TestRuntimeActivityLiveIdleAndBusyForSandboxProviders(t *testing.T) {
 			if body.Status != "running" {
 				t.Fatalf("status = %q, want running (independent of activity)", body.Status)
 			}
-			if body.RuntimeActivity.Liveness != "live" || body.RuntimeActivity.TurnActivity != "idle" {
+			if body.RuntimeActivity.Liveness != "live" || body.RuntimeActivity.TurnActivity != "busy" {
 				t.Fatalf("activity after launch = %#v", body.RuntimeActivity)
+			}
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind:   runtime.ProviderSessionObservationTurnCompleted,
+				Status: "completed",
+			}); err != nil {
+				t.Fatalf("complete launch Runtime Turn: %v", err)
+			}
+			deadline = time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				body = getTaskActivity(t, server, created.ProjectID, created.ID)
+				if body.RuntimeActivity.TurnActivity == "idle" {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if body.RuntimeActivity.Liveness != "live" || body.RuntimeActivity.TurnActivity != "idle" {
+				t.Fatalf("activity after launch terminal = %#v", body.RuntimeActivity)
 			}
 
 			model := "gpt-test"
@@ -204,21 +222,24 @@ func TestRuntimeActivityLiveIdleAndBusyForSandboxProviders(t *testing.T) {
 				t.Fatalf("steer status = %d body %s", resp.Code, resp.Body.String())
 			}
 
-			// Manual-ack native steer keeps ControlBusy true until acknowledged.
+			// An idle provider session uses send_turn. The RPC can settle immediately,
+			// but Activity must remain busy while its provider Turn is active.
 			deadline = time.Now().Add(2 * time.Second)
 			for time.Now().Before(deadline) {
 				body = getTaskActivity(t, server, created.ProjectID, created.ID)
-				if body.RuntimeActivity.Liveness == "live" && body.RuntimeActivity.TurnActivity == "busy" {
+				if body.RuntimeActivity.Liveness == "live" && body.RuntimeActivity.TurnActivity == "busy" && !session.ControlBusy() {
 					break
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
-			if body.RuntimeActivity.Liveness != "live" || body.RuntimeActivity.TurnActivity != "busy" {
-				t.Fatalf("activity during steer = %#v", body.RuntimeActivity)
+			if body.RuntimeActivity.Liveness != "live" || body.RuntimeActivity.TurnActivity != "busy" || session.ControlBusy() {
+				t.Fatalf("activity after send_turn settle = %#v control_busy=%v", body.RuntimeActivity, session.ControlBusy())
 			}
-
-			if err := session.Acknowledge("act-steer-1"); err != nil {
-				t.Fatalf("acknowledge steer: %v", err)
+			if err := session.EmitObservation(runtime.ProviderSessionObservation{
+				Kind:   runtime.ProviderSessionObservationTurnCompleted,
+				Status: "completed",
+			}); err != nil {
+				t.Fatalf("complete replacement Runtime Turn: %v", err)
 			}
 			deadline = time.Now().Add(2 * time.Second)
 			for time.Now().Before(deadline) {
@@ -229,7 +250,7 @@ func TestRuntimeActivityLiveIdleAndBusyForSandboxProviders(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 			if body.RuntimeActivity.Liveness != "live" || body.RuntimeActivity.TurnActivity != "idle" {
-				t.Fatalf("activity after steer settle = %#v", body.RuntimeActivity)
+				t.Fatalf("activity after replacement terminal = %#v", body.RuntimeActivity)
 			}
 
 			close(closed)

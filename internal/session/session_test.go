@@ -9,7 +9,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"pentest/internal/store"
 )
@@ -196,6 +198,157 @@ func TestCreateSessionSafelyCopiesAttachmentsAndCleansPartialWrites(t *testing.T
 	}
 	if len(entries) != 1 || entries[0].Name() != created.ID {
 		t.Fatalf("failed create left Workdir entries: %#v", entries)
+	}
+}
+
+func TestCopyAttachmentsDoesNotOverwriteConcurrentSameName(t *testing.T) {
+	workdir := t.TempDir()
+	ready := make(chan struct{}, 2)
+	release := make(chan struct{})
+	attachment := func(content string) Attachment {
+		return Attachment{
+			Name: "evidence.txt", Size: int64(len(content)),
+			Open: func() (io.ReadCloser, error) {
+				ready <- struct{}{}
+				<-release
+				return io.NopCloser(strings.NewReader(content)), nil
+			},
+		}
+	}
+	type outcome struct {
+		attachments []copiedAttachment
+		err         error
+	}
+	results := make(chan outcome, 2)
+	var started sync.WaitGroup
+	started.Add(2)
+	for _, content := range []string{"alpha", "beta"} {
+		content := content
+		go func() {
+			started.Done()
+			attachments, err := copyAttachments(workdir, []Attachment{attachment(content)})
+			results <- outcome{attachments: attachments, err: err}
+		}()
+	}
+	started.Wait()
+	<-ready
+	<-ready
+	close(release)
+
+	first, second := <-results, <-results
+	if first.err != nil || second.err != nil {
+		t.Fatalf("concurrent attachment errors = %v, %v", first.err, second.err)
+	}
+	if len(first.attachments) != 1 || len(second.attachments) != 1 {
+		t.Fatalf("concurrent attachment results = %#v, %#v", first.attachments, second.attachments)
+	}
+	firstName, secondName := first.attachments[0].Filename, second.attachments[0].Filename
+	if attachmentNameCollisionKey(firstName) == attachmentNameCollisionKey(secondName) {
+		t.Fatalf("concurrent attachments reused filename %q", firstName)
+	}
+	contents := map[string]bool{}
+	for _, name := range []string{firstName, secondName} {
+		data, err := os.ReadFile(filepath.Join(workdir, name))
+		if err != nil {
+			t.Fatalf("read concurrent attachment %q: %v", name, err)
+		}
+		contents[string(data)] = true
+	}
+	if !contents["alpha"] || !contents["beta"] {
+		t.Fatalf("concurrent attachment contents = %#v", contents)
+	}
+}
+
+func TestAppendEventTxAdvancesSessionActivity(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	created, err := service.Create(CreateRequest{Input: "Initial message"})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
+	}
+	old := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`UPDATE sessions SET updated_at=?,last_activity_at=? WHERE id=?`, formatTime(old), formatTime(old), created.ID); err != nil {
+		t.Fatalf("age Session activity: %v", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin caller transaction: %v", err)
+	}
+	if _, err := service.AppendEventTx(tx, created.ID, EventKindConversation, EventPayload{"role": "user", "text": "steer"}); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("append Event in caller transaction: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit caller transaction: %v", err)
+	}
+	updated, err := service.Get(created.ID)
+	if err != nil {
+		t.Fatalf("read updated Session: %v", err)
+	}
+	if !updated.LastActivityAt.After(old) || !updated.UpdatedAt.After(old) {
+		t.Fatalf("Session activity was not advanced: %#v", updated)
+	}
+}
+
+func TestPreparedConversationInputRollbackRemovesFilesAndEvents(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	created, err := service.Create(CreateRequest{Input: "Initial message"})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
+	}
+
+	prepared, err := service.PrepareConversationInput(created.ID, "", "user", "Steer with evidence", []Attachment{
+		inMemoryAttachment("evidence.txt", "proof"),
+	})
+	if err != nil {
+		t.Fatalf("prepare conversation input: %v", err)
+	}
+	defer prepared.Rollback()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin caller transaction: %v", err)
+	}
+	if _, _, err := prepared.AppendTx(tx); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("append prepared input: %v", err)
+	}
+	if _, err := service.RecordRuntimeConfigTx(tx, created.ID, "profile-1", map[string]any{"model": "gpt-test"}); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("append Runtime config: %v", err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatalf("rollback caller transaction: %v", err)
+	}
+	prepared.Rollback()
+
+	events, err := service.Events(created.ID)
+	if err != nil {
+		t.Fatalf("list Session events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("rolled-back input left %d Events, want 1 initial Event", len(events))
+	}
+	versions, err := service.RuntimeConfigVersions(created.ID)
+	if err != nil {
+		t.Fatalf("list Session Runtime configs: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Fatalf("rolled-back input left Runtime config versions: %#v", versions)
+	}
+	if _, err := os.Stat(filepath.Join(created.Workdir, "evidence.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rolled-back input left attachment, stat err=%v", err)
 	}
 }
 
@@ -435,6 +588,44 @@ func TestSessionContinuationsRetainRuntimeSelectionAndSeparateConversationFromTi
 	}
 	if len(versions) != 1 || versions[0].Config["reasoning_effort"] != "high" {
 		t.Fatalf("runtime config versions = %#v", versions)
+	}
+}
+
+func TestPublishStagedAttachmentDoesNotReplaceExistingFile(t *testing.T) {
+	workdir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workdir, "notes.txt"), []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	temporary, err := os.CreateTemp(workdir, ".staged-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := temporary.WriteString("new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := temporary.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	name, err := publishStagedAttachment(workdir, "notes.txt", temporary.Name(), map[string]struct{}{
+		attachmentNameCollisionKey("notes.txt"): {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name != "notes-1.txt" {
+		t.Fatalf("published name = %q, want notes-1.txt", name)
+	}
+	existing, err := os.ReadFile(filepath.Join(workdir, "notes.txt"))
+	if err != nil || string(existing) != "existing" {
+		t.Fatalf("existing attachment = %q, err=%v", existing, err)
+	}
+	published, err := os.ReadFile(filepath.Join(workdir, name))
+	if err != nil || string(published) != "new" {
+		t.Fatalf("published attachment = %q, err=%v", published, err)
+	}
+	if _, err := os.Stat(temporary.Name()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staged file remained after publish: %v", err)
 	}
 }
 

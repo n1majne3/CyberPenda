@@ -134,7 +134,8 @@ func (s *CodexProviderSession) HandleEvent(event SandboxBridgeEvent, emit Provid
 }
 
 func (s *CodexProviderSession) emitCodexRuntimeOutput(event SandboxBridgeEvent, emit ProviderSessionEmit) {
-	if strings.ToLower(strings.TrimSpace(event.Method)) != "item/completed" || len(event.Params) == 0 {
+	method := strings.ToLower(strings.TrimSpace(event.Method))
+	if (method != "item/started" && method != "item/completed") || len(event.Params) == 0 {
 		return
 	}
 	params := map[string]any{}
@@ -145,12 +146,26 @@ func (s *CodexProviderSession) emitCodexRuntimeOutput(event SandboxBridgeEvent, 
 	if !ok {
 		return
 	}
-	switch strings.ToLower(providerJSONValue(item, "type")) {
+	itemType := strings.ToLower(providerJSONValue(item, "type"))
+	text := string(event.Params)
+	switch itemType {
 	case "agentmessage":
-		if providerJSONValue(item, "text") == "" {
+		if method != "item/completed" || providerJSONValue(item, "text") == "" {
 			return
 		}
-	case "commandexecution", "mcptoolcall", "filechange", "websearch":
+	case "commandexecution", "mcptoolcall":
+	case "filechange", "websearch":
+		if method != "item/completed" {
+			return
+		}
+	case "reasoning":
+		if method != "item/completed" {
+			return
+		}
+		text = codexReasoningRuntimeOutput(params, item)
+		if text == "" {
+			return
+		}
 	default:
 		return
 	}
@@ -173,8 +188,49 @@ func (s *CodexProviderSession) emitCodexRuntimeOutput(event SandboxBridgeEvent, 
 	emit(task.EventKindRuntimeOutput, task.EventPayload{
 		"provider": s.provider, "provider_event": event.Method,
 		"session_id": sessionID, "provider_turn_id": turnID,
-		"stream": "codex_app_server", "text": string(event.Params),
+		"stream": "codex_app_server", "text": text,
 	})
+}
+
+func codexReasoningRuntimeOutput(params, item map[string]any) string {
+	summary, ok := item["summary"]
+	if !ok || strings.TrimSpace(providerReasoningSummary(summary)) == "" {
+		return ""
+	}
+	minimalItem := map[string]any{
+		"type":    "reasoning",
+		"id":      providerJSONValue(item, "id"),
+		"summary": summary,
+	}
+	minimal := map[string]any{"item": minimalItem}
+	if threadID := providerJSONValue(params, "threadId", "thread_id"); threadID != "" {
+		minimal["threadId"] = threadID
+	}
+	if turnID := providerJSONValue(params, "turnId", "turn_id"); turnID != "" {
+		minimal["turnId"] = turnID
+	}
+	encoded, err := json.Marshal(minimal)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
+}
+
+func providerReasoningSummary(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case []any:
+		parts := make([]string, 0, len(typed))
+		for _, part := range typed {
+			if text, ok := part.(string); ok && strings.TrimSpace(text) != "" {
+				parts = append(parts, strings.TrimSpace(text))
+			}
+		}
+		return strings.Join(parts, "\n")
+	default:
+		return ""
+	}
 }
 
 func (s *CodexProviderSession) acceptCodexAssisted(event codexAssistedEvent) {

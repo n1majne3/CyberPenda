@@ -31,12 +31,12 @@ func (state SteeringState) Terminal() bool {
 	return state == SteeringApplied || state == SteeringFailed || state == SteeringActionRequired
 }
 
-
 // SteeringMode is the provider-native steer operation chosen at acceptance.
 type SteeringMode string
 
 const (
-	SteeringModeInTurnSteer         SteeringMode = "in_turn_steer"
+	SteeringModeSendTurn             SteeringMode = "send_turn"
+	SteeringModeInTurnSteer          SteeringMode = "in_turn_steer"
 	SteeringModeInterruptThenReplace SteeringMode = "interrupt_then_replace"
 )
 
@@ -73,6 +73,15 @@ const (
 	// SteeringReasonDeliveryAmbiguous is the action-required reason for a
 	// post-fence request with no durable outcome. It is never replayed.
 	SteeringReasonDeliveryAmbiguous SteeringFailureReason = "delivery_ambiguous"
+	// SteeringReasonTargetTurnCompleted means the accepted same-turn target
+	// settled before the provider received the steering request.
+	SteeringReasonTargetTurnCompleted SteeringFailureReason = "target_turn_completed"
+	// SteeringReasonTargetTurnChanged means a different Runtime Turn replaced
+	// the accepted same-turn target before provider delivery.
+	SteeringReasonTargetTurnChanged SteeringFailureReason = "target_turn_changed"
+	// SteeringReasonActiveTurnNotSteerable means the active review/compact-like
+	// Runtime Turn explicitly rejects native same-turn input.
+	SteeringReasonActiveTurnNotSteerable SteeringFailureReason = "active_turn_not_steerable"
 	// SteeringReasonOwnerStopped means Stop settled the queued request before
 	// delivery.
 	SteeringReasonOwnerStopped SteeringFailureReason = "owner_stopped"
@@ -95,7 +104,9 @@ func ValidSteeringFailureReason(reason SteeringFailureReason) bool {
 		SteeringReasonContinuationUnavailable, SteeringReasonProviderRejected,
 		SteeringReasonUnsupportedReasoningEffort, SteeringReasonSessionClosed,
 		SteeringReasonControlConflict, SteeringReasonDeliveryTimedOut,
-		SteeringReasonDeliveryAmbiguous, SteeringReasonOwnerStopped,
+		SteeringReasonDeliveryAmbiguous, SteeringReasonTargetTurnCompleted,
+		SteeringReasonTargetTurnChanged,
+		SteeringReasonActiveTurnNotSteerable, SteeringReasonOwnerStopped,
 		SteeringReasonOwnerFinished, SteeringReasonOwnerRuntimeLost,
 		SteeringReasonOwnerArchived:
 		return true
@@ -109,24 +120,30 @@ func ValidSteeringFailureReason(reason SteeringFailureReason) bool {
 // by OwnerKind and OwnerID. Conversation Events remain projections of the
 // request and outcome, never the dispatch source of truth.
 type SteeringRecord struct {
-	ID                       string            `json:"id"`
-	OwnerKind                Kind              `json:"owner_kind"`
-	OwnerID                  string            `json:"owner_id"`
-	RequestID                string            `json:"request_id"`
-	Message                  string            `json:"message"`
-	Mode                     SteeringMode      `json:"mode"`
-	ModelProviderID          string            `json:"model_provider_id,omitempty"`
-	Model                    string            `json:"model,omitempty"`
-	RequestedReasoningEffort string            `json:"requested_reasoning_effort,omitempty"`
-	State                    SteeringState     `json:"state"`
-	QueueOrder               int               `json:"queue_order"`
-	ConversationEventID      string            `json:"conversation_event_id,omitempty"`
-	ContinuationID           string            `json:"continuation_id,omitempty"`
-	SessionID                string            `json:"session_id,omitempty"`
-	SendStartedAt            *time.Time        `json:"send_started_at,omitempty"`
-	Result                   map[string]any    `json:"result,omitempty"`
+	ID        string `json:"id"`
+	OwnerKind Kind   `json:"owner_kind"`
+	OwnerID   string `json:"owner_id"`
+	RequestID string `json:"request_id"`
+	// ClientSelectionIdentity is the durable canonical identity of the raw
+	// client-controlled Turn Selection fields. It stays internal because the
+	// public response exposes the resolved selection fields separately.
+	ClientSelectionIdentity  string                `json:"-"`
+	OperatorMessage          string                `json:"operator_message"`
+	Message                  string                `json:"message"`
+	Mode                     SteeringMode          `json:"mode"`
+	ModelProviderID          string                `json:"model_provider_id,omitempty"`
+	Model                    string                `json:"model,omitempty"`
+	RequestedReasoningEffort string                `json:"requested_reasoning_effort,omitempty"`
+	State                    SteeringState         `json:"state"`
+	QueueOrder               int                   `json:"queue_order"`
+	ConversationEventID      string                `json:"conversation_event_id,omitempty"`
+	ContinuationID           string                `json:"continuation_id,omitempty"`
+	SessionID                string                `json:"session_id,omitempty"`
+	ExpectedProviderTurnID   string                `json:"expected_provider_turn_id,omitempty"`
+	SendStartedAt            *time.Time            `json:"send_started_at,omitempty"`
+	Result                   map[string]any        `json:"result,omitempty"`
 	ErrorCode                SteeringFailureReason `json:"error_code,omitempty"`
-	ErrorMessage             string            `json:"error_message,omitempty"`
-	CreatedAt                time.Time         `json:"created_at"`
-	UpdatedAt                time.Time         `json:"updated_at"`
+	ErrorMessage             string                `json:"error_message,omitempty"`
+	CreatedAt                time.Time             `json:"created_at"`
+	UpdatedAt                time.Time             `json:"updated_at"`
 }

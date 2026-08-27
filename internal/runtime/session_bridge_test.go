@@ -164,6 +164,27 @@ func TestSandboxSessionBridgeKeepsOneTaskContainerAcrossContinuations(t *testing
 	}
 }
 
+func TestSandboxSessionBridgeReturnsJSONRPCErrorAsResponse(t *testing.T) {
+	docker := newFakeBridgeDocker()
+	bridge := newStartedBridge(t, docker)
+	go func() {
+		scanner := bufio.NewScanner(docker.requestR)
+		if scanner.Scan() {
+			var request runtime.SandboxBridgeRequest
+			_ = json.Unmarshal(scanner.Bytes(), &request)
+			_, _ = docker.outputW.Write([]byte(`{"jsonrpc":"2.0","id":"` + request.ID + `","error":{"code":-32601,"message":"Method not found"}}` + "\n"))
+		}
+	}()
+
+	response, err := bridge.Send(context.Background(), runtime.SandboxBridgeRequest{ID: "request-rpc-error", Method: "turn/steer"})
+	if err != nil {
+		t.Fatalf("JSON-RPC error was returned as a transport error: %v", err)
+	}
+	if string(response.Error) != `{"code":-32601,"message":"Method not found"}` {
+		t.Fatalf("response error = %s", response.Error)
+	}
+}
+
 func TestFirstProviderAdaptersShareOneNonPTYBridgeTransport(t *testing.T) {
 	docker := newFakeBridgeDocker()
 	bridge := newStartedBridge(t, docker)

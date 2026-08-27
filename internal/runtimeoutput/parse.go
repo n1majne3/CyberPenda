@@ -9,6 +9,12 @@ import (
 // ParseLine normalizes one runtime stdout/stderr line into turns. The bool is
 // true when the line is treated as plain-text fallback rather than structured JSON.
 func ParseLine(text string, createdAt time.Time, opts ParseOptions) ([]Turn, bool) {
+	return ParseLineWithMeta(text, RecordMeta{}, createdAt, opts)
+}
+
+// ParseLineWithMeta normalizes one runtime line with durable provider-event
+// lifecycle metadata.
+func ParseLineWithMeta(text string, meta RecordMeta, createdAt time.Time, opts ParseOptions) ([]Turn, bool) {
 	trimmed := strings.TrimSpace(text)
 	if !strings.HasPrefix(trimmed, "{") {
 		return []Turn{{Kind: KindText, Text: trimmed, ContentIndex: -1, CreatedAt: createdAt}}, true
@@ -19,7 +25,7 @@ func ParseLine(text string, createdAt time.Time, opts ParseOptions) ([]Turn, boo
 		return []Turn{{Kind: KindText, Text: trimmed, ContentIndex: -1, CreatedAt: createdAt}}, true
 	}
 
-	turns := ParseRecord(record, opts, createdAt)
+	turns := ParseRecordWithMeta(record, meta, opts, createdAt)
 	if len(turns) == 0 {
 		return []Turn{{Kind: KindText, Text: trimmed, ContentIndex: -1, CreatedAt: createdAt}}, true
 	}
@@ -28,11 +34,17 @@ func ParseLine(text string, createdAt time.Time, opts ParseOptions) ([]Turn, boo
 
 // ParseRecord projects one provider JSON object into normalized turns.
 func ParseRecord(record map[string]any, opts ParseOptions, createdAt time.Time) []Turn {
+	return ParseRecordWithMeta(record, RecordMeta{}, opts, createdAt)
+}
+
+// ParseRecordWithMeta projects one provider JSON object with its durable
+// lifecycle metadata into normalized turns.
+func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptions, createdAt time.Time) []Turn {
 	if turns := parseHermesACPRecord(record, opts, createdAt); len(turns) > 0 || isHermesACPRecord(record) {
 		return turns
 	}
 	if item, ok := mapValue(record, "item"); ok {
-		if turns := ParseRecord(item, opts, createdAt); len(turns) > 0 {
+		if turns := ParseRecordWithMeta(item, meta, opts, createdAt); len(turns) > 0 {
 			return turns
 		}
 	}
@@ -52,10 +64,12 @@ func ParseRecord(record map[string]any, opts ParseOptions, createdAt time.Time) 
 	case "assistant", "user", "message", "assistant_message", "agent_message", "agentmessage", "response.output_text", "output_text", "message_delta", "content_block_delta":
 		return parseMessageRecord(record, opts, roleFromType(recordType), createdAt)
 	case "commandexecution":
-		return parseCodexCommandExecution(record, createdAt)
+		return parseCodexCommandExecution(record, meta, createdAt)
 	case "mcptoolcall":
-		return parseCodexMCPToolCall(record, createdAt)
-	case "usermessage", "reasoning":
+		return parseCodexMCPToolCall(record, meta, createdAt)
+	case "reasoning":
+		return parseCodexReasoning(record, meta, opts, createdAt)
+	case "usermessage":
 		return nil
 	case "tool_call", "function_call", "tool_use":
 		return []Turn{toolUseTurn(record, createdAt)}
@@ -150,7 +164,7 @@ func parseContentBlocks(content []any, opts ParseOptions, role string, createdAt
 	return turns
 }
 
-func parseCodexCommandExecution(record map[string]any, createdAt time.Time) []Turn {
+func parseCodexCommandExecution(record map[string]any, meta RecordMeta, createdAt time.Time) []Turn {
 	command := firstText(record, "command")
 	output := firstText(record, "aggregatedOutput", "aggregated_output", "output")
 	id := firstText(record, "id")
@@ -158,31 +172,35 @@ func parseCodexCommandExecution(record map[string]any, createdAt time.Time) []Tu
 		return nil
 	}
 	use := Turn{
-		Kind:         KindToolUse,
-		Role:         roleAssistant,
-		Tool:         "command_execution",
-		ToolCallID:   id,
-		Input:        nilIfEmpty(map[string]any{"command": command}),
-		Details:      nilIfEmpty(map[string]any{"command": command}),
-		ContentIndex: -1,
-		CreatedAt:    createdAt,
+		ProviderItemID: id,
+		LifecyclePhase: codexLifecyclePhase(meta.ProviderEvent),
+		Kind:           KindToolUse,
+		Role:           roleAssistant,
+		Tool:           "command_execution",
+		ToolCallID:     id,
+		Input:          nilIfEmpty(map[string]any{"command": command}),
+		Details:        nilIfEmpty(map[string]any{"command": command}),
+		ContentIndex:   -1,
+		CreatedAt:      createdAt,
 	}
 	status := strings.ToLower(firstText(record, "status"))
 	if output == "" && (status == "" || status == "inprogress" || status == "in_progress") {
 		return []Turn{use}
 	}
 	return []Turn{use, Turn{
-		Kind:         KindToolResult,
-		Role:         roleTool,
-		Tool:         "command_execution",
-		ToolCallID:   id,
-		Output:       output,
-		ContentIndex: -1,
-		CreatedAt:    createdAt,
+		ProviderItemID: id,
+		LifecyclePhase: codexLifecyclePhase(meta.ProviderEvent),
+		Kind:           KindToolResult,
+		Role:           roleTool,
+		Tool:           "command_execution",
+		ToolCallID:     id,
+		Output:         output,
+		ContentIndex:   -1,
+		CreatedAt:      createdAt,
 	}}
 }
 
-func parseCodexMCPToolCall(record map[string]any, createdAt time.Time) []Turn {
+func parseCodexMCPToolCall(record map[string]any, meta RecordMeta, createdAt time.Time) []Turn {
 	name := firstText(record, "tool", "toolName", "tool_name", "name")
 	if name == "" {
 		return nil
@@ -194,26 +212,65 @@ func parseCodexMCPToolCall(record map[string]any, createdAt time.Time) []Turn {
 	}
 	id := firstText(record, "id")
 	use := Turn{
-		Kind:         KindToolUse,
-		Role:         roleAssistant,
-		Tool:         name,
-		ToolCallID:   id,
-		ContentIndex: -1,
-		CreatedAt:    createdAt,
+		ProviderItemID: id,
+		LifecyclePhase: codexLifecyclePhase(meta.ProviderEvent),
+		Kind:           KindToolUse,
+		Role:           roleAssistant,
+		Tool:           name,
+		ToolCallID:     id,
+		ContentIndex:   -1,
+		CreatedAt:      createdAt,
 	}
 	status := strings.ToLower(firstText(record, "status"))
 	if status == "" || status == "inprogress" || status == "in_progress" {
 		return []Turn{use}
 	}
 	return []Turn{use, Turn{
-		Kind:         KindToolResult,
-		Role:         roleTool,
-		Tool:         name,
-		ToolCallID:   id,
-		Output:       firstText(record, "aggregatedOutput", "aggregated_output", "output", "result", "content"),
-		ContentIndex: -1,
-		CreatedAt:    createdAt,
+		ProviderItemID: id,
+		LifecyclePhase: codexLifecyclePhase(meta.ProviderEvent),
+		Kind:           KindToolResult,
+		Role:           roleTool,
+		Tool:           name,
+		ToolCallID:     id,
+		Output:         firstText(record, "aggregatedOutput", "aggregated_output", "output", "result", "content"),
+		ContentIndex:   -1,
+		CreatedAt:      createdAt,
 	}}
+}
+
+func parseCodexReasoning(record map[string]any, meta RecordMeta, opts ParseOptions, createdAt time.Time) []Turn {
+	if !opts.IncludeReasoningSummaries {
+		return nil
+	}
+	id := firstText(record, "id")
+	phase := codexLifecyclePhase(meta.ProviderEvent)
+	if phase == "started" {
+		return nil
+	}
+	text := firstText(record, "summary")
+	if text == "" {
+		return nil
+	}
+	return []Turn{{
+		ProviderItemID: id,
+		LifecyclePhase: phase,
+		Kind:           KindThinking,
+		Role:           roleAssistant,
+		Text:           text,
+		ContentIndex:   -1,
+		CreatedAt:      createdAt,
+	}}
+}
+
+func codexLifecyclePhase(providerEvent string) string {
+	switch strings.ToLower(strings.TrimSpace(providerEvent)) {
+	case "item/started":
+		return "started"
+	case "item/completed":
+		return "completed"
+	default:
+		return ""
+	}
 }
 
 func toolUseTurn(record map[string]any, createdAt time.Time) Turn {

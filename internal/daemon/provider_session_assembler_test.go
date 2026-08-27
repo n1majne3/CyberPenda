@@ -40,6 +40,67 @@ func serveFactoryProtocol(t *testing.T, input *io.PipeReader, output *io.PipeWri
 	}()
 }
 
+type setupRPCErrorBridge struct {
+	method     string
+	mu         sync.Mutex
+	calls      []string
+	closed     chan struct{}
+	terminated chan struct{}
+}
+
+func (b *setupRPCErrorBridge) Send(_ context.Context, request runtime.SandboxBridgeRequest) (runtime.SandboxBridgeResponse, error) {
+	b.mu.Lock()
+	b.calls = append(b.calls, request.Method)
+	b.mu.Unlock()
+	if request.Method == b.method {
+		return runtime.SandboxBridgeResponse{ID: request.ID, Error: json.RawMessage(`{"code":-32000,"message":"private provider setup detail"}`)}, nil
+	}
+	return runtime.SandboxBridgeResponse{ID: request.ID, Result: json.RawMessage(`{}`)}, nil
+}
+
+func (b *setupRPCErrorBridge) Close(context.Context) error { return nil }
+func (b *setupRPCErrorBridge) Closed() <-chan struct{}     { return b.closed }
+func (b *setupRPCErrorBridge) Terminated() <-chan struct{} { return b.terminated }
+
+func (b *setupRPCErrorBridge) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.calls)
+}
+
+func TestProviderSessionAssemblersRejectJSONRPCSetupErrors(t *testing.T) {
+	registry := runtimeplugin.MustBuiltinRegistry()
+	tests := []struct {
+		name      string
+		provider  runtimeprofile.Provider
+		method    string
+		assembler providerSessionAssembler
+	}{
+		{name: "codex initialize", provider: runtimeprofile.ProviderCodex, method: "initialize", assembler: codexAssembler{plugins: registry, bridge: "bridge"}},
+		{name: "claude initialize", provider: runtimeprofile.ProviderClaudeCode, method: "claude/initialize", assembler: claudeAssembler{plugins: registry}},
+		{name: "pi state", provider: runtimeprofile.ProviderPi, method: "pi/get_state", assembler: piAssembler{plugins: registry}},
+		{name: "hermes initialize", provider: runtimeprofile.ProviderHermes, method: "initialize", assembler: hermesAssembler{plugins: registry}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bridge := &setupRPCErrorBridge{method: test.method, closed: make(chan struct{}), terminated: make(chan struct{})}
+			_, err := test.assembler.Setup(context.Background(), bridge, providerSessionAssembly{request: ProviderSessionLaunchRequest{
+				Provider: test.provider, Continuation: owner.Continuation{ID: "continuation-1", OwnerID: "owner-1"},
+				Facts: ProviderSessionLaunchFacts{Workdir: "/work"},
+			}})
+			if err == nil || !strings.Contains(err.Error(), "JSON-RPC") {
+				t.Fatalf("setup error = %v, want bounded JSON-RPC failure", err)
+			}
+			if bridge.callCount() != 1 {
+				t.Fatalf("setup calls = %d, want fail closed on first RPC error", bridge.callCount())
+			}
+			if strings.Contains(err.Error(), "private provider setup detail") {
+				t.Fatalf("setup error leaked provider detail: %v", err)
+			}
+		})
+	}
+}
+
 func TestProviderSessionAssemblerSandboxConformance(t *testing.T) {
 	claudeFullHandshake := `{"session_id":"conf-claude","status":"ready","capabilities":{"persistent_session":true,"send_turn":true,"interrupt_turn":true,"normalized_tool_events":true,"normalized_turn_events":true,"attempt_result":true,"assisted_conclusion":true}}`
 	cases := []struct {
@@ -52,13 +113,16 @@ func TestProviderSessionAssemblerSandboxConformance(t *testing.T) {
 		{
 			provider: runtimeprofile.ProviderCodex,
 			respond: func(method string, _ json.RawMessage) string {
-				if method == "thread/start" {
+				switch method {
+				case "initialize":
+					return `{"userAgent":"codex_cli_rs/0.149.0"}`
+				case "thread/start":
 					return `{"thread":{"id":"conf-codex"}}`
 				}
 				return ""
 			},
 			wantBridge:    []string{"sandbox:test", "/usr/local/bin/pentest-provider-bridge", "--provider", "codex", "--", "codex", "app-server"},
-			wantSessionID: "conf-codex",
+			wantSessionID: "conf-codex", wantInTurnSteer: true,
 		},
 		{
 			provider: runtimeprofile.ProviderClaudeCode,
@@ -281,5 +345,64 @@ func TestProviderSessionAssemblerFakeDrivesSharedFinish(t *testing.T) {
 	fake.mu.Unlock()
 	if teardowns != 1 {
 		t.Fatalf("family teardown runs = %d, want 1 after close", teardowns)
+	}
+}
+
+type codexSetupTestBridge struct {
+	initialize json.RawMessage
+	closed     chan struct{}
+	terminated chan struct{}
+}
+
+func (b *codexSetupTestBridge) Send(_ context.Context, request runtime.SandboxBridgeRequest) (runtime.SandboxBridgeResponse, error) {
+	switch request.Method {
+	case "initialize":
+		return runtime.SandboxBridgeResponse{ID: request.ID, Result: b.initialize}, nil
+	case "thread/start":
+		return runtime.SandboxBridgeResponse{ID: request.ID, Result: json.RawMessage(`{"thread":{"id":"thread-version"}}`)}, nil
+	default:
+		return runtime.SandboxBridgeResponse{ID: request.ID, Result: json.RawMessage(`{}`)}, nil
+	}
+}
+
+func (b *codexSetupTestBridge) Close(context.Context) error { return nil }
+func (b *codexSetupTestBridge) Closed() <-chan struct{}     { return b.closed }
+func (b *codexSetupTestBridge) Terminated() <-chan struct{} { return b.terminated }
+
+func TestCodexAssemblerAdvertisesManifestSteerUntilWireNegotiation(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		initialize string
+		wantSteer  bool
+	}{
+		{name: "current version", initialize: `{"userAgent":"codex_cli_rs/0.149.0"}`, wantSteer: true},
+		{name: "older version", initialize: `{"userAgent":"codex_cli_rs/0.148.9"}`, wantSteer: true},
+		{name: "unknown version", initialize: `{"userAgent":"codex app-server"}`, wantSteer: true},
+		{name: "future response shape", initialize: `{}`, wantSteer: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			registry := runtimeplugin.MustBuiltinRegistry()
+			bridge := &codexSetupTestBridge{
+				initialize: json.RawMessage(test.initialize),
+				closed:     make(chan struct{}), terminated: make(chan struct{}),
+			}
+			setup, err := (codexAssembler{plugins: registry, bridge: "bridge"}).Setup(context.Background(), bridge, providerSessionAssembly{
+				request: ProviderSessionLaunchRequest{
+					Provider:     runtimeprofile.ProviderCodex,
+					Continuation: owner.Continuation{ID: "continuation-1", OwnerID: "task-1"},
+					Facts:        ProviderSessionLaunchFacts{Workdir: "/work"},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			capabilities := setup.Session.Capabilities()
+			if capabilities.InTurnSteer != test.wantSteer {
+				t.Fatalf("InTurnSteer = %v, want %v", capabilities.InTurnSteer, test.wantSteer)
+			}
+			if !capabilities.InterruptThenReplace {
+				t.Fatal("wire negotiation removed interrupt_then_replace fallback")
+			}
+		})
 	}
 }

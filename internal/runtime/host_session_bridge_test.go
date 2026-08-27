@@ -48,6 +48,36 @@ done
 	}
 }
 
+func TestHostSessionBridgeReturnsJSONRPCErrorAsResponse(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
+	root := t.TempDir()
+	script := filepath.Join(root, "error-rpc.sh")
+	if err := os.WriteFile(script, []byte(`#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  printf '{"jsonrpc":"2.0","id":"%s","error":{"code":-32601,"message":"Method not found"}}\n' "$id"
+done
+`), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	bridge, err := runtime.NewHostSessionBridge(runtime.HostSessionBridgeConfig{TaskID: "task-host-rpc-error", Program: script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bridge.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Close(context.Background())
+
+	response, err := bridge.Send(context.Background(), runtime.SandboxBridgeRequest{ID: "req-rpc-error", Method: "turn/steer"})
+	if err != nil {
+		t.Fatalf("JSON-RPC error was returned as a transport error: %v", err)
+	}
+	if string(response.Error) != `{"code":-32601,"message":"Method not found"}` {
+		t.Fatalf("response error = %s", response.Error)
+	}
+}
+
 func TestHostSessionBridgeRegistryBindsOneProcessPerTask(t *testing.T) {
 	skipUnlessPOSIXProcessDoubles(t)
 	root := t.TempDir()

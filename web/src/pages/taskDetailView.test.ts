@@ -44,6 +44,19 @@ describe("collapsedTranscriptTitle", () => {
     };
     expect(collapsedTranscriptTitle(entry)).toBe("Result · ECONNREFUSED");
   });
+
+  it("uses a neutral title for reasoning summaries", () => {
+    const entry: TaskTranscriptEntry = {
+      id: "thinking-1",
+      seq: 3,
+      continuation: 1,
+      kind: "thinking",
+      role: "assistant",
+      text: "Checked the target and prepared the command.",
+      created_at: "",
+    };
+    expect(collapsedTranscriptTitle(entry)).toBe("Reasoning");
+  });
 });
 
 describe("toolCallFields", () => {

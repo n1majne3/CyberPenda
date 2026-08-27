@@ -314,7 +314,7 @@ describe("SessionDetailPage", () => {
       screen.getByRole("textbox", { name: "Session message" }),
       "Replace the current direction",
     );
-    await user.click(screen.getByRole("button", { name: "Interrupt and resume" }));
+    await user.click(screen.getByRole("button", { name: "Interrupt and send" }));
 
     await waitFor(() => {
       const call = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/api/sessions/session-interrupt/steer"));
@@ -326,6 +326,45 @@ describe("SessionDetailPage", () => {
         reasoning_effort: "high",
       }));
       expect((form.get("attachments") as File).name).toBe("interrupt-notes.txt");
+      expect(new Headers(call?.[1]?.headers).get("Idempotency-Key")).toBeTruthy();
+    });
+  });
+
+  it("shows Session action-required recovery and sends explicit replacement", async () => {
+    const fetchMock = mockApi({
+      "/api/sessions/session-action/transcript": { session_id: "session-action", entries: [] },
+      "/api/sessions/session-action/timeline": { session_id: "session-action", items: [] },
+      "/api/sessions/session-action": {
+        id: "session-action", title: "Recover steering", lifecycle: "open",
+        runtime_controls: {
+          native_steer_available: true, interrupt_steer_available: true, queue_steer_available: true,
+          native_steer_mode: "in_turn_steer", native_steer_state: "action_required",
+          native_steer_error_code: "target_turn_changed", native_steer_error: "target provider Runtime Turn changed",
+          native_session_captured: true, runtime_provider: "codex",
+        },
+        active_continuation: {
+          id: "continuation-action", session_id: "session-action", number: 1, runtime_profile_id: "profile-1",
+          runtime_provider: "codex", runner: "host", status: "running",
+          started_at: "2026-08-01T01:00:00Z", updated_at: "2026-08-01T01:00:00Z",
+        },
+        created_at: "2026-08-01T01:00:00Z", updated_at: "2026-08-01T01:00:00Z", last_activity_at: "2026-08-01T01:00:00Z",
+      },
+    });
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/sessions/session-action"]}>
+        <Routes><Route path="/sessions/:sessionId" element={<SessionDetailPage />} /></Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("target provider Runtime Turn changed");
+    await user.click(screen.getByRole("button", { name: "Use interrupt and replace" }));
+    await user.type(screen.getByRole("textbox", { name: "Session message" }), "replace it");
+    await user.click(screen.getByRole("button", { name: "Interrupt and replace" }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([input]) => String(input).endsWith("/api/sessions/session-action/steer"));
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ message: "replace it", force_replace: true });
     });
   });
 
