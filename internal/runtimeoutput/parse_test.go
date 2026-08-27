@@ -1,6 +1,7 @@
 package runtimeoutput_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +112,68 @@ func TestParseRecordCodexAppServerItems(t *testing.T) {
 	}
 	if command[1].Kind != runtimeoutput.KindToolResult || command[1].Output != "curl: (52) Empty reply from server\n" {
 		t.Fatalf("tool result = %#v", command[1])
+	}
+
+	started := runtimeoutput.ParseRecordWithMeta(map[string]any{
+		"item": map[string]any{
+			"type":    "commandExecution",
+			"id":      "item-cmd",
+			"command": "curl -sS http://10.0.100.58",
+			"status":  "inProgress",
+		},
+	}, runtimeoutput.RecordMeta{ProviderEvent: "item/started"}, runtimeoutput.ParseOptions{}, at)
+	if len(started) != 1 || started[0].Kind != runtimeoutput.KindToolUse || started[0].ProviderItemID != "item-cmd" || started[0].LifecyclePhase != "started" {
+		t.Fatalf("started command = %#v", started)
+	}
+	completed := runtimeoutput.ParseRecordWithMeta(map[string]any{
+		"item": map[string]any{
+			"type":             "commandExecution",
+			"id":               "item-cmd",
+			"command":          "curl -sS http://10.0.100.58",
+			"aggregatedOutput": "ok",
+			"status":           "completed",
+		},
+	}, runtimeoutput.RecordMeta{ProviderEvent: "item/completed"}, runtimeoutput.ParseOptions{}, at.Add(time.Second))
+	reconciled := runtimeoutput.ReconcileLifecycle(append(started, completed...))
+	if len(reconciled) != 2 || reconciled[0].Kind != runtimeoutput.KindToolUse || reconciled[1].Kind != runtimeoutput.KindToolResult {
+		t.Fatalf("reconciled command lifecycle = %#v", reconciled)
+	}
+
+	reasoningStarted := runtimeoutput.ParseRecordWithMeta(map[string]any{
+		"item": map[string]any{
+			"type":    "reasoning",
+			"id":      "item-reasoning",
+			"summary": []any{},
+			"content": []any{"SECRET_RAW_REASONING"},
+		},
+	}, runtimeoutput.RecordMeta{ProviderEvent: "item/started"}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true}, at)
+	reasoningCompleted := runtimeoutput.ParseRecordWithMeta(map[string]any{
+		"item": map[string]any{
+			"type":    "reasoning",
+			"id":      "item-reasoning",
+			"summary": []any{"Checked the target.", "Prepared the command."},
+			"content": []any{"SECRET_RAW_REASONING"},
+		},
+	}, runtimeoutput.RecordMeta{ProviderEvent: "item/completed"}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true}, at.Add(time.Second))
+	if len(reasoningStarted) != 0 {
+		t.Fatalf("started reasoning should stay hidden without a summary: %#v", reasoningStarted)
+	}
+	reasoning := runtimeoutput.ReconcileLifecycle(reasoningCompleted)
+	if len(reasoning) != 1 || reasoning[0].Kind != runtimeoutput.KindThinking || reasoning[0].Text != "Checked the target.\nPrepared the command." {
+		t.Fatalf("reasoning lifecycle = %#v", reasoning)
+	}
+	if strings.Contains(reasoning[0].Text, "SECRET_RAW_REASONING") {
+		t.Fatalf("reasoning leaked raw content: %#v", reasoning[0])
+	}
+	if empty := runtimeoutput.ParseRecordWithMeta(map[string]any{
+		"item": map[string]any{"type": "reasoning", "id": "empty", "summary": []any{}},
+	}, runtimeoutput.RecordMeta{ProviderEvent: "item/completed"}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true}, at); len(empty) != 0 {
+		t.Fatalf("empty completed reasoning invented text: %#v", empty)
+	}
+	if hidden := runtimeoutput.ParseRecordWithMeta(map[string]any{
+		"item": map[string]any{"type": "reasoning", "id": "hidden", "summary": []any{"summary"}},
+	}, runtimeoutput.RecordMeta{ProviderEvent: "item/completed"}, runtimeoutput.ParseOptions{}, at); len(hidden) != 0 {
+		t.Fatalf("reasoning ignored IncludeReasoningSummaries: %#v", hidden)
 	}
 }
 

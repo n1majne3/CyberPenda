@@ -122,6 +122,20 @@ func (s *productionBoundSession) ControlBusy() bool {
 	return false
 }
 
+func (s *productionBoundSession) TurnState() runtime.ProviderSessionTurnState {
+	if reporter, ok := s.ProviderSession.(runtime.ProviderSessionTurnStateReporter); ok {
+		return reporter.TurnState()
+	}
+	return runtime.ProviderSessionTurnState{SessionID: s.SessionID(), ControlBusy: s.ControlBusy()}
+}
+
+func (s *productionBoundSession) TurnBusy() bool {
+	if reporter, ok := s.ProviderSession.(runtime.ProviderSessionTurnBusyReporter); ok {
+		return reporter.TurnBusy()
+	}
+	return s.ControlBusy()
+}
+
 func (s *productionBoundSession) SessionClosed() bool {
 	if reporter, ok := s.ProviderSession.(interface{ SessionClosed() bool }); ok {
 		return reporter.SessionClosed()

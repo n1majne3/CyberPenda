@@ -36,7 +36,7 @@ export type RuntimeOwnerAdapter = {
   /** Sends a fresh message that starts a new continuation. */
   sendMessage(text: string, selection: ConversationSelection, attachments: File[]): Promise<RuntimeOwnerView>;
   /** Steers the live runtime; native picks the provider-native request shape. */
-  steer(input: { text: string; selection: ConversationSelection; requestID: string; native: boolean; attachments?: File[] }): Promise<unknown>;
+  steer(input: { text: string; selection: ConversationSelection; requestID: string; native: boolean; forceReplace?: boolean; attachments?: File[] }): Promise<unknown>;
   /** Queues an accepted steering request for the harness to deliver in order. */
   queueSteer(text: string, selection: ConversationSelection, attachments: File[]): Promise<unknown>;
   stop(): Promise<unknown>;
@@ -89,11 +89,11 @@ export function taskRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
     async sendMessage(text, selection) {
       return taskAsRuntimeOwner(await apiPost<Task>(`${base}/messages`, { message: text, ...selection }));
     },
-    steer: ({ text, selection, requestID, native }) =>
+    steer: ({ text, selection, requestID, native, forceReplace }) =>
       apiPost(
         `${base}/steer`,
         native
-          ? { request_id: requestID, message: text, ...selection }
+          ? { request_id: requestID, message: text, ...(forceReplace ? { force_replace: true } : {}), ...selection }
           : { directive: text, ...selection },
       ),
     queueSteer: (text, selection) => apiPost(`${base}/steer/queue`, { directive: text, ...selection }),
@@ -145,7 +145,9 @@ export function sessionRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
     loadOlderTranscript: (before) => apiGet<TaskTranscript>(`${base}/transcript?before=${before}`),
     loadOlderTimeline: (before) => apiGet<TaskTimeline>(`${base}/timeline?before=${before}`),
     sendMessage: (text, selection, attachments) => postSessionRuntimeMessage(`${base}/messages`, text, selection, attachments).then(sessionAsRuntimeOwner),
-    steer: ({ text, selection, attachments }) => postSessionRuntimeMessage(`${base}/steer`, text, selection, attachments ?? []),
+    steer: ({ text, selection, requestID, attachments, forceReplace }) => postSessionRuntimeMessage(
+      `${base}/steer`, text, selection, attachments ?? [], forceReplace ? { force_replace: true } : {}, requestID,
+    ),
     queueSteer: (text, selection, attachments) => postSessionRuntimeMessage(`${base}/steer/queue`, text, selection, attachments),
     stop: () => apiPost(`${base}/stop`, {}),
     finish: () => apiPost(`${base}/finish`, {}),
@@ -173,14 +175,17 @@ async function postSessionRuntimeMessage(
   message: string,
   selection: ConversationSelection,
   attachments: File[],
+  extra: Record<string, unknown> = {},
+  idempotencyKey = "",
 ): Promise<Session> {
+  const init = idempotencyKey ? { headers: { "Idempotency-Key": idempotencyKey } } : undefined;
   if (attachments.length === 0) {
-    return apiPost<Session>(path, { message, ...selection });
+    return apiPost<Session>(path, { message, ...selection, ...extra }, init);
   }
   const form = new FormData();
-  form.append("payload", JSON.stringify({ message, ...selection }));
+  form.append("payload", JSON.stringify({ message, ...selection, ...extra }));
   attachments.forEach((attachment) => form.append("attachments", attachment, attachment.name));
-  return apiPostForm<Session>(path, form);
+  return apiPostForm<Session>(path, form, init);
 }
 
 const DELETABLE = new Set(["completed", "failed", "stopped", "interrupted"]);
@@ -260,6 +265,10 @@ export function sessionAsRuntimeOwner(session: Session): RuntimeOwnerView {
       resume_available: session.lifecycle === "open",
       native_steer_available: controls.native_steer_available,
       native_steer_mode: controls.native_steer_mode,
+      native_steer_state: controls.native_steer_state,
+      native_steer_request_id: controls.native_steer_request_id,
+      native_steer_error_code: controls.native_steer_error_code,
+      native_steer_error: controls.native_steer_error,
       queue_steer_available: controls.queue_steer_available,
       interrupt_steer_available: controls.interrupt_steer_available,
       native_session_captured: controls.native_session_captured,

@@ -2,7 +2,7 @@ package daemon
 
 import (
 	"context"
-	"errors"
+	"strings"
 	"sync"
 
 	"pentest/internal/owner"
@@ -42,7 +42,6 @@ var sessionSteerEventVocabulary = steerEventVocabulary{
 // interrupt_then_replace steering settlement advances the Continuation under
 // the same mutex so the next provider event lands on the replacement.
 type steerEmitProtocolSpec struct {
-	mode runtime.ProviderSessionMode
 	// advanceOnSettled is false when the Continuation was created fresh by this
 	// dispatch and must not be advanced again.
 	advanceOnSettled bool
@@ -79,7 +78,7 @@ func newSteerEmitProtocol(initialContinuationID string, spec steerEmitProtocolSp
 		current := currentContinuationID
 		spec.persistEvent(current, kind, payload)
 		if transitionErr == nil && spec.advanceOnSettled &&
-			spec.mode == runtime.ProviderSessionModeInterruptThenReplace &&
+			payloadMode(payload) == runtime.ProviderSessionModeInterruptThenReplace &&
 			kind == task.EventKindSteering && payloadOutcome(payload) == "settled" && current != "" {
 			next, advanceErr := spec.advance(current)
 			if advanceErr != nil {
@@ -107,8 +106,9 @@ func newSteerEmitProtocol(initialContinuationID string, spec steerEmitProtocolSp
 }
 
 // steerExecutionSpec binds one Runtime Owner to the shared native steer
-// executor. The executor owns the owner-neutral delivery protocol: the request
-// is always lineage-assigned as a Harness Control Turn (ADR 0018), events
+// executor. The executor owns the owner-neutral delivery protocol: direct
+// same-turn input is a Harness control request that preserves the active Work
+// Turn lineage, while a new or replacement Turn receives Work lineage. Events
 // persist through the owner sink, a lost Continuation transition fails closed,
 // and a post-fence cancellation settles action_required instead of replaying.
 type steerExecutionSpec struct {
@@ -142,10 +142,14 @@ func runNativeSteerTurn(ctx context.Context, spec steerExecutionSpec) steeringEx
 	// from request lineage; provider payloads cannot choose or override it
 	// (ADR 0018).
 	request := spec.request
-	request.TurnKind = runtime.RuntimeTurnKindControl
+	request.TurnKind = runtime.RuntimeTurnKindWork
+	if spec.mode == runtime.ProviderSessionModeInTurnSteer {
+		// The steer request is Harness control, but the existing active provider
+		// Turn keeps its original Work lineage.
+		request.TurnKind = runtime.RuntimeTurnKindControl
+	}
 
 	protocol := newSteerEmitProtocol(spec.initialContinuationID, steerEmitProtocolSpec{
-		mode:              spec.mode,
 		advanceOnSettled:  spec.advanceOnSettled,
 		persistEvent:      spec.persistEvent,
 		persistOwnerEvent: spec.persistOwnerEvent,
@@ -165,38 +169,39 @@ func runNativeSteerTurn(ctx context.Context, spec steerExecutionSpec) steeringEx
 		}
 	}
 	if operationErr != nil {
-		errorCode, errorMessage := nativeSteerFailurePresentation(operationErr)
-		if errors.Is(operationErr, context.Canceled) || errors.Is(operationErr, context.DeadlineExceeded) {
-			// Post-fence with no provider outcome: delivery is ambiguous. The
-			// request is never replayed automatically; it settles
-			// action_required with a reason-specific recovery path.
-			protocol.emit(spec.vocabulary.failureKind, task.EventPayload{
-				"request_id": request.RequestID, "session_id": spec.providerSessionID, "mode": string(spec.mode),
-				"outcome": "action_required", "phase": spec.vocabulary.ambiguousPhase,
-				"error_code": string(owner.SteeringReasonDeliveryAmbiguous), "error": errorMessage,
-				"model_provider_id": request.ModelProviderID, "model": request.Model,
-				"requested_reasoning_effort": request.RequestedReasoningEffort,
-			})
-			return steeringExecution{state: owner.SteeringActionRequired, reason: owner.SteeringReasonDeliveryAmbiguous, message: errorMessage}
+		failure := classifyNativeSteerFailure(operationErr)
+		outcome := "failed"
+		phase := spec.vocabulary.failurePhase
+		if failure.state == owner.SteeringActionRequired {
+			outcome = "action_required"
+			phase = spec.vocabulary.ambiguousPhase
 		}
 		// Public Events carry only redacted, stable failure fields. Raw
-		// provider text stays out of the conversation surface; each owner's
-		// persistence sink applies its own allowlist.
+		// provider text stays out of the conversation surface.
 		protocol.emit(spec.vocabulary.failureKind, task.EventPayload{
 			"request_id": request.RequestID, "session_id": spec.providerSessionID, "mode": string(spec.mode),
-			"outcome": "failed", "phase": spec.vocabulary.failurePhase, "error_code": errorCode,
-			"error":             errorMessage,
+			"outcome": outcome, "phase": phase, "error_code": failure.code, "error": failure.message,
 			"model_provider_id": request.ModelProviderID, "model": request.Model,
 			"requested_reasoning_effort": request.RequestedReasoningEffort,
 		})
-		return steeringExecution{state: owner.SteeringFailed, reason: steerReasonFromFailureCode(errorCode), message: errorMessage}
+		return steeringExecution{state: failure.state, reason: failure.reason, message: failure.message}
 	}
-	payload := result.Payload()
-	payload["outcome"] = "applied"
-	payload["phase"] = spec.vocabulary.appliedPhase
-	// The provider result is a structured Runtime turn result, not a
-	// transcript message. Conversation contains only explicit user/runtime
-	// messages; provider control/result data stays on the owner Timeline.
-	protocol.emit(spec.vocabulary.appliedKind, payload)
-	return steeringExecution{state: owner.SteeringApplied, result: result.Payload()}
+
+	effectiveMode := result.Mode
+	if effectiveMode == "" {
+		effectiveMode = spec.mode
+	}
+	result.Mode = effectiveMode
+	result.RequestID = request.RequestID
+	// Applied projection is deliberately deferred. The dispatcher first commits
+	// the terminal Accepted Steering record, then projects this provider result.
+	return steeringExecution{
+		state: owner.SteeringApplied, result: result.Payload(), mode: effectiveMode,
+		continuationID: protocol.currentID(),
+	}
+}
+
+func payloadMode(payload task.EventPayload) runtime.ProviderSessionMode {
+	value, _ := payload["mode"].(string)
+	return runtime.ProviderSessionMode(strings.TrimSpace(value))
 }

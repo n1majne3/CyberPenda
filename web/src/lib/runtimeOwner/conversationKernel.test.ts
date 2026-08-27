@@ -168,10 +168,13 @@ describe("conversation send mode", () => {
     })).toBe("unavailable");
   });
 
-  it("labels modes for the composer", () => {
-    expect(conversationSendLabel("native")).toBe("Native interrupt & send");
-    expect(conversationSendLabel("native", "in_turn_steer")).toBe("Send message");
-    expect(conversationSendLabel("interrupt")).toBe("Interrupt and resume");
+  it("labels the real provider operation for the composer", () => {
+    expect(conversationSendLabel("native")).toBe("Send");
+    expect(conversationSendLabel("native", "send_turn")).toBe("Send");
+    expect(conversationSendLabel("native", "in_turn_steer")).toBe("Steer current turn");
+    expect(conversationSendLabel("native", "in_turn_steer", true)).toBe("Interrupt and send");
+    expect(conversationSendLabel("native", "interrupt_then_replace")).toBe("Interrupt and send");
+    expect(conversationSendLabel("interrupt")).toBe("Interrupt and send");
     expect(conversationSendLabel("queue")).toBe("Queue message");
     expect(conversationSendLabel("resume")).toBe("Resume and send");
     expect(conversationSendLabel("unavailable")).toBe("Send unavailable");

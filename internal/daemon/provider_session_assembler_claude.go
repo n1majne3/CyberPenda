@@ -67,7 +67,7 @@ func (a claudeAssembler) SandboxCommand(assembly providerSessionAssembly) ([]str
 }
 
 func (a claudeAssembler) Setup(ctx context.Context, bridge productionBridgeTransport, assembly providerSessionAssembly) (providerSessionSetup, error) {
-	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:initialize", Method: "claude/initialize", Params: json.RawMessage(`{}`)})
+	setupResponse, err := sendProviderSetupRPC(ctx, bridge, runtime.SandboxBridgeRequest{ID: "setup:initialize", Method: "claude/initialize", Params: json.RawMessage(`{}`)})
 	if err != nil {
 		return providerSessionSetup{}, err
 	}

@@ -35,6 +35,10 @@ type providerWireMethods struct {
 	steer      string
 	permission string
 	params     func(string, string, ProviderSessionRequest) map[string]any
+	// steerParams is separate because provider-native same-turn steering can
+	// have a narrower schema than starting a new turn. When nil, params is used.
+	steerParams               func(string, string, ProviderSessionRequest) map[string]any
+	steerRequiresExpectedTurn bool
 	// prepareSend optionally issues setup wire methods before the primary send
 	// method (for example Pi set_model → set_thinking_level before prompt).
 	prepareSend func(context.Context, ProviderSessionTransport, string, string, string, ProviderSessionRequest) error
@@ -60,29 +64,32 @@ type providerSettlement struct {
 // providerSessionAdapter implements the shared lifecycle, idempotency, and
 // event semantics. Provider wrappers below only supply native wire mappings.
 type providerSessionAdapter struct {
-	mu                sync.Mutex
-	transport         ProviderSessionTransport
-	provider          string
-	methods           providerWireMethods
-	capabilities      runtimeplugin.Capabilities
-	sessionID         string
-	activeTurnID      string
-	closed            bool
-	active            bool
-	activeRequestID   string
-	activeMode        ProviderSessionMode
-	activeFingerprint string
-	calls             map[string]providerSessionCallResult
-	requests          map[string]providerSessionRequestIdentity
-	eventSink         ProviderSessionEmit
-	observationSink   ProviderSessionObserve
-	requestTurnKind   map[string]RuntimeTurnKind
-	providerTurnKind  map[string]RuntimeTurnKind
-	requestLineage    map[string]ProviderSessionTurnLineage
-	providerLineage   map[string]ProviderSessionTurnLineage
-	settlements       map[string]providerSettlement
-	settlementSeq     uint64
-	settlementChanged chan struct{}
+	mu                        sync.Mutex
+	transport                 ProviderSessionTransport
+	provider                  string
+	methods                   providerWireMethods
+	capabilities              runtimeplugin.Capabilities
+	sessionID                 string
+	activeTurnID              string
+	closed                    bool
+	active                    bool
+	activeRequestID           string
+	activeMode                ProviderSessionMode
+	activeFingerprint         string
+	calls                     map[string]providerSessionCallResult
+	requests                  map[string]providerSessionRequestIdentity
+	eventSink                 ProviderSessionEmit
+	observationSink           ProviderSessionObserve
+	requestTurnKind           map[string]RuntimeTurnKind
+	providerTurnKind          map[string]RuntimeTurnKind
+	requestLineage            map[string]ProviderSessionTurnLineage
+	providerLineage           map[string]ProviderSessionTurnLineage
+	settlements               map[string]providerSettlement
+	startGeneration           uint64
+	pendingStartGeneration    uint64
+	pendingStartTerminalTurns map[string]struct{}
+	settlementSeq             uint64
+	settlementChanged         chan struct{}
 }
 
 func newProviderSessionAdapter(provider string, transport ProviderSessionTransport, sessionID, activeTurnID string, capabilities runtimeplugin.Capabilities, methods providerWireMethods) *providerSessionAdapter {
@@ -124,7 +131,11 @@ func (s *providerSessionAdapter) BindContinuation(continuationID string) error {
 	return nil
 }
 
-func (s *providerSessionAdapter) Capabilities() runtimeplugin.Capabilities { return s.capabilities }
+func (s *providerSessionAdapter) Capabilities() runtimeplugin.Capabilities {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.capabilities
+}
 
 func (s *providerSessionAdapter) SetEventSink(sink ProviderSessionEmit) {
 	s.mu.Lock()
@@ -271,7 +282,107 @@ func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, reque
 }
 
 func (s *providerSessionAdapter) SteerInTurn(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
-	return s.run(ctx, ProviderSessionModeInTurnSteer, ProviderSessionCapabilityInTurnSteer, request, emit, s.methods.steer)
+	request.RequestID = strings.TrimSpace(request.RequestID)
+	request.TurnKind = normalizeRuntimeTurnKind(request.TurnKind)
+	fingerprint := providerSessionRequestFingerprint(request)
+	if request.RequestID != "" {
+		if cached, ok, cacheErr := s.cached(request.RequestID, ProviderSessionModeInTurnSteer, fingerprint); cacheErr != nil {
+			return ProviderSessionResult{}, cacheErr
+		} else if ok {
+			return cached.result, cached.err
+		}
+	}
+	if s.methods.steerRequiresExpectedTurn {
+		s.mu.Lock()
+		closed, activeTurnID := s.closed, strings.TrimSpace(s.activeTurnID)
+		s.mu.Unlock()
+		if closed {
+			return ProviderSessionResult{}, ErrProviderSessionClosed
+		}
+		if activeTurnID == "" {
+			return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: ProviderSessionModeInTurnSteer, Cause: ErrProviderTurnUnavailable}
+		}
+		expectedTurnID := strings.TrimSpace(request.ProviderTurnID)
+		if expectedTurnID == "" {
+			return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: ProviderSessionModeInTurnSteer, Cause: ErrInvalidProviderSessionRequest}
+		} else if expectedTurnID != activeTurnID {
+			return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: ProviderSessionModeInTurnSteer, Cause: &ProviderTurnChangedError{
+				ExpectedTurnID: expectedTurnID,
+				ActiveTurnID:   activeTurnID,
+			}}
+		}
+	}
+	var deferredFailureKind task.EventKind
+	var deferredFailure task.EventPayload
+	steerEmit := func(kind task.EventKind, payload task.EventPayload) {
+		if payloadOutcomeValue(payload) == "failed" {
+			deferredFailureKind, deferredFailure = kind, cloneProviderEventPayload(payload)
+			return
+		}
+		s.forwardEvent(emit, kind, payload)
+	}
+	result, err := s.run(ctx, ProviderSessionModeInTurnSteer, ProviderSessionCapabilityInTurnSteer, request, steerEmit, s.methods.steer)
+	if !errors.Is(err, ErrProviderMethodUnavailable) || !s.Capabilities().InterruptThenReplace {
+		if deferredFailure != nil {
+			s.forwardEvent(emit, deferredFailureKind, deferredFailure)
+		}
+		return result, err
+	}
+
+	// A JSON-RPC method-not-found response proves that turn/steer did not apply
+	// the message. Fall back safely for this same Accepted Steering request. The
+	// provider adapter uses a deterministic internal identity because the public
+	// request id is already bound to the attempted in-turn operation; projected
+	// Events keep the original public identity.
+	fallbackRequest := request
+	fallbackRequest.RequestID = request.RequestID + ":interrupt-replace-fallback"
+	// The attempted same-turn steer is Harness control, but its safe fallback
+	// starts a replacement Turn from the operator message. That replacement is
+	// Work under ADR 0018.
+	fallbackRequest.TurnKind = RuntimeTurnKindWork
+	fallbackEmit := func(kind task.EventKind, payload task.EventPayload) {
+		projected := cloneProviderEventPayload(payload)
+		projected["request_id"] = request.RequestID
+		s.forwardEvent(emit, kind, projected)
+	}
+	fallback, fallbackErr := s.InterruptThenReplace(ctx, fallbackRequest, fallbackEmit)
+	if fallbackErr != nil {
+		return ProviderSessionResult{}, fallbackErr
+	}
+	fallback.RequestID = request.RequestID
+	publicFallbackRequest := request
+	publicFallbackRequest.TurnKind = RuntimeTurnKindWork
+	s.recordProviderSessionTurnKind(request.RequestID, fallback.ProviderTurnID, publicFallbackRequest.TurnKind)
+	s.recordProviderSessionTurnLineage(publicFallbackRequest, fallback.ProviderTurnID)
+	// Replace the cached method-unavailable outcome with the successful fallback
+	// so a direct retry of the same provider request remains idempotent even
+	// after the replacement Turn changes the active provider Turn identity.
+	s.store(request.RequestID, ProviderSessionModeInTurnSteer, fingerprint, fallback, nil)
+	return fallback, nil
+}
+
+func payloadOutcomeValue(payload task.EventPayload) string {
+	value, _ := payload["outcome"].(string)
+	return strings.TrimSpace(value)
+}
+
+func cloneProviderEventPayload(payload task.EventPayload) task.EventPayload {
+	cloned := make(task.EventPayload, len(payload))
+	for key, value := range payload {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func (s *providerSessionAdapter) forwardEvent(emit ProviderSessionEmit, kind task.EventKind, payload task.EventPayload) {
+	if emit == nil {
+		s.mu.Lock()
+		emit = s.eventSink
+		s.mu.Unlock()
+	}
+	if emit != nil {
+		emit(kind, payload)
+	}
 }
 
 func (s *providerSessionAdapter) RespondPermission(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
@@ -289,6 +400,9 @@ func (s *providerSessionAdapter) Close(ctx context.Context) error {
 		return ErrProviderSessionControlConflict
 	}
 	s.closed = true
+	s.activeTurnID = ""
+	s.pendingStartGeneration = 0
+	s.pendingStartTerminalTurns = nil
 	transport := s.transport
 	s.mu.Unlock()
 	if transport == nil {
@@ -302,6 +416,21 @@ func (s *providerSessionAdapter) ControlBusy() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.active
+}
+
+// TurnBusy reports whether a control RPC or provider Runtime Turn is active.
+func (s *providerSessionAdapter) TurnBusy() bool {
+	return s.TurnState().TurnBusy()
+}
+
+// TurnState returns one atomic provider session Turn snapshot.
+func (s *providerSessionAdapter) TurnState() ProviderSessionTurnState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return ProviderSessionTurnState{
+		SessionID: s.sessionID, ActiveTurnID: s.activeTurnID,
+		ActiveTurnKind: s.providerTurnKind[s.activeTurnID], ControlBusy: s.active,
+	}
 }
 
 // SessionClosed reports whether Close has completed on this handle.
@@ -391,8 +520,12 @@ func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMo
 		s.emit(emit, mode, "failed", request.RequestID, s.currentTurn())
 		return ProviderSessionResult{}, err
 	}
-	s.recordProviderSessionTurnKind(request.RequestID, result.ProviderTurnID, request.TurnKind)
-	s.recordProviderSessionTurnLineage(request, result.ProviderTurnID)
+	// Same-turn steering correlates a control request with an existing provider
+	// Work Turn. It must not reclassify or replace that Turn's original lineage.
+	if mode != ProviderSessionModeInTurnSteer {
+		s.recordProviderSessionTurnKind(request.RequestID, result.ProviderTurnID, request.TurnKind)
+		s.recordProviderSessionTurnLineage(request, result.ProviderTurnID)
+	}
 	outcome := "acknowledged"
 	if mode == ProviderSessionModeSendTurn {
 		outcome = "started"
@@ -437,7 +570,11 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 			return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: err}
 		}
 	}
-	params := s.methods.params(sessionID, activeTurnID, request)
+	paramsBuilder := s.methods.params
+	if mode == ProviderSessionModeInTurnSteer && s.methods.steerParams != nil {
+		paramsBuilder = s.methods.steerParams
+	}
+	params := paramsBuilder(sessionID, activeTurnID, request)
 	if mode == ProviderSessionModeInterruptTurn || mode == ProviderSessionModeInterruptThenReplace && strings.HasSuffix(wireID, ":interrupt") {
 		if request.ProviderTurnID != "" {
 			params["turnId"] = request.ProviderTurnID
@@ -448,12 +585,40 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 	if err != nil {
 		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: err}
 	}
+	startGeneration := uint64(0)
+	if method == s.methods.send && mode != ProviderSessionModeInTurnSteer {
+		s.mu.Lock()
+		s.startGeneration++
+		startGeneration = s.startGeneration
+		s.pendingStartGeneration = startGeneration
+		s.pendingStartTerminalTurns = make(map[string]struct{})
+		s.mu.Unlock()
+	}
+	clearPendingStart := func() {
+		if startGeneration == 0 {
+			return
+		}
+		s.mu.Lock()
+		if s.pendingStartGeneration == startGeneration {
+			s.pendingStartGeneration = 0
+			s.pendingStartTerminalTurns = nil
+		}
+		s.mu.Unlock()
+	}
 	response, err := transport.Send(ctx, SandboxBridgeRequest{ID: wireID, Method: method, Params: encoded})
 	if err != nil {
+		clearPendingStart()
 		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: err}
 	}
 	if len(response.Error) > 0 && string(response.Error) != "null" {
-		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: &SandboxBridgeRPCError{RequestID: wireID}}
+		clearPendingStart()
+		rpcErr := sandboxBridgeRPCError(wireID, response.Error)
+		if mode == ProviderSessionModeInTurnSteer && errors.Is(rpcErr, ErrProviderMethodUnavailable) {
+			s.mu.Lock()
+			s.capabilities.InTurnSteer = false
+			s.mu.Unlock()
+		}
+		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: rpcErr}
 	}
 	metadata := map[string]any{}
 	if len(response.Result) > 0 {
@@ -466,14 +631,56 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 	if turnID == "" {
 		turnID = activeTurnID
 	}
+	if mode == ProviderSessionModeInTurnSteer {
+		expectedTurnID := strings.TrimSpace(request.ProviderTurnID)
+		if expectedTurnID != "" && turnID != expectedTurnID {
+			return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: &ProviderTurnChangedError{
+				ExpectedTurnID: expectedTurnID,
+				ActiveTurnID:   turnID,
+			}}
+		}
+	}
 	newSessionID := s.methods.sessionID(metadata)
 	if newSessionID == "" {
 		newSessionID = sessionID
 	}
 	s.mu.Lock()
-	s.sessionID, s.activeTurnID = newSessionID, turnID
+	s.sessionID = newSessionID
+	if mode != ProviderSessionModeInTurnSteer {
+		_, terminal := s.pendingStartTerminalTurns[providerSettlementKey(newSessionID, turnID)]
+		if s.pendingStartGeneration == startGeneration {
+			s.pendingStartGeneration = 0
+			s.pendingStartTerminalTurns = nil
+		}
+		if terminal {
+			s.activeTurnID = ""
+		} else {
+			s.activeTurnID = turnID
+		}
+	}
 	s.mu.Unlock()
 	return ProviderSessionResult{RequestID: request.RequestID, SessionID: newSessionID, ProviderTurnID: turnID, Mode: mode, Outcome: "acknowledged"}, nil
+}
+
+func sandboxBridgeRPCError(requestID string, raw json.RawMessage) *SandboxBridgeRPCError {
+	kind := SandboxBridgeRPCErrorUnknown
+	var envelope struct {
+		Code int `json:"code"`
+	}
+	_ = json.Unmarshal(raw, &envelope)
+	lower := strings.ToLower(string(raw))
+	switch {
+	case envelope.Code == -32601 || strings.Contains(lower, "method not found"):
+		kind = SandboxBridgeRPCErrorMethodUnavailable
+	case strings.Contains(lower, "activeturnnotsteerable") || strings.Contains(lower, "active_turn_not_steerable"):
+		kind = SandboxBridgeRPCErrorTurnNotSteerable
+	case strings.Contains(lower, "no active turn"):
+		kind = SandboxBridgeRPCErrorTargetTurnCompleted
+	case strings.Contains(lower, "expectedturnid") || strings.Contains(lower, "expected_turn_id") ||
+		strings.Contains(lower, "active turn mismatch"):
+		kind = SandboxBridgeRPCErrorTargetTurnChanged
+	}
+	return &SandboxBridgeRPCError{RequestID: requestID, Kind: kind}
 }
 
 func providerTurnSettled(metadata map[string]any) bool {
@@ -636,11 +843,6 @@ func (s *providerSessionAdapter) currentTurn() string {
 }
 
 func (s *providerSessionAdapter) emit(emit ProviderSessionEmit, mode ProviderSessionMode, outcome, requestID, turnID string) {
-	if emit == nil {
-		s.mu.Lock()
-		emit = s.eventSink
-		s.mu.Unlock()
-	}
 	kind := task.EventKindLifecycle
 	if mode == ProviderSessionModeInterruptTurn || mode == ProviderSessionModeInterruptThenReplace || mode == ProviderSessionModeInTurnSteer {
 		kind = task.EventKindSteering
@@ -648,9 +850,7 @@ func (s *providerSessionAdapter) emit(emit ProviderSessionEmit, mode ProviderSes
 	if strings.TrimSpace(turnID) == "" {
 		turnID = s.currentTurn()
 	}
-	if emit != nil {
-		emit(kind, task.EventPayload{"provider": s.provider, "request_id": requestID, "session_id": s.SessionID(), "provider_turn_id": turnID, "mode": string(mode), "outcome": outcome})
-	}
+	s.forwardEvent(emit, kind, task.EventPayload{"provider": s.provider, "request_id": requestID, "session_id": s.SessionID(), "provider_turn_id": turnID, "mode": string(mode), "outcome": outcome})
 }
 
 // HandleEvent maps provider notifications to the normalized lifecycle channel.
@@ -738,9 +938,12 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 	}
 	if currentSession == "" || currentSession == sessionID {
 		if terminal {
-			// A finished turn is no longer active. Keeping the completed id made
-			// idle interrupt_then_replace call interrupt with a stale turn and
-			// fail Claude ("active turn identity mismatch").
+			// A terminal notification can race the matching turn/start response.
+			// Keep only operation-local terminal identities for the one pending
+			// start generation; arbitrary historical Turn ids never accumulate.
+			if s.pendingStartGeneration != 0 && sessionID != "" && turnID != "" && len(s.pendingStartTerminalTurns) < 8 {
+				s.pendingStartTerminalTurns[providerSettlementKey(sessionID, turnID)] = struct{}{}
+			}
 			if currentTurn == "" || currentTurn == turnID {
 				s.activeTurnID = ""
 			}
@@ -832,7 +1035,7 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 		threadID = strings.TrimSpace(config.SessionID)
 	}
 	methods := providerWireMethods{
-		send: "turn/start", interrupt: "turn/interrupt", permission: "item/permission/respond",
+		send: "turn/start", interrupt: "turn/interrupt", steer: "turn/steer", permission: "item/permission/respond",
 		params: func(sessionID, turnID string, request ProviderSessionRequest) map[string]any {
 			params := map[string]any{
 				"threadId": sessionID,
@@ -862,7 +1065,23 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 			params["sandboxPolicy"] = map[string]any{"type": "dangerFullAccess"}
 			return params
 		},
-		turnID: nestedTurnID, sessionID: func(record map[string]any) string {
+		steerParams: func(sessionID, turnID string, request ProviderSessionRequest) map[string]any {
+			expectedTurnID := strings.TrimSpace(request.ProviderTurnID)
+			if expectedTurnID == "" {
+				expectedTurnID = strings.TrimSpace(turnID)
+			}
+			return map[string]any{
+				"threadId":       sessionID,
+				"expectedTurnId": expectedTurnID,
+				"input": []any{map[string]any{
+					"type": "text",
+					"text": request.Message,
+				}},
+				"clientUserMessageId": request.RequestID,
+			}
+		},
+		steerRequiresExpectedTurn: true,
+		turnID:                    nestedTurnID, sessionID: func(record map[string]any) string {
 			return providerJSONValue(record, "threadId", "thread_id", "sessionId", "session_id")
 		},
 	}

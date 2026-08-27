@@ -112,12 +112,16 @@ _Avoid_: audit log entry, transcript line, raw output dump
 The user-runtime interaction that continues inside one **Task** after launch.
 _Avoid_: new task per reply, detached chat
 
+**Session Conversation**:
+The user-runtime interaction that continues inside one **Non-Project Session**.
+_Avoid_: Project Task Conversation, disposable chat, detached runtime log
+
 **Runtime Turn**:
-A single provider response cycle initiated by operator input within a **Task Conversation** or by a bounded **Harness Control Turn**. It retains the **Task** identity while using its own **Runtime Turn Selection**.
+A single provider response cycle initiated by operator input within a **Task Conversation** or **Session Conversation**, or by a bounded **Harness Control Turn**. It retains its **Runtime Owner** identity while using its own **Runtime Turn Selection**.
 _Avoid_: task, continuation, internal reasoning step
 
 **Work Runtime Turn**:
-A **Runtime Turn** initiated by the operator's Task Goal or Task Conversation input. The **Runtime Harness** assigns this kind from request lineage; provider output cannot claim it. In assisted Blackboard mode, bounded Tool and Turn observations from this kind may create a **Pending Blackboard Conclusion**.
+A **Runtime Turn** initiated by the operator's Task Goal, Task Conversation input, or Session Conversation input. The **Runtime Harness** assigns this kind from request lineage; provider output cannot claim it. In assisted Blackboard mode, bounded Tool and Turn observations from this kind may create a **Pending Blackboard Conclusion**.
 _Avoid_: harness control turn, provider-classified turn, task
 
 **Harness Control Turn**:
@@ -157,28 +161,28 @@ An immutable copy of **Scope** captured when a **Task** starts.
 _Avoid_: current scope, cached target list
 
 **Runtime**:
-The local agent CLI or assistant process scheduled to perform one **Task**.
+The local agent CLI or assistant process scheduled to perform work for one **Runtime Owner**.
 _Avoid_: pentest agent, model, provider, worker
 
-**Task-Scoped Persistent Runtime**:
-A **Runtime** process or native session that remains available across **Runtime Turns** within one **Task** and closes only at explicit Task completion, stop, failure, or a required **Config Projection** restart.
+**Runtime Owner-Scoped Persistent Runtime**:
+A **Runtime** process or native session that remains available across **Runtime Turns** within one **Runtime Owner**. The Runtime Owner is a **Task** or **Non-Project Session**. The Runtime closes only at explicit owner completion, stop, failure, archive, or a required **Config Projection** restart.
 _Avoid_: daemon-global session, infinite process, session-wide setting
 
 **Runtime Harness**:
-The daemon-managed control wrapper that launches, resumes, steers, and stops a **Runtime** for one **Task**.
+The daemon-managed, owner-neutral control wrapper that launches, resumes, steers, and stops a **Runtime** for one **Runtime Owner**.
 _Avoid_: pentest tool executor, agent brain, sandbox
 
 **Harness Steering**:
-A task-local control action that changes how the **Runtime Harness** continues a **Task** without creating a new task.
-_Avoid_: direct tool control, hidden prompt mutation, new task
+An owner-local control action that changes how the **Runtime Harness** continues a **Task** or **Non-Project Session** without creating a new Runtime Owner. When the Runtime exposes provider-native same-turn steering, it may append operator input to the current active steerable **Work Runtime Turn**; otherwise it changes a later or replacement **Runtime Continuation**.
+_Avoid_: direct tool control, hidden prompt mutation, new Runtime Owner
 
 **Accepted Steering**:
-A durable **Harness Steering** request whose ordered dispatch and settlement responsibility belongs to the **Runtime Harness**. It must reach `applied`, `failed`, or `action_required`, including after daemon restart.
+A durable **Harness Steering** request for one **Runtime Owner** whose ordered dispatch and settlement responsibility belongs to the **Runtime Harness**. It must reach `applied`, `failed`, or `action_required`, including after daemon restart.
 _Avoid_: saved message, in-memory callback, permanent pending state
 
 **Runtime Continuation**:
-The next unit of runtime progress after launch, user input, checkpoint, interrupt, or resume.
-_Avoid_: live thought editing, new task
+One writable unit of runtime progress after launch, user input, checkpoint, interrupt, or resume. Provider-native same-turn steering remains inside the current Runtime Continuation; interrupt-then-replace creates a replacement Runtime Continuation.
+_Avoid_: rewriting completed Runtime items, new task
 
 **Runtime Activity Indicator**:
 An operator-visible current-state view with Runtime liveness (`live`, `offline`, `orphaned`, or `unknown`) and, while live, turn activity (`busy` or `idle`), independently of the durable **Task** lifecycle.
@@ -1109,7 +1113,7 @@ _Avoid_: transcript, export, source of truth
 - **Runtime Custom Arguments** cannot declare a **Model Provider**, model, or **Reasoning Effort** through any runtime-native alias; Profile validation and **Preflight** reject such conflicts with a clear offending-argument error and diagnostic log instead of relying on CLI argument order.
 - CyberPenda does not migrate, remove, reinterpret, or otherwise fall back around conflicting **Runtime Custom Arguments**.
 - Structured Profile, launch, and **Runtime Turn Selection** fields are authoritative for **Model Provider**, model, and **Reasoning Effort**.
-- Non-conflicting **Runtime Custom Arguments** continue to apply to both **Sandbox Runner** and **Host Runner** launches, including **Task-Scoped Persistent Runtime** bridges.
+- Non-conflicting **Runtime Custom Arguments** continue to apply to both **Sandbox Runner** and **Host Runner** launches, including **Runtime Owner-Scoped Persistent Runtime** bridges.
 - Editing a **Model Provider** does not change existing **Task Runtime Configurations** or an active **Runtime Continuation**.
 - A **Model Provider** cannot be deleted while any **Runtime Profile** still references it, unless the operator explicitly confirms a deletion that clears the **Model Provider** reference and its pinned **Model Provider Protocol** from every referencing **Runtime Profile**.
 - Historical task views read captured **Task Runtime Configurations** and **Model Provider Snapshots**, not live **Runtime Profiles** or live **Model Providers**.
@@ -1173,10 +1177,10 @@ _Avoid_: transcript, export, source of truth
 - A **Scope Snapshot** records historical authorization and does not change when current **Scope** later changes.
 - A **Runtime** performs a **Task** but is not the whole **Pentest Agent**.
 - A **Runtime Harness** launches, resumes, steers, and stops a **Runtime** without executing pentest tools itself.
-- Built-in Codex, Claude Code, Pi, and Hermes **Runtimes** use a **Task-Scoped Persistent Runtime** on both **Sandbox Runner** and **Host Runner** when their native session bridge is available.
-- **Task-Scoped Persistent Runtime** does not remove **Host Runner Activation** or weaken the separate Sandbox and Host execution boundaries.
+- Built-in Codex, Claude Code, Pi, and Hermes **Runtimes** use a **Runtime Owner-Scoped Persistent Runtime** on both **Sandbox Runner** and **Host Runner** when their native session bridge is available.
+- **Runtime Owner-Scoped Persistent Runtime** does not remove **Host Runner Activation** or weaken the separate Sandbox and Host execution boundaries.
 - A plugin without a usable native session bridge may retain one-shot Runtime execution; normal process exit completes that one-shot **Task**.
-- A **Task-Scoped Persistent Runtime** remains active until the operator invokes **Task Finish** or **Stop**, a required **Config Projection** restart replaces it, it fails, or daemon shutdown closes it.
+- A **Runtime Owner-Scoped Persistent Runtime** remains active until the operator finishes, stops, archives, or otherwise closes its **Runtime Owner**, a required **Config Projection** restart replaces it, it fails, or daemon shutdown closes it.
 - A **Runtime** cannot autonomously complete its **Task** through a **Project Interface**; a valid **Blackboard Finish Intent** closes only the current Continuation's Blackboard write protocol when its **Work Runtime Turn** settles.
 - Source work after a **Blackboard Finish Intent** invalidates that intent and continues to advance **Semantic Debt Watermarks**.
 - `blackboard_finish` reports that a **Blackboard Finish Intent** was recorded, not that the Runtime Continuation is already closed.
@@ -1189,16 +1193,16 @@ _Avoid_: transcript, export, source of truth
 - **Task Finish** marks the **Task** completed after Runtime shutdown and required Continuation reconciliation; **Stop** marks it stopped and remains resumable.
 - **Task Finish** is available only when the **Runtime Activity Indicator** reports `live` with turn activity `idle`; an operator uses **Stop** to interrupt a `busy` Runtime.
 - A durable active **Task** whose Runtime is confirmed `offline` becomes failed; one whose Runtime is `orphaned` becomes interrupted; `unknown` liveness warns the operator without changing Task lifecycle.
-- Sending a new user message to a completed, failed, interrupted, or stopped **Task** resumes that Task and launches a replacement **Task-Scoped Persistent Runtime**, preferring provider-native session recovery and otherwise rebuilding a fresh **Runtime Continuation** from Task-owned continuity state.
+- Sending a new user message to a completed, failed, interrupted, or stopped **Task** resumes that Task and launches a replacement **Runtime Owner-Scoped Persistent Runtime**, preferring provider-native session recovery and otherwise rebuilding a fresh **Runtime Continuation** from Task-owned continuity state.
 - **Task Finish** releases Runtime resources and records a completed lifecycle state without sealing the **Task Conversation**; a later user message may resume the same **Task**.
 - An `orphaned` Runtime must be closed or proven absent before a replacement Runtime starts, preventing two live Runtimes from owning one **Task**.
-- **Harness Steering** changes the next runtime continuation, not the **Task** identity.
-- **Harness Steering** affects a **Runtime Continuation**, not an already-running internal reasoning step.
+- **Harness Steering** never changes the **Runtime Owner** identity. Provider-native same-turn steering appends operator input to the current active steerable **Work Runtime Turn** and keeps its Runtime Continuation; interrupt-then-replace creates a replacement **Work Runtime Turn** and changes the writable Runtime Continuation when the provider contract requires it.
+- **Harness Steering** never rewrites completed reasoning, messages, or tool items. A provider-native same-turn steer may enqueue additional operator input while the active Runtime Turn is still running.
 - A **Pending Blackboard Conclusion** may survive replacement of its source **Runtime Continuation**.
 - Each **Conclusion Dispatch** belongs to exactly one **Pending Blackboard Conclusion** and is bound immutably to exactly one Runtime Continuation and source Runtime session.
 - Replacing a Runtime Continuation never rewrites an earlier **Conclusion Dispatch**; recovery creates a new dispatch and retains the earlier dispatch outcome.
 - Only one **Conclusion Dispatch** for a **Pending Blackboard Conclusion** may be active at a time.
-- A new **Conclusion Dispatch** requires proven ownership of the current Task-scoped Runtime and a writable replacement Runtime Continuation.
+- A new **Conclusion Dispatch** requires proven ownership of the current Runtime Owner-scoped Runtime and a writable replacement Runtime Continuation.
 - A recovered **Conclusion Dispatch** reuses the source **Runtime Turn Selection**; if that selection cannot be projected safely, the **Pending Blackboard Conclusion** becomes `action_required`.
 - Automatic conclusion and repair budgets belong to the **Pending Blackboard Conclusion** and do not reset when a new **Conclusion Dispatch** is created.
 - Only the active **Conclusion Dispatch** may validate or apply a result. A late result from an earlier dispatch is retained as a terminal delivery outcome and cannot change Blackboard state.
@@ -1500,8 +1504,8 @@ _Avoid_: transcript, export, source of truth
 - **Project Defaults** are not copied **Runtime Profiles**; resolved: they select defaults while profiles remain global.
 - **Project Dashboard** is not a chat-first view; resolved: the project home prioritizes scope, task runs, blackboard state, findings, and evidence.
 - **Task Goal** is not the whole task configuration; resolved: natural-language goals are paired with visible **Run Controls**.
-- **Harness Steering** is not direct pentest tool control; resolved: it controls runtime continuation inside the same **Task** through the **Runtime Harness**.
-- **Runtime Continuation** is not live thought editing; resolved: steering applies at input, checkpoint, interrupt, or resume boundaries.
+- **Harness Steering** is not direct pentest tool control; resolved: it controls one **Runtime Owner** through the **Runtime Harness**, and provider-native same-turn steering may append operator input only to the current active steerable **Work Runtime Turn**.
+- **Runtime Continuation** is not live thought editing; resolved: provider-native same-turn steering may enqueue new operator input into an active steerable Runtime Turn without rewriting completed items, while interrupt-then-replace applies at a replacement boundary.
 - **Harness Steering** is not silent run-control mutation; resolved: runner, profile, or other run-control changes apply through explicit task events and only at continuation boundaries.
 - **Profile Selector** is not raw configuration editing; resolved: switching profiles is fast, while editing profiles remains structured.
 - **Generated Runtime Config** is not the editable source of truth; resolved: raw config preview and diff are derived from structured profile fields.

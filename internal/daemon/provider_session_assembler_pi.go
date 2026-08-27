@@ -76,7 +76,7 @@ func (a piAssembler) SandboxCommand(assembly providerSessionAssembly) ([]string,
 }
 
 func (a piAssembler) Setup(ctx context.Context, bridge productionBridgeTransport, assembly providerSessionAssembly) (providerSessionSetup, error) {
-	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:state", Method: "pi/get_state", Params: json.RawMessage(`{}`)})
+	setupResponse, err := sendProviderSetupRPC(ctx, bridge, runtime.SandboxBridgeRequest{ID: "setup:state", Method: "pi/get_state", Params: json.RawMessage(`{}`)})
 	if err != nil {
 		return providerSessionSetup{}, err
 	}

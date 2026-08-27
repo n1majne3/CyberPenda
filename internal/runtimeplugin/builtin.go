@@ -58,6 +58,7 @@ func BuiltinPlugins() []Plugin {
 				SendTurn:             true,
 				InterruptTurn:        true,
 				InterruptThenReplace: true,
+				InTurnSteer:          true,
 				PermissionResponse:   true,
 				ResumeSession:        true,
 			},

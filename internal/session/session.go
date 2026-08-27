@@ -116,6 +116,10 @@ type RuntimeControls struct {
 	NativeResumeAvailable   bool                  `json:"native_resume_available"`
 	NativeSteerAvailable    bool                  `json:"native_steer_available"`
 	NativeSteerMode         string                `json:"native_steer_mode,omitempty"`
+	NativeSteerState        string                `json:"native_steer_state,omitempty"`
+	NativeSteerRequestID    string                `json:"native_steer_request_id,omitempty"`
+	NativeSteerErrorCode    string                `json:"native_steer_error_code,omitempty"`
+	NativeSteerError        string                `json:"native_steer_error,omitempty"`
 	QueueSteerAvailable     bool                  `json:"queue_steer_available"`
 	InterruptSteerAvailable bool                  `json:"interrupt_steer_available"`
 	NativeSessionCaptured   bool                  `json:"native_session_captured"`
@@ -1042,7 +1046,31 @@ func (s *Service) AppendEvent(id string, kind EventKind, payload EventPayload) (
 // transaction so it can be committed atomically with another owner-neutral
 // record (for example a durable Accepted Steering request).
 func (s *Service) AppendEventTx(tx *sql.Tx, sessionID string, kind EventKind, payload EventPayload) (Event, error) {
-	return appendEventTx(tx, sessionID, kind, payload, time.Now().UTC())
+	now := time.Now().UTC()
+	event, err := appendEventTx(tx, sessionID, kind, payload, now)
+	if err != nil {
+		return Event{}, err
+	}
+	if err := touchSessionActivityTx(tx, sessionID, now); err != nil {
+		return Event{}, err
+	}
+	return event, nil
+}
+
+func touchSessionActivityTx(tx *sql.Tx, sessionID string, now time.Time) error {
+	result, err := tx.Exec(`UPDATE sessions SET updated_at=?,last_activity_at=? WHERE id=? AND lifecycle=?`,
+		formatTime(now), formatTime(now), sessionID, string(LifecycleOpen))
+	if err != nil {
+		return fmt.Errorf("update Session activity: %w", err)
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count Session activity update: %w", err)
+	}
+	if changed != 1 {
+		return ErrSessionNotOpen
+	}
+	return nil
 }
 
 // AppendConversationEvent stores one user/runtime conversation entry. It is
@@ -1087,58 +1115,87 @@ func (s *Service) AppendConversationInput(id, continuationID, role, text string,
 	return s.appendConversationInput(id, continuationID, input, role, text)
 }
 
-func (s *Service) appendConversationInput(id, continuationID string, input []Attachment, role, text string) ([]Event, Event, error) {
-	found, err := s.Get(id)
-	if err != nil {
-		return nil, Event{}, err
+// PreparedConversationInput stages attachment files and can append their safe
+// Event projections inside a caller-owned transaction. Commit keeps the files;
+// Rollback removes them. Both finalizers are idempotent.
+type PreparedConversationInput struct {
+	service        *Service
+	sessionID      string
+	continuationID string
+	role           string
+	text           string
+	workdir        string
+	copied         []copiedAttachment
+	finalized      bool
+}
+
+// PrepareConversationInput validates one input and stages its attachment files
+// without writing Events. The caller must call Commit after its transaction
+// commits, or Rollback on every failure path.
+func (s *Service) PrepareConversationInput(id, continuationID, role, text string, input []Attachment) (*PreparedConversationInput, error) {
+	role = strings.TrimSpace(role)
+	text = strings.TrimSpace(text)
+	if role == "" && len(input) == 0 {
+		return &PreparedConversationInput{service: s, sessionID: id, continuationID: continuationID, finalized: true}, nil
 	}
-	if found.Lifecycle != LifecycleOpen {
-		return nil, Event{}, ErrSessionNotOpen
-	}
-	if len(input) == 0 && role == "" {
-		return nil, Event{}, nil
+	if role == "" && text != "" || role != "" && text == "" {
+		return nil, ErrMissingInput
 	}
 	if len(input) > MaxAttachmentCount {
-		return nil, Event{}, fmt.Errorf("%w: too many attachments (max %d)", ErrInvalidAttachment, MaxAttachmentCount)
+		return nil, fmt.Errorf("%w: too many attachments (max %d)", ErrInvalidAttachment, MaxAttachmentCount)
+	}
+	found, err := s.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if found.Lifecycle != LifecycleOpen {
+		return nil, ErrSessionNotOpen
 	}
 	workdir, err := s.managedWorkdir(id)
 	if err != nil {
-		return nil, Event{}, err
+		return nil, err
 	}
 	if filepath.Clean(found.Workdir) != filepath.Clean(workdir) {
-		return nil, Event{}, ErrInvalidWorkdir
+		return nil, ErrInvalidWorkdir
 	}
 	if continuationID != "" {
 		continuation, continuationErr := s.Continuation(continuationID)
 		if continuationErr != nil {
-			return nil, Event{}, continuationErr
+			return nil, continuationErr
 		}
 		if continuation.SessionID != id {
-			return nil, Event{}, ErrContinuationNotFound
+			return nil, ErrContinuationNotFound
 		}
 	}
 	copied, err := copyAttachments(workdir, input)
 	if err != nil {
-		return nil, Event{}, err
+		return nil, err
 	}
-	cleanup := true
-	defer func() {
-		if !cleanup {
-			return
-		}
-		for _, attachment := range copied {
-			_ = os.Remove(filepath.Join(workdir, attachment.Filename))
-		}
-	}()
+	return &PreparedConversationInput{
+		service: s, sessionID: id, continuationID: continuationID,
+		role: role, text: text, workdir: workdir, copied: copied,
+	}, nil
+}
 
-	now := time.Now().UTC()
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, Event{}, fmt.Errorf("begin Session conversation input: %w", err)
+// AttachmentReferences returns the safe references that will be stored when
+// AppendTx commits. It is used to construct the provider-visible input before
+// the caller commits the shared transaction.
+func (prepared *PreparedConversationInput) AttachmentReferences() []AttachmentReference {
+	result := make([]AttachmentReference, 0, len(prepared.copied))
+	for _, attachment := range prepared.copied {
+		result = append(result, AttachmentReference{RelativePath: attachment.Filename, ContinuationID: prepared.continuationID})
 	}
-	defer func() { _ = tx.Rollback() }()
+	return result
+}
+
+// AppendTx writes attachment and Conversation Events inside a caller-owned
+// transaction. It does not finalize the staged files.
+func (prepared *PreparedConversationInput) AppendTx(tx *sql.Tx) ([]Event, Event, error) {
+	if prepared == nil || prepared.service == nil || prepared.finalized {
+		return nil, Event{}, errors.New("prepared Session conversation input is unavailable")
+	}
 	var lifecycle string
-	if err := tx.QueryRow(`SELECT lifecycle FROM sessions WHERE id=?`, id).Scan(&lifecycle); err != nil {
+	if err := tx.QueryRow(`SELECT lifecycle FROM sessions WHERE id=?`, prepared.sessionID).Scan(&lifecycle); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, Event{}, ErrNotFound
 		}
@@ -1147,33 +1204,83 @@ func (s *Service) appendConversationInput(id, continuationID string, input []Att
 	if Lifecycle(lifecycle) != LifecycleOpen {
 		return nil, Event{}, ErrSessionNotOpen
 	}
-	events := make([]Event, 0, len(copied))
-	for _, attachment := range copied {
-		event, err := appendEventTx(tx, id, EventKindAttachment, payloadWithContinuation(EventPayload{
+	if prepared.continuationID != "" {
+		var count int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM session_continuations WHERE id=? AND session_id=?`, prepared.continuationID, prepared.sessionID).Scan(&count); err != nil {
+			return nil, Event{}, fmt.Errorf("validate Session continuation: %w", err)
+		}
+		if count != 1 {
+			return nil, Event{}, ErrContinuationNotFound
+		}
+	}
+	now := time.Now().UTC()
+	events := make([]Event, 0, len(prepared.copied))
+	for _, attachment := range prepared.copied {
+		event, err := appendEventTx(tx, prepared.sessionID, EventKindAttachment, payloadWithContinuation(EventPayload{
 			"filename": attachment.Filename, "relative_path": attachment.Filename,
 			"size": attachment.Size, "sha256": attachment.SHA256,
-		}, continuationID), now)
+		}, prepared.continuationID), now)
 		if err != nil {
 			return nil, Event{}, fmt.Errorf("store Session attachment Event: %w", err)
 		}
 		events = append(events, event)
 	}
 	var conversation Event
-	if role != "" {
-		conversation, err = appendEventTx(tx, id, EventKindConversation, payloadWithContinuation(EventPayload{
-			"role": role, "text": text,
-		}, continuationID), now)
+	var err error
+	if prepared.role != "" {
+		conversation, err = appendEventTx(tx, prepared.sessionID, EventKindConversation, payloadWithContinuation(EventPayload{
+			"role": prepared.role, "text": prepared.text,
+		}, prepared.continuationID), now)
 		if err != nil {
 			return nil, Event{}, fmt.Errorf("store Session conversation Event: %w", err)
 		}
 	}
-	if _, err := tx.Exec(`UPDATE sessions SET updated_at=?,last_activity_at=? WHERE id=?`, formatTime(now), formatTime(now), id); err != nil {
-		return nil, Event{}, fmt.Errorf("update Session activity: %w", err)
+	if err := touchSessionActivityTx(tx, prepared.sessionID, now); err != nil {
+		return nil, Event{}, err
+	}
+	return events, conversation, nil
+}
+
+// Commit keeps staged files after the caller transaction commits.
+func (prepared *PreparedConversationInput) Commit() {
+	if prepared != nil {
+		prepared.finalized = true
+	}
+}
+
+// Rollback removes staged files unless Commit already finalized the input.
+func (prepared *PreparedConversationInput) Rollback() {
+	if prepared == nil || prepared.finalized {
+		return
+	}
+	for _, attachment := range prepared.copied {
+		_ = os.Remove(filepath.Join(prepared.workdir, attachment.Filename))
+	}
+	prepared.finalized = true
+}
+
+func (s *Service) appendConversationInput(id, continuationID string, input []Attachment, role, text string) ([]Event, Event, error) {
+	prepared, err := s.PrepareConversationInput(id, continuationID, role, text, input)
+	if err != nil {
+		return nil, Event{}, err
+	}
+	defer prepared.Rollback()
+	if prepared.finalized {
+		return nil, Event{}, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, Event{}, fmt.Errorf("begin Session conversation input: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	events, conversation, err := prepared.AppendTx(tx)
+	if err != nil {
+		return nil, Event{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, Event{}, fmt.Errorf("commit Session conversation input: %w", err)
 	}
-	cleanup = false
+	prepared.Commit()
 	return events, conversation, nil
 }
 
@@ -1218,11 +1325,37 @@ func (s *Service) Timeline(id string) ([]Event, error) {
 // RecordRuntimeConfig stores the non-secret Runtime Turn Selection history for
 // a Session. Each explicit configuration change creates a new version.
 func (s *Service) RecordRuntimeConfig(sessionID, runtimeProfileID string, config map[string]any) (RuntimeConfigVersion, error) {
-	if _, err := s.Get(sessionID); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return RuntimeConfigVersion{}, fmt.Errorf("begin Session Runtime config: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	version, err := s.RecordRuntimeConfigTx(tx, sessionID, runtimeProfileID, config)
+	if err != nil {
 		return RuntimeConfigVersion{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return RuntimeConfigVersion{}, fmt.Errorf("commit Session Runtime config: %w", err)
+	}
+	return version, nil
+}
+
+// RecordRuntimeConfigTx appends one Runtime Turn Selection version inside a
+// caller-owned transaction. Accepted Steering uses this to keep its selection,
+// Conversation, attachments, and dispatch record atomic.
+func (s *Service) RecordRuntimeConfigTx(tx *sql.Tx, sessionID, runtimeProfileID string, config map[string]any) (RuntimeConfigVersion, error) {
+	if tx == nil {
+		return RuntimeConfigVersion{}, errors.New("Session Runtime config transaction is required")
 	}
 	if strings.TrimSpace(runtimeProfileID) == "" {
 		return RuntimeConfigVersion{}, ErrMissingRuntimeProfile
+	}
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id=?`, sessionID).Scan(&count); err != nil {
+		return RuntimeConfigVersion{}, fmt.Errorf("validate Session Runtime config owner: %w", err)
+	}
+	if count != 1 {
+		return RuntimeConfigVersion{}, ErrNotFound
 	}
 	encoded, err := json.Marshal(config)
 	if err != nil {
@@ -1230,11 +1363,6 @@ func (s *Service) RecordRuntimeConfig(sessionID, runtimeProfileID string, config
 	}
 	now := time.Now().UTC()
 	version := RuntimeConfigVersion{ID: "session-config-" + strings.TrimPrefix(newIDMust(), "session-"), SessionID: sessionID, RuntimeProfileID: runtimeProfileID, Config: config, CreatedAt: now}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return RuntimeConfigVersion{}, fmt.Errorf("begin Session Runtime config: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	var max sql.NullInt64
 	if err := tx.QueryRow(`SELECT MAX(version) FROM session_runtime_config_versions WHERE session_id=?`, sessionID).Scan(&max); err != nil {
 		return RuntimeConfigVersion{}, fmt.Errorf("read Session Runtime config version: %w", err)
@@ -1242,9 +1370,6 @@ func (s *Service) RecordRuntimeConfig(sessionID, runtimeProfileID string, config
 	version.Version = int(max.Int64) + 1
 	if _, err := tx.Exec(`INSERT INTO session_runtime_config_versions (id,session_id,version,runtime_profile_id,config_json,created_at) VALUES (?,?,?,?,?,?)`, version.ID, sessionID, version.Version, runtimeProfileID, string(encoded), formatTime(now)); err != nil {
 		return RuntimeConfigVersion{}, fmt.Errorf("store Session Runtime config: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return RuntimeConfigVersion{}, fmt.Errorf("commit Session Runtime config: %w", err)
 	}
 	return version, nil
 }
@@ -1586,6 +1711,7 @@ func copyAttachments(workdir string, input []Attachment) ([]copiedAttachment, er
 	}
 	result := make([]copiedAttachment, 0, len(names))
 	created := make([]string, 0, len(names))
+	reserved := reservedAttachmentNames(names)
 	cleanup := func() {
 		for _, name := range created {
 			_ = os.Remove(name)
@@ -1625,21 +1751,66 @@ func copyAttachments(workdir string, input []Attachment) ([]copiedAttachment, er
 			}
 			return nil, fmt.Errorf("write Session attachment %q: %v", item.Filename, firstError(copyErr, closeReaderErr, closeFileErr))
 		}
-		destination := filepath.Join(workdir, item.Filename)
-		if filepath.Dir(destination) != filepath.Clean(workdir) {
-			_ = os.Remove(temporary.Name())
-			cleanup()
-			return nil, fmt.Errorf("%w: %q", ErrInvalidAttachment, item.Filename)
-		}
-		if err := os.Rename(temporary.Name(), destination); err != nil {
+		publishedName, err := publishStagedAttachment(workdir, item.Filename, temporary.Name(), reserved)
+		if err != nil {
 			_ = os.Remove(temporary.Name())
 			cleanup()
 			return nil, fmt.Errorf("publish Session attachment %q: %w", item.Filename, err)
 		}
+		destination := filepath.Join(workdir, publishedName)
 		created = append(created, destination)
-		result = append(result, copiedAttachment{Filename: item.Filename, Size: written, SHA256: hex.EncodeToString(digest.Sum(nil))})
+		result = append(result, copiedAttachment{Filename: publishedName, Size: written, SHA256: hex.EncodeToString(digest.Sum(nil))})
 	}
 	return result, nil
+}
+
+func reservedAttachmentNames(names []namedAttachment) map[string]struct{} {
+	reserved := make(map[string]struct{}, len(names))
+	for _, item := range names {
+		reserved[attachmentNameCollisionKey(item.Filename)] = struct{}{}
+	}
+	return reserved
+}
+
+// publishStagedAttachment reserves the destination with O_EXCL before copying
+// staged bytes. A concurrent upload can therefore force a new unique name but
+// can never replace an existing attachment.
+func publishStagedAttachment(workdir, preferredName, temporaryPath string, reserved map[string]struct{}) (string, error) {
+	name := preferredName
+	for {
+		destination := filepath.Join(workdir, name)
+		if filepath.Dir(destination) != filepath.Clean(workdir) {
+			return "", fmt.Errorf("%w: %q", ErrInvalidAttachment, name)
+		}
+		output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			reserved[attachmentNameCollisionKey(name)] = struct{}{}
+			name = uniqueAttachmentName(workdir, preferredName, reserved)
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		input, openErr := os.Open(temporaryPath)
+		if openErr != nil {
+			_ = output.Close()
+			_ = os.Remove(destination)
+			return "", openErr
+		}
+		_, copyErr := io.Copy(output, input)
+		closeInputErr := input.Close()
+		closeOutputErr := output.Close()
+		if copyErr != nil || closeInputErr != nil || closeOutputErr != nil {
+			_ = os.Remove(destination)
+			return "", firstError(copyErr, closeInputErr, closeOutputErr)
+		}
+		if err := os.Remove(temporaryPath); err != nil {
+			_ = os.Remove(destination)
+			return "", err
+		}
+		reserved[attachmentNameCollisionKey(name)] = struct{}{}
+		return name, nil
+	}
 }
 
 type namedAttachment struct {

@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 
 	"pentest/internal/blackboardv2"
 	"pentest/internal/modelprovider"
+	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
@@ -23,6 +25,13 @@ import (
 
 type failingContinuationBindSession struct {
 	runtime.ProviderSession
+}
+
+func (s failingContinuationBindSession) TurnState() runtime.ProviderSessionTurnState {
+	if reporter, ok := s.ProviderSession.(runtime.ProviderSessionTurnStateReporter); ok {
+		return reporter.TurnState()
+	}
+	return runtime.ProviderSessionTurnState{SessionID: s.SessionID()}
 }
 
 type stopRaceProviderSession struct {
@@ -441,6 +450,7 @@ func TestNativeSteerProviderFailureIsAcceptedThenProjectedAsFailed(t *testing.T)
 	}
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
 		SessionID:    "session-fail",
+		ActiveTurnID: "turn-fail",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
 		Failures:     map[runtime.ProviderSessionMode]error{runtime.ProviderSessionModeInTurnSteer: errors.New("rejected")},
 	})
@@ -463,6 +473,70 @@ func TestNativeSteerProviderFailureIsAcceptedThenProjectedAsFailed(t *testing.T)
 		}
 		return false
 	})
+}
+
+func TestNativeSteerNonSteerableTurnRequiresExplicitOperatorRecovery(t *testing.T) {
+	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	projectRecord, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := createTestRuntimeProfile(t, server)
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
+		t.Fatal(err)
+	}
+	provider := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-review", ActiveTurnID: "turn-review",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true, InTurnSteer: true},
+		Failures:     map[runtime.ProviderSessionMode]error{runtime.ProviderSessionModeInTurnSteer: runtime.ErrProviderTurnNotSteerable},
+	})
+	if err := server.BindProviderSession(created.ID, provider); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{"request_id":"review-steer","message":"focus"}`))
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", response.Code, response.Body.String())
+	}
+	waitForTaskEvent(t, server, created.ID, func(events []task.Event) bool {
+		for _, event := range events {
+			if event.Kind == task.EventKindSteering && event.Payload["request_id"] == "review-steer" &&
+				event.Payload["outcome"] == "action_required" && event.Payload["error_code"] == "active_turn_not_steerable" {
+				if event.Payload["error"] != "active provider Runtime Turn is not steerable" {
+					t.Fatalf("public error = %#v", event.Payload["error"])
+				}
+				return true
+			}
+		}
+		return false
+	})
+	if requests := provider.LastRequests(); len(requests) != 1 {
+		t.Fatalf("provider requests = %#v, want no automatic interrupt fallback", requests)
+	}
+	detailRequest := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectRecord.ID+"/tasks/"+created.ID, nil)
+	detailResponse := httptest.NewRecorder()
+	server.ServeHTTP(detailResponse, detailRequest)
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("detail status = %d, body=%s", detailResponse.Code, detailResponse.Body.String())
+	}
+	var detailed task.Task
+	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detailed); err != nil {
+		t.Fatal(err)
+	}
+	if detailed.RuntimeControls.NativeSteerState != "action_required" ||
+		detailed.RuntimeControls.NativeSteerErrorCode != "active_turn_not_steerable" ||
+		detailed.RuntimeControls.NativeSteerError != "active provider Runtime Turn is not steerable" {
+		t.Fatalf("Runtime Controls = %#v", detailed.RuntimeControls)
+	}
 }
 
 func TestNativeSteerReplacementContinuationFailureFailsClosedWithoutApplied(t *testing.T) {
@@ -572,7 +646,7 @@ func TestTaskDetailExposesNativeSteerModeAndIdleState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !detailed.RuntimeControls.NativeSteerAvailable || detailed.RuntimeControls.NativeSteerMode != string(runtime.ProviderSessionModeInTurnSteer) || detailed.RuntimeControls.NativeSteerState != "idle" {
+	if !detailed.RuntimeControls.NativeSteerAvailable || detailed.RuntimeControls.NativeSteerMode != string(runtime.ProviderSessionModeSendTurn) || detailed.RuntimeControls.NativeSteerState != "idle" {
 		t.Fatalf("native steer controls = %#v", detailed.RuntimeControls)
 	}
 }
@@ -1058,5 +1132,148 @@ func TestNativeSteerReplacementCarriesBlackboardGrant(t *testing.T) {
 	}
 	if oldAfter.Status != task.StatusCompleted {
 		t.Fatalf("old Continuation status = %q, want completed", oldAfter.Status)
+	}
+}
+
+type countingTurnStateSession struct {
+	runtime.ProviderSession
+	calls int
+	state runtime.ProviderSessionTurnState
+}
+
+func (session *countingTurnStateSession) TurnState() runtime.ProviderSessionTurnState {
+	session.calls++
+	return session.state
+}
+
+func TestPrepareNativeSteerUsesOneTurnSnapshotForModeAndFence(t *testing.T) {
+	base := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-atomic",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InTurnSteer: true, InterruptThenReplace: true,
+		},
+	})
+	session := &countingTurnStateSession{
+		ProviderSession: base,
+		state: runtime.ProviderSessionTurnState{
+			SessionID: "session-atomic", ActiveTurnID: "turn-atomic", ActiveTurnKind: runtime.RuntimeTurnKindWork,
+		},
+	}
+
+	prepared, err := prepareNativeSteer(session, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.calls != 1 {
+		t.Fatalf("TurnState calls = %d, want 1", session.calls)
+	}
+	if prepared.Mode != runtime.ProviderSessionModeInTurnSteer || prepared.ExpectedProviderTurnID != "turn-atomic" {
+		t.Fatalf("prepared steer = %#v", prepared)
+	}
+}
+
+func TestPrepareNativeSteerReplacesNonWorkActiveTurn(t *testing.T) {
+	base := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-control",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InTurnSteer: true, InterruptThenReplace: true,
+		},
+	})
+	session := &countingTurnStateSession{
+		ProviderSession: base,
+		state: runtime.ProviderSessionTurnState{
+			SessionID: "session-control", ActiveTurnID: "turn-control", ActiveTurnKind: runtime.RuntimeTurnKindControl,
+		},
+	}
+	prepared, err := prepareNativeSteer(session, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Mode != runtime.ProviderSessionModeInterruptThenReplace || prepared.ExpectedProviderTurnID != "turn-control" {
+		t.Fatalf("prepared control-Turn steer = %#v", prepared)
+	}
+}
+
+func TestPrepareAcceptedNativeSteerStartsAfterPendingOwnerSettlement(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-concluding", ActiveTurnID: "turn-conclusion", ActiveTurnKind: runtime.RuntimeTurnKindControl,
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InTurnSteer: true,
+		},
+	})
+	settlement := func(context.Context, bool) (bool, error) { return false, nil }
+
+	prepared, err := prepareAcceptedNativeSteer(context.Background(), session, false, false, settlement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Mode != runtime.ProviderSessionModeSendTurn || prepared.ExpectedProviderTurnID != "" {
+		t.Fatalf("prepared deferred steer = %#v", prepared)
+	}
+}
+
+func TestPrepareNativeSteerCanExplicitlyReplaceActiveTurn(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-replace", ActiveTurnID: "turn-old",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InTurnSteer: true, InterruptThenReplace: true,
+		},
+	})
+	prepared, err := prepareNativeSteer(session, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Mode != runtime.ProviderSessionModeInterruptThenReplace || prepared.ExpectedProviderTurnID != "turn-old" {
+		t.Fatalf("prepared steer = %#v", prepared)
+	}
+}
+
+func TestClassifyNativeSteerFailureDistinguishesCompletedTarget(t *testing.T) {
+	completed := classifyNativeSteerFailure(runtime.ErrProviderTurnUnavailable)
+	if completed.state != owner.SteeringActionRequired || completed.reason != owner.SteeringReasonTargetTurnCompleted || completed.code != "target_turn_completed" {
+		t.Fatalf("completed classification = %#v", completed)
+	}
+	changed := classifyNativeSteerFailure(runtime.ErrProviderTurnChanged)
+	if changed.state != owner.SteeringActionRequired || changed.reason != owner.SteeringReasonTargetTurnChanged || changed.code != "target_turn_changed" {
+		t.Fatalf("changed classification = %#v", changed)
+	}
+}
+
+func TestSteeringConflictUsesExactClientControlledSelectionIdentity(t *testing.T) {
+	recordedSelection := canonicalSteeringClientSelectionIdentity("provider-1", "model-1", "high")
+	record := &owner.SteeringRecord{
+		OperatorMessage: "focus", Message: "focus", Mode: owner.SteeringModeInTurnSteer, State: owner.SteeringPending,
+		ExpectedProviderTurnID: "turn-1", ModelProviderID: "provider-1", Model: "model-1",
+		RequestedReasoningEffort: "high", ClientSelectionIdentity: recordedSelection,
+	}
+	identity := steeringReplayIdentity{
+		requestID: "req-1", operatorMessage: "focus", clientSelectionIdentity: recordedSelection,
+	}
+	if conflict := steeringConflictMessage(record, identity); conflict != "" {
+		t.Fatalf("server-selected delivery fields caused conflict = %q", conflict)
+	}
+
+	identity.clientSelectionIdentity = canonicalSteeringClientSelectionIdentity("", "", "")
+	if conflict := steeringConflictMessage(record, identity); conflict != "steer request id already belongs to a different turn selection" {
+		t.Fatalf("omitted retry selection conflict = %q", conflict)
+	}
+
+	identity.clientSelectionIdentity = canonicalSteeringClientSelectionIdentity("provider-2", "model-1", "high")
+	if conflict := steeringConflictMessage(record, identity); conflict != "steer request id already belongs to a different turn selection" {
+		t.Fatalf("changed client selection conflict = %q", conflict)
+	}
+}
+
+func TestSteeringConflictKeepsLegacySelectionFallback(t *testing.T) {
+	record := &owner.SteeringRecord{
+		OperatorMessage: "focus", Message: "focus", ModelProviderID: "provider-1",
+	}
+	identity := steeringReplayIdentity{requestID: "req-1", operatorMessage: "focus"}
+	if conflict := steeringConflictMessage(record, identity); conflict != "" {
+		t.Fatalf("legacy omitted selection conflict = %q", conflict)
+	}
+	identity.modelProviderID = "provider-2"
+	if conflict := steeringConflictMessage(record, identity); conflict != "steer request id already belongs to a different turn selection" {
+		t.Fatalf("legacy changed selection conflict = %q", conflict)
 	}
 }

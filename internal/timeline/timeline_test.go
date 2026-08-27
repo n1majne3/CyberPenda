@@ -36,6 +36,47 @@ func TestBuildParsesThinkingToolUseTextAndResult(t *testing.T) {
 	requireItem(t, got, 4, "text", "", "Done inspecting.")
 }
 
+func TestBuildReconcilesCodexItemLifecycle(t *testing.T) {
+	createdAt := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	events := []timeline.Event{
+		{ID: "ev-1", Seq: 1, Kind: "runtime_output", Payload: map[string]any{
+			"provider_event": "item/started",
+			"text":           `{"item":{"type":"commandExecution","id":"item-cmd","command":"curl example.com","status":"inProgress"}}`,
+		}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{
+			"provider_event": "item/started",
+			"text":           `{"item":{"type":"reasoning","id":"item-reasoning","summary":[]}}`,
+		}, CreatedAt: createdAt.Add(time.Second)},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{
+			"provider_event": "item/completed",
+			"text":           `{"item":{"type":"reasoning","id":"item-reasoning","summary":["Checked the target."]}}`,
+		}, CreatedAt: createdAt.Add(2 * time.Second)},
+		{ID: "ev-4", Seq: 4, Kind: "runtime_output", Payload: map[string]any{
+			"provider_event": "item/completed",
+			"text":           `{"item":{"type":"commandExecution","id":"item-cmd","command":"curl example.com","aggregatedOutput":"200 OK","status":"completed"}}`,
+		}, CreatedAt: createdAt.Add(3 * time.Second)},
+	}
+
+	got := timeline.Build(events)
+	var toolUses, toolResults, thinking int
+	for _, item := range got {
+		switch item.Type {
+		case "tool_use":
+			toolUses++
+		case "tool_result":
+			toolResults++
+		case "thinking":
+			thinking++
+			if item.Content != "Checked the target." {
+				t.Fatalf("thinking = %#v", item)
+			}
+		}
+	}
+	if toolUses != 1 || toolResults != 1 || thinking != 1 {
+		t.Fatalf("Timeline lifecycle counts: tool_use=%d tool_result=%d thinking=%d items=%#v", toolUses, toolResults, thinking, got)
+	}
+}
+
 func TestBuildGivesMultipleItemsFromOneEventStableDistinctIDs(t *testing.T) {
 	createdAt := time.Date(2026, 8, 8, 10, 0, 0, 0, time.UTC)
 	items := timeline.Build([]timeline.Event{{

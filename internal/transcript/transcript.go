@@ -17,6 +17,7 @@ import (
 
 const (
 	KindMessage       = "message"
+	KindThinking      = "thinking"
 	KindToolCall      = "tool_call"
 	KindToolResult    = "tool_result"
 	KindRuntimeOutput = "runtime_output"
@@ -132,6 +133,25 @@ func BuildWindow(subject Subject, events []Event, context WindowContext) []Entry
 // Continuation so a streamed sentence is one row, not one row per token.
 func appendOrCoalesceTranscript(entries, next []Entry) []Entry {
 	for _, entry := range next {
+		if entry.ID != "" {
+			replaced := false
+			for index := range entries {
+				if entries[index].ID == entry.ID {
+					// A completed provider item enriches the row projected when the
+					// item started. Keep the first projection's history position so
+					// Transcript Seq order and same-Seq page boundaries stay valid.
+					entry.Seq = entries[index].Seq
+					entry.Continuation = entries[index].Continuation
+					entry.CreatedAt = entries[index].CreatedAt
+					entries[index] = entry
+					replaced = true
+					break
+				}
+			}
+			if replaced {
+				continue
+			}
+		}
 		if n := len(entries); n > 0 && canMergeAssistantMessage(entries[n-1], entry) {
 			entries[n-1].Text += entry.Text
 			entries[n-1].Seq = entry.Seq
@@ -348,7 +368,9 @@ func parseRuntimeOutput(event Event, continuation int, adapter, text string) ([]
 		CreatedAt:    event.CreatedAt,
 		Stream:       stringValue(event.Payload, "stream"),
 	}
-	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{}, base.CreatedAt)
+	turns := runtimeoutput.ParseRecordWithMeta(record, runtimeoutput.RecordMeta{
+		ProviderEvent: stringValue(event.Payload, "provider_event"),
+	}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true}, base.CreatedAt)
 	if len(turns) == 0 {
 		return nil, false
 	}
@@ -374,14 +396,16 @@ func ParserForAdapter(adapter string, registry *runtimeplugin.Registry) string {
 // derived entries inherit. It is exported so runtime tails can reuse the same
 // parsing as the post-hoc transcript builder.
 func ParseRecord(record map[string]any, base Entry) []Entry {
-	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{}, base.CreatedAt)
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true}, base.CreatedAt)
 	return turnsToEntries(turns, base)
 }
 
 func turnsToEntries(turns []runtimeoutput.Turn, base Entry) []Entry {
 	entries := make([]Entry, 0, len(turns))
-	for _, turn := range turns {
+	for _, turn := range runtimeoutput.ReconcileLifecycle(turns) {
 		switch turn.Kind {
+		case runtimeoutput.KindThinking:
+			entries = append(entries, thinkingEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "thinking")))
 		case runtimeoutput.KindText:
 			// Provider user records are internal prompt/session frames. Operator
 			// text is projected only from durable conversation or steering Events.
@@ -390,12 +414,19 @@ func turnsToEntries(turns []runtimeoutput.Turn, base Entry) []Entry {
 			}
 			entries = append(entries, messageEntry(base, entryID(base.ID, "-message", turn.ContentIndex), mapRuntimeRole(turn.Role), turn.Text))
 		case runtimeoutput.KindToolUse:
-			entries = append(entries, toolCallEntryFromTurn(turn, base, entryID(base.ID, "-tool-call", turn.ContentIndex)))
+			entries = append(entries, toolCallEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-call")))
 		case runtimeoutput.KindToolResult:
-			entries = append(entries, toolResultEntryFromTurn(turn, base, entryID(base.ID, "-tool-result", turn.ContentIndex)))
+			entries = append(entries, toolResultEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-result")))
 		}
 	}
 	return entries
+}
+
+func stableTurnEntryID(turn runtimeoutput.Turn, base Entry, kind string) string {
+	if stable := runtimeoutput.StableProviderItemID(turn.ProviderItemID, kind); stable != "" {
+		return fmt.Sprintf("continuation-%d-%s", base.Continuation, stable)
+	}
+	return entryID(base.ID, "-"+kind, turn.ContentIndex)
 }
 
 func entryID(baseID, suffix string, index int) string {
@@ -427,6 +458,19 @@ func messageEntry(base Entry, id, role, text string) Entry {
 		Role:         role,
 		Text:         text,
 		Stream:       base.Stream,
+		CreatedAt:    base.CreatedAt,
+	}
+}
+
+func thinkingEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry {
+	return Entry{
+		ID:           id,
+		Seq:          base.Seq,
+		Continuation: base.Continuation,
+		Kind:         KindThinking,
+		Role:         RoleAssistant,
+		Text:         turn.Text,
+		Status:       StatusCollapsed,
 		CreatedAt:    base.CreatedAt,
 	}
 }

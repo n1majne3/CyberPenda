@@ -41,6 +41,7 @@ type sessionRuntimeInput struct {
 	Model            string         `json:"model"`
 	ModelOverride    string         `json:"model_override"`
 	ReasoningEffort  string         `json:"reasoning_effort"`
+	ForceReplace     bool           `json:"force_replace,omitempty"`
 	Runner           string         `json:"runner"`
 	HostActivated    bool           `json:"host_activated"`
 	RuntimeConfig    map[string]any `json:"runtime_config"`
@@ -79,13 +80,9 @@ type sessionRuntimePlan struct {
 	Facts            ProviderSessionLaunchFacts
 }
 
-func sessionGoalWithAttachmentEvents(goal, workdir string, run session.Runner, events []session.Event) string {
-	paths := make([]string, 0, len(events))
-	for _, event := range events {
-		reference, ok := event.AttachmentReference()
-		if !ok {
-			continue
-		}
+func sessionGoalWithAttachmentReferences(goal, workdir string, run session.Runner, references []session.AttachmentReference) string {
+	paths := make([]string, 0, len(references))
+	for _, reference := range references {
 		hostPath := filepath.Join(workdir, reference.RelativePath)
 		info, err := os.Stat(hostPath)
 		if err != nil || !info.Mode().IsRegular() {
@@ -94,6 +91,17 @@ func sessionGoalWithAttachmentEvents(goal, workdir string, run session.Runner, e
 		paths = append(paths, ownerAttachmentGoalPath(task.Runner(run), workdir, reference.RelativePath))
 	}
 	return appendAttachmentPathsToGoal(goal, paths)
+}
+
+func sessionGoalWithAttachmentEvents(goal, workdir string, run session.Runner, events []session.Event) string {
+	references := make([]session.AttachmentReference, 0, len(events))
+	for _, event := range events {
+		reference, ok := event.AttachmentReference()
+		if ok {
+			references = append(references, reference)
+		}
+	}
+	return sessionGoalWithAttachmentReferences(goal, workdir, run, references)
 }
 
 func (server *Server) sessionLaunchGoal(found session.Session, goal string, run session.Runner) (string, error) {
@@ -797,13 +805,23 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 		}
 		controls.NativeResumeAvailable = active == nil && controls.NativeSessionCaptured && provider != string(runtimeprofile.ProviderFake)
 	}
+	steeringControl, steeringControlErr := server.latestSteeringControl(owner.KindSession, found.ID)
+	if steeringControlErr == nil {
+		controls.NativeSteerRequestID = steeringControl.requestID
+		controls.NativeSteerState = steeringControl.state
+		controls.NativeSteerErrorCode = steeringControl.errorCode
+		controls.NativeSteerError = steeringControl.error
+	}
 	if isBound {
 		capabilities := bound.Capabilities()
 		controls.QueueSteerAvailable = capabilities.SendTurn
-		if mode, modeErr := nativeSteerMode(capabilities); modeErr == nil {
+		if mode, modeErr := nativeSteerModeForSession(bound, false); modeErr == nil {
 			controls.NativeSteerAvailable = true
 			controls.NativeSteerMode = string(mode)
 			controls.InterruptSteerAvailable = capabilities.InterruptThenReplace || capabilities.InTurnSteer
+		}
+		if steeringControl.nonTerminal {
+			controls.NativeSteerAvailable = false
 		}
 	}
 	if active != nil && !isBound && !harnessActive {
@@ -1123,10 +1141,10 @@ func sessionInputChangesTurnSelection(input sessionRuntimeInput) bool {
 	return strings.TrimSpace(input.ModelProviderID) != "" || input.selectedModel() != "" || strings.TrimSpace(input.ReasoningEffort) != ""
 }
 
-func (server *Server) recordSessionTurnSelection(sessionID string, continuation session.Continuation, selection runtime.ProviderSessionRequest) error {
+func (server *Server) sessionTurnSelectionConfig(sessionID string, continuation session.Continuation, selection runtime.ProviderSessionRequest) (map[string]any, error) {
 	versions, err := server.sessions.RuntimeConfigVersions(sessionID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	config := map[string]any{
 		"runtime_profile_id": continuation.RuntimeProfileID,
@@ -1146,6 +1164,31 @@ func (server *Server) recordSessionTurnSelection(sessionID string, continuation 
 	}
 	if selection.RequestedReasoningEffort != "" {
 		config["reasoning_effort"] = selection.RequestedReasoningEffort
+	}
+	return config, nil
+}
+
+func (server *Server) sessionPiProjectedProviderAllowed(sessionID, providerID string) bool {
+	providerID = strings.TrimSpace(providerID)
+	if providerID == "" {
+		return false
+	}
+	versions, err := server.sessions.RuntimeConfigVersions(sessionID)
+	if err != nil || len(versions) == 0 {
+		return false
+	}
+	for _, projectedID := range stringSliceFromConfig(versions[len(versions)-1].Config["projected_model_provider_ids"]) {
+		if projectedID == providerID {
+			return true
+		}
+	}
+	return false
+}
+
+func (server *Server) recordSessionTurnSelection(sessionID string, continuation session.Continuation, selection runtime.ProviderSessionRequest) error {
+	config, err := server.sessionTurnSelectionConfig(sessionID, continuation, selection)
+	if err != nil {
+		return err
 	}
 	_, err = server.sessions.RecordRuntimeConfig(sessionID, continuation.RuntimeProfileID, config)
 	return err
@@ -1225,7 +1268,6 @@ func (server *Server) enqueueSessionProviderTurn(sessionID string, provider runt
 			selection.TurnKind = runtime.RuntimeTurnKindControl
 		}
 		spec := server.sessionSteerEmitSpec(ctx, sessionID, provider)
-		spec.mode = mode
 		protocol := newSteerEmitProtocol(continuationID, spec)
 		result, err := operation(ctx, selection, protocol.emit)
 		if err != nil || protocol.transitionErr() != nil {
@@ -1287,7 +1329,6 @@ func (server *Server) sessionSteerEmitSpec(ctx context.Context, sessionID string
 // The returned execution is the durable terminal outcome.
 func (server *Server) executeSessionNativeSteerOperation(ctx context.Context, sessionID string, provider runtime.ProviderSession, mode runtime.ProviderSessionMode, operation nativeSteerOperationFunc, providerRequest runtime.ProviderSessionRequest, continuationID string) steeringExecution {
 	spec := server.sessionSteerEmitSpec(ctx, sessionID, provider)
-	spec.mode = mode
 	return runNativeSteerTurn(ctx, steerExecutionSpec{
 		operation:             operation,
 		request:               providerRequest,
@@ -1400,6 +1441,28 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		writeSessionError(response, err)
 		return
 	}
+	requestID := sessionRequestID(request, "steer")
+	adapter := sessionSteeringAdapter(server, id, server.sessionConclusionSettlementForID(id))
+	clientSelectionIdentity := canonicalSteeringClientSelectionIdentity(input.ModelProviderID, input.selectedModel(), input.ReasoningEffort)
+	replayIdentity := steeringReplayIdentity{
+		requestID: requestID, operatorMessage: message,
+		clientSelectionIdentity: clientSelectionIdentity,
+		modelProviderID:         input.ModelProviderID, model: input.selectedModel(),
+		requestedReasoningEffort: input.ReasoningEffort,
+	}
+	if record, replayed, replayErr := server.findAcceptedSteeringReplayByIdentity(adapter, replayIdentity); replayErr != nil || replayed {
+		if replayErr != nil {
+			var conflict *steeringRequestConflictError
+			if errors.As(replayErr, &conflict) {
+				writeError(response, http.StatusConflict, conflict.Error())
+			} else {
+				writeSessionError(response, replayErr)
+			}
+			return
+		}
+		server.writeDecoratedSessionWithSteeringOutcome(response, http.StatusAccepted, id, steeringOutcomeFromRecord(record))
+		return
+	}
 	provider, bound := server.sessionProviderSessions.get(id)
 	active, activeErr := server.sessions.ActiveContinuation(id)
 	if activeErr != nil {
@@ -1414,68 +1477,94 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		writeError(response, http.StatusConflict, conflict)
 		return
 	}
-	mode, err := nativeSteerMode(provider.Capabilities())
-	if err != nil {
-		writeError(response, http.StatusConflict, err.Error())
-		return
-	}
-	if nativeSteerOperation(provider, mode) == nil {
-		writeError(response, http.StatusConflict, "provider session does not support native steer")
-		return
-	}
 	selection, err := server.sessionCurrentSelection(*active)
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
 	if requestedProvider := strings.TrimSpace(input.ModelProviderID); requestedProvider != "" && requestedProvider != selection.ModelProviderID {
-		writeError(response, http.StatusConflict, "Session Runtime model provider changes require a fresh continuation")
-		return
+		if runtimeprofile.Provider(active.RuntimeProvider) != runtimeprofile.ProviderPi || !server.sessionPiProjectedProviderAllowed(id, requestedProvider) {
+			writeError(response, http.StatusConflict, "Session Runtime model provider changes require a fresh continuation")
+			return
+		}
 	}
+	currentSelection := selection
 	selection, err = sessionSelectionFromInput(selection, input)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
-	if sessionInputChangesTurnSelection(input) {
-		if err := server.recordSessionTurnSelection(id, *active, selection); err != nil {
-			writeSessionError(response, err)
-			return
-		}
+	prepared, err := prepareAcceptedNativeSteer(
+		request.Context(), provider,
+		providerSelectionRequiresReplacement(runtimeprofile.Provider(active.RuntimeProvider), currentSelection, selection),
+		input.ForceReplace, adapter.settlement,
+	)
+	if err != nil {
+		writeError(response, http.StatusConflict, err.Error())
+		return
 	}
-	requestID := sessionRequestID(request, "steer")
+	if nativeSteerOperation(provider, prepared.Mode) == nil {
+		writeError(response, http.StatusConflict, "provider session does not support native steer")
+		return
+	}
+	mode := prepared.Mode
+	expectedProviderTurnID := prepared.ExpectedProviderTurnID
+	releaseSteeringRequest := server.steering.AcquireRequest(owner.KindSession, id, requestID)
+	defer releaseSteeringRequest()
 
-	// Repeated requests with the same request identity return the durable
-	// current outcome and never create a second queue item. Conflicting content
-	// under the same identity returns a conflict.
-	if record, err := server.steering.ByRequestID(owner.KindSession, id, requestID); err == nil {
-		if conflict := steeringConflictMessage(record, message, selection, owner.SteeringMode(mode)); conflict != "" {
-			writeError(response, http.StatusConflict, conflict)
+	acceptInput := steering.AcceptRequest{
+		RequestID:                requestID,
+		ClientSelectionIdentity:  clientSelectionIdentity,
+		OperatorMessage:          message,
+		Message:                  message,
+		Mode:                     owner.SteeringMode(mode),
+		ModelProviderID:          selection.ModelProviderID,
+		Model:                    selection.Model,
+		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+		SessionID:                provider.SessionID(),
+		ExpectedProviderTurnID:   expectedProviderTurnID,
+	}
+	if record, replayed, replayErr := server.findAcceptedSteeringReplay(adapter, acceptInput); replayErr != nil || replayed {
+		if replayErr != nil {
+			var conflict *steeringRequestConflictError
+			if errors.As(replayErr, &conflict) {
+				writeError(response, http.StatusConflict, conflict.Error())
+			} else {
+				writeSessionError(response, replayErr)
+			}
 			return
 		}
 		server.writeDecoratedSessionWithSteeringOutcome(response, http.StatusAccepted, id, steeringOutcomeFromRecord(record))
 		return
-	} else if !errors.Is(err, steering.ErrNotFound) {
-		writeSessionError(response, err)
-		return
 	}
 
-	// Durable acceptance: the operator message and the dispatch record commit
-	// before the request returns 202. The accepted steering is dispatched by
-	// the owner-neutral FIFO queue after the assisted conclusion settles.
-	adapter := sessionSteeringAdapter(server, id, server.sessionConclusionSettlementForID(id))
-	accept := func(runtimeMessage, conversationID string) error {
-		_, acceptErr := server.acceptSteeringDurably(request.Context(), adapter, steering.AcceptRequest{
-			RequestID:                requestID,
-			Message:                  runtimeMessage,
-			Mode:                     owner.SteeringMode(mode),
-			ModelProviderID:          selection.ModelProviderID,
-			Model:                    selection.Model,
-			RequestedReasoningEffort: selection.RequestedReasoningEffort,
-			SessionID:                provider.SessionID(),
-		}, func(tx *sql.Tx) (string, error) {
-			if conversationID != "" {
-				return conversationID, nil
+	var turnSelectionConfig map[string]any
+	if sessionInputChangesTurnSelection(input) {
+		turnSelectionConfig, err = server.sessionTurnSelectionConfig(id, *active, selection)
+		if err != nil {
+			writeSessionError(response, err)
+			return
+		}
+	}
+
+	// Durable acceptance: the operator message, attachments, Turn Selection,
+	// and dispatch record commit in one transaction before the request returns
+	// 202. The accepted steering is dispatched by the owner-neutral FIFO queue after the
+	// assisted conclusion settles.
+	accept := func(runtimeMessage string, preparedInput *session.PreparedConversationInput) (*owner.SteeringRecord, error) {
+		acceptInput.Message = runtimeMessage
+		record, _, acceptErr := server.acceptSteeringOrReplay(request.Context(), adapter, acceptInput, func(tx *sql.Tx) (string, error) {
+			if preparedInput != nil {
+				_, conversation, appendErr := preparedInput.AppendTx(tx)
+				if appendErr != nil {
+					return "", appendErr
+				}
+				if turnSelectionConfig != nil {
+					if _, configErr := server.sessions.RecordRuntimeConfigTx(tx, id, active.RuntimeProfileID, turnSelectionConfig); configErr != nil {
+						return "", configErr
+					}
+				}
+				return conversation.ID, nil
 			}
 			payload := session.EventPayload{
 				"role": "user", "text": message, "request_id": requestID,
@@ -1484,6 +1573,9 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 				"model_provider_id": selection.ModelProviderID, "model": selection.Model,
 				"requested_reasoning_effort": selection.RequestedReasoningEffort,
 			}
+			if expectedProviderTurnID != "" {
+				payload["provider_turn_id"] = expectedProviderTurnID
+			}
 			if active != nil {
 				payload["continuation_id"] = active.ID
 			}
@@ -1491,49 +1583,51 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 			if eventErr != nil {
 				return "", eventErr
 			}
+			if turnSelectionConfig != nil {
+				if _, configErr := server.sessions.RecordRuntimeConfigTx(tx, id, active.RuntimeProfileID, turnSelectionConfig); configErr != nil {
+					return "", configErr
+				}
+			}
 			return event.ID, nil
 		})
-		return acceptErr
+		return record, acceptErr
 	}
 
 	runtimeMessage := message
 	if len(uploads) > 0 {
-		// Attachments are staged by the existing input path; the conversation
-		// event it produces becomes the projection reference for the record.
-		uploadedEvents, conversation, uploadErr := server.appendSessionConversationInput(id, active.ID, message, uploads)
-		if uploadErr != nil {
-			writeSessionError(response, uploadErr)
+		input := sessionConversationInput(message, uploads)
+		preparedInput, prepareErr := server.sessions.PrepareConversationInput(id, active.ID, input.Role, input.Text, input.Attachments)
+		if prepareErr != nil {
+			writeSessionError(response, prepareErr)
 			return
 		}
-		runtimeMessage = sessionGoalWithAttachmentEvents(message, found.Workdir, active.Runner, uploadedEvents)
-		if err := accept(runtimeMessage, conversation.ID); err != nil {
+		defer preparedInput.Rollback()
+		runtimeMessage = sessionGoalWithAttachmentReferences(message, found.Workdir, active.Runner, preparedInput.AttachmentReferences())
+		record, err := accept(runtimeMessage, preparedInput)
+		if err != nil {
+			var conflict *steeringRequestConflictError
+			if errors.As(err, &conflict) {
+				writeError(response, http.StatusConflict, conflict.Error())
+				return
+			}
 			writeSessionError(response, err)
 			return
 		}
-		server.writeDecoratedSession(response, http.StatusAccepted, id)
+		preparedInput.Commit()
+		server.writeDecoratedSessionWithSteeringOutcome(response, http.StatusAccepted, id, steeringOutcomeFromRecord(record))
 		return
 	}
-	if err := accept(runtimeMessage, ""); err != nil {
-		if errors.Is(err, steering.ErrDuplicateRequest) {
-			// A concurrent duplicate committed first; the same identity rules
-			// apply: matching content replays the durable outcome, conflicting
-			// content is a conflict.
-			replayed, replayErr := server.steering.ByRequestID(owner.KindSession, id, requestID)
-			if replayErr != nil {
-				writeSessionError(response, replayErr)
-				return
-			}
-			if conflict := steeringConflictMessage(replayed, message, selection, owner.SteeringMode(mode)); conflict != "" {
-				writeError(response, http.StatusConflict, conflict)
-				return
-			}
-			server.writeDecoratedSessionWithSteeringOutcome(response, http.StatusAccepted, id, steeringOutcomeFromRecord(replayed))
+	record, err := accept(runtimeMessage, nil)
+	if err != nil {
+		var conflict *steeringRequestConflictError
+		if errors.As(err, &conflict) {
+			writeError(response, http.StatusConflict, conflict.Error())
 			return
 		}
 		writeSessionError(response, err)
 		return
 	}
-	server.writeDecoratedSession(response, http.StatusAccepted, id)
+	server.writeDecoratedSessionWithSteeringOutcome(response, http.StatusAccepted, id, steeringOutcomeFromRecord(record))
 }
 func sessionConversationInput(message string, uploads []uploadedAttachment) session.ConversationInput {
 	attachments := make([]session.Attachment, 0, len(uploads))

@@ -38,7 +38,7 @@ func (a hermesAssembler) SandboxCommand(assembly providerSessionAssembly) ([]str
 
 func (a hermesAssembler) Setup(ctx context.Context, bridge productionBridgeTransport, assembly providerSessionAssembly) (providerSessionSetup, error) {
 	// Hermes ACP InitializeRequest requires integer protocolVersion.
-	if _, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{
+	if _, err := sendProviderSetupRPC(ctx, bridge, runtime.SandboxBridgeRequest{
 		ID: "setup:initialize", Method: "initialize",
 		Params: json.RawMessage(`{"protocolVersion":1,"clientInfo":{"name":"cyberpenda","version":"1"}}`),
 	}); err != nil {
@@ -58,7 +58,7 @@ func (a hermesAssembler) Setup(ctx context.Context, bridge productionBridgeTrans
 			return providerSessionSetup{}, err
 		}
 	}
-	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:session", Method: method, Params: params})
+	setupResponse, err := sendProviderSetupRPC(ctx, bridge, runtime.SandboxBridgeRequest{ID: "setup:session", Method: method, Params: params})
 	if err != nil {
 		return providerSessionSetup{}, err
 	}

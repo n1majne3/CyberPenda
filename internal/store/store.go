@@ -946,7 +946,125 @@ func migrations() []migration {
 		newMigration(59, "project_approval_workflows", migration59SQL, migration59Up),
 		newMigration(60, "blackboard_conclusion_directive_kind", migration60SQL, migration60Up),
 		newMigration(61, "slash_form_evidence_path_identities", migration61SQL, migration61Up),
+		newMigration(62, "accepted_steering_expected_provider_turn", migration62SQL, migration62Up),
+		newMigration(63, "accepted_steering_send_turn_mode", migration63SQL, migration63Up),
+		newMigration(64, "accepted_steering_operator_message", migration64SQL, migration64Up),
+		newMigration(65, "accepted_steering_client_selection_identity", migration65SQL, migration65Up),
 	}
+}
+
+// migration65SQL preserves the exact client-controlled Runtime Turn Selection
+// identity for Accepted Steering replay. Empty identifies a legacy record for
+// which the raw omitted-versus-explicit selection cannot be reconstructed.
+const migration65SQL = `
+ALTER TABLE accepted_steering ADD COLUMN client_selection_identity TEXT NOT NULL DEFAULT '';
+`
+
+func migration65Up(tx *sql.Tx) error {
+	present, err := storeTableHasColumn(tx, "accepted_steering", "client_selection_identity")
+	if err != nil {
+		return err
+	}
+	if present {
+		return nil
+	}
+	return execStatements(tx, migration65SQL)
+}
+
+// migration64SQL separates the canonical operator Conversation text from the
+// provider delivery message, which can contain resolved attachment paths.
+const migration64SQL = `
+ALTER TABLE accepted_steering ADD COLUMN operator_message TEXT NOT NULL DEFAULT '';
+UPDATE accepted_steering
+SET operator_message=COALESCE(
+	NULLIF(CASE owner_kind
+		WHEN 'session' THEN (
+			SELECT json_extract(payload_json,'$.text') FROM session_events
+			WHERE id=accepted_steering.conversation_event_id AND session_id=accepted_steering.owner_id
+		)
+		WHEN 'task' THEN (
+			SELECT json_extract(payload_json,'$.text') FROM task_events
+			WHERE id=accepted_steering.conversation_event_id AND task_id=accepted_steering.owner_id
+		)
+	END, ''),
+	message
+)
+WHERE operator_message='';
+`
+
+func migration64Up(tx *sql.Tx) error {
+	present, err := storeTableHasColumn(tx, "accepted_steering", "operator_message")
+	if err != nil {
+		return err
+	}
+	if present {
+		return nil
+	}
+	return execStatements(tx, migration64SQL)
+}
+
+// migration63SQL extends Accepted Steering to represent an operator message
+// sent while the persistent provider Session has no active Runtime Turn.
+const migration63SQL = `
+ALTER TABLE accepted_steering RENAME TO accepted_steering_v63;
+CREATE TABLE accepted_steering (
+	id TEXT PRIMARY KEY,
+	owner_kind TEXT NOT NULL CHECK (owner_kind IN ('task', 'session')),
+	owner_id TEXT NOT NULL,
+	request_id TEXT NOT NULL,
+	message TEXT NOT NULL,
+	mode TEXT NOT NULL CHECK (mode IN ('send_turn', 'in_turn_steer', 'interrupt_then_replace')),
+	model_provider_id TEXT NOT NULL DEFAULT '',
+	model TEXT NOT NULL DEFAULT '',
+	requested_reasoning_effort TEXT NOT NULL DEFAULT '',
+	state TEXT NOT NULL CHECK (state IN ('pending', 'dispatch_started', 'applied', 'failed', 'action_required')),
+	queue_order INTEGER NOT NULL,
+	conversation_event_id TEXT NOT NULL DEFAULT '',
+	continuation_id TEXT NOT NULL DEFAULT '',
+	session_id TEXT NOT NULL DEFAULT '',
+	expected_provider_turn_id TEXT NOT NULL DEFAULT '',
+	send_started_at TEXT NOT NULL DEFAULT '',
+	result_json TEXT NOT NULL DEFAULT '{}',
+	error_code TEXT NOT NULL DEFAULT '',
+	error_message TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	UNIQUE (owner_kind, owner_id, request_id)
+);
+INSERT INTO accepted_steering (
+	id, owner_kind, owner_id, request_id, message, mode, model_provider_id, model,
+	requested_reasoning_effort, state, queue_order, conversation_event_id, continuation_id, session_id,
+	expected_provider_turn_id, send_started_at, result_json, error_code, error_message, created_at, updated_at
+)
+SELECT
+	id, owner_kind, owner_id, request_id, message, mode, model_provider_id, model,
+	requested_reasoning_effort, state, queue_order, conversation_event_id, continuation_id, session_id,
+	expected_provider_turn_id, send_started_at, result_json, error_code, error_message, created_at, updated_at
+FROM accepted_steering_v63;
+DROP TABLE accepted_steering_v63;
+CREATE INDEX idx_accepted_steering_owner_queue
+	ON accepted_steering(owner_kind, owner_id, queue_order ASC);
+CREATE INDEX idx_accepted_steering_state
+	ON accepted_steering(state ASC);
+`
+
+func migration63Up(tx *sql.Tx) error { return execStatements(tx, migration63SQL) }
+
+// migration62SQL binds provider-native same-turn Steering to the exact active
+// provider Turn observed when the operator request was durably accepted.
+const migration62SQL = `
+ALTER TABLE accepted_steering ADD COLUMN expected_provider_turn_id TEXT NOT NULL DEFAULT '';
+`
+
+func migration62Up(tx *sql.Tx) error {
+	present, err := storeTableHasColumn(tx, "accepted_steering", "expected_provider_turn_id")
+	if err != nil {
+		return err
+	}
+	if present {
+		return nil
+	}
+	return execStatements(tx, migration62SQL)
 }
 
 // migration61SQL records the canonical slash-form identity cutover for

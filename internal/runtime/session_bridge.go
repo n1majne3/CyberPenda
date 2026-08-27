@@ -82,12 +82,42 @@ var (
 	ErrSandboxBridgeRequestConflict = errors.New("sandbox bridge request id is already bound to different content")
 )
 
+// SandboxBridgeRPCErrorKind is the stable, redacted class of one provider RPC
+// error. Raw provider message/data never crosses the runtime boundary.
+type SandboxBridgeRPCErrorKind string
+
+const (
+	SandboxBridgeRPCErrorUnknown             SandboxBridgeRPCErrorKind = "unknown"
+	SandboxBridgeRPCErrorMethodUnavailable   SandboxBridgeRPCErrorKind = "method_unavailable"
+	SandboxBridgeRPCErrorTargetTurnCompleted SandboxBridgeRPCErrorKind = "target_turn_completed"
+	SandboxBridgeRPCErrorTargetTurnChanged   SandboxBridgeRPCErrorKind = "target_turn_changed"
+	SandboxBridgeRPCErrorTurnNotSteerable    SandboxBridgeRPCErrorKind = "active_turn_not_steerable"
+)
+
 // SandboxBridgeRPCError reports a provider RPC failure without exposing its
 // potentially sensitive wire payload through daemon errors.
-type SandboxBridgeRPCError struct{ RequestID string }
+type SandboxBridgeRPCError struct {
+	RequestID string
+	Kind      SandboxBridgeRPCErrorKind
+}
 
 func (e *SandboxBridgeRPCError) Error() string {
 	return fmt.Sprintf("sandbox bridge request %q failed", e.RequestID)
+}
+
+func (e *SandboxBridgeRPCError) Is(target error) bool {
+	switch e.Kind {
+	case SandboxBridgeRPCErrorMethodUnavailable:
+		return target == ErrProviderMethodUnavailable
+	case SandboxBridgeRPCErrorTargetTurnCompleted:
+		return target == ErrProviderTurnUnavailable
+	case SandboxBridgeRPCErrorTargetTurnChanged:
+		return target == ErrProviderTurnChanged
+	case SandboxBridgeRPCErrorTurnNotSteerable:
+		return target == ErrProviderTurnNotSteerable
+	default:
+		return false
+	}
 }
 
 type bridgePending struct {
@@ -466,11 +496,7 @@ func (b *SandboxSessionBridge) readLoop(reader io.Reader) {
 			continue
 		}
 		if event.ID != "" {
-			var responseErr error
-			if len(event.Error) > 0 && string(event.Error) != "null" {
-				responseErr = &SandboxBridgeRPCError{RequestID: event.ID}
-			}
-			b.finish(event.ID, SandboxBridgeResponse{JSONRPC: event.JSONRPC, ID: event.ID, Result: event.Result, Error: event.Error}, responseErr)
+			b.finish(event.ID, SandboxBridgeResponse{JSONRPC: event.JSONRPC, ID: event.ID, Result: event.Result, Error: event.Error}, nil)
 			continue
 		}
 		if b.config.ProtocolEmit != nil {

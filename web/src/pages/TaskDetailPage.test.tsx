@@ -497,6 +497,30 @@ describe("TaskDetailPage", () => {
     expect(resultBody?.textContent).not.toContain("tool_call_id: call-1");
   });
 
+  it("renders reasoning as collapsed activity instead of an agent message", async () => {
+    stubTaskDetailApi({}, [
+      {
+        id: "thinking-1",
+        seq: 6,
+        continuation: 1,
+        kind: "thinking",
+        role: "assistant",
+        text: "Checked the active challenge and prepared the next command.",
+        created_at: "2026-08-26T09:00:01Z",
+      },
+    ]);
+
+    renderPage();
+
+    expect(await screen.findByText("Reasoning")).toBeInTheDocument();
+    const row = screen.getByTestId("transcript-thinking-row");
+    expect(row).not.toHaveAttribute("open");
+    expect(screen.getByText("Checked the active challenge and prepared the next command.")).toBeInTheDocument();
+    expect(screen.queryByTestId("transcript-message-bubble")).not.toBeInTheDocument();
+    expect(screen.queryByText("Agent")).not.toBeInTheDocument();
+    expect(screen.queryByText("You")).not.toBeInTheDocument();
+  });
+
   it("keeps agent messages and tool rows tight, only spacing out new user turns", async () => {
     stubTaskDetailApi({}, [
       {
@@ -798,6 +822,39 @@ describe("TaskDetailPage", () => {
     expect(screen.queryByTestId("steer-pending-badge")).not.toBeInTheDocument();
   });
 
+  it("shows action-required reason and lets the operator select replacement delivery", async () => {
+    const { fetchMock } = stubTaskDetailApi({
+      status: "running",
+      runtime_controls: {
+        native_steer_available: true,
+        interrupt_steer_available: true,
+        native_steer_mode: "in_turn_steer",
+        native_steer_state: "action_required",
+        native_steer_error_code: "active_turn_not_steerable",
+        native_steer_error: "active provider Runtime Turn is not steerable",
+        native_session_captured: true,
+        same_runtime_provider_only: true,
+        runtime_provider: "codex",
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("active provider Runtime Turn is not steerable");
+    await user.click(screen.getByRole("button", { name: "Use interrupt and replace" }));
+    await user.type(screen.getByRole("textbox", { name: "Task message" }), "continue in a replacement turn");
+    await user.click(screen.getByRole("button", { name: "Interrupt and replace" }));
+
+    const steerCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/api/projects/project-1/tasks/task-1/steer"),
+    );
+    expect(JSON.parse(String(steerCall?.[1]?.body))).toMatchObject({
+      message: "continue in a replacement turn",
+      force_replace: true,
+    });
+  });
+
   it("lets the continuation summary shrink instead of overflowing the header", async () => {
     stubTaskDetailApi();
 
@@ -986,7 +1043,7 @@ describe("TaskDetailPage", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "mimo-v2-pro");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation reasoning effort" }), "xhigh");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "stronger turn");
-    await user.click(screen.getByRole("button", { name: /Native interrupt & send/ }));
+    await user.click(screen.getByRole("button", { name: /Interrupt and send/ }));
 
     const postPaths = fetchMock.mock.calls
       .filter(([, init]) => init?.method === "POST")
@@ -1057,7 +1114,7 @@ describe("TaskDetailPage", () => {
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model" }), "claude-opus");
     await user.selectOptions(screen.getByRole("combobox", { name: "Continuation reasoning effort" }), "xhigh");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "claude stronger turn");
-    await user.click(screen.getByRole("button", { name: /Native interrupt & send/ }));
+    await user.click(screen.getByRole("button", { name: /Interrupt and send/ }));
 
     const postPaths = fetchMock.mock.calls
       .filter(([, init]) => init?.method === "POST")
@@ -1138,7 +1195,7 @@ describe("TaskDetailPage", () => {
 
     await screen.findByText("Conversation should be hidden by default");
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "focus on admin");
-    await user.click(screen.getByRole("button", { name: /Native interrupt & send/ }));
+    await user.click(screen.getByRole("button", { name: /Interrupt and send/ }));
 
     const steerCall = fetchMock.mock.calls.find(([input]) =>
       String(input).endsWith("/api/projects/project-1/tasks/task-1/steer"),
@@ -1237,9 +1294,9 @@ describe("TaskDetailPage", () => {
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo on pi");
     // Pi must not present the restart-oriented provider-switch label.
     expect(screen.queryByRole("button", { name: "Switch provider and resume" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Send message" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Steer current turn" })).toBeEnabled();
 
-    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await user.click(screen.getByRole("button", { name: "Steer current turn" }));
 
     const postPaths = fetchMock.mock.calls
       .filter(([, init]) => init?.method === "POST")

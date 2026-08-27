@@ -79,6 +79,20 @@ func manifestSessionCapabilities(registry *runtimeplugin.Registry, provider runt
 	return plugin.Capabilities, nil
 }
 
+// sendProviderSetupRPC keeps transport failures and provider JSON-RPC failures
+// separate. Bridge transports return protocol error envelopes as responses so
+// Runtime adapters can classify them, but setup handshakes must fail closed.
+func sendProviderSetupRPC(ctx context.Context, bridge productionBridgeTransport, request runtime.SandboxBridgeRequest) (runtime.SandboxBridgeResponse, error) {
+	response, err := bridge.Send(ctx, request)
+	if err != nil {
+		return runtime.SandboxBridgeResponse{}, err
+	}
+	if len(response.Error) > 0 && string(response.Error) != "null" {
+		return runtime.SandboxBridgeResponse{}, fmt.Errorf("provider setup %s returned JSON-RPC error", request.Method)
+	}
+	return response, nil
+}
+
 // openHostWithAssembler is the shared Host Runner flow: prologue, host command
 // assembly, bridge bind, family handshake, and the shared finish. Only the
 // assembler differs per family.

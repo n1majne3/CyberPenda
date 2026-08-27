@@ -1,12 +1,27 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
 )
+
+func TestProductionBoundSessionForwardsTurnBusy(t *testing.T) {
+	inner := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID:    "busy-session",
+		Capabilities: runtimeplugin.Capabilities{SendTurn: true},
+	})
+	base := &productionBoundSession{ProviderSession: inner}
+	if _, err := inner.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "send-busy", Message: "inspect"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !base.TurnBusy() {
+		t.Fatal("production wrapper hid the active provider Runtime Turn")
+	}
+}
 
 type incompleteAssistedDelegationSession struct {
 	runtime.ProviderSession

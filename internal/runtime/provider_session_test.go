@@ -56,6 +56,80 @@ func TestFakeProviderSessionEmitsBoundedObservations(t *testing.T) {
 	}
 }
 
+func TestFakeProviderSessionInTurnSteerPreservesWorkTurnLineage(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID:    "session-1",
+		Capabilities: runtimeplugin.Capabilities{SendTurn: true, InTurnSteer: true},
+	})
+	work, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
+		RequestID: "work-1", Message: "inspect", TurnKind: runtime.RuntimeTurnKindWork,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, ok := session.ResolveProviderSessionTurnLineage("", work.ProviderTurnID)
+	if !ok || before.RequestID != "work-1" || before.Kind != runtime.RuntimeTurnKindWork {
+		t.Fatalf("work lineage before steer = %#v ok=%v", before, ok)
+	}
+	steered, err := session.SteerInTurn(context.Background(), runtime.ProviderSessionRequest{
+		RequestID: "steer-1", Message: "focus", ProviderTurnID: work.ProviderTurnID, TurnKind: runtime.RuntimeTurnKindControl,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if steered.ProviderTurnID != work.ProviderTurnID {
+		t.Fatalf("steered Turn = %q, want %q", steered.ProviderTurnID, work.ProviderTurnID)
+	}
+	after, ok := session.ResolveProviderSessionTurnLineage("", work.ProviderTurnID)
+	if !ok || after != before {
+		t.Fatalf("work lineage after steer = %#v ok=%v, want %#v", after, ok, before)
+	}
+}
+
+func TestFakeProviderSessionRejectsChangedInTurnTarget(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1", ActiveTurnID: "turn-live",
+		Capabilities: runtimeplugin.Capabilities{InTurnSteer: true},
+	})
+	_, err := session.SteerInTurn(context.Background(), runtime.ProviderSessionRequest{
+		RequestID: "steer-1", Message: "focus", ProviderTurnID: "turn-old",
+	}, nil)
+	if !errors.Is(err, runtime.ErrProviderTurnChanged) {
+		t.Fatalf("steer error = %v, want provider Turn changed", err)
+	}
+}
+
+func TestFakeProviderSessionTurnBusyTracksActiveRuntimeTurn(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1",
+		Capabilities: runtimeplugin.Capabilities{
+			SendTurn: true,
+		},
+	})
+	result, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "send-1", Message: "inspect"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ControlBusy() {
+		t.Fatal("ControlBusy remained true after SendTurn returned")
+	}
+	if !session.TurnBusy() {
+		t.Fatal("TurnBusy = false while fake Runtime Turn is active")
+	}
+	if err := session.EmitObservation(runtime.ProviderSessionObservation{
+		Kind:           runtime.ProviderSessionObservationTurnCompleted,
+		SessionID:      "session-1",
+		ProviderTurnID: result.ProviderTurnID,
+		RequestID:      "send-1",
+		Status:         "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if session.TurnBusy() {
+		t.Fatal("TurnBusy = true after matching fake terminal observation")
+	}
+}
+
 func TestFakeProviderSessionRejectsMalformedObservations(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{SessionID: "session-1", ActiveTurnID: "turn-1"})
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -559,7 +633,7 @@ func TestFakeProviderSessionPermissionResponseAndTypedFailure(t *testing.T) {
 		t.Fatalf("permission result = %#v", permission)
 	}
 
-	_, err = session.SteerInTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "steer-1", Message: "redirect"}, recorder.emit)
+	_, err = session.SteerInTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "steer-1", Message: "redirect", ProviderTurnID: "turn-1"}, recorder.emit)
 	var failed *runtime.ProviderSessionOperationError
 	if !errors.As(err, &failed) || failed.Mode != runtime.ProviderSessionModeInTurnSteer {
 		t.Fatalf("steer error = %v, want typed operation error", err)
@@ -572,5 +646,18 @@ func TestFakeProviderSessionPermissionResponseAndTypedFailure(t *testing.T) {
 	}
 	if _, leaked := last["message"]; leaked {
 		t.Fatalf("failure event leaked user/provider data: %#v", last)
+	}
+}
+
+func TestFakeProviderSessionCloseClearsActiveTurn(t *testing.T) {
+	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-1", ActiveTurnID: "turn-live",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
+	})
+	if err := session.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if session.TurnBusy() || session.TurnState().ActiveTurnID != "" {
+		t.Fatalf("closed fake session retained active Turn: %#v", session.TurnState())
 	}
 }

@@ -3,12 +3,14 @@ package daemon
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
 
 	"pentest/internal/owner"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
 	"pentest/internal/steering"
 	"pentest/internal/task"
@@ -27,9 +29,35 @@ type steeringExecution struct {
 	reason  owner.SteeringFailureReason
 	message string
 	result  map[string]any
+	mode    runtime.ProviderSessionMode
+	// continuationID is the writable Continuation after provider settlement.
+	// Applied Timeline projection is deferred until the durable record commits.
+	continuationID string
 	// failOwner marks the Task owner failed when a required Continuation
 	// transition fails after the provider accepted the steer.
 	failOwner bool
+}
+
+type steeringControlProjection struct {
+	requestID   string
+	state       string
+	errorCode   string
+	error       string
+	nonTerminal bool
+}
+
+func (server *Server) latestSteeringControl(kind owner.Kind, ownerID string) (steeringControlProjection, error) {
+	record, err := server.steering.Latest(kind, ownerID)
+	if err != nil || record == nil {
+		return steeringControlProjection{}, err
+	}
+	return steeringControlProjection{
+		requestID:   record.RequestID,
+		state:       steeringOutcomeFromRecord(record),
+		errorCode:   string(record.ErrorCode),
+		error:       record.ErrorMessage,
+		nonTerminal: !record.State.Terminal(),
+	}, nil
 }
 
 // steeringAdapter binds one Runtime Owner to the owner-neutral Accepted
@@ -50,6 +78,8 @@ type steeringAdapter struct {
 	// project appends the owner-local Timeline projection of one terminal
 	// settlement (used by settlement and recovery paths that did not dispatch).
 	project func(record owner.SteeringRecord, state owner.SteeringState, reason owner.SteeringFailureReason, message string)
+	// projectApplied runs only after the durable record reached applied.
+	projectApplied func(record owner.SteeringRecord, continuationID string, result map[string]any)
 }
 
 func (adapter *steeringAdapter) providerRequest(record *owner.SteeringRecord) runtime.ProviderSessionRequest {
@@ -59,6 +89,7 @@ func (adapter *steeringAdapter) providerRequest(record *owner.SteeringRecord) ru
 		ModelProviderID:          record.ModelProviderID,
 		Model:                    record.Model,
 		RequestedReasoningEffort: record.RequestedReasoningEffort,
+		ProviderTurnID:           record.ExpectedProviderTurnID,
 	}
 }
 
@@ -69,6 +100,9 @@ func taskSteeringAdapter(server *Server, taskID string, settlement providerContr
 		settlement: settlement,
 		project: func(record owner.SteeringRecord, state owner.SteeringState, reason owner.SteeringFailureReason, message string) {
 			projectTaskSteeringSettlement(server, record, state, reason, message)
+		},
+		projectApplied: func(record owner.SteeringRecord, continuationID string, result map[string]any) {
+			projectTaskSteeringApplied(server, record, continuationID, result)
 		},
 	}
 	adapter.resolveContinuation = func(ctx context.Context) (string, bool, error) {
@@ -129,6 +163,9 @@ func sessionSteeringAdapter(server *Server, sessionID string, settlement provide
 		settlement: settlement,
 		project: func(record owner.SteeringRecord, state owner.SteeringState, reason owner.SteeringFailureReason, message string) {
 			projectSessionSteeringSettlement(server, record, state, reason, message)
+		},
+		projectApplied: func(record owner.SteeringRecord, continuationID string, result map[string]any) {
+			projectSessionSteeringApplied(server, record, continuationID, result)
 		},
 	}
 	adapter.resolveContinuation = func(ctx context.Context) (string, bool, error) {
@@ -244,8 +281,17 @@ func (server *Server) dispatchAcceptedSteering(ctx context.Context, adapter *ste
 		cancel()
 		switch execution.state {
 		case owner.SteeringApplied:
-			if _, err := server.steering.MarkApplied(ctx, fenced.ID, execution.result); err != nil && !errors.Is(err, steering.ErrNotFound) {
+			effectiveMode := owner.SteeringMode(execution.mode)
+			if effectiveMode == "" {
+				effectiveMode = fenced.Mode
+			}
+			updated, err := server.steering.MarkApplied(ctx, fenced.ID, effectiveMode, execution.result)
+			if err != nil && !errors.Is(err, steering.ErrNotFound) {
 				server.logger.Printf("Accepted Steering applied: %v", err)
+				return
+			}
+			if err == nil && updated != nil && adapter.projectApplied != nil {
+				adapter.projectApplied(*updated, execution.continuationID, execution.result)
 			}
 		case owner.SteeringFailed:
 			server.settleSteeringRecord(ctx, adapter, *fenced, owner.SteeringFailed, execution.reason, execution.message)
@@ -441,21 +487,129 @@ func (server *Server) steeringAdapterFor(record owner.SteeringRecord) *steeringA
 	return sessionSteeringAdapter(server, record.OwnerID, server.sessionConclusionSettlementForID(record.OwnerID))
 }
 
+// steeringReplayIdentity contains only client-controlled idempotency fields.
+// Delivery mode and provider Turn fences are server-selected and may change
+// while the same durable request is being dispatched or safely falling back.
+type steeringReplayIdentity struct {
+	requestID                string
+	operatorMessage          string
+	clientSelectionIdentity  string
+	modelProviderID          string
+	model                    string
+	requestedReasoningEffort string
+}
+
+type steeringClientSelectionIdentity struct {
+	ModelProviderID          string `json:"model_provider_id"`
+	Model                    string `json:"model"`
+	RequestedReasoningEffort string `json:"requested_reasoning_effort"`
+}
+
+// canonicalSteeringClientSelectionIdentity preserves omitted selection fields
+// as empty values. This is different from the resolved Runtime Turn Selection:
+// idempotency compares exactly what the client controlled, while provider
+// defaults and fallback mode remain server-owned.
+func canonicalSteeringClientSelectionIdentity(modelProviderID, model, requestedReasoningEffort string) string {
+	effort := strings.TrimSpace(requestedReasoningEffort)
+	if effort != "" {
+		if normalized, err := runtimeprofile.NormalizeReasoningEffort(effort); err == nil {
+			effort = string(normalized)
+		}
+	}
+	encoded, _ := json.Marshal(steeringClientSelectionIdentity{
+		ModelProviderID:          strings.TrimSpace(modelProviderID),
+		Model:                    strings.TrimSpace(model),
+		RequestedReasoningEffort: effort,
+	})
+	return string(encoded)
+}
+
+func steeringReplayIdentityFromAccept(input steering.AcceptRequest) steeringReplayIdentity {
+	operatorMessage := input.OperatorMessage
+	if strings.TrimSpace(operatorMessage) == "" {
+		operatorMessage = input.Message
+	}
+	return steeringReplayIdentity{
+		requestID:                input.RequestID,
+		operatorMessage:          operatorMessage,
+		clientSelectionIdentity:  input.ClientSelectionIdentity,
+		modelProviderID:          input.ModelProviderID,
+		model:                    input.Model,
+		requestedReasoningEffort: input.RequestedReasoningEffort,
+	}
+}
+
 // steeringConflictMessage compares a repeated request against the durable
-// record and returns a conflict message, or "" when the repeat matches.
-func steeringConflictMessage(record *owner.SteeringRecord, message string, selection runtime.ProviderSessionRequest, mode owner.SteeringMode) string {
-	if strings.TrimSpace(record.Message) != strings.TrimSpace(message) {
+// client-controlled identity. New records compare the canonical raw selection,
+// including empty fields. Legacy records have no raw identity and retain the
+// former non-empty fallback comparison for upgrade compatibility.
+func steeringConflictMessage(record *owner.SteeringRecord, identity steeringReplayIdentity) string {
+	recordedMessage := record.OperatorMessage
+	if strings.TrimSpace(recordedMessage) == "" {
+		recordedMessage = record.Message
+	}
+	if strings.TrimSpace(recordedMessage) != strings.TrimSpace(identity.operatorMessage) {
 		return "steer request id already belongs to a different message"
 	}
-	if record.Mode != mode {
-		return "steer request id already belongs to a different steer mode"
+	if record.ClientSelectionIdentity != "" {
+		if record.ClientSelectionIdentity != identity.clientSelectionIdentity {
+			return "steer request id already belongs to a different turn selection"
+		}
+		return ""
 	}
-	if strings.TrimSpace(record.ModelProviderID) != strings.TrimSpace(selection.ModelProviderID) ||
-		strings.TrimSpace(record.Model) != strings.TrimSpace(selection.Model) ||
-		strings.TrimSpace(record.RequestedReasoningEffort) != strings.TrimSpace(selection.RequestedReasoningEffort) {
+	if value := strings.TrimSpace(identity.modelProviderID); value != "" && value != strings.TrimSpace(record.ModelProviderID) {
+		return "steer request id already belongs to a different turn selection"
+	}
+	if value := strings.TrimSpace(identity.model); value != "" && value != strings.TrimSpace(record.Model) {
+		return "steer request id already belongs to a different turn selection"
+	}
+	if value := strings.TrimSpace(identity.requestedReasoningEffort); value != "" && value != strings.TrimSpace(record.RequestedReasoningEffort) {
 		return "steer request id already belongs to a different turn selection"
 	}
 	return ""
+}
+
+type steeringRequestConflictError struct{ message string }
+
+func (err *steeringRequestConflictError) Error() string { return err.message }
+
+func (server *Server) findAcceptedSteeringReplayByIdentity(adapter *steeringAdapter, identity steeringReplayIdentity) (*owner.SteeringRecord, bool, error) {
+	record, err := server.steering.ByRequestID(adapter.kind, adapter.id, identity.requestID)
+	if errors.Is(err, steering.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if conflict := steeringConflictMessage(record, identity); conflict != "" {
+		return nil, false, &steeringRequestConflictError{message: conflict}
+	}
+	return record, true, nil
+}
+
+func (server *Server) findAcceptedSteeringReplay(adapter *steeringAdapter, input steering.AcceptRequest) (*owner.SteeringRecord, bool, error) {
+	return server.findAcceptedSteeringReplayByIdentity(adapter, steeringReplayIdentityFromAccept(input))
+}
+
+// acceptSteeringOrReplay is the shared Task/Session acceptance kernel. It owns
+// both the normal idempotency check and the concurrent unique-key race replay;
+// owner handlers only format their public response and projection callback.
+func (server *Server) acceptSteeringOrReplay(ctx context.Context, adapter *steeringAdapter, input steering.AcceptRequest, project func(*sql.Tx) (string, error)) (*owner.SteeringRecord, bool, error) {
+	if record, replayed, err := server.findAcceptedSteeringReplay(adapter, input); err != nil || replayed {
+		return record, replayed, err
+	}
+	record, err := server.acceptSteeringDurably(ctx, adapter, input, project)
+	if !errors.Is(err, steering.ErrDuplicateRequest) {
+		return record, false, err
+	}
+	replayed, found, replayErr := server.findAcceptedSteeringReplay(adapter, input)
+	if replayErr != nil {
+		return nil, false, replayErr
+	}
+	if !found {
+		return nil, false, steering.ErrDuplicateRequest
+	}
+	return replayed, true, nil
 }
 
 // steeringOutcomeFromRecord projects the durable state as the API outcome
@@ -501,4 +655,35 @@ func projectSessionSteeringSettlement(server *Server, record owner.SteeringRecor
 	}
 	payload["phase"] = phase
 	_, _ = server.sessions.AppendEvent(record.OwnerID, session.EventKindSteering, payload)
+}
+
+func appliedSteeringPayload(record owner.SteeringRecord, result map[string]any, phase string) task.EventPayload {
+	payload := make(task.EventPayload, len(result)+8)
+	for key, value := range result {
+		payload[key] = value
+	}
+	payload["request_id"] = record.RequestID
+	payload["session_id"] = record.SessionID
+	payload["mode"] = string(record.Mode)
+	payload["outcome"] = "applied"
+	payload["phase"] = phase
+	payload["model_provider_id"] = record.ModelProviderID
+	payload["model"] = record.Model
+	payload["requested_reasoning_effort"] = record.RequestedReasoningEffort
+	return payload
+}
+
+func projectTaskSteeringApplied(server *Server, record owner.SteeringRecord, continuationID string, result map[string]any) {
+	payload := appliedSteeringPayload(record, result, taskSteerEventVocabulary.appliedPhase)
+	payload["conversation_event_id"] = record.ConversationEventID
+	if continuationID != "" {
+		_, _ = server.tasks.AppendContinuationEvent(record.OwnerID, continuationID, taskSteerEventVocabulary.appliedKind, payload)
+		return
+	}
+	_, _ = server.tasks.AppendEvent(record.OwnerID, taskSteerEventVocabulary.appliedKind, payload)
+}
+
+func projectSessionSteeringApplied(server *Server, record owner.SteeringRecord, continuationID string, result map[string]any) {
+	payload := appliedSteeringPayload(record, result, sessionSteerEventVocabulary.appliedPhase)
+	server.persistSessionProviderEventForContinuation(record.OwnerID, continuationID, sessionSteerEventVocabulary.appliedKind, payload)
 }

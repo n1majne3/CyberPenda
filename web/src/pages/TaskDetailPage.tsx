@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip } from "lucide-react";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip, Brain } from "lucide-react";
 import { apiGet, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -48,6 +48,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const [actionError, setActionError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [steering, setSteering] = useState("");
+  const [forceReplaceNext, setForceReplaceNext] = useState(false);
   const [continuationModelProvider, setContinuationModelProvider] = useState("");
   const [continuationModelOverride, setContinuationModelOverride] = useState("");
   const [continuationReasoningEffort, setContinuationReasoningEffort] = useState("high");
@@ -597,9 +598,11 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         selectedProviderID: continuationModelProvider.trim(),
         runtimeProvider: currentRuntimeProvider ?? "",
         nativeSteerMode: owner.runtimeControls?.native_steer_mode,
+        forceReplace: forceReplaceNext,
       }, requestID);
       await action.run(message, modelPayload, ownerAdapter, owner.capabilities.attachments ? attachments : []);
       setSteering("");
+      setForceReplaceNext(false);
       if (owner.capabilities.attachments) {
         setAttachments([]);
         if (attachmentInput.current) attachmentInput.current.value = "";
@@ -757,9 +760,23 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     !piNativeCrossProvider;
   const providerSwitchAvailable = owner.kind === "session" || queueSteerAvailable;
   const queueActionAvailable = queueSteerAvailable;
-  const sendActionLabel = providerSwitchRequested
-    ? providerSwitchAvailable ? "Switch provider and resume" : "Provider switch unavailable"
-    : conversationSendLabel(sendMode, nativeSteerMode);
+  const currentTurnModel = controls?.turn_selection?.model?.trim() ?? "";
+  const currentTurnEffort = controls?.turn_selection?.reasoning_effort?.trim() ?? "";
+  const selectedTurnModel = continuationModelOverride.trim();
+  const selectedTurnEffort = continuationReasoningEffort.trim();
+  const turnSelectionChanged = !providerSwitchRequested && currentRuntimeProvider === "codex" && (
+    (selectedTurnModel !== "" && selectedTurnModel !== currentTurnModel) ||
+    (selectedTurnEffort !== "" && selectedTurnEffort !== currentTurnEffort)
+  );
+  const sendActionLabel = forceReplaceNext
+    ? "Interrupt and replace"
+    : providerSwitchRequested
+      ? providerSwitchAvailable ? "Switch provider and resume" : "Provider switch unavailable"
+      : conversationSendLabel(sendMode, nativeSteerMode, turnSelectionChanged);
+  const steerActionRequired = controls?.native_steer_state === "action_required";
+  const replacementRecoveryAvailable = steerActionRequired && interruptSteerAvailable && [
+    "active_turn_not_steerable", "target_turn_changed", "target_turn_completed",
+  ].includes(controls?.native_steer_error_code ?? "");
   const focusMode = searchParams.get("focus") === "1";
 
   return (
@@ -1066,6 +1083,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           sendActionLabel={sendActionLabel}
           actionError={actionError}
           steerState={controls?.native_steer_state}
+          steerError={controls?.native_steer_error}
+          replacementRecoveryAvailable={replacementRecoveryAvailable}
+          replacementSelected={forceReplaceNext}
+          onUseReplacement={() => setForceReplaceNext(true)}
           continuationModelProviders={continuationModelProviders}
           continuationModelProvider={continuationModelProvider}
           continuationModelOverride={continuationModelOverride}
@@ -1296,6 +1317,10 @@ function RuntimeOwnerComposer({
   sendActionLabel,
   actionError,
   steerState,
+  steerError,
+  replacementRecoveryAvailable,
+  replacementSelected,
+  onUseReplacement,
   continuationModelProviders,
   continuationModelProvider,
   continuationModelOverride,
@@ -1327,6 +1352,10 @@ function RuntimeOwnerComposer({
   sendActionLabel: string;
   actionError: string | null;
   steerState?: string;
+  steerError?: string;
+  replacementRecoveryAvailable: boolean;
+  replacementSelected: boolean;
+  onUseReplacement: () => void;
   continuationModelProviders: ModelProvider[];
   continuationModelProvider: string;
   continuationModelOverride: string;
@@ -1343,6 +1372,16 @@ function RuntimeOwnerComposer({
     <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none">
       <div className="mx-auto max-w-3xl space-y-2">
         {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
+        {steerState === "action_required" && (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
+            <span>{steerError || "Steering needs operator action."}</span>
+            {replacementRecoveryAvailable && (
+              <Button type="button" size="sm" variant="outline" onClick={onUseReplacement} disabled={replacementSelected}>
+                {replacementSelected ? "Replacement selected" : "Use interrupt and replace"}
+              </Button>
+            )}
+          </div>
+        )}
         <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm focus-within:border-ring">
           <Textarea
             aria-label={`${ownerLabel} message`}
@@ -1688,15 +1727,17 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
 function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
   const isError = entry.kind === "tool_result" && (entry.details as { is_error?: boolean } | undefined)?.is_error === true;
   const Icon =
-    entry.kind === "runtime_output"
-      ? Terminal
+    entry.kind === "thinking"
+      ? Brain
+      : entry.kind === "runtime_output"
+        ? Terminal
       : entry.kind === "tool_result"
         ? isError
           ? CircleX
           : CheckCircle2
         : Wrench;
   return (
-    <details data-testid="transcript-tool-row" className="group border-b border-border/50 last:border-b-0">
+    <details data-testid={entry.kind === "thinking" ? "transcript-thinking-row" : "transcript-tool-row"} className="group border-b border-border/50 last:border-b-0">
       <summary className="-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
         <Icon className={`h-4 w-4 shrink-0 ${isError ? "text-destructive" : "text-muted-foreground"}`} />
@@ -1741,7 +1782,7 @@ function ToolCallDetails({ entry }: { entry: TaskTranscriptEntry }) {
 }
 
 function isCollapsedTranscriptEntry(entry: TaskTranscriptEntry) {
-  return entry.kind === "tool_call" || entry.kind === "tool_result" || entry.kind === "runtime_output";
+  return entry.kind === "thinking" || entry.kind === "tool_call" || entry.kind === "tool_result" || entry.kind === "runtime_output";
 }
 
 function collapsedBody(entry: TaskTranscriptEntry) {

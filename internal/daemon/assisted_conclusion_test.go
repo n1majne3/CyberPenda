@@ -74,7 +74,7 @@ func TestAssistedWorkTurnWithTerminalToolResultBecomesPending(t *testing.T) {
 	if found.BlackboardConclusion.Mode != task.BlackboardConclusionModeAssisted || found.BlackboardConclusion.SourceTurnID != "work-turn-1" {
 		t.Fatalf("Blackboard conclusion view = %#v", found.BlackboardConclusion)
 	}
-	if found.Status != task.StatusRunning || found.RuntimeActivity.Liveness != "live" || found.RuntimeActivity.TurnActivity != "idle" {
+	if found.Status != task.StatusRunning || found.RuntimeActivity.Liveness != "live" || found.RuntimeActivity.TurnActivity != "busy" {
 		t.Fatalf("Task lifecycle/activity changed by pending conclusion: status=%q activity=%#v", found.Status, found.RuntimeActivity)
 	}
 
@@ -243,7 +243,7 @@ func TestAssistedWorkTurnDispatchesControlTurnAndAppliesClosedResult(t *testing.
 		t.Fatalf("control directive invites forbidden file access: %q", controlRequest.Message)
 	}
 	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
-	if found.Status != task.StatusRunning || found.RuntimeActivity.Liveness != "live" || found.RuntimeActivity.TurnActivity != "idle" {
+	if found.Status != task.StatusRunning || found.RuntimeActivity.Liveness != "live" || found.RuntimeActivity.TurnActivity != "busy" {
 		t.Fatalf("Conclude Turn changed Task lifecycle/activity: status=%q activity=%#v", found.Status, found.RuntimeActivity)
 	}
 	receipt, err := server.tasks.LatestBlackboardConclusion(created.ID)

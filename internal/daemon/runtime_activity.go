@@ -365,6 +365,9 @@ func durableTaskActive(status task.Status) bool {
 }
 
 func sessionBusy(session runtime.ProviderSession) bool {
+	if reporter, ok := session.(runtime.ProviderSessionTurnBusyReporter); ok {
+		return reporter.TurnBusy()
+	}
 	if reporter, ok := session.(interface{ ControlBusy() bool }); ok {
 		return reporter.ControlBusy()
 	}

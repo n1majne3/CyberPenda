@@ -90,14 +90,129 @@ func TestBuildParsesCodexAppServerItemsFromProviderSession(t *testing.T) {
 	}
 
 	got := transcript.Build(subject, events)
-	requireEntry(t, got, "ev-2-tool-call", "tool_call", "assistant", "")
-	requireEntry(t, got, "ev-2-tool-result", "tool_result", "tool", "curl: (52) Empty reply from server\n")
+	toolCall := firstEntryOfKind(t, got, transcript.KindToolCall)
+	if toolCall.Role != transcript.RoleAssistant {
+		t.Fatalf("tool call = %#v", toolCall)
+	}
+	toolResult := firstEntryOfKind(t, got, transcript.KindToolResult)
+	if toolResult.Role != transcript.RoleTool || toolResult.Text != "curl: (52) Empty reply from server\n" {
+		t.Fatalf("tool result = %#v", toolResult)
+	}
 	requireEntry(t, got, "ev-3-message", "message", "assistant", "VPN检测未通过")
 	for _, entry := range got {
 		if entry.Kind == "runtime_output" {
 			t.Fatalf("codex item collapsed to runtime fallback: %#v", entry)
 		}
 	}
+}
+
+func TestBuildReconcilesCodexStartedCompletedAndReasoningItems(t *testing.T) {
+	createdAt := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	subject := transcript.Subject{ID: "session-1", Title: "Inspect", CreatedAt: createdAt}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "provider-session:thread-1"}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/started", "stream": "codex_app_server",
+			"text": `{"item":{"type":"commandExecution","id":"item-cmd","command":"curl example.com","status":"inProgress"}}`,
+		}, CreatedAt: createdAt.Add(time.Second)},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/started", "stream": "codex_app_server",
+			"text": `{"item":{"type":"reasoning","id":"item-reasoning","summary":[]}}`,
+		}, CreatedAt: createdAt.Add(2 * time.Second)},
+		{ID: "ev-4", Seq: 4, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/completed", "stream": "codex_app_server",
+			"text": `{"item":{"type":"reasoning","id":"item-reasoning","summary":["Checked the target."]}}`,
+		}, CreatedAt: createdAt.Add(3 * time.Second)},
+		{ID: "ev-5", Seq: 5, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/completed", "stream": "codex_app_server",
+			"text": `{"item":{"type":"commandExecution","id":"item-cmd","command":"curl example.com","aggregatedOutput":"200 OK","status":"completed"}}`,
+		}, CreatedAt: createdAt.Add(4 * time.Second)},
+	}
+
+	got := transcript.Build(subject, events)
+	var calls, results, thinking []transcript.Entry
+	for _, entry := range got {
+		switch entry.Kind {
+		case transcript.KindToolCall:
+			calls = append(calls, entry)
+		case transcript.KindToolResult:
+			results = append(results, entry)
+		case transcript.KindThinking:
+			thinking = append(thinking, entry)
+		}
+	}
+	if len(calls) != 1 || len(results) != 1 {
+		t.Fatalf("tool lifecycle calls=%#v results=%#v", calls, results)
+	}
+	if len(thinking) != 1 || thinking[0].Text != "Checked the target." || thinking[0].Role == transcript.RoleUser {
+		t.Fatalf("thinking entries = %#v", thinking)
+	}
+}
+
+func TestBuildPreservesStartedCommandPositionWhenCompletionArrivesAfterAnotherEntry(t *testing.T) {
+	createdAt := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "provider-session:thread-1"}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/started", "stream": "codex_app_server",
+			"text": `{"item":{"type":"commandExecution","id":"item-cmd","command":"curl example.com","status":"inProgress"}}`,
+		}, CreatedAt: createdAt.Add(time.Second)},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/completed", "stream": "codex_app_server",
+			"text": `{"item":{"type":"agentMessage","id":"item-message","text":"Still working."}}`,
+		}, CreatedAt: createdAt.Add(2 * time.Second)},
+		{ID: "ev-4", Seq: 4, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/completed", "stream": "codex_app_server",
+			"text": `{"item":{"type":"commandExecution","id":"item-cmd","command":"curl example.com","aggregatedOutput":"200 OK","status":"completed"}}`,
+		}, CreatedAt: createdAt.Add(3 * time.Second)},
+	}
+
+	got := transcript.Build(transcript.Subject{ID: "session-1", CreatedAt: createdAt}, events)
+	call := firstEntryOfKind(t, got, transcript.KindToolCall)
+	if call.Seq != 2 || !call.CreatedAt.Equal(createdAt.Add(time.Second)) {
+		t.Fatalf("completed command moved started call to seq/time %d/%s, want 2/%s", call.Seq, call.CreatedAt, createdAt.Add(time.Second))
+	}
+	for index := 1; index < len(got); index++ {
+		if got[index].Seq < got[index-1].Seq {
+			t.Fatalf("transcript seqs are not chronological: %#v", got)
+		}
+	}
+}
+
+func TestBuildWindowUsesStableCodexToolCallIdentityAcrossPages(t *testing.T) {
+	createdAt := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	subject := transcript.Subject{ID: "session-1", CreatedAt: createdAt}
+	started := transcript.BuildWindow(subject, []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "provider-session:thread-1"}},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/started", "stream": "codex_app_server",
+			"text": `{"item":{"type":"commandExecution","id":"item-cmd","command":"curl example.com","status":"inProgress"}}`,
+		}},
+	}, transcript.WindowContext{})
+	completed := transcript.BuildWindow(subject, []transcript.Event{{
+		ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/completed", "stream": "codex_app_server",
+			"text": `{"item":{"type":"commandExecution","id":"item-cmd","command":"curl example.com","aggregatedOutput":"200 OK","status":"completed"}}`,
+		},
+	}}, transcript.WindowContext{Continuation: 1, Adapter: "provider-session:thread-1"})
+
+	startedCall := firstEntryOfKind(t, started, transcript.KindToolCall)
+	completedCall := firstEntryOfKind(t, completed, transcript.KindToolCall)
+	if startedCall.ID != completedCall.ID {
+		t.Fatalf("tool call IDs differ across windows: %q != %q", startedCall.ID, completedCall.ID)
+	}
+	_ = firstEntryOfKind(t, completed, transcript.KindToolResult)
+}
+
+func firstEntryOfKind(t *testing.T, entries []transcript.Entry, kind string) transcript.Entry {
+	t.Helper()
+	for _, entry := range entries {
+		if entry.Kind == kind {
+			return entry
+		}
+	}
+	t.Fatalf("entry kind %q missing from %#v", kind, entries)
+	return transcript.Entry{}
 }
 
 func TestBuildProjectsNativeSteerControlsWithoutDuplicatingConversationMessage(t *testing.T) {

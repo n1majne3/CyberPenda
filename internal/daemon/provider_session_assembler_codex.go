@@ -38,7 +38,8 @@ func (a codexAssembler) SandboxCommand(assembly providerSessionAssembly) ([]stri
 }
 
 func (a codexAssembler) Setup(ctx context.Context, bridge productionBridgeTransport, assembly providerSessionAssembly) (providerSessionSetup, error) {
-	if _, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: "setup:initialize", Method: "initialize", Params: json.RawMessage(`{"clientInfo":{"name":"cyberpenda","version":"dev"}}`)}); err != nil {
+	_, err := sendProviderSetupRPC(ctx, bridge, runtime.SandboxBridgeRequest{ID: "setup:initialize", Method: "initialize", Params: json.RawMessage(`{"clientInfo":{"name":"cyberpenda","version":"dev"}}`)})
+	if err != nil {
 		return providerSessionSetup{}, err
 	}
 	cwd := assembly.facts().Workdir
@@ -46,7 +47,7 @@ func (a codexAssembler) Setup(ctx context.Context, bridge productionBridgeTransp
 	if durableThreadID := strings.TrimSpace(assembly.request.Continuation.NativeSessionID); durableThreadID != "" {
 		setupMethod, setupID, setupParams = "thread/resume", "setup:thread-resume", codexThreadSetupParams(cwd, durableThreadID)
 	}
-	setupResponse, err := bridge.Send(ctx, runtime.SandboxBridgeRequest{ID: setupID, Method: setupMethod, Params: setupParams})
+	setupResponse, err := sendProviderSetupRPC(ctx, bridge, runtime.SandboxBridgeRequest{ID: setupID, Method: setupMethod, Params: setupParams})
 	if err != nil {
 		return providerSessionSetup{}, err
 	}
@@ -77,6 +78,10 @@ func (a codexAssembler) Setup(ctx context.Context, bridge productionBridgeTransp
 	// assisted conclusion, which the manifest must not claim for production
 	// providers before it is proven.
 	capabilities.AssistedConclusion = true
+	// InitializeResponse exposes server identity, not a server capability set.
+	// Keep the manifest capability until the wire call negotiates support. A
+	// JSON-RPC method-not-found response downgrades this adapter and safely
+	// falls back to interrupt_then_replace.
 	return providerSessionSetup{
 		Session: runtime.NewCodexProviderSession(runtime.CodexProviderSessionConfig{
 			Transport: bridge, SessionID: threadID, Capabilities: capabilities,

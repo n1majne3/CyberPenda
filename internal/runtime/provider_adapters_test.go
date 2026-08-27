@@ -140,6 +140,310 @@ func TestCodexProviderSessionMapsTurnStartAndInterrupt(t *testing.T) {
 	}
 }
 
+func TestCodexProviderSessionSteersTheExpectedActiveTurn(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/steer": {Result: json.RawMessage(`{"turnId":"turn-live"}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: transport, SessionID: "thread-1", ThreadID: "thread-1", ActiveTurnID: "turn-live",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptTurn: true,
+			InterruptThenReplace: true, InTurnSteer: true,
+		},
+	})
+
+	result, err := session.SteerInTurn(context.Background(), ProviderSessionRequest{
+		RequestID:                "steer-1",
+		Message:                  "focus on the auth path",
+		ProviderTurnID:           "turn-live",
+		Model:                    "must-not-be-sent",
+		RequestedReasoningEffort: "must-not-be-sent",
+	}, nil)
+	if err != nil {
+		t.Fatalf("steer active turn: %v", err)
+	}
+	if result.Mode != ProviderSessionModeInTurnSteer || result.ProviderTurnID != "turn-live" || result.Outcome != "acknowledged" {
+		t.Fatalf("result = %#v", result)
+	}
+	requests := transport.snapshot()
+	if len(requests) != 1 || requests[0].Method != "turn/steer" {
+		t.Fatalf("wire requests = %#v", requests)
+	}
+	var params map[string]any
+	if err := json.Unmarshal(requests[0].Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params["threadId"] != "thread-1" || params["expectedTurnId"] != "turn-live" || params["clientUserMessageId"] != "steer-1" {
+		t.Fatalf("steer params = %#v", params)
+	}
+	input, ok := params["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("steer input = %#v", params["input"])
+	}
+	item, ok := input[0].(map[string]any)
+	if !ok || item["type"] != "text" || item["text"] != "focus on the auth path" {
+		t.Fatalf("steer input item = %#v", input[0])
+	}
+	for _, forbidden := range []string{"turnId", "model", "effort", "approvalPolicy", "sandboxPolicy", "cwd"} {
+		if _, exists := params[forbidden]; exists {
+			t.Fatalf("turn/steer sent forbidden %q in %#v", forbidden, params)
+		}
+	}
+	if !session.TurnBusy() {
+		t.Fatal("same-turn steer cleared active Runtime Turn")
+	}
+}
+
+func TestCodexProviderSessionRejectsMissingExpectedTurnFence(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/steer": {Result: json.RawMessage(`{"turnId":"turn-live"}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: transport, SessionID: "thread-1", ThreadID: "thread-1", ActiveTurnID: "turn-live",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
+	})
+	_, err := session.SteerInTurn(context.Background(), ProviderSessionRequest{RequestID: "steer-no-fence", Message: "focus"}, nil)
+	if !errors.Is(err, ErrInvalidProviderSessionRequest) {
+		t.Fatalf("steer error = %v, want invalid request", err)
+	}
+	if requests := transport.snapshot(); len(requests) != 0 {
+		t.Fatalf("missing fence reached provider transport: %#v", requests)
+	}
+}
+
+func TestCodexProviderSessionMapsStructuredNonSteerableError(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/steer": {Error: json.RawMessage(`{"code":-32000,"message":"provider detail must stay private","data":{"reason":"activeTurnNotSteerable","turnKind":"review"}}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: transport, SessionID: "thread-1", ThreadID: "thread-1", ActiveTurnID: "turn-review",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true, InTurnSteer: true},
+	})
+	_, err := session.SteerInTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "steer-review", Message: "focus", ProviderTurnID: "turn-review",
+	}, nil)
+	if !errors.Is(err, ErrProviderTurnNotSteerable) {
+		t.Fatalf("steer error = %v, want active Turn not steerable", err)
+	}
+	if requests := transport.snapshot(); len(requests) != 1 || requests[0].Method != "turn/steer" {
+		t.Fatalf("requests = %#v, want only turn/steer", requests)
+	}
+	if strings.Contains(err.Error(), "provider detail") {
+		t.Fatalf("typed error leaked provider message: %v", err)
+	}
+}
+
+func TestCodexProviderSessionFallsBackAfterSteerMethodNotFound(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/steer":     {Error: json.RawMessage(`{"code":-32601,"message":"Method not found"}`)},
+		"turn/interrupt": {Result: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-live"}`)},
+		"turn/start":     {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-replacement"}}`)},
+	}, notifications: map[string]SandboxBridgeEvent{
+		"turn/interrupt": {Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-live","status":"interrupted"}}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: transport, SessionID: "thread-1", ThreadID: "thread-1", ActiveTurnID: "turn-live",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true, InTurnSteer: true},
+	})
+	bindFakeProviderEvents(transport, session)
+	var emits []task.EventPayload
+	result, err := session.SteerInTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "steer-old-server", Message: "focus", ProviderTurnID: "turn-live", TurnKind: RuntimeTurnKindControl,
+	}, func(_ task.EventKind, payload task.EventPayload) { emits = append(emits, payload) })
+	if err != nil {
+		t.Fatalf("steer fallback: %v", err)
+	}
+	if result.Mode != ProviderSessionModeInterruptThenReplace || result.RequestID != "steer-old-server" || result.ProviderTurnID != "turn-replacement" {
+		t.Fatalf("fallback result = %#v", result)
+	}
+	if kind, ok := session.ResolveProviderSessionTurnKind("steer-old-server", "turn-replacement"); !ok || kind != RuntimeTurnKindWork {
+		t.Fatalf("fallback replacement Turn kind = %q, ok=%v, want work", kind, ok)
+	}
+	if session.Capabilities().InTurnSteer {
+		t.Fatal("turn/steer capability remained enabled after method-not-found")
+	}
+	requests := transport.snapshot()
+	if len(requests) != 3 || requests[0].Method != "turn/steer" || requests[1].Method != "turn/interrupt" || requests[2].Method != "turn/start" {
+		t.Fatalf("fallback requests = %#v", requests)
+	}
+	for _, event := range emits {
+		if event["outcome"] == "failed" {
+			t.Fatalf("safe fallback projected a failed event: %#v", emits)
+		}
+		if event["request_id"] != "steer-old-server" {
+			t.Fatalf("fallback event lost public request identity: %#v", event)
+		}
+	}
+	replayed, replayErr := session.SteerInTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "steer-old-server", Message: "focus", ProviderTurnID: "turn-live", TurnKind: RuntimeTurnKindControl,
+	}, nil)
+	if replayErr != nil || replayed.Mode != ProviderSessionModeInterruptThenReplace || replayed.ProviderTurnID != "turn-replacement" {
+		t.Fatalf("fallback replay = %#v, err=%v", replayed, replayErr)
+	}
+	if got := len(transport.snapshot()); got != 3 {
+		t.Fatalf("fallback replay sent %d wire requests, want 3 total", got)
+	}
+}
+
+func TestCodexProviderSessionSteerResponseDoesNotResurrectCompletedTurn(t *testing.T) {
+	var session *CodexProviderSession
+	transport := &fakeProviderTransport{send: func(_ context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
+		if request.Method != "turn/steer" {
+			return SandboxBridgeResponse{}, errors.New("unexpected method " + request.Method)
+		}
+		session.HandleEvent(SandboxBridgeEvent{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-live","status":"completed"}}`)}, nil)
+		return SandboxBridgeResponse{Result: json.RawMessage(`{"turnId":"turn-live"}`)}, nil
+	}}
+	session = NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: transport, SessionID: "thread-1", ThreadID: "thread-1", ActiveTurnID: "turn-live",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptTurn: true,
+			InterruptThenReplace: true, InTurnSteer: true,
+		},
+	})
+
+	if _, err := session.SteerInTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "steer-race", ProviderTurnID: "turn-live", Message: "one more check",
+	}, nil); err != nil {
+		t.Fatalf("steer active turn: %v", err)
+	}
+	if session.TurnBusy() {
+		t.Fatal("turn/steer response resurrected a provider Turn completed before the response")
+	}
+}
+
+func TestCodexProviderSessionRejectsSteerWithoutTheExpectedActiveTurn(t *testing.T) {
+	tests := []struct {
+		name       string
+		activeTurn string
+		expected   string
+		wantErr    error
+	}{
+		{name: "no active turn", expected: "turn-finished", wantErr: ErrProviderTurnUnavailable},
+		{name: "target changed", activeTurn: "turn-new", expected: "turn-old", wantErr: ErrProviderTurnChanged},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			transport := &fakeProviderTransport{}
+			session := NewCodexProviderSession(CodexProviderSessionConfig{
+				Transport: transport, SessionID: "thread-1", ThreadID: "thread-1", ActiveTurnID: test.activeTurn,
+				Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
+			})
+			_, err := session.SteerInTurn(context.Background(), ProviderSessionRequest{
+				RequestID: "steer-target", ProviderTurnID: test.expected, Message: "continue",
+			}, nil)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("error = %v, want %v", err, test.wantErr)
+			}
+			if calls := transport.snapshot(); len(calls) != 0 {
+				t.Fatalf("invalid target sent provider request: %#v", calls)
+			}
+		})
+	}
+}
+
+func TestCodexProviderSessionSteerPreservesTheActiveWorkTurnLineage(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/start": {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-live"}}`)},
+		"turn/steer": {Result: json.RawMessage(`{"turnId":"turn-live"}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: transport, SessionID: "thread-1", ThreadID: "thread-1",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptTurn: true,
+			InterruptThenReplace: true, InTurnSteer: true,
+		},
+	})
+	if _, err := session.SendTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "work-1", Message: "inspect", TurnKind: RuntimeTurnKindWork,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.SteerInTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "steer-control", ProviderTurnID: "turn-live", Message: "focus", TurnKind: RuntimeTurnKindControl,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if kind, ok := session.ResolveProviderSessionTurnKind("", "turn-live"); !ok || kind != RuntimeTurnKindWork {
+		t.Fatalf("active provider Turn kind = %q, ok=%v", kind, ok)
+	}
+	lineage, ok := session.ResolveProviderSessionTurnLineage("", "turn-live")
+	if !ok || lineage.RequestID != "work-1" || lineage.ProviderTurnID != "turn-live" {
+		t.Fatalf("active provider Turn lineage = %#v, ok=%v", lineage, ok)
+	}
+}
+
+func TestCodexProviderSessionRejectsSteerResponseForAnotherTurn(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/steer": {Result: json.RawMessage(`{"turnId":"turn-other"}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: transport, SessionID: "thread-1", ThreadID: "thread-1", ActiveTurnID: "turn-live",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
+	})
+	_, err := session.SteerInTurn(context.Background(), ProviderSessionRequest{
+		RequestID: "steer-response-mismatch", ProviderTurnID: "turn-live", Message: "continue",
+	}, nil)
+	if !errors.Is(err, ErrProviderTurnChanged) {
+		t.Fatalf("error = %v, want provider Turn changed", err)
+	}
+	if state := session.TurnState(); state.ActiveTurnID != "turn-live" {
+		t.Fatalf("mismatched response changed active Turn: %#v", state)
+	}
+}
+
+func TestProviderSessionTurnBusyTracksActiveRuntimeTurn(t *testing.T) {
+	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
+		"turn/start": {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1"}}`)},
+	}}
+	session := NewCodexProviderSession(CodexProviderSessionConfig{Transport: transport, SessionID: "thread-1", ThreadID: "thread-1"})
+
+	result, err := session.SendTurn(context.Background(), ProviderSessionRequest{RequestID: "send-busy", Message: "inspect"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.ControlBusy() {
+		t.Fatal("ControlBusy remained true after turn/start returned")
+	}
+	if !session.TurnBusy() {
+		t.Fatal("TurnBusy = false while provider Runtime Turn is active")
+	}
+	if state := session.TurnState(); state.SessionID != "thread-1" || state.ActiveTurnID != "turn-1" || !state.TurnBusy() {
+		t.Fatalf("active Turn state = %#v", state)
+	}
+
+	session.HandleEvent(SandboxBridgeEvent{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`)}, nil)
+	if session.TurnBusy() {
+		t.Fatalf("TurnBusy = true after matching terminal event for %q", result.ProviderTurnID)
+	}
+	if state := session.TurnState(); state.ActiveTurnID != "" || state.TurnBusy() {
+		t.Fatalf("completed Turn state = %#v", state)
+	}
+}
+
+func TestProviderSessionTurnBusyConsumesTerminalNotificationBeforeTurnStartResponse(t *testing.T) {
+	var session *CodexProviderSession
+	transport := &fakeProviderTransport{send: func(_ context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
+		if request.Method != "turn/start" {
+			return SandboxBridgeResponse{}, errors.New("unexpected method " + request.Method)
+		}
+		session.HandleEvent(SandboxBridgeEvent{Method: "turn/completed", Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-fast","status":"completed"}}`)}, nil)
+		return SandboxBridgeResponse{Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-fast"}}`)}, nil
+	}}
+	session = NewCodexProviderSession(CodexProviderSessionConfig{Transport: transport, SessionID: "thread-1", ThreadID: "thread-1"})
+
+	result, err := session.SendTurn(context.Background(), ProviderSessionRequest{RequestID: "send-fast", Message: "finish quickly"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ProviderTurnID != "turn-fast" {
+		t.Fatalf("provider turn = %q, want turn-fast", result.ProviderTurnID)
+	}
+	if session.TurnBusy() {
+		t.Fatal("TurnBusy = true after terminal notification raced before turn/start response")
+	}
+}
+
 func TestCodexProviderSessionMapsModelAndRequestedReasoningEffortOnTurnStart(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
 		"turn/start": {Result: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-effort"}}`)},
@@ -379,7 +683,7 @@ func TestClaudeProviderSessionMapsModelProviderModelAndEffortOnInput(t *testing.
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
 		"claude/input": {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-effort"}`)},
 	}}
-	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{Transport: transport, SessionID: "claude-1"})
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{Transport: transport, SessionID: "claude-1", ActiveTurnID: "turn-live"})
 	bindFakeProviderEvents(transport, session)
 
 	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
@@ -901,13 +1205,12 @@ func TestProviderSessionAdapterErrorsAreTypedAndCapabilitiesAreHonest(t *testing
 		Transport: &fakeProviderTransport{}, SessionID: "thread-1",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
 	})
-	if noSteer.Capabilities().InTurnSteer {
-		t.Fatal("codex should not claim direct in-turn steer")
+	if !noSteer.Capabilities().InTurnSteer {
+		t.Fatal("codex should advertise direct in-turn steer")
 	}
 	_, err = noSteer.SteerInTurn(context.Background(), ProviderSessionRequest{RequestID: "steer-1", Message: "hi"}, nil)
-	var unsupported *UnsupportedProviderSessionCapabilityError
-	if !errors.As(err, &unsupported) || unsupported.Capability != ProviderSessionCapabilityInTurnSteer {
-		t.Fatalf("steer error = %v", err)
+	if !errors.Is(err, ErrProviderTurnUnavailable) {
+		t.Fatalf("steer error = %v, want provider Turn unavailable", err)
 	}
 }
 
@@ -999,13 +1302,16 @@ func TestProviderSessionAdapterRejectTimeoutAndDuplicateAreTruthful(t *testing.T
 
 func TestProviderSessionAdapterCloseIsIdempotentAndTimeoutDoesNotLeakMessage(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{}}
-	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{Transport: transport, SessionID: "claude-1"})
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{Transport: transport, SessionID: "claude-1", ActiveTurnID: "turn-live"})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
 	// A transport that honors the canceled context is covered by the shared
 	// operation wrapper; this assertion ensures Close remains a public control.
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatalf("close: %v", err)
+	}
+	if session.TurnBusy() || session.TurnState().ActiveTurnID != "" {
+		t.Fatalf("closed session retained active Turn: %#v", session.TurnState())
 	}
 	if err := session.Close(context.Background()); err != nil {
 		t.Fatalf("repeat close: %v", err)
@@ -1190,19 +1496,43 @@ func TestCodexProviderSessionProjectsVisibleRuntimeOutput(t *testing.T) {
 		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"agentMessage","id":"item-msg","text":"VPN检测未通过"}}`),
 	}, emit)
 	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/started",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"commandExecution","id":"item-cmd","command":"curl http://10.0.100.58","status":"inProgress"}}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
 		Method: "item/completed",
 		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"commandExecution","id":"item-cmd","command":"curl http://10.0.100.58","aggregatedOutput":"curl: (52) Empty reply from server\n","status":"failed","exitCode":52}}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/started",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"mcpToolCall","id":"item-mcp","server":"browser","tool":"navigate","status":"inProgress"}}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/completed",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"mcpToolCall","id":"item-mcp","server":"browser","tool":"navigate","status":"completed","result":"ok"}}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/started",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"reasoning","id":"item-reasoning","summary":[],"content":["SECRET_RAW_REASONING"]}}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/completed",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"reasoning","id":"item-reasoning","summary":["Checked the active challenge.","Prepared the next command."],"content":["SECRET_RAW_REASONING"]}}`),
 	}, emit)
 	session.HandleEvent(SandboxBridgeEvent{
 		Method: "item/agentMessage/delta",
 		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-msg","delta":"VPN"}`),
 	}, emit)
 	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/reasoning/summaryTextDelta",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-reasoning","delta":"Checked"}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
 		Method: "item/completed",
 		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"userMessage","id":"item-user","content":[{"type":"text","text":"operator prompt"}]}}`),
 	}, emit)
 
-	if len(events) != 2 {
+	if len(events) != 6 {
 		t.Fatalf("runtime events = %#v", events)
 	}
 	for i, kind := range kinds {
@@ -1219,8 +1549,21 @@ func TestCodexProviderSessionProjectsVisibleRuntimeOutput(t *testing.T) {
 	if text, _ := events[0]["text"].(string); !strings.Contains(text, "VPN检测未通过") {
 		t.Fatalf("assistant text = %q", events[0]["text"])
 	}
-	if text, _ := events[1]["text"].(string); !strings.Contains(text, "curl http://10.0.100.58") || !strings.Contains(text, "Empty reply") {
-		t.Fatalf("command text = %q", events[1]["text"])
+	if events[1]["provider_event"] != "item/started" || events[2]["provider_event"] != "item/completed" {
+		t.Fatalf("command lifecycle = %#v %#v", events[1], events[2])
+	}
+	if text, _ := events[2]["text"].(string); !strings.Contains(text, "curl http://10.0.100.58") || !strings.Contains(text, "Empty reply") {
+		t.Fatalf("command text = %q", events[2]["text"])
+	}
+	if events[3]["provider_event"] != "item/started" || events[4]["provider_event"] != "item/completed" {
+		t.Fatalf("MCP lifecycle = %#v %#v", events[3], events[4])
+	}
+	text, _ := events[5]["text"].(string)
+	if events[5]["provider_event"] != "item/completed" || !strings.Contains(text, "Checked the active challenge.") {
+		t.Fatalf("completed reasoning summary = %#v", events[5])
+	}
+	if strings.Contains(text, "SECRET_RAW_REASONING") || strings.Contains(text, `"content"`) {
+		t.Fatalf("reasoning event leaked raw content: %s", text)
 	}
 }
 
@@ -1258,5 +1601,16 @@ func TestProviderSessionAdapterUsesDaemonEventSinkForUnsolicitedPermission(t *te
 	}
 	if _, leaked := events[0]["tool_input"]; leaked {
 		t.Fatalf("sink event leaked provider wire details: %#v", events[0])
+	}
+}
+
+func TestSandboxBridgeRPCErrorDistinguishesCompletedAndChangedTargets(t *testing.T) {
+	completed := sandboxBridgeRPCError("steer-completed", json.RawMessage(`{"code":-32000,"message":"no active turn"}`))
+	if !errors.Is(completed, ErrProviderTurnUnavailable) || errors.Is(completed, ErrProviderTurnChanged) {
+		t.Fatalf("completed target classification = %#v", completed)
+	}
+	changed := sandboxBridgeRPCError("steer-changed", json.RawMessage(`{"code":-32000,"message":"expectedTurnId does not match active turn"}`))
+	if !errors.Is(changed, ErrProviderTurnChanged) || errors.Is(changed, ErrProviderTurnUnavailable) {
+		t.Fatalf("changed target classification = %#v", changed)
 	}
 }

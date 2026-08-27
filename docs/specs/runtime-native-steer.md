@@ -1,150 +1,132 @@
-# Interactive Sandbox Provider Sessions and Native Steer
+# Runtime Owner Provider Sessions and Native Steering
 
 ## Problem Statement
 
-CyberPenda executes each Runtime Continuation as a one-shot foreground process.
-Task controls can stop, resume, or steer only by ending the current sandbox
-container and starting another continuation from a persisted native session
-identifier. This is not the interactive Agent UI experience operators expect
-from Paseo: an active Claude Code, Codex, or Pi session should remain inside
-one sandbox-owned Task session, receive a user follow-up through the provider's
-native control protocol, and preserve a truthful Task Conversation and
-transcript.
+A **Runtime Owner** can be a Project **Task** or a **Non-Project Session**.
+Both owners use one persistent provider session and one shared Runtime Owner
+Workspace. Operator follow-up must not create a different owner or make the UI
+report `idle` while a provider **Runtime Turn** is still active.
+
+Codex App Server supports `turn/steer` for same-turn input. A blanket
+interrupt-then-replace implementation loses that behavior and can start an
+expensive replacement Turn. The Conversation can also appear blank if the
+Runtime output projection stores only completed assistant messages and tools.
 
 ## Solution
 
-Add a Task-owned Sandbox/provider session bridge. The bridge keeps the provider
-process and its bidirectional, non-PTY protocol channel alive for the Task.
-Runtime Continuations become durable turn/control boundaries inside that
-session. A user message is recorded once as a Task Conversation event. Direct
-provider in-turn steer is preferred when capability negotiation exposes it.
-Otherwise the Runtime Harness performs provider-native interrupt/cancel/abort,
-waits for acknowledged settlement, and sends the new prompt on the same
-session. The daemon records typed lifecycle and provider acknowledgement events
-and projects them once into the existing transcript.
+Use provider-native same-turn steering when the current active Turn is a
+steerable **Work Runtime Turn** and the requested **Runtime Turn Selection** does
+not require replacement. For Codex, send App Server `turn/steer` with the
+current thread ID, `expectedTurnId`, and operator input. For Pi, use its native
+same-turn RPC. If a provider does not implement same-turn steering, use its
+native interrupt, wait for acknowledged settlement, and start one replacement
+Work Turn on the same native session.
 
-The first provider release is Claude Code, Codex, and Pi. Providers without a
-persistent session or interrupt capability fail with a typed unsupported
-capability error. PTY, shell emulation, raw terminal input, process-kill steer,
-and mechanical handoff are outside this feature.
+Every request first becomes durable **Accepted Steering**. The Runtime Harness
+then dispatches requests first-in, first-out for that Runtime Owner. Runtime
+activity follows the provider Turn, and the Conversation shows bounded
+reasoning summaries plus started and completed tool work.
 
-## User Stories
+## Required Behavior
 
-1. As an operator, I want to send a follow-up message while a Task Runtime is
-   active, so that I can redirect work without creating a new Task.
-2. As an operator, I want my Task to keep one Sandbox/provider session, so that
-   the provider retains its native context and workdir.
-3. As an operator, I want provider-native in-turn steer used when available,
-   so that the provider can apply its own interruption semantics.
-4. As an operator, I want providers without direct steer to interrupt natively
-   and then receive my prompt on the same session, so that fallback preserves
-   provider context.
-5. As an operator, I want failed or unsupported steer to be reported clearly,
-   so that the UI never claims a redirect was applied when it was not.
-6. As an operator, I want one Task Conversation user message, so that the
-   transcript does not duplicate my prompt as both conversation and steering.
-7. As an operator, I want the transcript to show steer requested, provider
-   acknowledgement, old-turn settlement, and replacement turn boundaries, so
-   that I can audit what happened.
-8. As an operator, I want duplicate steer requests to be idempotent, so that a
-   retry after a lost response cannot create two replacement turns.
-9. As an operator, I want concurrent steer, stop, and close operations to be
-   serialized, so that one Task cannot own conflicting active controls.
-10. As an operator, I want provider permission requests and responses to remain
-    on the same typed session channel, so that approval state is not lost.
-11. As an operator, I want a daemon restart to fail closed on orphaned live
-    bridges, so that a stale process cannot mutate a Task after ownership is
-    lost.
-12. As an operator, I want restart recovery to use durable provider metadata
-    and a fresh Continuation pin, so that recovery is deterministic.
-13. As an operator, I want Claude Code, Codex, and Pi supported in the first
-    release, so that the common local runtimes share one interaction model.
-14. As an operator, I want unsupported providers to expose capability errors,
-    so that the UI can disable controls honestly.
-15. As an operator, I want Scope Snapshot and Project Interface authority to
-    remain unchanged during steer, so that interactivity cannot expand access.
-16. As an operator, I want Host Runner activation and Sandbox Runner reporting
-    to remain explicit, so that steer cannot cause an invisible runner switch.
-17. As an operator, I want provider protocol diagnostics redacted and separated
-    from user conversation, so that secrets and raw wire data do not leak.
-18. As an operator, I want the existing mechanical handoff path preserved as a
-    separately named recovery action, so that native interaction does not blur
-    recovery modes.
+1. Steering keeps the Task or Session identity and its native provider session.
+2. Direct same-turn steering requires one active provider Turn whose Harness
+   lineage is `work`. It never targets a Harness Control Turn.
+3. Codex `turn/steer` uses the current active Turn as an explicit precondition.
+   A mismatched or completed Turn fails closed.
+4. A same-turn steer request is a Harness control action but does not reclassify
+   the active Work Turn. A new or replacement provider Turn has `work` lineage.
+5. A model or Requested Reasoning Effort change that cannot apply in the active
+   Turn, or an explicit force-replace request, uses interrupt-then-replace. Pi
+   also uses replacement for a Model Provider change when the target belongs to
+   its fixed projected Provider set. Other Model Provider changes follow the
+   existing Config Projection and fresh Continuation rules: Task keeps its
+   queue-then-stop-then-resume safety order, while Session stops and sends the
+   operator message on the fresh Continuation. A live Session steer rejects
+   that non-Pi cross-provider request so it cannot bypass the restart path.
+6. If `turn/steer` returns JSON-RPC method-not-found, the Codex adapter disables
+   same-turn steering for that live adapter and safely retries the accepted
+   request through interrupt-then-replace. Codex InitializeResponse exposes
+   server identity, not a server capability set, so version text is not a
+   capability authority.
+7. A request ID is idempotent from the public Runtime Owner API through provider
+   dispatch. Durable replay is checked before live provider binding, active-Turn
+   checks, and server-selected steering mode.
+8. Replay identity uses only client-controlled fields: request ID, operator
+   message, Model Provider, model, and Requested Reasoning Effort. A changed
+   provider Turn ID or fallback mode cannot create a false conflict.
+9. A 202 response is returned only after the operator Conversation projection
+   and Accepted Steering record commit in one transaction.
+10. Session steering attachments are staged before acceptance. Attachment
+    Events, the Conversation Event, and Accepted Steering commit in one database
+    transaction. Failed acceptance removes staged files.
+11. The durable send-start fence remains the recovery authority. A pre-fence
+    request may dispatch after restart. A post-fence request without a durable
+    result becomes `action_required` and is never sent again automatically.
+12. Per-owner serialization covers steering dispatch, stop, close, and recovery.
+    Steering requests for different owners do not block each other.
+13. Runtime Activity is `busy` while a control RPC is active or while the
+    provider session has an active Turn ID. Elapsed time and historical Events
+    are not liveness authority.
+14. Codex Runtime output retains bounded `item/started` tool records and
+    completed reasoning summaries. Deltas remain excluded. Conversation
+    projects reasoning as collapsed `thinking`, not as an assistant answer.
+15. Started command and MCP tool records project a tool call. Completion adds
+    the matching result without duplicating the tool call.
+16. Scope, Project Interface authority, Runner choice, credentials, Workdir,
+    and Runtime Non-Interactive Defaults do not change during steering.
 
 ## Implementation Decisions
 
-- A Task owns one Sandbox/provider session for its selected Runtime Profile and
-  provider. Runtime Continuations own provider turn/control boundaries inside
-  that session.
-- The provider-session contract separates `persistent_session`, `send_turn`,
-  `interrupt_turn`, `interrupt_then_replace`, `in_turn_steer`,
-  `permission_response`, and `resume_session` capabilities.
-- The daemon-to-bridge v1 transport is a non-PTY, line-framed JSON-RPC stream
-  over daemon-owned container stdin/stdout. Bridge stdout contains only framed
-  protocol; diagnostics use redacted stderr/runtime events.
-- A bridge process owns the provider child process. The daemon owns bridge
-  lifecycle, Task binding, request ids, provider turn ids, and event persistence.
-- Direct `in_turn_steer` is preferred and is used by Pi RPC. The fallback is provider-native
-  interrupt/cancel/abort, acknowledged settlement, then same-session
-  replacement prompt. Process cancellation, PTY input, and raw stdin injection
-  are not steer implementations.
-- The first provider adapters are Claude Code, Codex, and Pi. Production
-  capability advertisement is gated by a verified transport: Codex App Server
-  and Pi RPC are stable non-PTY protocols; Claude native interrupt requires an
-  explicit Claude Agent SDK `Query` bridge and remains typed unsupported until
-  that bridge is installed. ACP is deferred until provider handshake
-  capability negotiation is implemented.
-- The canonical user message is a Task Conversation event. Control/provider
-  lifecycle events are correlated typed Task Events and are projected once into
-  the transcript without duplicating the user message.
-- A steer request is idempotent by request id. Provider turn ids and session ids
-  bind acknowledgements and replacement Continuations.
-- The old Continuation is not marked replaced/applied until provider
-  acknowledgement and settlement are durable. A failed acknowledgement cannot
-  produce `steering_applied`.
-- Per-Task control serialization covers steer, stop, close, and recovery.
-- Daemon restart does not blindly reattach an old stdio bridge in v1. Startup
-  cleans stale ownership fail-closed and resumes through durable provider
-  metadata plus a fresh Continuation pin.
-- Scope, Preflight, Project Interface grants, credential projection, Runtime
-  Workdir, Host Runner activation, and Runtime Non-Interactive Defaults remain
+- The shared ProviderSession contract exposes `send_turn`, `interrupt_turn`,
+  `interrupt_then_replace`, `in_turn_steer`, `permission_response`, persistent
+  session identity, and atomic Turn state.
+- Codex App Server is a non-PTY JSON-RPC transport. Its same-turn method is
+  `turn/steer`; its fallback is `turn/interrupt` followed by `turn/start`.
+- The provider manifest advertises the supported wire contract. Live
+  method-not-found is the backward-compatible negotiation and downgrade path.
+- Accepted Steering is the source of truth for dispatch and settlement.
+  Conversation and Timeline entries are owner-local projections.
+- Task and Session adapters share the Accepted Steering state machine. Their
+  persistence and continuation transitions remain owner-specific.
+- Runtime Turn kind comes from Harness request lineage. Provider output cannot
+  choose or change it.
+- Same-turn steering preserves the source Work Turn lineage. Replacement sends
+  always create Work Turn lineage, including method-not-found fallback.
+- Provider Turn liveness is read as one atomic snapshot when possible.
+- Pi applies model, Model Provider, and Requested Reasoning Effort through
+  pre-prompt RPCs. Therefore a selection-changing Pi steer always starts a
+  replacement Work Turn; `pi/steer` is used only when the raw selection is
   unchanged.
 
 ## Testing Decisions
 
-- Use TDD at the daemon Task control API as the highest seam, with a fake
-  provider session and fake bridge for deterministic red-green cycles.
-- Test the public behavior: same Task/session identity, typed event ordering,
-  acknowledgement gating, idempotency, unsupported capability errors,
-  concurrent control conflicts, and truthful failure states.
-- Add provider contract tests for Codex App Server JSON-RPC, Claude Code SDK
-  input/interrupt, and Pi RPC prompt/steer/abort. Tests must not require live model
-  credentials for the core contract.
-- Add sandbox lifecycle tests proving bidirectional non-PTY protocol input,
-  `-i` without `-t`, cancellation cleanup, and no duplicate containers during
-  native steer.
-- Add transcript projection tests for one canonical user message and the
-  correlated steer/provider lifecycle entries.
-- Add restart/crash-window tests for request-before-send, sent-before-ack, and
-  ack-before-commit, with at-most-once replacement creation.
-- Port Paseo's tool-call replacement behavior as an integration acceptance
-  scenario: run a long tool, send a follow-up, observe no false idle/error gap,
-  and verify same session identity.
+Use TDD. The main seam is the daemon Task and Session HTTP APIs with real owner
+services, SQLite, and deterministic fake ProviderSessions.
+
+Required tests cover:
+
+- Codex `turn/steer` wire parameters and expected active Turn checks.
+- Same-turn Work lineage preservation and replacement Work lineage creation.
+- Method-not-found downgrade and one safe interrupt-then-replace fallback.
+- Request replay before live provider checks, including daemon restart and the
+  fallback window.
+- Client-controlled conflict identity.
+- Atomic Session attachment, Conversation, and Accepted Steering persistence,
+  including staged-file rollback.
+- Provider Turn busy/idle transitions after launch, direct steer, replacement,
+  completion, interruption, and close.
+- Bounded reasoning and started-tool Runtime output parsing and Transcript
+  projection.
+- A web TranscriptRow test that renders `thinking` as collapsed text.
+- Full backend tests, web tests, web build, and `git diff --check`.
 
 ## Out of Scope
 
-- PTY, shell emulation, terminal resize, raw terminal bytes, or arbitrary Docker
-  attach/exec exposed to the web client.
-- ACP implementation in the first provider release.
-- Cross-provider session migration.
-- Automatic fallback from Sandbox Runner to Host Runner.
-- Dynamic injection into an already-running model reasoning step without a
-  provider-defined boundary.
-- Replacing provider-native persistence stores.
-- Distributed worker orchestration or remote bridge ownership.
-
-## Further Notes
-
-The existing native resume and Interrupt & Steer paths remain useful as an
-explicit recovery path while the Task-owned bridge is introduced. They must not
-be labeled as live native steer after the new capability is available.
+- Making maximum Requested Reasoning Effort faster.
+- Rewriting completed reasoning, messages, or tool items.
+- Backfilling historical Sessions that did not store reasoning summaries.
+- Raw PTY input, shell emulation, terminal bytes, or process-kill steering.
+- Cross-provider native session migration.
+- Automatic Sandbox-to-Host Runner fallback.
+- Changing Scope or Project Interface authority during steering.

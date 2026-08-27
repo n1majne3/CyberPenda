@@ -41,8 +41,9 @@ type Event struct {
 }
 
 var timelineParseOpts = runtimeoutput.ParseOptions{
-	IncludeThinking: true,
-	IncludeErrors:   true,
+	IncludeThinking:           true,
+	IncludeReasoningSummaries: true,
+	IncludeErrors:             true,
 }
 
 // Build projects owner events into coalesced timeline items.
@@ -51,7 +52,7 @@ func Build(events []Event) []Item {
 	nextSeq := 1
 	turns := make([]runtimeoutput.Turn, 0, len(events))
 	flushTurns := func() {
-		for _, item := range turnsToItems(runtimeoutput.CoalesceStreaming(turns)) {
+		for _, item := range turnsToItems(runtimeoutput.CoalesceStreaming(runtimeoutput.ReconcileLifecycle(turns))) {
 			if item.Seq <= 0 {
 				item.Seq = nextSeq
 			}
@@ -118,7 +119,9 @@ func Build(events []Event) []Item {
 			if runtimeoutput.ShouldIgnoreForTimeline(text) {
 				continue
 			}
-			lineTurns, _ := runtimeoutput.ParseLine(text, event.CreatedAt, timelineParseOpts)
+			lineTurns, _ := runtimeoutput.ParseLineWithMeta(text, runtimeoutput.RecordMeta{
+				ProviderEvent: stringValue(event.Payload, "provider_event"),
+			}, event.CreatedAt, timelineParseOpts)
 			for index := range lineTurns {
 				lineTurns[index].SourceID = event.ID
 				lineTurns[index].SourceSeq = event.Seq
@@ -244,7 +247,9 @@ func steeringItem(event Event) (Item, bool) {
 
 func turnToItem(turn runtimeoutput.Turn) (Item, bool) {
 	id := turn.SourceID
-	if id != "" {
+	if stable := runtimeoutput.StableProviderItemID(turn.ProviderItemID, string(turn.Kind)); stable != "" {
+		id = stable
+	} else if id != "" {
 		id = fmt.Sprintf("%s-%s-%d", id, turn.Kind, turn.ContentIndex)
 	}
 	switch turn.Kind {

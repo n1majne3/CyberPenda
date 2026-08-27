@@ -13,10 +13,10 @@ import (
 	"pentest/internal/task"
 )
 
-// A native steer delivery is a Harness Control Turn. The executor assigns the
-// kind from request lineage for both owners so a steer can never be
-// lineage-classified as operator work (ADR 0018).
-func TestNativeSteerSendsHarnessControlTurnKind(t *testing.T) {
+// An interrupt-then-replace steer creates a new Runtime Turn from operator
+// Conversation input, so the replacement must retain Work Turn semantics
+// under ADR 0018.
+func TestInterruptThenReplaceSteerSendsWorkTurnKind(t *testing.T) {
 	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
 	if err != nil {
 		t.Fatal(err)
@@ -61,8 +61,8 @@ func TestNativeSteerSendsHarnessControlTurnKind(t *testing.T) {
 
 	waitForProviderRequests(t, session, 1)
 	for _, sent := range session.LastRequests() {
-		if sent.TurnKind != runtime.RuntimeTurnKindControl {
-			t.Fatalf("steer request %q TurnKind = %q, want %q", sent.RequestID, sent.TurnKind, runtime.RuntimeTurnKindControl)
+		if sent.TurnKind != runtime.RuntimeTurnKindWork {
+			t.Fatalf("steer request %q TurnKind = %q, want %q", sent.RequestID, sent.TurnKind, runtime.RuntimeTurnKindWork)
 		}
 	}
 }

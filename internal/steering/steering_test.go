@@ -23,7 +23,10 @@ func newTestService(t *testing.T) *Service {
 func TestAcceptAssignsFIFOQueueOrderPerOwner(t *testing.T) {
 	service := newTestService(t)
 	ctx := context.Background()
-	input := AcceptRequest{RequestID: "req-1", Message: "first", Mode: owner.SteeringModeInTurnSteer}
+	input := AcceptRequest{
+		RequestID: "req-1", Message: "first", Mode: owner.SteeringModeInTurnSteer,
+		ExpectedProviderTurnID: "turn-expected",
+	}
 	first, err := service.Accept(ctx, owner.KindTask, "task-1", input, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -39,12 +42,38 @@ func TestAcceptAssignsFIFOQueueOrderPerOwner(t *testing.T) {
 	if first.State != owner.SteeringPending || first.QueueOrder != 1 || second.QueueOrder != 2 {
 		t.Fatalf("task queue order = %d, %d (states %s, %s), want 1 then 2", first.QueueOrder, second.QueueOrder, first.State, second.State)
 	}
+	if first.ExpectedProviderTurnID != "turn-expected" || sessionFirst.ExpectedProviderTurnID != "turn-expected" {
+		t.Fatalf("expected provider Turn was not durable: task=%#v session=%#v", first, sessionFirst)
+	}
 	if sessionFirst.QueueOrder != 1 {
 		t.Fatalf("session queue order = %d, want owner-local order 1", sessionFirst.QueueOrder)
 	}
 	oldest, err := service.OldestPending(owner.KindTask, "task-1")
 	if err != nil || oldest == nil || oldest.RequestID != "req-1" {
 		t.Fatalf("oldest pending = %#v err=%v, want req-1", oldest, err)
+	}
+}
+
+func TestAcceptPersistsClientSelectionIdentity(t *testing.T) {
+	service := newTestService(t)
+	ctx := context.Background()
+	const identity = "{\"model_provider_id\":\"provider-1\",\"model\":\"model-1\",\"requested_reasoning_effort\":\"high\"}"
+	record, err := service.Accept(ctx, owner.KindTask, "task-1", AcceptRequest{
+		RequestID: "selection-identity", Message: "focus", Mode: owner.SteeringModeInTurnSteer,
+		ClientSelectionIdentity: identity,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ClientSelectionIdentity != identity {
+		t.Fatalf("accepted client selection identity = %q, want %q", record.ClientSelectionIdentity, identity)
+	}
+	loaded, err := service.ByRequestID(owner.KindTask, "task-1", "selection-identity")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ClientSelectionIdentity != identity {
+		t.Fatalf("loaded client selection identity = %q, want %q", loaded.ClientSelectionIdentity, identity)
 	}
 }
 

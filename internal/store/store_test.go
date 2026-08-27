@@ -1561,3 +1561,100 @@ func TestMigration58AddsChallengeOperationRecoverySettlement(t *testing.T) {
 		t.Fatalf("set action_required after migration 58: %v", err)
 	}
 }
+
+func TestMigration65MarksLegacyClientSelectionIdentityUnknown(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO accepted_steering (
+		id,owner_kind,owner_id,request_id,operator_message,message,mode,state,queue_order,created_at,updated_at
+	) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		"legacy-selection", "task", "task-1", "request-1", "focus", "focus", "in_turn_steer", "pending", 1, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version=65`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE accepted_steering DROP COLUMN client_selection_identity`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	var identity string
+	if err := reopened.QueryRow(`SELECT client_selection_identity FROM accepted_steering WHERE id='legacy-selection'`).Scan(&identity); err != nil {
+		t.Fatal(err)
+	}
+	if identity != "" {
+		t.Fatalf("legacy client selection identity = %q, want unknown empty identity", identity)
+	}
+}
+
+func TestMigration64BackfillsOperatorMessageFromConversationEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := db.Exec(`INSERT INTO session_events (id,session_id,seq,kind,payload_json,created_at) VALUES (?,?,?,?,?,?)`,
+		"session-conversation-1", "session-1", 1, "conversation", `{"role":"user","text":"focus login"}`, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO task_events (id,task_id,seq,kind,payload_json,created_at) VALUES (?,?,?,?,?,?)`,
+		"task-conversation-1", "task-1", 1, "conversation", `{"role":"user","text":"focus task"}`, stamp); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(id, kind, ownerID, message, conversationID string) {
+		t.Helper()
+		if _, err := db.Exec(`INSERT INTO accepted_steering (
+			id,owner_kind,owner_id,request_id,operator_message,message,mode,model_provider_id,model,
+			requested_reasoning_effort,state,queue_order,conversation_event_id,continuation_id,session_id,
+			expected_provider_turn_id,send_started_at,result_json,error_code,error_message,created_at,updated_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			id, kind, ownerID, "request-"+id, message, message, "interrupt_then_replace", "", "", "",
+			"pending", 1, conversationID, "", "provider-session", "", "", `{}`, "", "", stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert("steer-session", "session", "session-1", "focus login\n\nATTACHED FILES:\n- /work/login.txt", "session-conversation-1")
+	insert("steer-task", "task", "task-1", "focus task\n\nATTACHED FILES:\n- /work/task.txt", "task-conversation-1")
+	insert("steer-fallback", "session", "session-2", "provider fallback", "missing-conversation")
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version=64`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE accepted_steering DROP COLUMN operator_message`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	for id, want := range map[string]string{
+		"steer-session":  "focus login",
+		"steer-task":     "focus task",
+		"steer-fallback": "provider fallback",
+	} {
+		var got string
+		if err := reopened.QueryRow(`SELECT operator_message FROM accepted_steering WHERE id=?`, id).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s operator_message = %q, want %q", id, got, want)
+		}
+	}
+}

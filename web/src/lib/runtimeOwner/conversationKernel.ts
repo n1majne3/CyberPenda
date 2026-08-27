@@ -20,6 +20,7 @@ export type ConversationKernelState = {
   selectedProviderID: string;
   runtimeProvider: string;
   nativeSteerMode?: string;
+  forceReplace?: boolean;
 };
 
 export type ConversationAction = {
@@ -56,7 +57,7 @@ export function resolveConversationAction(
     if (state.running && (state.nativeSteerAvailable || state.interruptSteerAvailable)) {
       return {
         run: async (message, selection, adapter, attachments) => {
-          await adapter.steer({ text: message, selection, requestID, native: true, attachments });
+          await adapter.steer({ text: message, selection, requestID, native: true, forceReplace: state.forceReplace, attachments });
         },
       };
     }
@@ -98,6 +99,7 @@ export function resolveConversationAction(
           selection,
           requestID,
           native: state.nativeSteerAvailable,
+          forceReplace: state.forceReplace,
         });
       },
     };
@@ -139,12 +141,14 @@ export function resolveConversationSendMode(input: {
   return input.queueSteerAvailable && input.resumeAvailable ? "resume" : "unavailable";
 }
 
-export function conversationSendLabel(mode: ConversationSendMode, nativeSteerMode?: string): string {
+export function conversationSendLabel(mode: ConversationSendMode, nativeSteerMode?: string, selectionChanged = false): string {
   switch (mode) {
     case "native":
-      return nativeSteerMode === "in_turn_steer" ? "Send message" : "Native interrupt & send";
+      if (selectionChanged || nativeSteerMode === "interrupt_then_replace") return "Interrupt and send";
+      if (nativeSteerMode === "in_turn_steer") return "Steer current turn";
+      return "Send";
     case "interrupt":
-      return "Interrupt and resume";
+      return "Interrupt and send";
     case "queue":
       return "Queue message";
     case "resume":

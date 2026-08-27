@@ -30,6 +30,7 @@ pentest.db.pre-blackboard-v2.*.bak
 /pentestd
 /pentestd.exe
 daemon.log
+/model-capability-cache.json
 runs/
 __pycache__/
 *.pyc

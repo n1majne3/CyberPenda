@@ -52,7 +52,14 @@ func (s *blockingSteerSession) SteerInTurn(ctx context.Context, request runtime.
 	case <-ctx.Done():
 		return runtime.ProviderSessionResult{}, ctx.Err()
 	}
-	return s.FakeProviderSession.SendTurn(ctx, request, emit)
+	state := s.FakeProviderSession.TurnState()
+	if request.ProviderTurnID != "" && request.ProviderTurnID != state.ActiveTurnID {
+		return runtime.ProviderSessionResult{}, &runtime.ProviderSessionOperationError{
+			Mode:  runtime.ProviderSessionModeInTurnSteer,
+			Cause: &runtime.ProviderTurnChangedError{ExpectedTurnID: request.ProviderTurnID, ActiveTurnID: state.ActiveTurnID},
+		}
+	}
+	return s.FakeProviderSession.SteerInTurn(ctx, request, emit)
 }
 
 // newBlockingSteerFixture creates an interactive Task with a bound provider
@@ -237,6 +244,9 @@ func TestAcceptedSteeringRecordsDurableSendStartFence(t *testing.T) {
 	if fenced.SendStartedAt == nil || fenced.SendStartedAt.IsZero() {
 		t.Fatalf("fenced record has no send_started_at: %#v", fenced)
 	}
+	if fenced.ExpectedProviderTurnID != "turn-1" {
+		t.Fatalf("fenced expected provider Turn = %q, want turn-1", fenced.ExpectedProviderTurnID)
+	}
 
 	close(blocked.releaseSteer)
 	waitForSteerOutcomeEvent(t, server, created.ID, "fence-1", "applied")
@@ -246,6 +256,45 @@ func TestAcceptedSteeringRecordsDurableSendStartFence(t *testing.T) {
 	}
 	if len(applied.Result) == 0 {
 		t.Fatalf("applied record carries no delivery evidence: %#v", applied)
+	}
+	requests := blocked.LastRequests()
+	if len(requests) != 1 || requests[0].ProviderTurnID != "turn-1" {
+		t.Fatalf("provider steer requests = %#v, want one request for turn-1", requests)
+	}
+}
+
+func TestAcceptedSameTurnSteeringDoesNotRetargetAChangedProviderTurn(t *testing.T) {
+	server, projectID, created, blocked := newBlockingSteerFixture(t)
+
+	response := postSteerTimed(t, server, projectID, created.ID, `{"request_id":"turn-race","message":"Stay on the accepted Turn."}`, time.Second)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("steer status=%d body=%s", response.Code, response.Body.String())
+	}
+	select {
+	case <-blocked.steerStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("accepted steering did not reach provider dispatch")
+	}
+	if err := blocked.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, SessionID: blocked.SessionID(),
+		ProviderTurnID: "turn-1", RequestID: "work-1", Status: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocked.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "later-work", Message: "new work"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if state := blocked.TurnState(); state.ActiveTurnID == "turn-1" || state.ActiveTurnID == "" {
+		t.Fatalf("replacement provider Turn state = %#v", state)
+	}
+	close(blocked.releaseSteer)
+	waitForSteerOutcomeEvent(t, server, created.ID, "turn-race", "action_required")
+	record, err := server.steering.ByRequestID(owner.KindTask, created.ID, "turn-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.ErrorCode != owner.SteeringReasonTargetTurnChanged {
+		t.Fatalf("settlement = %#v, want target_turn_changed", record)
 	}
 }
 
@@ -316,6 +365,41 @@ func TestAcceptedSteeringPostFenceRestartBecomesActionRequiredWithoutReplay(t *t
 	}
 	if sawApplied {
 		t.Fatalf("post-fence request was replayed as applied: %#v", events)
+	}
+	detail := httptest.NewRecorder()
+	server2.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+created.ID, nil))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("recovered Task detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	var recoveredTask task.Task
+	if err := json.Unmarshal(detail.Body.Bytes(), &recoveredTask); err != nil {
+		t.Fatal(err)
+	}
+	if recoveredTask.RuntimeControls.NativeSteerState != "action_required" ||
+		recoveredTask.RuntimeControls.NativeSteerErrorCode != string(owner.SteeringReasonDeliveryAmbiguous) {
+		t.Fatalf("recovered Task Runtime Controls = %#v", recoveredTask.RuntimeControls)
+	}
+	beforeReplayEvents := len(events)
+	replay := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{
+		"request_id":"post-fence-restart",
+		"message":"Crashed after the fence."
+	}`))
+	replay.Header.Set("Content-Type", "application/json")
+	replay.Header.Set("Idempotency-Key", "post-fence-restart")
+	replayResponse := httptest.NewRecorder()
+	server2.ServeHTTP(replayResponse, replay)
+	if replayResponse.Code != http.StatusAccepted {
+		t.Fatalf("recovered Task replay status=%d body=%s", replayResponse.Code, replayResponse.Body.String())
+	}
+	var replayOutcome struct {
+		Outcome string `json:"outcome"`
+	}
+	if err := json.Unmarshal(replayResponse.Body.Bytes(), &replayOutcome); err != nil || replayOutcome.Outcome != "action_required" {
+		t.Fatalf("recovered Task replay outcome=%#v err=%v body=%s", replayOutcome, err, replayResponse.Body.String())
+	}
+	afterReplayEvents, err := server2.tasks.Events(created.ID)
+	if err != nil || len(afterReplayEvents) != beforeReplayEvents {
+		t.Fatalf("recovered Task replay events=%d err=%v, want %d", len(afterReplayEvents), err, beforeReplayEvents)
 	}
 }
 
@@ -393,7 +477,7 @@ func TestAcceptedSteeringPreFenceRestartResumesDispatchAfterResume(t *testing.T)
 
 func TestAcceptedSteeringReplayReturnsDurableOutcomeAndRejectsConflict(t *testing.T) {
 	server, projectID, created, blocked := newBlockingSteerFixture(t)
-	body := `{"request_id":"replay-1","message":"Replay the durable outcome."}`
+	body := `{"request_id":"replay-1","message":"Replay the durable outcome.","model":"gpt-test"}`
 	first := postSteerTimed(t, server, projectID, created.ID, body, time.Second)
 	if first.Code != http.StatusAccepted {
 		t.Fatalf("first steer status=%d body=%s", first.Code, first.Body.String())
@@ -425,6 +509,16 @@ func TestAcceptedSteeringReplayReturnsDurableOutcomeAndRejectsConflict(t *testin
 	}
 	if conversations != 1 {
 		t.Fatalf("replay created %d conversation items, want 1", conversations)
+	}
+
+	// Omitting an explicitly supplied client Turn Selection changes the
+	// idempotency identity even when the resolved provider selection is equal.
+	omittedSelection := postSteerTimed(t, server, projectID, created.ID, `{
+		"request_id":"replay-1",
+		"message":"Replay the durable outcome."
+	}`, time.Second)
+	if omittedSelection.Code != http.StatusConflict {
+		t.Fatalf("omitted selection replay status=%d body=%s, want 409", omittedSelection.Code, omittedSelection.Body.String())
 	}
 
 	// Conflicting content under the same request identity is a conflict.
@@ -628,6 +722,116 @@ func newSessionSteerFixture(t *testing.T) (*Server, string, *runtime.FakeProvide
 	return nil, "", nil
 }
 
+func TestAcceptedSteeringWithoutAttachmentsAdvancesSessionActivityAtomically(t *testing.T) {
+	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	profile := createTestRuntimeProfile(t, server)
+	created, err := server.sessions.Create(session.CreateRequest{Input: "Session activity"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.sessions.CreateContinuation(created.ID, profile.ID, string(runtimeprofile.ProviderCodex), session.RunnerHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "session-activity-provider", ActiveTurnID: "turn-session-activity",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
+	})
+	if err := server.BindSessionProviderSession(created.ID, active); err != nil {
+		t.Fatal(err)
+	}
+	releaseHarness := make(chan struct{})
+	t.Cleanup(func() { close(releaseHarness) })
+	go func() {
+		_ = server.sessionHarness.Launch(context.Background(), runtime.SessionLaunchRequest{
+			SessionID: created.ID, Goal: "Session activity", Adapter: holdAdapter{release: releaseHarness}, ContinuationID: continuation.ID,
+		})
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		events, eventsErr := server.sessions.Events(created.ID)
+		if eventsErr != nil {
+			t.Fatal(eventsErr)
+		}
+		started := false
+		for _, event := range events {
+			if event.Payload["phase"] == "hold_started" {
+				started = true
+				break
+			}
+		}
+		if started && server.sessionHarness.IsActive(created.ID) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("controlled Session Harness did not start: %#v", events)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	sessionID := created.ID
+	controlStarted := make(chan struct{})
+	releaseControl := make(chan struct{})
+	if !server.enqueueProviderTaskControl(sessionID, func(ctx context.Context) {
+		close(controlStarted)
+		select {
+		case <-releaseControl:
+		case <-ctx.Done():
+		}
+	}) {
+		t.Fatal("reserve Session provider control")
+	}
+	select {
+	case <-controlStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Session provider control did not start")
+	}
+	defer close(releaseControl)
+
+	stale := time.Date(2020, time.January, 2, 3, 4, 5, 0, time.UTC)
+	stamp := stale.Format(time.RFC3339Nano)
+	if _, err := server.db.Exec(`UPDATE sessions SET updated_at=?,last_activity_at=? WHERE id=?`, stamp, stamp, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := server.sessions.Get(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.LastActivityAt.Equal(stale) {
+		t.Fatalf("Session activity fixture = %s, want stale %s", before.LastActivityAt, stale)
+	}
+
+	steer := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sessionID+"/steer", bytes.NewBufferString(`{
+		"request_id":"session-activity-1",
+		"message":"Advance Session activity before provider settlement."
+	}`))
+	steer.Header.Set("Content-Type", "application/json")
+	steer.Header.Set("Idempotency-Key", "session-activity-1")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, steer)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("Session steer status=%d body=%s", response.Code, response.Body.String())
+	}
+	record, err := server.steering.ByRequestID(owner.KindSession, sessionID, "session-activity-1")
+	if err != nil || record.State != owner.SteeringPending {
+		t.Fatalf("accepted Session steer = %#v err=%v, want pending behind provider control", record, err)
+	}
+	if requests := active.LastRequests(); len(requests) != 0 {
+		t.Fatalf("queued Session steer reached provider before activity assertion: %#v", requests)
+	}
+
+	found, err := server.sessions.Get(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found.LastActivityAt.After(stale) {
+		t.Fatalf("Session last activity = %s, want after accepted steering at %s", found.LastActivityAt, stale)
+	}
+}
+
 func TestAcceptedSteeringSessionOwnerDispatchesDurably(t *testing.T) {
 	server, sessionID, fake := newSessionSteerFixture(t)
 
@@ -744,7 +948,7 @@ func TestAcceptedSteeringSessionPreFenceRestartResumesDispatchAfterMessage(t *te
 	server, sessionID, _ := newSessionSteerFixtureAt(t, root)
 	// A pre-fence queued request that never dispatched before the restart.
 	if _, err := server.steering.Accept(context.Background(), owner.KindSession, sessionID, steering.AcceptRequest{
-		RequestID: "session-pre-fence", Message: "Survive the Session restart.", Mode: owner.SteeringModeInTurnSteer,
+		RequestID: "session-pre-fence", Message: "Survive the Session restart.", Mode: owner.SteeringModeSendTurn,
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -927,6 +1131,39 @@ func TestAcceptedSteeringSessionPostFenceRestartBecomesActionRequiredWithoutRepl
 	}
 	if !sawActionRequired || sawApplied {
 		t.Fatalf("Session post-fence projection = action_required:%v applied:%v events=%#v", sawActionRequired, sawApplied, events)
+	}
+	detail := httptest.NewRecorder()
+	server2.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/sessions/"+sessionID, nil))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("recovered Session detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	var recoveredSession session.Session
+	if err := json.Unmarshal(detail.Body.Bytes(), &recoveredSession); err != nil {
+		t.Fatal(err)
+	}
+	if recoveredSession.RuntimeControls.NativeSteerState != "action_required" ||
+		recoveredSession.RuntimeControls.NativeSteerErrorCode != string(owner.SteeringReasonDeliveryAmbiguous) {
+		t.Fatalf("recovered Session Runtime Controls = %#v", recoveredSession.RuntimeControls)
+	}
+	beforeReplayEvents := len(events)
+	replay := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sessionID+"/steer", bytes.NewBufferString(`{
+		"request_id":"session-post-fence",
+		"message":"Crashed after the Session fence."
+	}`))
+	replay.Header.Set("Content-Type", "application/json")
+	replay.Header.Set("Idempotency-Key", "session-post-fence")
+	replayResponse := httptest.NewRecorder()
+	server2.ServeHTTP(replayResponse, replay)
+	if replayResponse.Code != http.StatusAccepted {
+		t.Fatalf("recovered Session replay status=%d body=%s", replayResponse.Code, replayResponse.Body.String())
+	}
+	var replayed session.Session
+	if err := json.Unmarshal(replayResponse.Body.Bytes(), &replayed); err != nil || replayed.RuntimeControls.NativeSteerState != "action_required" {
+		t.Fatalf("recovered Session replay state=%#v err=%v body=%s", replayed.RuntimeControls, err, replayResponse.Body.String())
+	}
+	afterReplayEvents, err := server2.sessions.Events(sessionID)
+	if err != nil || len(afterReplayEvents) != beforeReplayEvents {
+		t.Fatalf("recovered Session replay events=%d err=%v, want %d", len(afterReplayEvents), err, beforeReplayEvents)
 	}
 }
 
