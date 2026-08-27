@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { apiGet, apiPost, apiPatch, apiDelete, mergedConfigPreview, projectedConfig, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
-import { enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
+import { codexMultiAgentTOMLLines, enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
 import {
   applyModelProviderSelection,
   buildProfileFields,
@@ -95,6 +95,9 @@ type ProfileForm = {
   default_runner: string;
   sandbox_image: string;
   credential_refs: string;
+  codex_multi_agent_enabled: boolean;
+  codex_multi_agent_max_threads: string;
+  codex_multi_agent_max_depth: string;
 };
 
 const emptyForm: ProfileForm = {
@@ -116,6 +119,9 @@ const emptyForm: ProfileForm = {
   default_runner: "sandbox",
   sandbox_image: "",
   credential_refs: "",
+  codex_multi_agent_enabled: false,
+  codex_multi_agent_max_threads: "",
+  codex_multi_agent_max_depth: "",
 };
 
 function ProfileListButton({
@@ -795,7 +801,12 @@ function fallbackRuntimePlugins(): RuntimePlugin[] {
         "mcp_servers",
         "default_runner",
         "sandbox_image",
-      ].map((name) => ({ name, type: "string", label: name })),
+        ...(id === "codex" ? ["codex_multi_agent"] : []),
+      ].map((name) => ({
+        name,
+        type: name === "codex_multi_agent" ? "codex_multi_agent" : "string",
+        label: name,
+      })),
     },
     config_projection:
       id === "claude_code"
@@ -1264,6 +1275,51 @@ function ProfileEditor({
             Override the daemon sandbox image for tasks using this profile.
           </p>
         </div>}
+        {form.provider === "codex" && <div className="col-span-2 space-y-2 rounded-lg border border-border p-3">
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              name="codex_multi_agent_enabled"
+              className="mt-1 h-4 w-4 accent-primary"
+              checked={form.codex_multi_agent_enabled}
+              onChange={(e) => onChange({ ...form, codex_multi_agent_enabled: e.target.checked })}
+            />
+            <span>
+              <span className="font-medium">In-turn multi-agent tools</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                Project Codex-native spawn tools (<code className="text-[11px]">features.multi_agent</code> + <code className="text-[11px]">agents</code> caps) for launches using this profile. Off keeps the runtime free of spawn tools.
+              </span>
+            </span>
+          </label>
+          {form.codex_multi_agent_enabled && <div className="grid grid-cols-2 gap-3 pl-6">
+            <div>
+              <Label htmlFor="profile-multi-agent-threads">Max concurrent agent threads</Label>
+              <Input
+                id="profile-multi-agent-threads"
+                name="codex_multi_agent_max_threads"
+                type="number"
+                min={1}
+                value={form.codex_multi_agent_max_threads}
+                onChange={(e) => onChange({ ...form, codex_multi_agent_max_threads: e.target.value })}
+                placeholder="Codex default (6)"
+                autoComplete="off"
+              />
+            </div>
+            <div>
+              <Label htmlFor="profile-multi-agent-depth">Max agent depth</Label>
+              <Input
+                id="profile-multi-agent-depth"
+                name="codex_multi_agent_max_depth"
+                type="number"
+                min={1}
+                value={form.codex_multi_agent_max_depth}
+                onChange={(e) => onChange({ ...form, codex_multi_agent_max_depth: e.target.value })}
+                placeholder="Codex default (1)"
+                autoComplete="off"
+              />
+            </div>
+          </div>}
+        </div>}
         {has("credential_refs") && <div className="col-span-2">
           <Label htmlFor="profile-credential-refs">Credential refs</Label>
           <Textarea
@@ -1488,6 +1544,10 @@ function profileToForm(profile: RuntimeProfile, plugins: RuntimePlugin[]): Profi
     default_runner: profile.fields.default_runner ?? "sandbox",
     sandbox_image: profile.fields.sandbox_image ?? "",
     credential_refs: (profile.fields.credential_refs ?? []).join("\n"),
+    codex_multi_agent_enabled: profile.fields.codex_multi_agent?.enabled ?? false,
+    codex_multi_agent_max_threads:
+      profile.fields.codex_multi_agent?.max_concurrent_threads_per_session?.toString() ?? "",
+    codex_multi_agent_max_depth: profile.fields.codex_multi_agent?.max_depth?.toString() ?? "",
   };
 }
 
@@ -1574,6 +1634,7 @@ function buildGeneratedConfigPreview(
       endpoint ? `wire_api = "${wireApi}"` : null,
       endpoint ? "requires_openai_auth = true" : null,
       ...appendCodexMCPTOMLPreview(mcpServers),
+      ...codexMultiAgentTOMLLines(fields),
     ]
       .filter((line): line is string => line !== null)
       .join("\n");

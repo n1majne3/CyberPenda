@@ -1310,6 +1310,99 @@ describe("TaskLaunchPage", () => {
     expect(await screen.findByText("Model provider", { selector: "p" })).toBeInTheDocument();
   });
 
+  it("previews codex multi-agent tools from preflight", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ plugins: [codexPlugin] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/model-providers")) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ providers: [mimoProvider] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              profile_id: "resolved-profile",
+              created: false,
+              profile: {
+                ...autoResolvedProfile,
+                fields: {
+                  ...autoResolvedProfile.fields,
+                  codex_multi_agent: { enabled: true, max_concurrent_threads_per_session: 4, max_depth: 2 },
+                },
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              pass: true,
+              checks: [{ name: "model_provider", status: "pass" }],
+              codex_multi_agent: { enabled: true, max_concurrent_threads_per_session: 4, max_depth: 2 },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
+        return Promise.resolve(new Response(() => {}));
+      }
+      if (url.includes("/api/projects/project-1")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              id: "project-1",
+              name: "Acme",
+              description: "",
+              kind: "pentest",
+              scope: {},
+              defaults: { runner: "sandbox" },
+              created_at: "",
+              updated_at: "",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+
+    await selectPentestTaskType();
+    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.click(screen.getByRole("button", { name: /launch/i }));
+
+    expect(await screen.findByText("Codex multi-agent tools", { selector: "p" })).toBeInTheDocument();
+    expect(await screen.findByText("Spawn tools on for this launch")).toBeInTheDocument();
+    expect(await screen.findByText("max threads 4 · max depth 2")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Spawn stays a model tool inside the runtime turn; CyberPenda schedules no subagents."),
+    ).toBeInTheDocument();
+  });
+
   it("sends host-proxy-only sandbox network in launch run controls", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();

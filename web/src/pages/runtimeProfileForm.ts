@@ -37,6 +37,10 @@ export type RuntimeProfileFormInput = {
   default_runner: string;
   sandbox_image: string;
   credential_refs: string;
+  /** Codex-only in-turn multi-agent tools control; off by default. */
+  codex_multi_agent_enabled: boolean;
+  codex_multi_agent_max_threads: string;
+  codex_multi_agent_max_depth: string;
 };
 
 const API_KEY_CONFIGURED = "[configured]";
@@ -177,7 +181,25 @@ export function buildProfileFields(form: RuntimeProfileFormInput, plugins: Runti
   if (sandboxImage) fields.sandbox_image = sandboxImage;
   const credentialRefs = splitLines(form.credential_refs);
   if (credentialRefs.length > 0) fields.credential_refs = credentialRefs;
+  // The multi-agent control persists only when on; off means nothing is
+  // stored and projection writes the explicit Codex off state.
+  if (form.codex_multi_agent_enabled) {
+    const multiAgent: NonNullable<RuntimeProfileFields["codex_multi_agent"]> = { enabled: true };
+    const maxThreads = positiveInt(form.codex_multi_agent_max_threads);
+    const maxDepth = positiveInt(form.codex_multi_agent_max_depth);
+    if (maxThreads !== undefined) multiAgent.max_concurrent_threads_per_session = maxThreads;
+    if (maxDepth !== undefined) multiAgent.max_depth = maxDepth;
+    fields.codex_multi_agent = multiAgent;
+  }
   return fields;
+}
+
+function positiveInt(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return undefined;
+  return parsed;
 }
 
 function defaultAPIKeyEnv(provider: string, plugins: RuntimePlugin[]): string | undefined {

@@ -11,6 +11,7 @@ const (
 	StructuredFieldModel           = "model"
 	StructuredFieldModelProvider   = "model_provider"
 	StructuredFieldReasoningEffort = "reasoning_effort"
+	StructuredFieldCodexMultiAgent = "codex_multi_agent"
 )
 
 // CustomArgConflictError reports a Runtime Custom Argument that redefines a
@@ -162,6 +163,11 @@ func customArgRulesFor(provider Provider) customArgRules {
 				"model":                  StructuredFieldModel,
 				"model_provider":         StructuredFieldModelProvider,
 				"model_reasoning_effort": StructuredFieldReasoningEffort,
+				// Keys owned by the structured Codex multi-agent control.
+				"features.multi_agent":                      StructuredFieldCodexMultiAgent,
+				"agents.enabled":                            StructuredFieldCodexMultiAgent,
+				"agents.max_concurrent_threads_per_session": StructuredFieldCodexMultiAgent,
+				"agents.max_depth":                          StructuredFieldCodexMultiAgent,
 			},
 		}
 	case ProviderClaudeCode:
@@ -311,6 +317,8 @@ func structuredFieldLabel(field string) string {
 		return "Model Provider"
 	case StructuredFieldReasoningEffort:
 		return "Reasoning Effort"
+	case StructuredFieldCodexMultiAgent:
+		return "Codex multi-agent tools"
 	default:
 		return field
 	}

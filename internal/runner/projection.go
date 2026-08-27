@@ -1069,8 +1069,34 @@ func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimepr
 		fmt.Fprintf(&b, "wire_api = %q\n", wireAPI)
 		fmt.Fprintf(&b, "requires_openai_auth = true\n")
 	}
+	appendCodexMultiAgentTOML(&b, profile)
 	appendCodexMCPTOML(&b, mcpServers)
 	return b.String()
+}
+
+// appendCodexMultiAgentTOML writes the Codex-native multi-agent feature flag
+// and agent caps. Both states are explicit: Codex releases have shipped with
+// the multi_agent feature default-on, so an absent key cannot carry the
+// default-off control. `agents.enabled = false` forces the tools off for every
+// model; `features.multi_agent = true` turns the V1 tools on for models whose
+// metadata does not already select a multi-agent version. An unset cap is not
+// written, so a Custom Config File may supply it — the same fill-in behavior
+// as other conditional managed keys such as model_context_window.
+func appendCodexMultiAgentTOML(b *strings.Builder, profile runtimeprofile.Profile) {
+	enabled := runtimeprofile.CodexMultiAgentEnabled(profile)
+	settings := profile.Fields.CodexMultiAgent
+	b.WriteString("\n[features]\n")
+	fmt.Fprintf(b, "multi_agent = %t\n", enabled)
+	b.WriteString("\n[agents]\n")
+	fmt.Fprintf(b, "enabled = %t\n", enabled)
+	if settings != nil && enabled {
+		if settings.MaxConcurrentThreadsPerSession > 0 {
+			fmt.Fprintf(b, "max_concurrent_threads_per_session = %d\n", settings.MaxConcurrentThreadsPerSession)
+		}
+		if settings.MaxDepth > 0 {
+			fmt.Fprintf(b, "max_depth = %d\n", settings.MaxDepth)
+		}
+	}
 }
 
 func buildCodexAuth(materialized map[string]string) map[string]string {

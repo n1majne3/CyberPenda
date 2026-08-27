@@ -81,4 +81,24 @@ describe("runtimeProfilePreview", () => {
     expect(preview.config_toml).toContain('model_provider = "mimo"');
     expect(preview.config_toml).toContain('base_url = "https://api.example.test/v1"');
   });
+
+  it("projects the codex multi-agent state into the config preview", () => {
+    const base = { provider: "codex", config_path: "runtime-home/codex/config.toml", config_toml: "" };
+    const off = enrichPreviewWithModelProvider(base, { model_provider_id: "mimo" }, [mimoProvider], codexPlugin);
+    expect(off.config_toml).toContain("multi_agent = false");
+    expect(off.config_toml).toContain("enabled = false");
+
+    const on = enrichPreviewWithModelProvider(
+      base,
+      {
+        model_provider_id: "mimo",
+        codex_multi_agent: { enabled: true, max_concurrent_threads_per_session: 4, max_depth: 2 },
+      },
+      [mimoProvider],
+      codexPlugin,
+    );
+    expect(on.config_toml).toContain("multi_agent = true");
+    expect(on.config_toml).toContain("max_concurrent_threads_per_session = 4");
+    expect(on.config_toml).toContain("max_depth = 2");
+  });
 });

@@ -1219,6 +1219,7 @@ func (server *Server) handleCreateRuntimeProfile(response http.ResponseWriter, r
 			errors.Is(err, runtimeprofile.ErrMissingProvider),
 			errors.Is(err, runtimeprofile.ErrUnknownProvider),
 			errors.Is(err, runtimeprofile.ErrInvalidReasoningEffort),
+			errors.Is(err, runtimeprofile.ErrInvalidCodexMultiAgent),
 			errors.Is(err, runtimeprofile.ErrCustomArgConflict):
 			server.logCustomArgConflict(input.Provider, input.Fields.CustomArgs, err)
 			writeError(response, http.StatusBadRequest, err.Error())
@@ -1300,6 +1301,7 @@ func (server *Server) handleUpdateRuntimeProfile(response http.ResponseWriter, r
 			})
 		case errors.Is(err, runtimeprofile.ErrUnknownProvider),
 			errors.Is(err, runtimeprofile.ErrInvalidReasoningEffort),
+			errors.Is(err, runtimeprofile.ErrInvalidCodexMultiAgent),
 			errors.Is(err, runtimeprofile.ErrCustomArgConflict):
 			logProvider := provider
 			if logProvider == "" {

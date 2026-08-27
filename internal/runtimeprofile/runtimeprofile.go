@@ -95,6 +95,10 @@ type Fields struct {
 	// SandboxImage overrides the daemon default sandbox image for tasks using
 	// this profile. Leave empty to use the daemon-wide setting.
 	SandboxImage string `json:"sandbox_image,omitempty"`
+	// CodexMultiAgent is the Codex-only control for in-turn multi-agent tools.
+	// Nil means off; Config Projection projects an explicit off state for
+	// Codex launches so Codex's own feature defaults cannot turn the tools on.
+	CodexMultiAgent *CodexMultiAgent `json:"codex_multi_agent,omitempty"`
 	// CustomConfigFile is the provider-bound Custom Config File: raw
 	// provider-native config text holding only keys structured fields cannot
 	// express. Config Projection deep-merges it over the Generated Runtime
@@ -474,6 +478,19 @@ func GeneratedConfig(profile Profile) map[string]any {
 	if profile.Fields.SandboxImage != "" {
 		cfg["sandbox_image"] = profile.Fields.SandboxImage
 	}
+	if profile.Fields.CodexMultiAgent != nil {
+		entry := map[string]any{}
+		if profile.Fields.CodexMultiAgent.Enabled != nil {
+			entry["enabled"] = *profile.Fields.CodexMultiAgent.Enabled
+		}
+		if profile.Fields.CodexMultiAgent.MaxConcurrentThreadsPerSession > 0 {
+			entry["max_concurrent_threads_per_session"] = profile.Fields.CodexMultiAgent.MaxConcurrentThreadsPerSession
+		}
+		if profile.Fields.CodexMultiAgent.MaxDepth > 0 {
+			entry["max_depth"] = profile.Fields.CodexMultiAgent.MaxDepth
+		}
+		cfg["codex_multi_agent"] = entry
+	}
 	return cfg
 }
 
@@ -504,6 +521,11 @@ func normalizeFields(provider Provider, fields Fields) (Fields, error) {
 	if err := ValidateCustomConfigFile(provider, fields.CustomConfigFile); err != nil {
 		return Fields{}, err
 	}
+	codexMultiAgent, err := normalizeCodexMultiAgent(provider, fields.CodexMultiAgent)
+	if err != nil {
+		return Fields{}, err
+	}
+	fields.CodexMultiAgent = codexMultiAgent
 	if strings.TrimSpace(fields.ReasoningEffort) == "" {
 		fields.ReasoningEffort = ""
 		return fields, nil

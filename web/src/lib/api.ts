@@ -433,6 +433,12 @@ export interface RuntimeProfile {
     mcp_servers?: { name?: string; mode?: string; command?: string; url?: string; args?: string[]; env?: Record<string, string> }[];
     default_runner?: string;
     sandbox_image?: string;
+    /** Codex-only in-turn multi-agent tools control; unset means off. */
+    codex_multi_agent?: {
+      enabled?: boolean;
+      max_concurrent_threads_per_session?: number;
+      max_depth?: number;
+    };
     /** Custom Config File: provider-bound raw overlay text, deep-merged at projection. */
     custom_config_file?: string;
   };
@@ -824,6 +830,12 @@ export interface PreflightResult {
   skills?: PreflightSkill[];
   runtime_extensions?: PreflightRuntimeExtension[];
   model_provider?: PreflightModelProvider;
+  /** Codex-only: whether in-turn multi-agent tools will be projected on. */
+  codex_multi_agent?: {
+    enabled: boolean;
+    max_concurrent_threads_per_session?: number;
+    max_depth?: number;
+  };
 }
 
 // ---- Health ----

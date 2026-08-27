@@ -69,6 +69,16 @@ type ModelProviderPreview struct {
 	MaxOutputTokensSource string `json:"max_output_tokens_source,omitempty"`
 }
 
+// CodexMultiAgentPreview reports whether the Codex Runtime will receive
+// in-turn multi-agent tools for this launch. It is a projection preview only:
+// spawn remains a model tool inside a Work Runtime Turn, never a Harness-owned
+// worker scheduling surface.
+type CodexMultiAgentPreview struct {
+	Enabled                        bool `json:"enabled"`
+	MaxConcurrentThreadsPerSession int  `json:"max_concurrent_threads_per_session,omitempty"`
+	MaxDepth                       int  `json:"max_depth,omitempty"`
+}
+
 // Result is the full preflight outcome for a task launch.
 type Result struct {
 	Pass              bool                      `json:"pass"`
@@ -76,6 +86,7 @@ type Result struct {
 	Skills            []SkillPreview            `json:"skills,omitempty"`
 	RuntimeExtensions []RuntimeExtensionPreview `json:"runtime_extensions,omitempty"`
 	ModelProvider     *ModelProviderPreview     `json:"model_provider,omitempty"`
+	CodexMultiAgent   *CodexMultiAgentPreview   `json:"codex_multi_agent,omitempty"`
 }
 
 // Request describes what to validate for a task launch.
@@ -282,6 +293,20 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 			}
 			result.add(Check{Name: "model_provider", Status: CheckPass, Detail: fmt.Sprintf("%s via %s", snapshot.Model, snapshot.APIKeyEnv)})
 		}
+	}
+
+	// Codex multi-agent tools preview: whether the projected Codex config will
+	// give the Runtime in-turn spawn tools. Informational only; it never gates
+	// launch and never implies Harness-owned subagent scheduling.
+	if profileLoaded && profile.Provider == runtimeprofile.ProviderCodex {
+		preview := &CodexMultiAgentPreview{
+			Enabled: runtimeprofile.CodexMultiAgentEnabled(profile),
+		}
+		if settings := profile.Fields.CodexMultiAgent; settings != nil && preview.Enabled {
+			preview.MaxConcurrentThreadsPerSession = settings.MaxConcurrentThreadsPerSession
+			preview.MaxDepth = settings.MaxDepth
+		}
+		result.CodexMultiAgent = preview
 	}
 
 	// Check 2: the selected runner is valid. Empty defaults to sandbox.

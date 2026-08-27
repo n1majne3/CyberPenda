@@ -674,6 +674,29 @@ function PreflightCard({ preflight }: { preflight: PreflightResult }) {
           </div>
         </div>
       )}
+      {preflight.codex_multi_agent && (
+        <div className="mt-3 border-t border-border/60 pt-3" data-preflight-section="codex-multi-agent">
+          <p className="mb-2 text-sm font-medium">Codex multi-agent tools</p>
+          <div className="rounded-lg border border-border/60 bg-background/50 p-2 text-xs space-y-1">
+            <div className="text-sm">
+              {preflight.codex_multi_agent.enabled ? "Spawn tools on for this launch" : "Spawn tools off for this launch"}
+            </div>
+            {preflight.codex_multi_agent.enabled && (
+              <div className="font-mono text-muted-foreground">
+                {[
+                  preflight.codex_multi_agent.max_concurrent_threads_per_session
+                    ? `max threads ${preflight.codex_multi_agent.max_concurrent_threads_per_session}`
+                    : null,
+                  preflight.codex_multi_agent.max_depth ? `max depth ${preflight.codex_multi_agent.max_depth}` : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ") || "Codex default caps"}
+              </div>
+            )}
+            <p className="text-muted-foreground">Spawn stays a model tool inside the runtime turn; CyberPenda schedules no subagents.</p>
+          </div>
+        </div>
+      )}
       {preflight.runtime_extensions && preflight.runtime_extensions.length > 0 && (
         <div className="mt-3 border-t border-border/60 pt-3">
           <p className="mb-2 text-sm font-medium">Runtime extensions</p>

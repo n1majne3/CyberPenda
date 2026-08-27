@@ -121,6 +121,7 @@ var profileFieldTypes = map[string]bool{
 	"mcp_servers":        true,
 	"runtime_extensions": true,
 	"runner":             true,
+	"codex_multi_agent":  true,
 }
 
 var projectionPrimitives = map[string]bool{

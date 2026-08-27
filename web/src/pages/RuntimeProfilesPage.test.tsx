@@ -751,6 +751,78 @@ describe("RuntimeProfilesPage", () => {
     expect(screen.getByLabelText("Default runner")).toHaveAttribute("name", "default_runner");
   });
 
+  it("edits and saves the codex multi-agent tools control", async () => {
+    const patchBodies: unknown[] = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (url.includes("/api/runtime-extension-catalog")) {
+        return new Promise<Response>(() => {});
+      }
+      if (url.includes("/api/runtime-profiles/profile-1") && method === "PATCH") {
+        patchBodies.push(JSON.parse(String(init?.body ?? "{}")));
+        return Promise.resolve(
+          new Response(JSON.stringify({ id: "profile-1", name: "Fast Codex", provider: "codex", fields: {}, created_at: "", updated_at: "" }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              profiles: [
+                {
+                  id: "profile-1",
+                  name: "Fast Codex",
+                  provider: "codex",
+                  fields: { model: "gpt-5" },
+                  created_at: "",
+                  updated_at: "2026-06-19T00:00:00Z",
+                },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
+      if (url.includes("/api/runtime-plugins")) {
+        return Promise.resolve(new Response(JSON.stringify({ plugins: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      if (url.includes("/api/runtime-extensions")) {
+        return Promise.resolve(new Response(JSON.stringify({ extensions: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /Fast Codex/i }));
+
+    const toggle = screen.getByLabelText(/In-turn multi-agent tools/i);
+    expect(toggle).not.toBeChecked();
+    expect(screen.queryByLabelText("Max concurrent agent threads")).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(screen.getByLabelText("Max concurrent agent threads")).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText("Max concurrent agent threads"), "4");
+    await userEvent.type(screen.getByLabelText("Max agent depth"), "2");
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => expect(patchBodies).toHaveLength(1));
+    expect(patchBodies[0]).toMatchObject({
+      fields: {
+        codex_multi_agent: { enabled: true, max_concurrent_threads_per_session: 4, max_depth: 2 },
+      },
+    });
+  });
+
   it("requires confirmation before deleting a runtime profile", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const fetchMock = vi.fn((input: RequestInfo | URL) => {

@@ -8,6 +8,11 @@ export type RuntimeProfileFields = {
   model_override?: string;
   env?: Record<string, string>;
   api_keys?: Record<string, string>;
+  codex_multi_agent?: {
+    enabled?: boolean;
+    max_concurrent_threads_per_session?: number;
+    max_depth?: number;
+  };
   [key: string]: unknown;
 };
 
@@ -79,7 +84,28 @@ function codexWireAPI(protocol: string): string {
   return protocol === "openai_responses" ? "responses" : protocol;
 }
 
-function buildCodexConfigTomlFromSnapshot(snapshot: ModelProviderSnapshot): string {
+/**
+ * Codex-native multi-agent lines shared by every generated-config preview,
+ * mirroring the daemon's appendCodexMultiAgentTOML projection. Both states
+ * are explicit because recent Codex versions enable multi_agent by default.
+ */
+export function codexMultiAgentTOMLLines(fields: RuntimeProfileFields): string[] {
+  const enabled = fields.codex_multi_agent?.enabled === true;
+  const settings = enabled ? fields.codex_multi_agent : undefined;
+  return [
+    "[features]",
+    `multi_agent = ${enabled}`,
+    "",
+    "[agents]",
+    `enabled = ${enabled}`,
+    ...(settings?.max_concurrent_threads_per_session
+      ? [`max_concurrent_threads_per_session = ${settings.max_concurrent_threads_per_session}`]
+      : []),
+    ...(settings?.max_depth ? [`max_depth = ${settings.max_depth}`] : []),
+  ];
+}
+
+function buildCodexConfigTomlFromSnapshot(snapshot: ModelProviderSnapshot, fields: RuntimeProfileFields): string {
   const providerID = snapshot.model_provider_id;
   const wireApi = codexWireAPI(snapshot.protocol);
   return [
@@ -92,6 +118,7 @@ function buildCodexConfigTomlFromSnapshot(snapshot: ModelProviderSnapshot): stri
     `base_url = "${snapshot.base_url.replace(/\/$/, "")}"`,
     `wire_api = "${wireApi}"`,
     "requires_openai_auth = true",
+    ...codexMultiAgentTOMLLines(fields),
   ].join("\n");
 }
 
@@ -113,7 +140,7 @@ export function enrichPreviewWithModelProvider(
   };
 
   if (preview.provider === "codex") {
-    next.config_toml = buildCodexConfigTomlFromSnapshot(snapshot);
+    next.config_toml = buildCodexConfigTomlFromSnapshot(snapshot, fields);
   }
 
   return next;

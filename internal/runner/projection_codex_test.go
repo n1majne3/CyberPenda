@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/BurntSushi/toml"
+
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
 	"pentest/internal/owner"
@@ -227,5 +229,135 @@ func TestProjectCodexConfigUsesSandboxModelCatalogPath(t *testing.T) {
 	config := string(raw)
 	if !strings.Contains(config, `model_catalog_json = "/task/runtime-home/codex/model_catalog.json"`) {
 		t.Fatalf("expected sandbox catalog path:\n%s", config)
+	}
+}
+
+func projectCodexMultiAgentConfig(t *testing.T, fields runtimeprofile.Fields) string {
+	t.Helper()
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-codex-multi-agent", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderCodex,
+		Fields:   fields,
+	}, runner.ProjectionRequest{}); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	return string(raw)
+}
+
+func TestProjectCodexConfigMultiAgentOffByDefault(t *testing.T) {
+	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{Model: "gpt-test"})
+
+	// The default stays off explicitly so a recent Codex that enables its
+	// multi_agent feature by default still yields no spawn tools.
+	var parsed map[string]any
+	if err := toml.Unmarshal([]byte(config), &parsed); err != nil {
+		t.Fatalf("parse projected config: %v\n%s", err, config)
+	}
+	features, ok := parsed["features"].(map[string]any)
+	if !ok || features["multi_agent"] != false {
+		t.Fatalf("features = %#v in:\n%s", parsed["features"], config)
+	}
+	agents, ok := parsed["agents"].(map[string]any)
+	if !ok || agents["enabled"] != false {
+		t.Fatalf("agents = %#v in:\n%s", parsed["agents"], config)
+	}
+	if _, has := agents["max_concurrent_threads_per_session"]; has {
+		t.Fatalf("expected no agent thread cap when off, got:\n%s", config)
+	}
+	if _, has := agents["max_depth"]; has {
+		t.Fatalf("expected no agent depth cap when off, got:\n%s", config)
+	}
+}
+
+func TestProjectCodexConfigMultiAgentOnProjectsFeatureAndCaps(t *testing.T) {
+	enabled := true
+	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{
+		Model: "gpt-test",
+		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{
+			Enabled:                        &enabled,
+			MaxConcurrentThreadsPerSession: 4,
+			MaxDepth:                       2,
+		},
+	})
+
+	for _, want := range []string{
+		"[features]",
+		"multi_agent = true",
+		"[agents]",
+		"enabled = true",
+		"max_concurrent_threads_per_session = 4",
+		"max_depth = 2",
+	} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("expected config.toml to contain %q, got:\n%s", want, config)
+		}
+	}
+
+	// The projected document must remain valid TOML.
+	var parsed map[string]any
+	if err := toml.Unmarshal([]byte(config), &parsed); err != nil {
+		t.Fatalf("parse projected config: %v\n%s", err, config)
+	}
+	features, ok := parsed["features"].(map[string]any)
+	if !ok || features["multi_agent"] != true {
+		t.Fatalf("features = %#v", parsed["features"])
+	}
+	agents, ok := parsed["agents"].(map[string]any)
+	if !ok || agents["enabled"] != true {
+		t.Fatalf("agents = %#v", parsed["agents"])
+	}
+}
+
+func TestProjectCodexConfigMultiAgentOmitsUnsetCaps(t *testing.T) {
+	enabled := true
+	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{
+		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{Enabled: &enabled},
+	})
+	if !strings.Contains(config, "multi_agent = true") || !strings.Contains(config, "enabled = true") {
+		t.Fatalf("expected enabled multi-agent tools:\n%s", config)
+	}
+	for _, forbidden := range []string{"max_concurrent_threads_per_session", "max_depth"} {
+		if strings.Contains(config, forbidden) {
+			t.Fatalf("unset caps must stay unprojected, found %q:\n%s", forbidden, config)
+		}
+	}
+}
+
+func TestProjectCodexConfigMultiAgentOverlayMergesUnmanagedAgentsKeys(t *testing.T) {
+	enabled := true
+	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{
+		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{
+			Enabled:  &enabled,
+			MaxDepth: 2,
+		},
+		CustomConfigFile: `
+[agents]
+default_subagent_model = "gpt-sub"
+max_depth = 9
+
+[agents.researcher]
+description = "Research role."
+`,
+	})
+
+	// Unmanaged overlay keys merge; the structured cap wins its conflict.
+	if !strings.Contains(config, `default_subagent_model = "gpt-sub"`) {
+		t.Fatalf("expected overlay agents key to merge, got:\n%s", config)
+	}
+	if !strings.Contains(config, `description = "Research role."`) {
+		t.Fatalf("expected overlay agent role table to merge, got:\n%s", config)
+	}
+	if !strings.Contains(config, "max_depth = 2") || strings.Contains(config, "max_depth = 9") {
+		t.Fatalf("structured max_depth must win the conflict, got:\n%s", config)
+	}
+	if !strings.Contains(config, "multi_agent = true") {
+		t.Fatalf("expected multi-agent feature on, got:\n%s", config)
 	}
 }

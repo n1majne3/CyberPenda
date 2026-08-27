@@ -34,6 +34,11 @@ func TestValidateCustomArgsRejectsDocumentedAliases(t *testing.T) {
 		{name: "codex --config model_reasoning_effort=", provider: runtimeprofile.ProviderCodex, args: []string{"--config", "model_reasoning_effort=xhigh"}, wantArg: "--config model_reasoning_effort=xhigh", wantFlag: "model_reasoning_effort", wantField: "reasoning_effort"},
 		{name: "codex --config=model_reasoning_effort=", provider: runtimeprofile.ProviderCodex, args: []string{`--config=model_reasoning_effort="high"`}, wantArg: "--config=model_reasoning_effort=high", wantFlag: "model_reasoning_effort", wantField: "reasoning_effort"},
 		{name: "codex -c=model_reasoning_effort", provider: runtimeprofile.ProviderCodex, args: []string{"-c=model_reasoning_effort=max"}, wantArg: "-c=model_reasoning_effort=max", wantFlag: "model_reasoning_effort", wantField: "reasoning_effort"},
+		// Codex — -c / --config keys owned by the structured multi-agent control
+		{name: "codex -c features.multi_agent=", provider: runtimeprofile.ProviderCodex, args: []string{"-c", "features.multi_agent=true"}, wantArg: "-c features.multi_agent=true", wantFlag: "features.multi_agent", wantField: "codex_multi_agent"},
+		{name: "codex --config agents.enabled=", provider: runtimeprofile.ProviderCodex, args: []string{"--config", "agents.enabled=false"}, wantArg: "--config agents.enabled=false", wantFlag: "agents.enabled", wantField: "codex_multi_agent"},
+		{name: "codex -c agents.max_depth=", provider: runtimeprofile.ProviderCodex, args: []string{"-c", "agents.max_depth=3"}, wantArg: "-c agents.max_depth=3", wantFlag: "agents.max_depth", wantField: "codex_multi_agent"},
+		{name: "codex -c agents.max_concurrent_threads_per_session=", provider: runtimeprofile.ProviderCodex, args: []string{"-c", "agents.max_concurrent_threads_per_session=8"}, wantArg: "-c agents.max_concurrent_threads_per_session=8", wantFlag: "agents.max_concurrent_threads_per_session", wantField: "codex_multi_agent"},
 
 		// Claude Code — builtin --model; CLI --effort
 		{name: "claude --model", provider: runtimeprofile.ProviderClaudeCode, args: []string{"--model", "claude-opus"}, wantArg: "--model claude-opus", wantFlag: "--model", wantField: "model"},
@@ -121,6 +126,8 @@ func TestValidateCustomArgsAllowsNonConflictingArgs(t *testing.T) {
 		{name: "codex non-interactive and strict", provider: runtimeprofile.ProviderCodex, args: []string{"--dangerously-bypass-approvals-and-sandbox", "--strict", "--json"}},
 		{name: "codex unrelated -c key", provider: runtimeprofile.ProviderCodex, args: []string{"-c", "sandbox_workspace_write.network_access=true"}},
 		{name: "codex unrelated --config key", provider: runtimeprofile.ProviderCodex, args: []string{"--config", "approval_policy=never"}},
+		{name: "codex unrelated feature flag", provider: runtimeprofile.ProviderCodex, args: []string{"-c", "features.web_search_cached=true"}},
+		{name: "codex unstructured agents key", provider: runtimeprofile.ProviderCodex, args: []string{"-c", `agents.default_subagent_model="gpt-sub"`}},
 		{name: "codex --config=unrelated", provider: runtimeprofile.ProviderCodex, args: []string{"--config=sandbox_workspace_write.network_access=true"}},
 		{name: "claude stream options", provider: runtimeprofile.ProviderClaudeCode, args: []string{"-p", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"}},
 		{name: "claude permission mode", provider: runtimeprofile.ProviderClaudeCode, args: []string{"--permission-mode", "bypassPermissions"}},

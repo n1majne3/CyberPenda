@@ -192,6 +192,97 @@ describe("runtimeProfileForm", () => {
     expect(displayReasoningEffort("xhigh")).toBe("xhigh");
   });
 
+  it("keeps the codex multi-agent control off by default", () => {
+    const fields = buildProfileFields(
+      {
+        name: "codex",
+        provider: "codex",
+        binary_path: "",
+        model: "",
+        endpoint: "",
+        model_provider_id: "mimo",
+        model_provider_protocol: "",
+        model_override: "",
+        reasoning_effort: "high",
+        custom_args: "",
+        env: "",
+        api_key_env: "",
+        api_key: "",
+        runtime_extensions: [],
+        mcp_servers: "",
+        default_runner: "sandbox",
+        sandbox_image: "",
+        credential_refs: "",
+      },
+      plugins,
+    );
+    expect(fields.codex_multi_agent).toBeUndefined();
+  });
+
+  it("persists the codex multi-agent control with caps from the form", () => {
+    const fields = buildProfileFields(
+      {
+        name: "codex",
+        provider: "codex",
+        binary_path: "",
+        model: "",
+        endpoint: "",
+        model_provider_id: "mimo",
+        model_provider_protocol: "",
+        model_override: "",
+        reasoning_effort: "high",
+        custom_args: "",
+        env: "",
+        api_key_env: "",
+        api_key: "",
+        runtime_extensions: [],
+        mcp_servers: "",
+        default_runner: "sandbox",
+        sandbox_image: "",
+        credential_refs: "",
+        codex_multi_agent_enabled: true,
+        codex_multi_agent_max_threads: "4",
+        codex_multi_agent_max_depth: "2",
+      },
+      plugins,
+    );
+    expect(fields.codex_multi_agent).toEqual({
+      enabled: true,
+      max_concurrent_threads_per_session: 4,
+      max_depth: 2,
+    });
+  });
+
+  it("persists the enabled multi-agent control without empty caps", () => {
+    const fields = buildProfileFields(
+      {
+        name: "codex",
+        provider: "codex",
+        binary_path: "",
+        model: "",
+        endpoint: "",
+        model_provider_id: "mimo",
+        model_provider_protocol: "",
+        model_override: "",
+        reasoning_effort: "high",
+        custom_args: "",
+        env: "",
+        api_key_env: "",
+        api_key: "",
+        runtime_extensions: [],
+        mcp_servers: "",
+        default_runner: "sandbox",
+        sandbox_image: "",
+        credential_refs: "",
+        codex_multi_agent_enabled: true,
+        codex_multi_agent_max_threads: "",
+        codex_multi_agent_max_depth: "",
+      },
+      plugins,
+    );
+    expect(fields.codex_multi_agent).toEqual({ enabled: true });
+  });
+
   it("persists explicit high when the form shows the default for a missing stored value", () => {
     const fields = buildProfileFields(
       {
