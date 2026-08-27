@@ -679,9 +679,11 @@ function PreflightCard({ preflight }: { preflight: PreflightResult }) {
           <p className="mb-2 text-sm font-medium">Codex multi-agent tools</p>
           <div className="rounded-lg border border-border/60 bg-background/50 p-2 text-xs space-y-1">
             <div className="text-sm">
-              {preflight.codex_multi_agent.enabled ? "Spawn tools on for this launch" : "Spawn tools off for this launch"}
+              {preflight.codex_multi_agent.state === "on" && "Spawn tools on for this launch"}
+              {preflight.codex_multi_agent.state === "off" && "Spawn tools off for this launch"}
+              {preflight.codex_multi_agent.state === "inherit" && "Codex decides — no multi-agent keys projected"}
             </div>
-            {preflight.codex_multi_agent.enabled && (
+            {preflight.codex_multi_agent.state === "on" && (
               <div className="font-mono text-muted-foreground">
                 {[
                   preflight.codex_multi_agent.max_concurrent_threads_per_session

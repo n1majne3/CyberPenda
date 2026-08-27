@@ -1075,21 +1075,27 @@ func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimepr
 }
 
 // appendCodexMultiAgentTOML writes the Codex-native multi-agent feature flag
-// and agent caps. Both states are explicit: Codex releases have shipped with
-// the multi_agent feature default-on, so an absent key cannot carry the
-// default-off control. `agents.enabled = false` forces the tools off for every
-// model; `features.multi_agent = true` turns the V1 tools on for models whose
-// metadata does not already select a multi-agent version. An unset cap is not
-// written, so a Custom Config File may supply it — the same fill-in behavior
-// as other conditional managed keys such as model_context_window.
+// and agent caps. The control is tri-state: unset writes nothing so Codex's
+// own feature default applies (CyberPenda does not suppress native
+// multi-agent behavior); an explicit on projects `features.multi_agent =
+// true` plus `agents.enabled = true` and the caps, which turns the V1 tools
+// on for models whose metadata does not already select a multi-agent
+// version; an explicit off projects both off keys because Codex releases
+// have shipped with the feature default-on, so an absent key cannot carry an
+// operator's off decision. An unset cap is not written, so a Custom Config
+// File may supply it — the same fill-in behavior as other conditional
+// managed keys such as model_context_window.
 func appendCodexMultiAgentTOML(b *strings.Builder, profile runtimeprofile.Profile) {
-	enabled := runtimeprofile.CodexMultiAgentEnabled(profile)
 	settings := profile.Fields.CodexMultiAgent
+	if settings == nil {
+		return
+	}
+	enabled := settings.Enabled != nil && *settings.Enabled
 	b.WriteString("\n[features]\n")
 	fmt.Fprintf(b, "multi_agent = %t\n", enabled)
 	b.WriteString("\n[agents]\n")
 	fmt.Fprintf(b, "enabled = %t\n", enabled)
-	if settings != nil && enabled {
+	if enabled {
 		if settings.MaxConcurrentThreadsPerSession > 0 {
 			fmt.Fprintf(b, "max_concurrent_threads_per_session = %d\n", settings.MaxConcurrentThreadsPerSession)
 		}

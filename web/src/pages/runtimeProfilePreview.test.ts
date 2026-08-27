@@ -84,7 +84,18 @@ describe("runtimeProfilePreview", () => {
 
   it("projects the codex multi-agent state into the config preview", () => {
     const base = { provider: "codex", config_path: "runtime-home/codex/config.toml", config_toml: "" };
-    const off = enrichPreviewWithModelProvider(base, { model_provider_id: "mimo" }, [mimoProvider], codexPlugin);
+
+    // Unset inherits Codex's default: no multi-agent keys at all.
+    const inherit = enrichPreviewWithModelProvider(base, { model_provider_id: "mimo" }, [mimoProvider], codexPlugin);
+    expect(inherit.config_toml).not.toContain("multi_agent");
+    expect(inherit.config_toml).not.toContain("[agents]");
+
+    const off = enrichPreviewWithModelProvider(
+      base,
+      { model_provider_id: "mimo", codex_multi_agent: { enabled: false } },
+      [mimoProvider],
+      codexPlugin,
+    );
     expect(off.config_toml).toContain("multi_agent = false");
     expect(off.config_toml).toContain("enabled = false");
 

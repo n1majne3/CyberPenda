@@ -18,26 +18,23 @@ func newMultiAgentTestService(t *testing.T) *runtimeprofile.Service {
 	return runtimeprofile.NewService(db)
 }
 
-func TestCodexMultiAgentDefaultsOffWithoutRewritingExistingProfiles(t *testing.T) {
+func TestCodexMultiAgentDefaultsToInheritWithoutRewritingExistingProfiles(t *testing.T) {
 	svc := newMultiAgentTestService(t)
 
-	created, err := svc.Create("codex-off", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	created, err := svc.Create("codex-inherit", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	if created.Fields.CodexMultiAgent != nil {
 		t.Fatalf("expected no codex_multi_agent storage, got %#v", created.Fields.CodexMultiAgent)
 	}
-	if runtimeprofile.CodexMultiAgentEnabled(created) {
-		t.Fatalf("expected multi-agent tools to default off")
-	}
 
 	loaded, err := svc.Get(created.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if runtimeprofile.CodexMultiAgentEnabled(loaded) {
-		t.Fatalf("expected stored profile to keep multi-agent tools off")
+	if loaded.Fields.CodexMultiAgent != nil {
+		t.Fatalf("expected stored profile to keep the inherit default")
 	}
 }
 
@@ -55,11 +52,11 @@ func TestCreatePersistsCodexMultiAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if !runtimeprofile.CodexMultiAgentEnabled(created) {
-		t.Fatalf("expected multi-agent tools on")
-	}
 	stored := created.Fields.CodexMultiAgent
-	if stored == nil || stored.MaxConcurrentThreadsPerSession != 4 || stored.MaxDepth != 2 {
+	if stored == nil || stored.Enabled == nil || !*stored.Enabled {
+		t.Fatalf("expected explicit on, got %#v", stored)
+	}
+	if stored.MaxConcurrentThreadsPerSession != 4 || stored.MaxDepth != 2 {
 		t.Fatalf("stored caps = %#v", stored)
 	}
 
@@ -67,15 +64,13 @@ func TestCreatePersistsCodexMultiAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if !runtimeprofile.CodexMultiAgentEnabled(loaded) {
-		t.Fatalf("expected persisted multi-agent tools on")
-	}
-	if got := loaded.Fields.CodexMultiAgent; got == nil || got.MaxConcurrentThreadsPerSession != 4 || got.MaxDepth != 2 {
-		t.Fatalf("persisted caps = %#v", got)
+	if got := loaded.Fields.CodexMultiAgent; got == nil || got.Enabled == nil || !*got.Enabled ||
+		got.MaxConcurrentThreadsPerSession != 4 || got.MaxDepth != 2 {
+		t.Fatalf("persisted control = %#v", got)
 	}
 }
 
-func TestCodexMultiAgentExplicitFalseStaysOff(t *testing.T) {
+func TestCodexMultiAgentExplicitFalseStaysStored(t *testing.T) {
 	svc := newMultiAgentTestService(t)
 	disabled := false
 
@@ -85,8 +80,9 @@ func TestCodexMultiAgentExplicitFalseStaysOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if runtimeprofile.CodexMultiAgentEnabled(created) {
-		t.Fatalf("explicit false must stay off")
+	stored := created.Fields.CodexMultiAgent
+	if stored == nil || stored.Enabled == nil || *stored.Enabled {
+		t.Fatalf("explicit false must stay stored as off, got %#v", stored)
 	}
 }
 
@@ -103,6 +99,24 @@ func TestNormalizeRejectsNegativeCodexMultiAgentCaps(t *testing.T) {
 		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{Enabled: &enabled, MaxDepth: -3},
 	}); err == nil {
 		t.Fatalf("expected negative max depth to be rejected")
+	}
+}
+
+func TestNormalizeRejectsCapsWithoutEnabledChoice(t *testing.T) {
+	svc := newMultiAgentTestService(t)
+	disabled := false
+
+	// Caps project only in the on state; storing them under inherit or off
+	// would leave them silently inert.
+	if _, err := svc.Create("caps-inherit", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{MaxConcurrentThreadsPerSession: 4},
+	}); err == nil {
+		t.Fatalf("expected caps without an enabled choice to be rejected")
+	}
+	if _, err := svc.Create("caps-off", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{Enabled: &disabled, MaxDepth: 2},
+	}); err == nil {
+		t.Fatalf("expected caps under explicit off to be rejected")
 	}
 }
 

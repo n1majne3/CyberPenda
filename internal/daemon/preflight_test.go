@@ -487,9 +487,9 @@ func TestPreflightPreviewsCodexMultiAgentTools(t *testing.T) {
 	var result struct {
 		Pass            bool `json:"pass"`
 		CodexMultiAgent *struct {
-			Enabled                        bool `json:"enabled"`
-			MaxConcurrentThreadsPerSession int  `json:"max_concurrent_threads_per_session"`
-			MaxDepth                       int  `json:"max_depth"`
+			State                          string `json:"state"`
+			MaxConcurrentThreadsPerSession int    `json:"max_concurrent_threads_per_session"`
+			MaxDepth                       int    `json:"max_depth"`
 		} `json:"codex_multi_agent"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -501,38 +501,38 @@ func TestPreflightPreviewsCodexMultiAgentTools(t *testing.T) {
 	if result.CodexMultiAgent == nil {
 		t.Fatalf("expected codex multi-agent preview, got %s", resp.Body.String())
 	}
-	if !result.CodexMultiAgent.Enabled ||
+	if result.CodexMultiAgent.State != "on" ||
 		result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 4 ||
 		result.CodexMultiAgent.MaxDepth != 2 {
 		t.Fatalf("codex multi-agent preview = %#v", result.CodexMultiAgent)
 	}
 
-	// A profile without the control previews an explicit off state.
-	offProfileID := createRuntimeProfile(t, server, `{
-		"name":"Codex Off",
+	// A profile without the control previews the inherit state.
+	inheritProfileID := createRuntimeProfile(t, server, `{
+		"name":"Codex Inherit",
 		"provider":"codex",
 		"fields":{"model_provider_id":"`+provider.ID+`"}
 	}`)
-	offBody := []byte(`{
-		"runtime_profile_id":"` + offProfileID + `",
+	inheritBody := []byte(`{
+		"runtime_profile_id":"` + inheritProfileID + `",
 		"runner":"sandbox"
 	}`)
-	offReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(offBody))
-	offReq.Header.Set("Content-Type", "application/json")
-	offResp := httptest.NewRecorder()
-	server.ServeHTTP(offResp, offReq)
-	if offResp.Code != http.StatusOK {
-		t.Fatalf("off preflight status %d body %s", offResp.Code, offResp.Body.String())
+	inheritReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(inheritBody))
+	inheritReq.Header.Set("Content-Type", "application/json")
+	inheritResp := httptest.NewRecorder()
+	server.ServeHTTP(inheritResp, inheritReq)
+	if inheritResp.Code != http.StatusOK {
+		t.Fatalf("inherit preflight status %d body %s", inheritResp.Code, inheritResp.Body.String())
 	}
-	var offResult struct {
+	var inheritResult struct {
 		CodexMultiAgent *struct {
-			Enabled bool `json:"enabled"`
+			State string `json:"state"`
 		} `json:"codex_multi_agent"`
 	}
-	if err := json.NewDecoder(offResp.Body).Decode(&offResult); err != nil {
-		t.Fatalf("decode off preflight: %v", err)
+	if err := json.NewDecoder(inheritResp.Body).Decode(&inheritResult); err != nil {
+		t.Fatalf("decode inherit preflight: %v", err)
 	}
-	if offResult.CodexMultiAgent == nil || offResult.CodexMultiAgent.Enabled {
-		t.Fatalf("expected off multi-agent preview, got %s", offResp.Body.String())
+	if inheritResult.CodexMultiAgent == nil || inheritResult.CodexMultiAgent.State != "inherit" {
+		t.Fatalf("expected inherit multi-agent preview, got %s", inheritResp.Body.String())
 	}
 }

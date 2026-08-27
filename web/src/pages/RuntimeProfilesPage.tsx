@@ -95,7 +95,7 @@ type ProfileForm = {
   default_runner: string;
   sandbox_image: string;
   credential_refs: string;
-  codex_multi_agent_enabled: boolean;
+  codex_multi_agent_state: "inherit" | "on" | "off";
   codex_multi_agent_max_threads: string;
   codex_multi_agent_max_depth: string;
 };
@@ -119,7 +119,7 @@ const emptyForm: ProfileForm = {
   default_runner: "sandbox",
   sandbox_image: "",
   credential_refs: "",
-  codex_multi_agent_enabled: false,
+  codex_multi_agent_state: "inherit",
   codex_multi_agent_max_threads: "",
   codex_multi_agent_max_depth: "",
 };
@@ -1276,22 +1276,23 @@ function ProfileEditor({
           </p>
         </div>}
         {form.provider === "codex" && <div className="col-span-2 space-y-2 rounded-lg border border-border p-3">
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              name="codex_multi_agent_enabled"
-              className="mt-1 h-4 w-4 accent-primary"
-              checked={form.codex_multi_agent_enabled}
-              onChange={(e) => onChange({ ...form, codex_multi_agent_enabled: e.target.checked })}
-            />
-            <span>
-              <span className="font-medium">In-turn multi-agent tools</span>
-              <span className="mt-0.5 block text-xs text-muted-foreground">
-                Project Codex-native spawn tools (<code className="text-[11px]">features.multi_agent</code> + <code className="text-[11px]">agents</code> caps) for launches using this profile. Off keeps the runtime free of spawn tools.
-              </span>
-            </span>
-          </label>
-          {form.codex_multi_agent_enabled && <div className="grid grid-cols-2 gap-3 pl-6">
+          <div>
+            <Label htmlFor="profile-multi-agent-state">In-turn multi-agent tools</Label>
+            <Select
+              id="profile-multi-agent-state"
+              name="codex_multi_agent_state"
+              value={form.codex_multi_agent_state}
+              onChange={(e) => onChange({ ...form, codex_multi_agent_state: e.target.value as ProfileForm["codex_multi_agent_state"] })}
+            >
+              <option value="inherit">Codex default (no keys projected)</option>
+              <option value="on">On — project spawn tools + caps</option>
+              <option value="off">Off — project the off keys</option>
+            </Select>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              On projects <code className="text-[11px]">features.multi_agent</code> and <code className="text-[11px]">agents</code> caps so turns receive spawn tools. Off writes the off keys for every model. Codex default stores nothing and lets Codex decide.
+            </p>
+          </div>
+          {form.codex_multi_agent_state === "on" && <div className="grid grid-cols-2 gap-3">
             <div>
               <Label htmlFor="profile-multi-agent-threads">Max concurrent agent threads</Label>
               <Input
@@ -1544,7 +1545,11 @@ function profileToForm(profile: RuntimeProfile, plugins: RuntimePlugin[]): Profi
     default_runner: profile.fields.default_runner ?? "sandbox",
     sandbox_image: profile.fields.sandbox_image ?? "",
     credential_refs: (profile.fields.credential_refs ?? []).join("\n"),
-    codex_multi_agent_enabled: profile.fields.codex_multi_agent?.enabled ?? false,
+    codex_multi_agent_state: profile.fields.codex_multi_agent
+      ? profile.fields.codex_multi_agent.enabled
+        ? "on"
+        : "off"
+      : "inherit",
     codex_multi_agent_max_threads:
       profile.fields.codex_multi_agent?.max_concurrent_threads_per_session?.toString() ?? "",
     codex_multi_agent_max_depth: profile.fields.codex_multi_agent?.max_depth?.toString() ?? "",

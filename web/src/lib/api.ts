@@ -830,9 +830,13 @@ export interface PreflightResult {
   skills?: PreflightSkill[];
   runtime_extensions?: PreflightRuntimeExtension[];
   model_provider?: PreflightModelProvider;
-  /** Codex-only: whether in-turn multi-agent tools will be projected on. */
+  /**
+   * Codex-only multi-agent tools projection state. "inherit" projects no
+   * keys so Codex's own feature default applies; "on" and "off" project
+   * the explicit keys.
+   */
   codex_multi_agent?: {
-    enabled: boolean;
+    state: "inherit" | "on" | "off";
     max_concurrent_threads_per_session?: number;
     max_depth?: number;
   };

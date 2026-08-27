@@ -1340,7 +1340,7 @@ describe("TaskLaunchPage", () => {
                 ...autoResolvedProfile,
                 fields: {
                   ...autoResolvedProfile.fields,
-                  codex_multi_agent: { enabled: true, max_concurrent_threads_per_session: 4, max_depth: 2 },
+                  codex_multi_agent: { state: "on", max_concurrent_threads_per_session: 4, max_depth: 2 },
                 },
               },
             }),
@@ -1354,7 +1354,7 @@ describe("TaskLaunchPage", () => {
             JSON.stringify({
               pass: true,
               checks: [{ name: "model_provider", status: "pass" }],
-              codex_multi_agent: { enabled: true, max_concurrent_threads_per_session: 4, max_depth: 2 },
+              codex_multi_agent: { state: "on", max_concurrent_threads_per_session: 4, max_depth: 2 },
             }),
             { status: 200, headers: { "Content-Type": "application/json" } },
           ),

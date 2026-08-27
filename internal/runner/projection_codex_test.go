@@ -251,11 +251,34 @@ func projectCodexMultiAgentConfig(t *testing.T, fields runtimeprofile.Fields) st
 	return string(raw)
 }
 
-func TestProjectCodexConfigMultiAgentOffByDefault(t *testing.T) {
+func TestProjectCodexConfigMultiAgentUnsetInheritsCodexDefault(t *testing.T) {
 	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{Model: "gpt-test"})
 
-	// The default stays off explicitly so a recent Codex that enables its
-	// multi_agent feature by default still yields no spawn tools.
+	// An unset control projects no multi-agent keys: CyberPenda does not
+	// suppress Codex's own feature default.
+	for _, forbidden := range []string{
+		"[features]",
+		"multi_agent",
+		"[agents]",
+		"agents",
+		"max_concurrent_threads_per_session",
+		"max_depth",
+	} {
+		if strings.Contains(config, forbidden) {
+			t.Fatalf("expected config.toml without %q, got:\n%s", forbidden, config)
+		}
+	}
+}
+
+func TestProjectCodexConfigMultiAgentExplicitOffProjectsOffKeys(t *testing.T) {
+	disabled := false
+	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{
+		Model:           "gpt-test",
+		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{Enabled: &disabled},
+	})
+
+	// An explicit off projects the off keys so Codex's default-on feature
+	// cannot leak spawn tools past an operator decision.
 	var parsed map[string]any
 	if err := toml.Unmarshal([]byte(config), &parsed); err != nil {
 		t.Fatalf("parse projected config: %v\n%s", err, config)

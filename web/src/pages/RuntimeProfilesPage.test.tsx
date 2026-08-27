@@ -805,11 +805,11 @@ describe("RuntimeProfilesPage", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Fast Codex/i }));
 
-    const toggle = screen.getByLabelText(/In-turn multi-agent tools/i);
-    expect(toggle).not.toBeChecked();
+    const stateSelect = screen.getByLabelText("In-turn multi-agent tools");
+    expect(stateSelect).toHaveValue("inherit");
     expect(screen.queryByLabelText("Max concurrent agent threads")).not.toBeInTheDocument();
 
-    await userEvent.click(toggle);
+    await userEvent.selectOptions(stateSelect, "on");
     expect(screen.getByLabelText("Max concurrent agent threads")).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("Max concurrent agent threads"), "4");
     await userEvent.type(screen.getByLabelText("Max agent depth"), "2");

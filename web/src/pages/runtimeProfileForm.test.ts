@@ -192,7 +192,7 @@ describe("runtimeProfileForm", () => {
     expect(displayReasoningEffort("xhigh")).toBe("xhigh");
   });
 
-  it("keeps the codex multi-agent control off by default", () => {
+  it("keeps the codex multi-agent control unset by default", () => {
     const fields = buildProfileFields(
       {
         name: "codex",
@@ -240,7 +240,7 @@ describe("runtimeProfileForm", () => {
         default_runner: "sandbox",
         sandbox_image: "",
         credential_refs: "",
-        codex_multi_agent_enabled: true,
+        codex_multi_agent_state: "on",
         codex_multi_agent_max_threads: "4",
         codex_multi_agent_max_depth: "2",
       },
@@ -253,7 +253,7 @@ describe("runtimeProfileForm", () => {
     });
   });
 
-  it("persists the enabled multi-agent control without empty caps", () => {
+  it("persists the enabled multi-agent control without empty caps and the explicit off choice", () => {
     const fields = buildProfileFields(
       {
         name: "codex",
@@ -274,13 +274,41 @@ describe("runtimeProfileForm", () => {
         default_runner: "sandbox",
         sandbox_image: "",
         credential_refs: "",
-        codex_multi_agent_enabled: true,
+        codex_multi_agent_state: "on",
         codex_multi_agent_max_threads: "",
         codex_multi_agent_max_depth: "",
       },
       plugins,
     );
     expect(fields.codex_multi_agent).toEqual({ enabled: true });
+
+    const offFields = buildProfileFields(
+      {
+        name: "codex",
+        provider: "codex",
+        binary_path: "",
+        model: "",
+        endpoint: "",
+        model_provider_id: "mimo",
+        model_provider_protocol: "",
+        model_override: "",
+        reasoning_effort: "high",
+        custom_args: "",
+        env: "",
+        api_key_env: "",
+        api_key: "",
+        runtime_extensions: [],
+        mcp_servers: "",
+        default_runner: "sandbox",
+        sandbox_image: "",
+        credential_refs: "",
+        codex_multi_agent_state: "off",
+        codex_multi_agent_max_threads: "",
+        codex_multi_agent_max_depth: "",
+      },
+      plugins,
+    );
+    expect(offFields.codex_multi_agent).toEqual({ enabled: false });
   });
 
   it("persists explicit high when the form shows the default for a missing stored value", () => {

@@ -86,23 +86,22 @@ function codexWireAPI(protocol: string): string {
 
 /**
  * Codex-native multi-agent lines shared by every generated-config preview,
- * mirroring the daemon's appendCodexMultiAgentTOML projection. Both states
- * are explicit because recent Codex versions enable multi_agent by default.
+ * mirroring the daemon's appendCodexMultiAgentTOML projection. An unset
+ * control projects nothing so Codex's own feature default applies; an
+ * explicit choice projects the on or off keys.
  */
 export function codexMultiAgentTOMLLines(fields: RuntimeProfileFields): string[] {
-  const enabled = fields.codex_multi_agent?.enabled === true;
-  const settings = enabled ? fields.codex_multi_agent : undefined;
-  return [
-    "[features]",
-    `multi_agent = ${enabled}`,
-    "",
-    "[agents]",
-    `enabled = ${enabled}`,
-    ...(settings?.max_concurrent_threads_per_session
-      ? [`max_concurrent_threads_per_session = ${settings.max_concurrent_threads_per_session}`]
-      : []),
-    ...(settings?.max_depth ? [`max_depth = ${settings.max_depth}`] : []),
-  ];
+  const settings = fields.codex_multi_agent;
+  if (!settings) return [];
+  const enabled = settings.enabled === true;
+  const lines = ["[features]", `multi_agent = ${enabled}`, "", "[agents]", `enabled = ${enabled}`];
+  if (enabled) {
+    if (settings.max_concurrent_threads_per_session) {
+      lines.push(`max_concurrent_threads_per_session = ${settings.max_concurrent_threads_per_session}`);
+    }
+    if (settings.max_depth) lines.push(`max_depth = ${settings.max_depth}`);
+  }
+  return lines;
 }
 
 function buildCodexConfigTomlFromSnapshot(snapshot: ModelProviderSnapshot, fields: RuntimeProfileFields): string {
