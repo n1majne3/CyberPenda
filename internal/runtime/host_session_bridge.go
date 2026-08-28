@@ -250,22 +250,32 @@ func (b *HostSessionBridge) BindContinuation(continuationID string) error {
 }
 
 func (b *HostSessionBridge) Send(ctx context.Context, request SandboxBridgeRequest) (SandboxBridgeResponse, error) {
+	waiter, err := b.BeginSend(request)
+	if err != nil {
+		return SandboxBridgeResponse{}, err
+	}
+	return waiter.Wait(ctx)
+}
+
+// BeginSend writes one framed request and returns a waiter for its idempotent
+// response. It is the host equivalent of SandboxSessionBridge.BeginSend.
+func (b *HostSessionBridge) BeginSend(request SandboxBridgeRequest) (ProviderSessionResponseWaiter, error) {
 	request.JSONRPC = "2.0"
 	request.ID = strings.TrimSpace(request.ID)
 	request.TaskID = strings.TrimSpace(request.TaskID)
 	if request.ID == "" || strings.TrimSpace(request.Method) == "" {
-		return SandboxBridgeResponse{}, ErrHostBridgeInvalid
+		return nil, ErrHostBridgeInvalid
 	}
 	if request.TaskID == "" {
 		request.TaskID = b.config.TaskID
 	}
 	if request.TaskID != b.config.TaskID {
-		return SandboxBridgeResponse{}, ErrHostBridgeTaskMismatch
+		return nil, ErrHostBridgeTaskMismatch
 	}
 	b.mu.Lock()
 	if b.state != "running" {
 		b.mu.Unlock()
-		return SandboxBridgeResponse{}, ErrHostBridgeClosed
+		return nil, ErrHostBridgeClosed
 	}
 	if request.ContinuationID == "" {
 		request.ContinuationID = b.continuation
@@ -273,25 +283,20 @@ func (b *HostSessionBridge) Send(ctx context.Context, request SandboxBridgeReque
 	encoded, err := json.Marshal(request)
 	if err != nil {
 		b.mu.Unlock()
-		return SandboxBridgeResponse{}, ErrHostBridgeInvalid
+		return nil, ErrHostBridgeInvalid
 	}
 	fingerprint := sha256.Sum256(encoded)
 	if prior, ok := b.requests[request.ID]; ok && prior != fingerprint {
 		b.mu.Unlock()
-		return SandboxBridgeResponse{}, ErrSandboxBridgeRequestConflict
+		return nil, ErrSandboxBridgeRequestConflict
 	}
 	if done, ok := b.completed[request.ID]; ok {
 		b.mu.Unlock()
-		return done.response, done.err
+		return completedBridgeResponseWaiter(done), nil
 	}
 	if prior, ok := b.pending[request.ID]; ok {
 		b.mu.Unlock()
-		select {
-		case <-prior.done:
-			return prior.result.response, prior.result.err
-		case <-ctx.Done():
-			return SandboxBridgeResponse{}, ctx.Err()
-		}
+		return bridgeResponseWaiter{pending: prior}, nil
 	}
 	pending := &bridgePending{done: make(chan struct{})}
 	b.pending[request.ID] = pending
@@ -304,14 +309,11 @@ func (b *HostSessionBridge) Send(ctx context.Context, request SandboxBridgeReque
 	_, err = stdin.Write(frame)
 	b.writeMu.Unlock()
 	if err != nil {
-		b.finish(request.ID, SandboxBridgeResponse{}, fmt.Errorf("write host bridge request: %w", err))
+		writeErr := fmt.Errorf("write host bridge request: %w", err)
+		b.finish(request.ID, SandboxBridgeResponse{}, writeErr)
+		return nil, writeErr
 	}
-	select {
-	case <-pending.done:
-		return pending.result.response, pending.result.err
-	case <-ctx.Done():
-		return SandboxBridgeResponse{}, ctx.Err()
-	}
+	return bridgeResponseWaiter{pending: pending}, nil
 }
 
 func (b *HostSessionBridge) readLoop(reader io.Reader) {

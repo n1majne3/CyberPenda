@@ -21,6 +21,19 @@ type ProviderSessionTransport interface {
 	Close(context.Context) error
 }
 
+// ProviderSessionResponseWaiter waits for one already-written provider request.
+// The request remains owned by the transport when a caller stops waiting.
+type ProviderSessionResponseWaiter interface {
+	Wait(context.Context) (SandboxBridgeResponse, error)
+}
+
+// ProviderSessionStartTransport exposes the provider request write boundary for
+// provider methods whose JSON-RPC response is also the Runtime Turn terminal
+// boundary. SandboxSessionBridge and HostSessionBridge implement it.
+type ProviderSessionStartTransport interface {
+	BeginSend(SandboxBridgeRequest) (ProviderSessionResponseWaiter, error)
+}
+
 // ProviderSessionEventHandler is implemented by adapters that can consume
 // unsolicited provider notifications delivered through SandboxBridgeConfig's
 // ProtocolEmit callback. Implementations emit only normalized correlation
@@ -28,6 +41,13 @@ type ProviderSessionTransport interface {
 type ProviderSessionEventHandler interface {
 	HandleEvent(SandboxBridgeEvent, ProviderSessionEmit)
 }
+
+type providerSendResponseBoundary uint8
+
+const (
+	providerSendResponseStartsRuntimeTurn providerSendResponseBoundary = iota
+	providerSendResponseEndsRuntimeTurn
+)
 
 type providerWireMethods struct {
 	send       string
@@ -44,6 +64,10 @@ type providerWireMethods struct {
 	prepareSend func(context.Context, ProviderSessionTransport, string, string, string, ProviderSessionRequest) error
 	turnID      func(map[string]any) string
 	sessionID   func(map[string]any) string
+	// sendResponseBoundary defines whether the send response starts or ends the
+	// Runtime Turn. A response-ending provider must supply start evidence through
+	// provider updates while the response remains pending.
+	sendResponseBoundary providerSendResponseBoundary
 }
 
 type providerSessionCallResult struct {
@@ -59,6 +83,10 @@ type providerSessionRequestIdentity struct {
 
 type providerSettlement struct {
 	seq uint64
+}
+
+type providerLongRunningSendResult struct {
+	err error
 }
 
 // providerSessionAdapter implements the shared lifecycle, idempotency, and
@@ -87,6 +115,7 @@ type providerSessionAdapter struct {
 	settlements               map[string]providerSettlement
 	startGeneration           uint64
 	pendingStartGeneration    uint64
+	pendingStartEvidence      chan struct{}
 	pendingStartTerminalTurns map[string]struct{}
 	settlementSeq             uint64
 	settlementChanged         chan struct{}
@@ -402,6 +431,7 @@ func (s *providerSessionAdapter) Close(ctx context.Context) error {
 	s.closed = true
 	s.activeTurnID = ""
 	s.pendingStartGeneration = 0
+	s.pendingStartEvidence = nil
 	s.pendingStartTerminalTurns = nil
 	transport := s.transport
 	s.mu.Unlock()
@@ -586,11 +616,14 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: err}
 	}
 	startGeneration := uint64(0)
+	var startEvidence <-chan struct{}
 	if method == s.methods.send && mode != ProviderSessionModeInTurnSteer {
 		s.mu.Lock()
 		s.startGeneration++
 		startGeneration = s.startGeneration
 		s.pendingStartGeneration = startGeneration
+		s.pendingStartEvidence = make(chan struct{})
+		startEvidence = s.pendingStartEvidence
 		s.pendingStartTerminalTurns = make(map[string]struct{})
 		s.mu.Unlock()
 	}
@@ -601,11 +634,53 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 		s.mu.Lock()
 		if s.pendingStartGeneration == startGeneration {
 			s.pendingStartGeneration = 0
+			s.pendingStartEvidence = nil
 			s.pendingStartTerminalTurns = nil
 		}
 		s.mu.Unlock()
 	}
-	response, err := transport.Send(ctx, SandboxBridgeRequest{ID: wireID, Method: method, Params: encoded})
+	wireRequest := SandboxBridgeRequest{ID: wireID, Method: method, Params: encoded}
+	if startGeneration != 0 && s.methods.sendResponseBoundary == providerSendResponseEndsRuntimeTurn {
+		if starter, ok := transport.(ProviderSessionStartTransport); ok {
+			turnID := strings.TrimSpace(request.RequestID)
+			s.mu.Lock()
+			s.activeTurnID = turnID
+			s.mu.Unlock()
+			waiter, startErr := starter.BeginSend(wireRequest)
+			if startErr != nil {
+				clearPendingStart()
+				s.mu.Lock()
+				if s.activeTurnID == turnID {
+					s.activeTurnID = ""
+				}
+				s.mu.Unlock()
+				return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: startErr}
+			}
+			responseDone := waitProviderSessionResponse(waiter, wireID)
+			started := ProviderSessionResult{
+				RequestID: request.RequestID, SessionID: sessionID, ProviderTurnID: turnID,
+				Mode: mode, Outcome: "started",
+			}
+			select {
+			case <-startEvidence:
+				clearPendingStart()
+				go s.finishLongRunningSend(responseDone, mode, request.RequestID, sessionID, turnID, true)
+				return started, nil
+			case result := <-responseDone:
+				clearPendingStart()
+				s.recordProviderTurnEvent(sessionID, turnID, true)
+				if result.err != nil {
+					return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: result.err}
+				}
+				return started, nil
+			case <-ctx.Done():
+				clearPendingStart()
+				go s.finishLongRunningSend(responseDone, mode, request.RequestID, sessionID, turnID, false)
+				return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: ctx.Err()}
+			}
+		}
+	}
+	response, err := transport.Send(ctx, wireRequest)
 	if err != nil {
 		clearPendingStart()
 		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: err}
@@ -660,6 +735,26 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 	}
 	s.mu.Unlock()
 	return ProviderSessionResult{RequestID: request.RequestID, SessionID: newSessionID, ProviderTurnID: turnID, Mode: mode, Outcome: "acknowledged"}, nil
+}
+
+func waitProviderSessionResponse(waiter ProviderSessionResponseWaiter, requestID string) <-chan providerLongRunningSendResult {
+	done := make(chan providerLongRunningSendResult, 1)
+	go func() {
+		response, err := waiter.Wait(context.Background())
+		if err == nil && len(response.Error) > 0 && string(response.Error) != "null" {
+			err = sandboxBridgeRPCError(requestID, response.Error)
+		}
+		done <- providerLongRunningSendResult{err: err}
+	}()
+	return done
+}
+
+func (s *providerSessionAdapter) finishLongRunningSend(done <-chan providerLongRunningSendResult, mode ProviderSessionMode, requestID, sessionID, turnID string, emitFailure bool) {
+	result := <-done
+	s.recordProviderTurnEvent(sessionID, turnID, true)
+	if emitFailure && result.err != nil {
+		s.emit(nil, mode, "failed", requestID, turnID)
+	}
 }
 
 func sandboxBridgeRPCError(requestID string, raw json.RawMessage) *SandboxBridgeRPCError {
@@ -919,6 +1014,26 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 		turnID = s.currentTurn()
 	}
 	terminal := outcome == "settled" || outcome == "completed" || outcome == "failed" || providerTurnSettled(params)
+	s.recordProviderTurnEvent(sessionID, turnID, terminal)
+	requestID := providerJSONValue(params, "request_id", "requestId", "control_id", "controlId")
+	kind := task.EventKindLifecycle
+	if mode == ProviderSessionModeInterruptTurn {
+		kind = task.EventKindSteering
+	}
+	payload := task.EventPayload{
+		"provider": s.provider, "provider_event": event.Method, "request_id": requestID,
+		"session_id": sessionID, "provider_turn_id": turnID, "mode": string(mode), "outcome": outcome,
+	}
+	if mode == ProviderSessionModePermissionResponse {
+		payload["permission_request_id"] = providerJSONValue(params, "permission_request_id", "permissionRequestId", "permission_id", "permissionId")
+		payload["phase"] = "provider_permission_requested"
+	}
+	if emit != nil {
+		emit(kind, payload)
+	}
+}
+
+func (s *providerSessionAdapter) recordProviderTurnEvent(sessionID, turnID string, terminal bool) {
 	s.mu.Lock()
 	currentSession := s.sessionID
 	currentTurn := s.activeTurnID
@@ -930,6 +1045,10 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 	interruptActive := s.active && (s.activeMode == ProviderSessionModeInterruptTurn || s.activeMode == ProviderSessionModeInterruptThenReplace)
 	matchingSession := currentSession == "" || currentSession == sessionID
 	matchingTurn := currentTurn == "" || currentTurn == turnID
+	if s.pendingStartGeneration != 0 && matchingSession && matchingTurn && sessionID != "" && turnID != "" && s.pendingStartEvidence != nil {
+		close(s.pendingStartEvidence)
+		s.pendingStartEvidence = nil
+	}
 	if terminal && interruptActive && matchingSession && matchingTurn && sessionID != "" && turnID != "" {
 		s.settlementSeq++
 		s.settlements[providerSettlementKey(sessionID, turnID)] = providerSettlement{seq: s.settlementSeq}
@@ -952,22 +1071,6 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 		}
 	}
 	s.mu.Unlock()
-	requestID := providerJSONValue(params, "request_id", "requestId", "control_id", "controlId")
-	kind := task.EventKindLifecycle
-	if mode == ProviderSessionModeInterruptTurn {
-		kind = task.EventKindSteering
-	}
-	payload := task.EventPayload{
-		"provider": s.provider, "provider_event": event.Method, "request_id": requestID,
-		"session_id": sessionID, "provider_turn_id": turnID, "mode": string(mode), "outcome": outcome,
-	}
-	if mode == ProviderSessionModePermissionResponse {
-		payload["permission_request_id"] = providerJSONValue(params, "permission_request_id", "permissionRequestId", "permission_id", "permissionId")
-		payload["phase"] = "provider_permission_requested"
-	}
-	if emit != nil {
-		emit(kind, payload)
-	}
 }
 
 func defaultProviderCapabilities() runtimeplugin.Capabilities {
@@ -1181,8 +1284,9 @@ func NewHermesProviderSession(config HermesProviderSessionConfig) *HermesProvide
 		prepareSend: func(ctx context.Context, transport ProviderSessionTransport, wireBaseID, sessionID, turnID string, request ProviderSessionRequest) error {
 			return hermesPrepareSendSelection(ctx, transport, wireBaseID, sessionID, turnID, config.HermesHome, request)
 		},
-		turnID:    func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") },
-		sessionID: identitySession,
+		turnID:               func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") },
+		sessionID:            identitySession,
+		sendResponseBoundary: providerSendResponseEndsRuntimeTurn,
 	}
 	return &HermesProviderSession{
 		providerSessionAdapter: newProviderSessionAdapter("hermes", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods),

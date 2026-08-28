@@ -148,6 +148,7 @@ type Server struct {
 	runtimeRecovery         map[string]task.RuntimeActivity
 	blackboardConclusions   *runtime.AssistedConclusionTracker
 	runtimeStopTimeout      time.Duration
+	steeringDispatchTimeout time.Duration
 }
 
 func NewServer(config Config) (*Server, error) {
@@ -309,6 +310,7 @@ func NewServer(config Config) (*Server, error) {
 		runtimeRecovery:         map[string]task.RuntimeActivity{},
 		blackboardConclusions:   runtime.NewAssistedConclusionTracker(),
 		runtimeStopTimeout:      10 * time.Second,
+		steeringDispatchTimeout: defaultAcceptedSteeringDispatchTimeout,
 	}
 	server.sessions = session.NewService(db, server.sessionRoot)
 	server.sessionHarness = runtime.NewSessionHarness(server.sessions)

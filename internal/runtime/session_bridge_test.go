@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeplugin"
 )
 
 type fakeBridgeDocker struct {
@@ -311,6 +312,97 @@ func TestSandboxSessionBridgeRetryAfterCallerTimeoutDoesNotResend(t *testing.T) 
 	_, _ = docker.outputW.Write([]byte(`{"jsonrpc":"2.0","id":"` + got.ID + `","result":{}}` + "\n"))
 	if err := <-retried; err != nil {
 		t.Fatalf("retry: %v", err)
+	}
+}
+
+func TestHermesLongRunningReplacementReturnsStartedAndOwnsActiveRuntimeTurn(t *testing.T) {
+	docker := newFakeBridgeDocker()
+	var provider *runtime.HermesProviderSession
+	bridge := newStartedBridge(t, docker, func(config *runtime.SandboxBridgeConfig) {
+		config.ProtocolEmit = func(event runtime.SandboxBridgeEvent) {
+			provider.HandleEvent(event, nil)
+		}
+	})
+	provider = runtime.NewHermesProviderSession(runtime.HermesProviderSessionConfig{
+		Transport: bridge,
+		SessionID: "hermes-session",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession:    true,
+			SendTurn:             true,
+			InterruptThenReplace: true,
+		},
+	})
+
+	requestRead := make(chan runtime.SandboxBridgeRequest, 1)
+	finishPrompt := make(chan struct{})
+	var finishOnce sync.Once
+	finish := func() { finishOnce.Do(func() { close(finishPrompt) }) }
+	t.Cleanup(finish)
+	go func() {
+		scanner := bufio.NewScanner(docker.requestR)
+		if !scanner.Scan() {
+			return
+		}
+		var request runtime.SandboxBridgeRequest
+		_ = json.Unmarshal(scanner.Bytes(), &request)
+		requestRead <- request
+		<-finishPrompt
+		_, _ = docker.outputW.Write([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"hermes-session","update":{"sessionUpdate":"turn_ended","stopReason":"end_turn"}}}` + "\n"))
+		_, _ = docker.outputW.Write([]byte(`{"jsonrpc":"2.0","id":"` + request.ID + `","result":{"stopReason":"end_turn"}}` + "\n"))
+	}()
+
+	type turnResult struct {
+		result runtime.ProviderSessionResult
+		err    error
+	}
+	resultReady := make(chan turnResult, 1)
+	go func() {
+		result, err := provider.InterruptThenReplace(context.Background(), runtime.ProviderSessionRequest{
+			RequestID: "replace-1",
+			Message:   "continue",
+			TurnKind:  runtime.RuntimeTurnKindWork,
+		}, nil)
+		resultReady <- turnResult{result: result, err: err}
+	}()
+
+	select {
+	case request := <-requestRead:
+		if request.Method != "session/prompt" {
+			t.Fatalf("Hermes request method = %q, want session/prompt", request.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Hermes replacement prompt was not written")
+	}
+	select {
+	case early := <-resultReady:
+		t.Fatalf("Hermes replacement returned before provider start evidence: %#v", early)
+	case <-time.After(20 * time.Millisecond):
+	}
+	_, _ = docker.outputW.Write([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"hermes-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"working"}}}}` + "\n"))
+
+	var started turnResult
+	select {
+	case started = <-resultReady:
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("Hermes replacement waited for the long-running session/prompt response")
+	}
+	if started.err != nil {
+		t.Fatalf("Hermes replacement start: %v", started.err)
+	}
+	if started.result.Outcome != "started" || started.result.ProviderTurnID != "replace-1" {
+		t.Fatalf("Hermes replacement result = %#v, want started Runtime Turn replace-1", started.result)
+	}
+	if state := provider.TurnState(); !state.TurnBusy() || state.ActiveTurnID != "replace-1" || state.ActiveTurnKind != runtime.RuntimeTurnKindWork {
+		t.Fatalf("Hermes active replacement = %#v, want busy Work Runtime Turn replace-1", state)
+	}
+
+	finish()
+	deadline := time.Now().Add(time.Second)
+	for provider.TurnState().TurnBusy() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if state := provider.TurnState(); state.TurnBusy() {
+		t.Fatalf("Hermes terminal replacement = %#v, want idle", state)
 	}
 }
 

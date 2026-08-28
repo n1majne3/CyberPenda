@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,72 @@ type blockingSteerSession struct {
 	*runtime.FakeProviderSession
 	steerStarted chan struct{}
 	releaseSteer chan struct{}
+}
+
+type pendingHermesResponse struct {
+	done     chan struct{}
+	once     sync.Once
+	response runtime.SandboxBridgeResponse
+	err      error
+}
+
+func newPendingHermesResponse() *pendingHermesResponse {
+	return &pendingHermesResponse{done: make(chan struct{})}
+}
+
+func (response *pendingHermesResponse) Wait(ctx context.Context) (runtime.SandboxBridgeResponse, error) {
+	select {
+	case <-response.done:
+		return response.response, response.err
+	case <-ctx.Done():
+		return runtime.SandboxBridgeResponse{}, ctx.Err()
+	}
+}
+
+func (response *pendingHermesResponse) complete(result runtime.SandboxBridgeResponse, err error) {
+	response.once.Do(func() {
+		response.response = result
+		response.err = err
+		close(response.done)
+	})
+}
+
+type longRunningHermesTransport struct {
+	provider      *runtime.HermesProviderSession
+	promptStarted chan runtime.SandboxBridgeRequest
+	promptResult  *pendingHermesResponse
+	closeOnce     sync.Once
+}
+
+func newLongRunningHermesTransport() *longRunningHermesTransport {
+	return &longRunningHermesTransport{
+		promptStarted: make(chan runtime.SandboxBridgeRequest, 1),
+		promptResult:  newPendingHermesResponse(),
+	}
+}
+
+func (transport *longRunningHermesTransport) Send(_ context.Context, request runtime.SandboxBridgeRequest) (runtime.SandboxBridgeResponse, error) {
+	if request.Method == "session/cancel" {
+		transport.provider.HandleEvent(runtime.SandboxBridgeEvent{
+			Method: "session/update",
+			Params: json.RawMessage(`{"sessionId":"hermes-session","update":{"sessionUpdate":"turn_ended","stopReason":"cancelled"}}`),
+		}, nil)
+	}
+	return runtime.SandboxBridgeResponse{
+		ID: request.ID, Result: json.RawMessage(`{"sessionId":"hermes-session"}`),
+	}, nil
+}
+
+func (transport *longRunningHermesTransport) BeginSend(request runtime.SandboxBridgeRequest) (runtime.ProviderSessionResponseWaiter, error) {
+	transport.promptStarted <- request
+	return transport.promptResult, nil
+}
+
+func (transport *longRunningHermesTransport) Close(context.Context) error {
+	transport.closeOnce.Do(func() {
+		transport.promptResult.complete(runtime.SandboxBridgeResponse{}, runtime.ErrProviderSessionClosed)
+	})
+	return nil
 }
 
 func (s *blockingSteerSession) Capabilities() runtimeplugin.Capabilities {
@@ -899,6 +966,150 @@ func TestAcceptedSteeringSessionOwnerDispatchesDurably(t *testing.T) {
 	}
 	if len(fake.LastRequests()) != 1 {
 		t.Fatalf("Session replay dispatched %d provider requests, want 1", len(fake.LastRequests()))
+	}
+}
+
+func TestHermesAcceptedSteeringStaysAppliedAndBusyWhileReplacementPromptRuns(t *testing.T) {
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(),
+		DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	server.steeringDispatchTimeout = 500 * time.Millisecond
+	profile := createTestRuntimeProfile(t, server)
+	created, err := server.sessions.Create(session.CreateRequest{Input: "Hermes long-running replacement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.sessions.CreateContinuation(created.ID, profile.ID, string(runtimeprofile.ProviderHermes), session.RunnerHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	releaseRuntime := make(chan struct{})
+	var releaseRuntimeOnce sync.Once
+	t.Cleanup(func() { releaseRuntimeOnce.Do(func() { close(releaseRuntime) }) })
+	go func() {
+		_ = server.sessionHarness.Launch(context.Background(), runtime.SessionLaunchRequest{
+			SessionID: created.ID, Goal: "Hermes long-running replacement", Adapter: holdAdapter{release: releaseRuntime}, ContinuationID: continuation.ID,
+		})
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !server.sessionHarness.IsActive(created.ID) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !server.sessionHarness.IsActive(created.ID) {
+		t.Fatal("Hermes Session Harness did not become active")
+	}
+
+	transport := newLongRunningHermesTransport()
+	provider := runtime.NewHermesProviderSession(runtime.HermesProviderSessionConfig{
+		Transport:    transport,
+		SessionID:    "hermes-session",
+		ActiveTurnID: "hermes-old-turn",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession:    true,
+			SendTurn:             true,
+			InterruptThenReplace: true,
+		},
+	})
+	transport.provider = provider
+	if err := server.BindSessionProviderSession(created.ID, provider); err != nil {
+		t.Fatal(err)
+	}
+
+	steer := httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/steer", bytes.NewBufferString(`{
+		"request_id":"hermes-long-steer",
+		"message":"Continue the Session."
+	}`))
+	steer.Header.Set("Content-Type", "application/json")
+	steer.Header.Set("Idempotency-Key", "hermes-long-steer")
+	steerResponse := httptest.NewRecorder()
+	server.ServeHTTP(steerResponse, steer)
+	if steerResponse.Code != http.StatusAccepted {
+		t.Fatalf("Hermes Session steer status=%d body=%s", steerResponse.Code, steerResponse.Body.String())
+	}
+
+	var prompt runtime.SandboxBridgeRequest
+	select {
+	case prompt = <-transport.promptStarted:
+		if prompt.Method != "session/prompt" {
+			t.Fatalf("Hermes replacement method = %q, want session/prompt", prompt.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Hermes replacement prompt did not start")
+	}
+	record, err := server.steering.ByRequestID(owner.KindSession, created.ID, "hermes-long-steer")
+	if err != nil || record.State != owner.SteeringDispatchStarted {
+		t.Fatalf("Hermes Accepted Steering before provider evidence = %#v err=%v, want dispatch_started", record, err)
+	}
+	provider.HandleEvent(runtime.SandboxBridgeEvent{
+		Method: "session/update",
+		Params: json.RawMessage(`{"sessionId":"hermes-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"still working"}}}`),
+	}, nil)
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		record, err = server.steering.ByRequestID(owner.KindSession, created.ID, "hermes-long-steer")
+		if err == nil && record.State == owner.SteeringApplied {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if record == nil || record.State != owner.SteeringApplied {
+		t.Fatalf("Hermes Accepted Steering = %#v err=%v, want applied while prompt response is pending", record, err)
+	}
+	select {
+	case <-transport.promptResult.done:
+		t.Fatal("Hermes prompt response completed before the active Runtime Turn assertion")
+	default:
+	}
+	<-time.After(2 * server.steeringDispatchTimeout)
+	record, err = server.steering.ByRequestID(owner.KindSession, created.ID, "hermes-long-steer")
+	if err != nil || record.State != owner.SteeringApplied {
+		t.Fatalf("Hermes Accepted Steering after the delivery bound = %#v err=%v, want applied", record, err)
+	}
+	select {
+	case <-transport.promptResult.done:
+		t.Fatal("Hermes replacement prompt completed before the post-bound assertion")
+	default:
+	}
+	detail := httptest.NewRecorder()
+	server.ServeHTTP(detail, httptest.NewRequest(http.MethodGet, "/api/sessions/"+created.ID, nil))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("Hermes Session detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	var running session.Session
+	if err := json.Unmarshal(detail.Body.Bytes(), &running); err != nil {
+		t.Fatal(err)
+	}
+	if running.RuntimeActivity.Liveness != runtimeLivenessLive || running.RuntimeActivity.TurnActivity != runtimeTurnBusy {
+		t.Fatalf("Hermes replacement Runtime Activity = %#v, want live/busy", running.RuntimeActivity)
+	}
+	if running.RuntimeControls.NativeSteerState != string(owner.SteeringApplied) {
+		t.Fatalf("Hermes active Runtime Turn Controls = %#v, want applied steering", running.RuntimeControls)
+	}
+
+	stop := httptest.NewRecorder()
+	server.ServeHTTP(stop, httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/stop", nil))
+	if stop.Code != http.StatusOK {
+		t.Fatalf("Hermes Session Stop status=%d body=%s", stop.Code, stop.Body.String())
+	}
+	select {
+	case <-transport.promptResult.done:
+	default:
+		t.Fatal("Hermes Session Stop did not close the pending replacement prompt")
+	}
+	if server.sessionHarness.IsActive(created.ID) {
+		t.Fatal("Hermes Session Stop left the Session Harness active")
+	}
+	if _, bound := server.sessionProviderSessions.get(created.ID); bound {
+		t.Fatal("Hermes Session Stop left the Provider Session bound")
+	}
+	if state := provider.TurnState(); state.TurnBusy() {
+		t.Fatalf("Hermes Session Stop left Runtime Turn busy: %#v", state)
 	}
 }
 

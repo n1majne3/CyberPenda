@@ -74,6 +74,17 @@ func (s *HermesProviderSession) HandleEvent(event SandboxBridgeEvent, emit Provi
 	}
 	update := hermesACPUpdate(params)
 	kind := hermesACPUpdateKind(method, update)
+	if method == "session/update" && kind != "turn_ended" {
+		sessionID := providerJSONValue(params, "sessionId", "session_id")
+		if sessionID == "" {
+			sessionID = s.SessionID()
+		}
+		turnID := providerJSONValue(params, "turn_id", "turnId")
+		if turnID == "" {
+			turnID = s.currentTurn()
+		}
+		s.recordProviderTurnEvent(sessionID, turnID, kind == "turn_ended")
+	}
 	switch kind {
 	case "agent_message_chunk":
 		s.captureHermesAttemptCandidate(params, update)
@@ -94,9 +105,18 @@ func (s *HermesProviderSession) HandleEvent(event SandboxBridgeEvent, emit Provi
 		s.emitHermesRuntimeOutput(event, params, emit)
 		return
 	case "turn_ended":
+		sessionID := providerJSONValue(params, "sessionId", "session_id")
+		if sessionID == "" {
+			sessionID = s.SessionID()
+		}
+		turnID := providerJSONValue(params, "turn_id", "turnId")
+		if turnID == "" {
+			turnID = s.currentTurn()
+		}
 		s.completeHermesThought(emit, params, event)
 		s.projectHermesTerminalLifecycle(event, params, hermesACPStopStatus(update), emit)
 		s.finishHermesAssistedTurn(params, update)
+		s.recordProviderTurnEvent(sessionID, turnID, true)
 		return
 	default:
 		s.completeHermesThought(emit, params, event)

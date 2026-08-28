@@ -211,10 +211,10 @@ var (
 	errSteeringContinuationUnavailable = errors.New("accepted steering continuation is unavailable")
 )
 
-// acceptedSteeringDispatchTimeout bounds one provider delivery. A timed-out
+// defaultAcceptedSteeringDispatchTimeout bounds one provider delivery. A timed-out
 // dispatch is delivery-ambiguous (post-fence, no durable outcome) and settles
 // action_required instead of being replayed.
-const acceptedSteeringDispatchTimeout = 30 * time.Second
+const defaultAcceptedSteeringDispatchTimeout = 30 * time.Second
 
 // acceptAcceptedSteering durably records one native steer request together with
 // its conversation projection, then enqueues its owner-neutral dispatch. The
@@ -276,7 +276,7 @@ func (server *Server) dispatchAcceptedSteering(ctx context.Context, adapter *ste
 		}
 		// Each provider delivery is bounded so a hung steer operation cannot
 		// leave the owner queue blocked or the record permanently dispatch_started.
-		runCtx, cancel := context.WithTimeout(ctx, acceptedSteeringDispatchTimeout)
+		runCtx, cancel := context.WithTimeout(ctx, server.steeringDispatchTimeout)
 		execution := adapter.execute(runCtx, fenced, continuationID, freshContinuation)
 		cancel()
 		switch execution.state {
