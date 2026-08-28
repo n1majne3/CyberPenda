@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import { apiGet, apiPost, apiPatch, apiDelete, mergedConfigPreview, projectedConfig, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
-import { enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
+import { codexMultiAgentTOMLLines, enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
 import {
   applyModelProviderSelection,
   buildProfileFields,
@@ -95,6 +95,9 @@ type ProfileForm = {
   default_runner: string;
   sandbox_image: string;
   credential_refs: string;
+  codex_multi_agent_state: "inherit" | "on" | "off";
+  codex_multi_agent_max_threads: string;
+  codex_multi_agent_max_depth: string;
 };
 
 const emptyForm: ProfileForm = {
@@ -116,6 +119,9 @@ const emptyForm: ProfileForm = {
   default_runner: "sandbox",
   sandbox_image: "",
   credential_refs: "",
+  codex_multi_agent_state: "inherit",
+  codex_multi_agent_max_threads: "",
+  codex_multi_agent_max_depth: "",
 };
 
 function ProfileListButton({
@@ -795,7 +801,12 @@ function fallbackRuntimePlugins(): RuntimePlugin[] {
         "mcp_servers",
         "default_runner",
         "sandbox_image",
-      ].map((name) => ({ name, type: "string", label: name })),
+        ...(id === "codex" ? ["codex_multi_agent"] : []),
+      ].map((name) => ({
+        name,
+        type: name === "codex_multi_agent" ? "codex_multi_agent" : "string",
+        label: name,
+      })),
     },
     config_projection:
       id === "claude_code"
@@ -1036,6 +1047,9 @@ function ProfileEditor({
                 provider,
                 api_key_env: form.api_key_env || defaultAPIKeyEnv(provider, plugins) || "",
                 runtime_extensions: compatibleRuntimeExtensionRefs(form.runtime_extensions, provider, extensions),
+                codex_multi_agent_state: provider === "codex" ? form.codex_multi_agent_state : "inherit",
+                codex_multi_agent_max_threads: provider === "codex" ? form.codex_multi_agent_max_threads : "",
+                codex_multi_agent_max_depth: provider === "codex" ? form.codex_multi_agent_max_depth : "",
               });
             }}
           >
@@ -1264,6 +1278,52 @@ function ProfileEditor({
             Override the daemon sandbox image for tasks using this profile.
           </p>
         </div>}
+        {form.provider === "codex" && <div className="col-span-2 space-y-2 rounded-lg border border-border p-3">
+          <div>
+            <Label htmlFor="profile-multi-agent-state">In-turn multi-agent tools</Label>
+            <Select
+              id="profile-multi-agent-state"
+              name="codex_multi_agent_state"
+              value={form.codex_multi_agent_state}
+              onChange={(e) => onChange({ ...form, codex_multi_agent_state: e.target.value as ProfileForm["codex_multi_agent_state"] })}
+            >
+              <option value="inherit">Codex default (no keys projected)</option>
+              <option value="on">On — project spawn tools + caps</option>
+              <option value="off">Off — project the off keys</option>
+            </Select>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              On projects <code className="text-[11px]">features.multi_agent</code> and <code className="text-[11px]">agents</code> caps so turns receive spawn tools. Off writes the off keys for every model. Codex default stores nothing and lets Codex decide.
+            </p>
+          </div>
+          {form.codex_multi_agent_state === "on" && <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label htmlFor="profile-multi-agent-threads">Max concurrent agent threads</Label>
+              <Input
+                id="profile-multi-agent-threads"
+                name="codex_multi_agent_max_threads"
+                type="number"
+                min={1}
+                value={form.codex_multi_agent_max_threads}
+                onChange={(e) => onChange({ ...form, codex_multi_agent_max_threads: e.target.value })}
+                placeholder="Codex default (6)"
+                autoComplete="off"
+              />
+            </div>
+            <div>
+              <Label htmlFor="profile-multi-agent-depth">Max agent depth</Label>
+              <Input
+                id="profile-multi-agent-depth"
+                name="codex_multi_agent_max_depth"
+                type="number"
+                min={1}
+                value={form.codex_multi_agent_max_depth}
+                onChange={(e) => onChange({ ...form, codex_multi_agent_max_depth: e.target.value })}
+                placeholder="Codex default (1)"
+                autoComplete="off"
+              />
+            </div>
+          </div>}
+        </div>}
         {has("credential_refs") && <div className="col-span-2">
           <Label htmlFor="profile-credential-refs">Credential refs</Label>
           <Textarea
@@ -1488,6 +1548,14 @@ function profileToForm(profile: RuntimeProfile, plugins: RuntimePlugin[]): Profi
     default_runner: profile.fields.default_runner ?? "sandbox",
     sandbox_image: profile.fields.sandbox_image ?? "",
     credential_refs: (profile.fields.credential_refs ?? []).join("\n"),
+    codex_multi_agent_state: profile.fields.codex_multi_agent
+      ? profile.fields.codex_multi_agent.enabled
+        ? "on"
+        : "off"
+      : "inherit",
+    codex_multi_agent_max_threads:
+      profile.fields.codex_multi_agent?.max_concurrent_threads_per_session?.toString() ?? "",
+    codex_multi_agent_max_depth: profile.fields.codex_multi_agent?.max_depth?.toString() ?? "",
   };
 }
 
@@ -1574,6 +1642,7 @@ function buildGeneratedConfigPreview(
       endpoint ? `wire_api = "${wireApi}"` : null,
       endpoint ? "requires_openai_auth = true" : null,
       ...appendCodexMCPTOMLPreview(mcpServers),
+      ...codexMultiAgentTOMLLines(fields),
     ]
       .filter((line): line is string => line !== null)
       .join("\n");

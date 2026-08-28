@@ -1069,8 +1069,46 @@ func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimepr
 		fmt.Fprintf(&b, "wire_api = %q\n", wireAPI)
 		fmt.Fprintf(&b, "requires_openai_auth = true\n")
 	}
+	appendCodexMultiAgentTOML(&b, profile)
 	appendCodexMCPTOML(&b, mcpServers)
 	return b.String()
+}
+
+// appendCodexMultiAgentTOML writes the Codex-native multi-agent feature flag
+// and agent caps. The control is tri-state: unset writes nothing so Codex's
+// own feature default applies (CyberPenda does not suppress native
+// multi-agent behavior); an explicit on projects `features.multi_agent =
+// true` plus `agents.enabled = true` and the caps, which turns the V1 tools
+// on for models whose metadata does not already select a multi-agent
+// version; an explicit off projects both off keys because Codex releases
+// have shipped with the feature default-on, so an absent key cannot carry an
+// operator's off decision. Off also disables multi_agent_v2 because Codex
+// resolves V2 before agents.enabled. An unset cap is not written, so a Custom Config
+// File may supply it — the same fill-in behavior as other conditional
+// managed keys such as model_context_window.
+func appendCodexMultiAgentTOML(b *strings.Builder, profile runtimeprofile.Profile) {
+	settings := profile.Fields.CodexMultiAgent
+	if settings == nil {
+		return
+	}
+	enabled := settings.Enabled != nil && *settings.Enabled
+	b.WriteString("\n[features]\n")
+	fmt.Fprintf(b, "multi_agent = %t\n", enabled)
+	if !enabled {
+		// Codex resolves V2 before agents.enabled, so an explicit operator off
+		// must disable both tool generations.
+		b.WriteString("multi_agent_v2 = false\n")
+	}
+	b.WriteString("\n[agents]\n")
+	fmt.Fprintf(b, "enabled = %t\n", enabled)
+	if enabled {
+		if settings.MaxConcurrentThreadsPerSession > 0 {
+			fmt.Fprintf(b, "max_concurrent_threads_per_session = %d\n", settings.MaxConcurrentThreadsPerSession)
+		}
+		if settings.MaxDepth > 0 {
+			fmt.Fprintf(b, "max_depth = %d\n", settings.MaxDepth)
+		}
+	}
 }
 
 func buildCodexAuth(materialized map[string]string) map[string]string {

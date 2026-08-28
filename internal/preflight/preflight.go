@@ -69,6 +69,17 @@ type ModelProviderPreview struct {
 	MaxOutputTokensSource string `json:"max_output_tokens_source,omitempty"`
 }
 
+// CodexMultiAgentPreview reports the multi-agent tool state the projected
+// Codex config will carry for this launch. State is "inherit" (no keys
+// projected; Codex's own feature default applies), "on", or "off". It is a
+// projection preview only: spawn remains a model tool inside a Work Runtime
+// Turn, never a Harness-owned subagent scheduling surface.
+type CodexMultiAgentPreview struct {
+	State                          string `json:"state"`
+	MaxConcurrentThreadsPerSession int    `json:"max_concurrent_threads_per_session,omitempty"`
+	MaxDepth                       int    `json:"max_depth,omitempty"`
+}
+
 // Result is the full preflight outcome for a task launch.
 type Result struct {
 	Pass              bool                      `json:"pass"`
@@ -76,6 +87,7 @@ type Result struct {
 	Skills            []SkillPreview            `json:"skills,omitempty"`
 	RuntimeExtensions []RuntimeExtensionPreview `json:"runtime_extensions,omitempty"`
 	ModelProvider     *ModelProviderPreview     `json:"model_provider,omitempty"`
+	CodexMultiAgent   *CodexMultiAgentPreview   `json:"codex_multi_agent,omitempty"`
 }
 
 // Request describes what to validate for a task launch.
@@ -281,6 +293,18 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 				MaxOutputTokensSource: snapshot.MaxOutputTokensSource,
 			}
 			result.add(Check{Name: "model_provider", Status: CheckPass, Detail: fmt.Sprintf("%s via %s", snapshot.Model, snapshot.APIKeyEnv)})
+		}
+	}
+
+	// Codex multi-agent tools preview: report the final merged config, including
+	// Custom Config File values that fill keys the structured control leaves
+	// unset. Spawn remains a model tool inside the Work Runtime Turn.
+	if profileLoaded && profile.Provider == runtimeprofile.ProviderCodex {
+		preview, err := mergedCodexMultiAgentPreview(profile)
+		if err != nil {
+			result.add(Check{Name: "custom_config_file", Status: CheckFail, Detail: fmt.Sprintf("project Codex config: %v", err)})
+		} else {
+			result.CodexMultiAgent = preview
 		}
 	}
 
@@ -772,4 +796,85 @@ func globalEnvCheckDetail(creds *credential.Service) (string, bool) {
 		return err.Error(), false
 	}
 	return "", true
+}
+
+func mergedCodexMultiAgentPreview(profile runtimeprofile.Profile) (*CodexMultiAgentPreview, error) {
+	config, err := runner.MergedProjectedConfig(runtimeprofile.ProviderCodex, profile)
+	if err != nil {
+		return nil, err
+	}
+	preview := &CodexMultiAgentPreview{State: "inherit"}
+	features, _ := config["features"].(map[string]any)
+	agents, _ := config["agents"].(map[string]any)
+
+	v2Active := false
+	v2Value := features["multi_agent_v2"]
+	if v2, present := codexFeatureEnabled(v2Value); present && v2 {
+		preview.State = "on"
+		v2Active = true
+	} else if enabled, present := boolValue(agents["enabled"]); present && !enabled {
+		preview.State = "off"
+	} else if enabled, present := codexFeatureEnabled(features["multi_agent"]); present {
+		if enabled {
+			preview.State = "on"
+		} else {
+			preview.State = "off"
+		}
+	}
+
+	if preview.State == "on" {
+		if v2Active {
+			if v2Config, ok := v2Value.(map[string]any); ok {
+				preview.MaxConcurrentThreadsPerSession = positiveConfigInt(v2Config["max_concurrent_threads_per_session"])
+			}
+		} else {
+			preview.MaxConcurrentThreadsPerSession = positiveConfigInt(agents["max_concurrent_threads_per_session"])
+			preview.MaxDepth = positiveConfigInt(agents["max_depth"])
+		}
+	}
+	return preview, nil
+}
+
+func codexFeatureEnabled(value any) (bool, bool) {
+	if enabled, ok := boolValue(value); ok {
+		return enabled, true
+	}
+	if config, ok := value.(map[string]any); ok {
+		// Codex's configurable feature form is enabled only by its explicit
+		// `enabled` member. Other settings (for example V2 thread caps) do not
+		// turn the feature on by themselves.
+		return boolValue(config["enabled"])
+	}
+	return false, false
+}
+
+func boolValue(value any) (bool, bool) {
+	enabled, ok := value.(bool)
+	return enabled, ok
+}
+
+func positiveConfigInt(value any) int {
+	var converted int64
+	switch typed := value.(type) {
+	case int:
+		if typed > 0 {
+			return typed
+		}
+		return 0
+	case int64:
+		converted = typed
+	case uint64:
+		if typed > uint64(^uint(0)>>1) {
+			return 0
+		}
+		return int(typed)
+	case float64:
+		converted = int64(typed)
+	default:
+		return 0
+	}
+	if converted < 1 || int64(int(converted)) != converted {
+		return 0
+	}
+	return int(converted)
 }

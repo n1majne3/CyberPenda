@@ -37,6 +37,14 @@ export type RuntimeProfileFormInput = {
   default_runner: string;
   sandbox_image: string;
   credential_refs: string;
+  /**
+   * Codex-only in-turn multi-agent tools state. "inherit" stores nothing so
+   * Codex's own feature default applies; "on" and "off" store the explicit
+   * choice.
+   */
+  codex_multi_agent_state: "inherit" | "on" | "off";
+  codex_multi_agent_max_threads: string;
+  codex_multi_agent_max_depth: string;
 };
 
 const API_KEY_CONFIGURED = "[configured]";
@@ -177,7 +185,31 @@ export function buildProfileFields(form: RuntimeProfileFormInput, plugins: Runti
   if (sandboxImage) fields.sandbox_image = sandboxImage;
   const credentialRefs = splitLines(form.credential_refs);
   if (credentialRefs.length > 0) fields.credential_refs = credentialRefs;
+  // The multi-agent control stores only an explicit choice. "inherit" (or any
+  // unknown state) stores nothing so Config Projection writes no multi-agent
+  // keys and Codex's own feature default applies.
+  const multiAgentState = form.codex_multi_agent_state;
+  if (form.provider === "codex" && (multiAgentState === "on" || multiAgentState === "off")) {
+    const multiAgent: NonNullable<RuntimeProfileFields["codex_multi_agent"]> = {
+      enabled: multiAgentState === "on",
+    };
+    if (multiAgentState === "on") {
+      const maxThreads = positiveInt(form.codex_multi_agent_max_threads);
+      const maxDepth = positiveInt(form.codex_multi_agent_max_depth);
+      if (maxThreads !== undefined) multiAgent.max_concurrent_threads_per_session = maxThreads;
+      if (maxDepth !== undefined) multiAgent.max_depth = maxDepth;
+    }
+    fields.codex_multi_agent = multiAgent;
+  }
   return fields;
+}
+
+function positiveInt(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return undefined;
+  return parsed;
 }
 
 function defaultAPIKeyEnv(provider: string, plugins: RuntimePlugin[]): string | undefined {

@@ -11,6 +11,7 @@ const (
 	StructuredFieldModel           = "model"
 	StructuredFieldModelProvider   = "model_provider"
 	StructuredFieldReasoningEffort = "reasoning_effort"
+	StructuredFieldCodexMultiAgent = "codex_multi_agent"
 )
 
 // CustomArgConflictError reports a Runtime Custom Argument that redefines a
@@ -49,12 +50,12 @@ func (e *CustomArgConflictError) Is(target error) bool {
 }
 
 // ValidateCustomArgs rejects provider-native aliases that redefine structured
-// Model Provider, model, or Reasoning Effort controls. Only aliases that the
-// corresponding runtime CLI/argv surface actually uses are rejected. The input
-// slice is never modified, stripped, or reordered.
+// Model Provider, model, Reasoning Effort, or Codex multi-agent controls. Only
+// aliases that the corresponding runtime CLI/argv surface actually uses are
+// rejected. The input slice is never modified, stripped, or reordered.
 func ValidateCustomArgs(provider Provider, args []string) error {
 	rules := customArgRulesFor(provider)
-	if len(rules.flags) == 0 && len(rules.configKeys) == 0 {
+	if len(rules.flags) == 0 && len(rules.configKeys) == 0 && len(rules.featureNames) == 0 {
 		return nil
 	}
 
@@ -102,6 +103,32 @@ func ValidateCustomArgs(provider Provider, args []string) error {
 		}
 
 		flag, inlineValue := splitFlag(head)
+		if (flag == "--enable" || flag == "--disable") && len(rules.featureNames) > 0 {
+			value := inlineValue
+			consumedNext := false
+			if value == "" {
+				if fields := strings.Fields(token); len(fields) > 1 {
+					value = fields[1]
+				} else if i+1 < len(args) {
+					value = args[i+1]
+					consumedNext = true
+				}
+			}
+			featureName := strings.Trim(strings.TrimSpace(value), `"'`)
+			if field, ok := rules.featureNames[featureName]; ok {
+				return &CustomArgConflictError{
+					Provider:   provider,
+					Argument:   formatFlagOffendingArg(flag, featureName, inlineValue != "" || strings.Contains(head, "=")),
+					Flag:       flag,
+					Field:      field,
+					CustomArgs: args,
+				}
+			}
+			if consumedNext {
+				i++
+			}
+			continue
+		}
 		if field, ok := rules.flags[flag]; ok {
 			value := inlineValue
 			if value == "" {
@@ -132,8 +159,9 @@ func firstField(token string) string {
 }
 
 type customArgRules struct {
-	flags      map[string]string // flag -> structured field
-	configKeys map[string]string // codex config key -> structured field
+	flags        map[string]string // flag -> structured field
+	configKeys   map[string]string // codex config key -> structured field
+	featureNames map[string]string // Codex --enable/--disable feature -> structured field
 }
 
 func (r customArgRules) configFlag(token string) bool {
@@ -145,9 +173,9 @@ func (r customArgRules) configFlag(token string) bool {
 }
 
 // customArgRulesFor lists only runtime-native aliases that redefine structured
-// Model Provider, model, or Reasoning Effort — matching builtin launch argv and
-// documented CLI surfaces. Ordinary non-interactive / stream options are not
-// rejected.
+// Model Provider, model, Reasoning Effort, or Codex multi-agent controls —
+// matching builtin launch argv and documented CLI surfaces. Ordinary
+// non-interactive / stream options are not rejected.
 func customArgRulesFor(provider Provider) customArgRules {
 	switch provider {
 	case ProviderCodex:
@@ -162,6 +190,17 @@ func customArgRulesFor(provider Provider) customArgRules {
 				"model":                  StructuredFieldModel,
 				"model_provider":         StructuredFieldModelProvider,
 				"model_reasoning_effort": StructuredFieldReasoningEffort,
+				// Keys owned by the structured Codex multi-agent control.
+				"features.multi_agent":                      StructuredFieldCodexMultiAgent,
+				"features.multi_agent_v2":                   StructuredFieldCodexMultiAgent,
+				"features.multi_agent_v2.enabled":           StructuredFieldCodexMultiAgent,
+				"agents.enabled":                            StructuredFieldCodexMultiAgent,
+				"agents.max_concurrent_threads_per_session": StructuredFieldCodexMultiAgent,
+				"agents.max_depth":                          StructuredFieldCodexMultiAgent,
+			},
+			featureNames: map[string]string{
+				"multi_agent":    StructuredFieldCodexMultiAgent,
+				"multi_agent_v2": StructuredFieldCodexMultiAgent,
 			},
 		}
 	case ProviderClaudeCode:
@@ -311,6 +350,8 @@ func structuredFieldLabel(field string) string {
 		return "Model Provider"
 	case StructuredFieldReasoningEffort:
 		return "Reasoning Effort"
+	case StructuredFieldCodexMultiAgent:
+		return "Codex multi-agent tools"
 	default:
 		return field
 	}

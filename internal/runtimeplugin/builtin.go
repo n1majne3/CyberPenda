@@ -67,7 +67,7 @@ func BuiltinPlugins() []Plugin {
 				SupportedProtocols: []string{"openai_responses"},
 				ProtocolPreference: []string{"openai_responses"},
 			},
-			ProfileSchema: commonProfileSchema(commonFields),
+			ProfileSchema: codexProfileSchema(commonFields),
 			ConfigProjection: ConfigProjection{
 				Primitive:  "codex_home",
 				ConfigPath: "runtime-home/codex/config.toml",
@@ -80,6 +80,13 @@ func BuiltinPlugins() []Plugin {
 					{Key: "model_catalog_json", Field: "model", Condition: "model_provider_resolved"},
 					{Key: "model_provider", Field: "model_provider_id", Condition: "model_provider_resolved"},
 					{Key: "model_providers.*", Field: "model_provider_id", Condition: "model_provider_resolved"},
+					// In-turn multi-agent keys are managed when the
+					// codex_multi_agent structured field projects them.
+					{Key: "features.multi_agent", Field: "codex_multi_agent", Condition: "projected"},
+					{Key: "features.multi_agent_v2", Field: "codex_multi_agent", Condition: "projected"},
+					{Key: "agents.enabled", Field: "codex_multi_agent", Condition: "projected"},
+					{Key: "agents.max_concurrent_threads_per_session", Field: "codex_multi_agent", Condition: "projected"},
+					{Key: "agents.max_depth", Field: "codex_multi_agent", Condition: "projected"},
 				},
 			},
 			Launch: LaunchTemplate{
@@ -300,5 +307,14 @@ func BuiltinPlugins() []Plugin {
 func commonProfileSchema(fields []ProfileField) ProfileSchema {
 	out := make([]ProfileField, len(fields))
 	copy(out, fields)
+	return ProfileSchema{Fields: out}
+}
+
+// codexProfileSchema extends the common fields with the Codex-only in-turn
+// multi-agent tools control.
+func codexProfileSchema(fields []ProfileField) ProfileSchema {
+	out := make([]ProfileField, 0, len(fields)+1)
+	out = append(out, fields...)
+	out = append(out, ProfileField{Name: "codex_multi_agent", Type: "codex_multi_agent", Label: "Multi-agent tools"})
 	return ProfileSchema{Fields: out}
 }

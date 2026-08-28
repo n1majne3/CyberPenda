@@ -439,3 +439,100 @@ func TestPreflightPreviewsSelectedEndpointBaseURL(t *testing.T) {
 		t.Fatalf("preflight response leaked API key value: %s", resp.Body.String())
 	}
 }
+
+func TestPreflightPreviewsCodexMultiAgentTools(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
+
+	createProvider := httptest.NewRequest(http.MethodPost, "/api/model-providers", bytes.NewReader([]byte(`{
+		"name":"MiMo",
+		"endpoints":[{"protocol":"openai_responses","base_url":"https://api.example.test/v1"}],
+		"catalog":{"manual":["mimo"],"default_model":"mimo"}
+	}`)))
+	createProvider.Header.Set("Content-Type", "application/json")
+	providerResp := httptest.NewRecorder()
+	server.ServeHTTP(providerResp, createProvider)
+	if providerResp.Code != http.StatusCreated {
+		t.Fatalf("create provider status %d body %s", providerResp.Code, providerResp.Body.String())
+	}
+	var provider struct {
+		ID        string `json:"id"`
+		APIKeyEnv string `json:"api_key_env"`
+	}
+	if err := json.NewDecoder(providerResp.Body).Decode(&provider); err != nil {
+		t.Fatalf("decode provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-daemon-multi-agent")
+
+	profileID := createRuntimeProfile(t, server, `{
+		"name":"Codex",
+		"provider":"codex",
+		"fields":{
+			"model_provider_id":"`+provider.ID+`",
+			"codex_multi_agent":{"enabled":true,"max_concurrent_threads_per_session":4,"max_depth":2}
+		}
+	}`)
+
+	body := []byte(`{
+		"runtime_profile_id":"` + profileID + `",
+		"runner":"sandbox"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("preflight status %d body %s", resp.Code, resp.Body.String())
+	}
+	var result struct {
+		Pass            bool `json:"pass"`
+		CodexMultiAgent *struct {
+			State                          string `json:"state"`
+			MaxConcurrentThreadsPerSession int    `json:"max_concurrent_threads_per_session"`
+			MaxDepth                       int    `json:"max_depth"`
+		} `json:"codex_multi_agent"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode preflight: %v", err)
+	}
+	if !result.Pass {
+		t.Fatalf("expected preflight to pass, got %s", resp.Body.String())
+	}
+	if result.CodexMultiAgent == nil {
+		t.Fatalf("expected codex multi-agent preview, got %s", resp.Body.String())
+	}
+	if result.CodexMultiAgent.State != "on" ||
+		result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 4 ||
+		result.CodexMultiAgent.MaxDepth != 2 {
+		t.Fatalf("codex multi-agent preview = %#v", result.CodexMultiAgent)
+	}
+
+	// A profile without the control previews the inherit state.
+	inheritProfileID := createRuntimeProfile(t, server, `{
+		"name":"Codex Inherit",
+		"provider":"codex",
+		"fields":{"model_provider_id":"`+provider.ID+`"}
+	}`)
+	inheritBody := []byte(`{
+		"runtime_profile_id":"` + inheritProfileID + `",
+		"runner":"sandbox"
+	}`)
+	inheritReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(inheritBody))
+	inheritReq.Header.Set("Content-Type", "application/json")
+	inheritResp := httptest.NewRecorder()
+	server.ServeHTTP(inheritResp, inheritReq)
+	if inheritResp.Code != http.StatusOK {
+		t.Fatalf("inherit preflight status %d body %s", inheritResp.Code, inheritResp.Body.String())
+	}
+	var inheritResult struct {
+		CodexMultiAgent *struct {
+			State string `json:"state"`
+		} `json:"codex_multi_agent"`
+	}
+	if err := json.NewDecoder(inheritResp.Body).Decode(&inheritResult); err != nil {
+		t.Fatalf("decode inherit preflight: %v", err)
+	}
+	if inheritResult.CodexMultiAgent == nil || inheritResult.CodexMultiAgent.State != "inherit" {
+		t.Fatalf("expected inherit multi-agent preview, got %s", inheritResp.Body.String())
+	}
+}

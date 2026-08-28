@@ -95,6 +95,10 @@ type Fields struct {
 	// SandboxImage overrides the daemon default sandbox image for tasks using
 	// this profile. Leave empty to use the daemon-wide setting.
 	SandboxImage string `json:"sandbox_image,omitempty"`
+	// CodexMultiAgent is the Codex-only control for in-turn multi-agent tools.
+	// Nil means inherit: Config Projection writes no multi-agent keys and lets
+	// Codex apply its own feature default. Explicit off writes all off keys.
+	CodexMultiAgent *CodexMultiAgent `json:"codex_multi_agent,omitempty"`
 	// CustomConfigFile is the provider-bound Custom Config File: raw
 	// provider-native config text holding only keys structured fields cannot
 	// express. Config Projection deep-merges it over the Generated Runtime
@@ -285,12 +289,14 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 		existing.Name = strings.TrimSpace(name)
 	}
 	confirmedSwitchClearsOverlay := false
+	providerChanged := false
 	// Provider: must always be valid; empty means keep current.
 	if provider != "" {
 		if err := s.validate(existing.Name, provider); err != nil {
 			return Profile{}, err
 		}
-		if provider != existing.Provider && strings.TrimSpace(existing.Fields.CustomConfigFile) != "" {
+		providerChanged = provider != existing.Provider
+		if providerChanged && strings.TrimSpace(existing.Fields.CustomConfigFile) != "" {
 			if !confirmProviderSwitchClearsOverlay {
 				return Profile{}, &ProviderSwitchNeedsOverlayClearError{
 					From: existing.Provider,
@@ -303,6 +309,10 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 	} else if err := s.validate(existing.Name, existing.Provider); err != nil {
 		// Should not happen for a stored profile, but guard anyway.
 		return Profile{}, err
+	}
+	if providerChanged && existing.Provider != ProviderCodex {
+		existing.Fields.CodexMultiAgent = nil
+		fields.CodexMultiAgent = nil
 	}
 	if fieldsTouched {
 		normalizedFields, err := normalizeFields(existing.Provider, fields)
@@ -474,6 +484,19 @@ func GeneratedConfig(profile Profile) map[string]any {
 	if profile.Fields.SandboxImage != "" {
 		cfg["sandbox_image"] = profile.Fields.SandboxImage
 	}
+	if profile.Fields.CodexMultiAgent != nil {
+		entry := map[string]any{}
+		if profile.Fields.CodexMultiAgent.Enabled != nil {
+			entry["enabled"] = *profile.Fields.CodexMultiAgent.Enabled
+		}
+		if profile.Fields.CodexMultiAgent.MaxConcurrentThreadsPerSession > 0 {
+			entry["max_concurrent_threads_per_session"] = profile.Fields.CodexMultiAgent.MaxConcurrentThreadsPerSession
+		}
+		if profile.Fields.CodexMultiAgent.MaxDepth > 0 {
+			entry["max_depth"] = profile.Fields.CodexMultiAgent.MaxDepth
+		}
+		cfg["codex_multi_agent"] = entry
+	}
 	return cfg
 }
 
@@ -504,6 +527,11 @@ func normalizeFields(provider Provider, fields Fields) (Fields, error) {
 	if err := ValidateCustomConfigFile(provider, fields.CustomConfigFile); err != nil {
 		return Fields{}, err
 	}
+	codexMultiAgent, err := normalizeCodexMultiAgent(provider, fields.CodexMultiAgent)
+	if err != nil {
+		return Fields{}, err
+	}
+	fields.CodexMultiAgent = codexMultiAgent
 	if strings.TrimSpace(fields.ReasoningEffort) == "" {
 		fields.ReasoningEffort = ""
 		return fields, nil
