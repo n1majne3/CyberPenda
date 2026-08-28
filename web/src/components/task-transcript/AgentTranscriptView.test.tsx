@@ -64,6 +64,24 @@ describe("AgentTranscriptView", () => {
     expect(eventRows.map((row) => row.textContent)).toEqual(["Newer timeline event", "Older timeline event"]);
   });
 
+  it("auto-expands live reasoning and collapses it at settlement", () => {
+    const { rerender } = render(
+      <AgentTranscriptView
+        owner={{ ...owner, status: "running" }}
+        items={[{ id: "reasoning-1", seq: 1, type: "reasoning", status: "streaming", content: "checking auth" }]}
+      />,
+    );
+    expect(screen.getByTestId("timeline-event-detail")).toHaveTextContent("checking auth");
+
+    rerender(
+      <AgentTranscriptView
+        owner={{ ...owner, status: "running" }}
+        items={[{ id: "reasoning-1", seq: 2, type: "reasoning", status: "completed", content: "checked auth" }]}
+      />,
+    );
+    expect(screen.queryByTestId("timeline-event-detail")).not.toBeInTheDocument();
+  });
+
   it("labels timeline segment buttons and gives rows a content-visibility boundary", () => {
     render(
       <AgentTranscriptView

@@ -497,13 +497,13 @@ describe("TaskDetailPage", () => {
     expect(resultBody?.textContent).not.toContain("tool_call_id: call-1");
   });
 
-  it("renders reasoning as collapsed activity instead of an agent message", async () => {
+  it("renders completed reasoning as collapsed activity instead of an agent message", async () => {
     stubTaskDetailApi({}, [
       {
-        id: "thinking-1",
+        id: "reasoning-1",
         seq: 6,
         continuation: 1,
-        kind: "thinking",
+        kind: "reasoning",
         role: "assistant",
         text: "Checked the active challenge and prepared the next command.",
         created_at: "2026-08-26T09:00:01Z",
@@ -513,12 +513,46 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     expect(await screen.findByText("Reasoning")).toBeInTheDocument();
-    const row = screen.getByTestId("transcript-thinking-row");
+    const row = screen.getByTestId("transcript-reasoning-row");
     expect(row).not.toHaveAttribute("open");
     expect(screen.getByText("Checked the active challenge and prepared the next command.")).toBeInTheDocument();
     expect(screen.queryByTestId("transcript-message-bubble")).not.toBeInTheDocument();
     expect(screen.queryByText("Agent")).not.toBeInTheDocument();
     expect(screen.queryByText("You")).not.toBeInTheDocument();
+  });
+
+  it("auto-expands the latest reasoning entry while the Runtime Turn is busy", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      runtime_activity: { liveness: "live", turn_activity: "busy" },
+    }, [
+      {
+        id: "reasoning-old",
+        seq: 4,
+        continuation: 1,
+        kind: "reasoning",
+        role: "assistant",
+        text: "Older reasoning.",
+        created_at: "2026-08-26T09:00:00Z",
+      },
+      {
+        id: "reasoning-live",
+        seq: 6,
+        continuation: 1,
+        kind: "reasoning",
+        role: "assistant",
+        text: "Checking the auth flow.",
+        status: "streaming",
+        created_at: "2026-08-26T09:00:01Z",
+      },
+    ]);
+
+    renderPage();
+
+    const rows = await screen.findAllByTestId("transcript-reasoning-row");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).not.toHaveAttribute("open");
+    expect(rows[1]).toHaveAttribute("open");
   });
 
   it("keeps agent messages and tool rows tight, only spacing out new user turns", async () => {

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"pentest/internal/adapters"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
@@ -230,8 +231,9 @@ func (server *Server) persistSessionProviderSessionEvent(sessionID string, kind 
 }
 
 func sessionProviderEventPayload(kind task.EventKind, payload task.EventPayload, continuationID string) (session.EventKind, session.EventPayload) {
+	payload = task.EventPayload(adapters.Redact(map[string]any(payload)))
 	redacted := session.EventPayload{}
-	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "mode", "outcome", "permission_request_id", "permission_decision", "error_code", "phase"} {
+	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "provider_item_id", "mode", "outcome", "permission_request_id", "permission_decision", "error_code", "phase"} {
 		if value, ok := payload[key]; ok {
 			redacted[key] = value
 		}
@@ -282,8 +284,9 @@ func (server *Server) persistSessionProviderEventForContinuation(sessionID, cont
 // the current Continuation at receipt time, so raw protocol payload cannot be
 // persisted or leak into the Task Conversation.
 func (server *Server) persistProviderSessionEvent(taskID string, kind task.EventKind, payload task.EventPayload) {
+	payload = task.EventPayload(adapters.Redact(map[string]any(payload)))
 	redacted := task.EventPayload{}
-	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "mode", "outcome", "permission_request_id"} {
+	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "provider_item_id", "mode", "outcome", "permission_request_id", "phase"} {
 		if value, ok := payload[key]; ok {
 			redacted[key] = value
 		}

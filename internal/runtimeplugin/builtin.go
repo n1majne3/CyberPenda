@@ -139,6 +139,7 @@ func BuiltinPlugins() []Plugin {
 					"{{mcp_args}}",
 					"-p",
 					"--output-format", "stream-json",
+					"--include-partial-messages",
 					"--verbose",
 					"{{custom_args}}",
 					"{{claude_goal_prefix}}",
@@ -147,6 +148,7 @@ func BuiltinPlugins() []Plugin {
 				SingletonOptions: []SingletonOption{
 					{Options: []string{"-p", "--print"}, Arity: 0},
 					{Options: []string{"--output-format"}, Arity: 1},
+					{Options: []string{"--include-partial-messages"}, Arity: 0},
 					{Options: []string{"--verbose"}, Arity: 0},
 				},
 			},
@@ -161,6 +163,7 @@ func BuiltinPlugins() []Plugin {
 					"{{mcp_args}}",
 					"-p",
 					"--output-format", "stream-json",
+					"--include-partial-messages",
 					"--verbose",
 					"{{custom_args}}",
 					"{{claude_goal_prefix}}",

@@ -37,7 +37,7 @@ func timelineSteps(items []timeline.Item) []semanticStep {
 	out := make([]semanticStep, 0, len(items))
 	for _, item := range items {
 		switch item.Type {
-		case "thinking":
+		case "reasoning":
 			continue
 		case "text":
 			out = append(out, semanticStep{kind: "text", text: item.Content})

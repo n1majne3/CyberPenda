@@ -2,7 +2,7 @@ package runtimeoutput
 
 import "strings"
 
-// CoalesceStreaming merges adjacent thinking or text turns split by flush timing.
+// CoalesceStreaming merges adjacent reasoning or text turns split by flush timing.
 func CoalesceStreaming(turns []Turn) []Turn {
 	if len(turns) == 0 {
 		return turns
@@ -20,6 +20,7 @@ func CoalesceStreaming(turns []Turn) []Turn {
 				SourceSeq:      turn.SourceSeq,
 				ProviderItemID: prev.ProviderItemID,
 				LifecyclePhase: turn.LifecyclePhase,
+				Incremental:    turn.Incremental,
 				Kind:           prev.Kind,
 				Role:           prev.Role,
 				Text:           prev.Text + turn.Text,
@@ -44,7 +45,7 @@ func ReconcileLifecycle(turns []Turn) []Turn {
 	out := make([]Turn, 0, len(turns))
 	toolUses := map[string]int{}
 	toolResults := map[string]int{}
-	thinking := map[string]int{}
+	reasoning := map[string]int{}
 	for _, turn := range turns {
 		switch turn.Kind {
 		case KindToolUse:
@@ -63,13 +64,13 @@ func ReconcileLifecycle(turns []Turn) []Turn {
 				}
 				toolResults[key] = len(out)
 			}
-		case KindThinking:
+		case KindReasoning:
 			if key := strings.TrimSpace(turn.ProviderItemID); key != "" {
-				if index, ok := thinking[key]; ok {
+				if index, ok := reasoning[key]; ok {
 					out[index] = mergeLifecycleTurn(out[index], turn)
 					continue
 				}
-				thinking[key] = len(out)
+				reasoning[key] = len(out)
 			}
 		}
 		out = append(out, turn)
@@ -78,6 +79,9 @@ func ReconcileLifecycle(turns []Turn) []Turn {
 }
 
 func mergeLifecycleTurn(previous, next Turn) Turn {
+	if next.Incremental {
+		next.Text = previous.Text + next.Text
+	}
 	if previous.SourceID != "" {
 		next.SourceID = previous.SourceID
 	}
@@ -108,5 +112,5 @@ func mergeLifecycleTurn(previous, next Turn) Turn {
 }
 
 func canMergeStreamingText(prev, next Turn) bool {
-	return (prev.Kind == KindThinking || prev.Kind == KindText) && prev.Kind == next.Kind
+	return (prev.Kind == KindReasoning || prev.Kind == KindText) && prev.Kind == next.Kind
 }

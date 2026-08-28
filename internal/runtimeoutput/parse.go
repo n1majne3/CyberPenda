@@ -2,6 +2,7 @@ package runtimeoutput
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -40,6 +41,23 @@ func ParseRecord(record map[string]any, opts ParseOptions, createdAt time.Time) 
 // ParseRecordWithMeta projects one provider JSON object with its durable
 // lifecycle metadata into normalized turns.
 func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptions, createdAt time.Time) []Turn {
+	if strings.EqualFold(stringValue(record, "type"), "stream_event") {
+		if event, ok := mapValue(record, "event"); ok {
+			nested := make(map[string]any, len(event)+1)
+			for key, value := range event {
+				nested[key] = value
+			}
+			if delta, ok := mapValue(event, "delta"); ok && firstText(delta, "thinking", "reasoning", "reasoning_content") != "" {
+				nested["incremental"] = true
+				if messageID := firstText(record, "uuid", "message_id", "messageId", "id"); messageID != "" {
+					if index, ok := numberValue(event, "index"); ok {
+						nested["item_id"] = messageID + "-reasoning-" + strconv.Itoa(index)
+					}
+				}
+			}
+			return ParseRecordWithMeta(nested, meta, opts, createdAt)
+		}
+	}
 	if turns := parseHermesACPRecord(record, opts, createdAt); len(turns) > 0 || isHermesACPRecord(record) {
 		return turns
 	}
@@ -51,6 +69,17 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 	if delta, ok := mapValue(record, "delta"); ok {
 		if text := firstText(delta, "text", "content"); text != "" {
 			return []Turn{{Kind: KindText, Role: roleAssistant, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+		}
+		// Streaming reasoning deltas carry a synthesized provider item id so
+		// every batched projection replaces one stable transcript row.
+		if opts.IncludeThinking {
+			if text := firstText(delta, "thinking", "reasoning", "reasoning_content"); text != "" {
+				phase := firstText(record, "phase")
+				if phase == "" {
+					phase = ReasoningPhaseStreaming
+				}
+				return []Turn{{Kind: KindReasoning, Role: roleAssistant, Text: text, ProviderItemID: firstText(record, "item_id", "itemId", "provider_item_id"), LifecyclePhase: phase, Incremental: isTruthy(record["incremental"]), ContentIndex: -1, CreatedAt: createdAt}}
+			}
 		}
 	}
 
@@ -109,19 +138,37 @@ func parseMessageRecord(record map[string]any, opts ParseOptions, role string, c
 			}
 		}
 		if content, ok := sliceValue(message, "content"); ok {
-			return parseContentBlocks(content, opts, role, createdAt)
+			turns := parseContentBlocks(content, opts, role, createdAt)
+			messageID := firstText(record, "uuid", "message_id", "messageId", "id")
+			if messageID == "" {
+				messageID = firstText(message, "uuid", "message_id", "messageId", "id")
+			}
+			return assignReasoningBlockIDs(turns, messageID)
 		}
 		if text := firstText(message, "text", "content", "message"); text != "" {
 			return []Turn{{Kind: KindText, Role: role, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
 		}
 	}
 	if content, ok := sliceValue(record, "content"); ok {
-		return parseContentBlocks(content, opts, role, createdAt)
+		return assignReasoningBlockIDs(parseContentBlocks(content, opts, role, createdAt), firstText(record, "uuid", "message_id", "messageId", "id"))
 	}
 	if text := firstText(record, "text", "content", "message"); text != "" {
 		return []Turn{{Kind: KindText, Role: role, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
 	}
 	return nil
+}
+
+func assignReasoningBlockIDs(turns []Turn, messageID string) []Turn {
+	if messageID == "" {
+		return turns
+	}
+	for index := range turns {
+		if turns[index].Kind == KindReasoning && turns[index].ProviderItemID == "" {
+			turns[index].ProviderItemID = messageID + "-reasoning-" + strconv.Itoa(turns[index].ContentIndex)
+			turns[index].LifecyclePhase = ReasoningPhaseCompleted
+		}
+	}
+	return turns
 }
 
 func parseContentBlocks(content []any, opts ParseOptions, role string, createdAt time.Time) []Turn {
@@ -135,12 +182,12 @@ func parseContentBlocks(content []any, opts ParseOptions, role string, createdAt
 		case map[string]any:
 			blockType := strings.ToLower(stringValue(value, "type"))
 			switch blockType {
-			case "thinking":
+			case "thinking", "reasoning":
 				if !opts.IncludeThinking {
 					continue
 				}
 				if text := thinkingText(value); text != "" {
-					turns = append(turns, Turn{Kind: KindThinking, Role: role, Text: text, ContentIndex: index, CreatedAt: createdAt})
+					turns = append(turns, Turn{Kind: KindReasoning, Role: role, Text: text, ProviderItemID: firstText(value, "id", "item_id", "itemId"), ContentIndex: index, CreatedAt: createdAt})
 				}
 			case "text":
 				if text := firstText(value, "text", "content"); text != "" {
@@ -247,14 +294,14 @@ func parseCodexReasoning(record map[string]any, meta RecordMeta, opts ParseOptio
 	if phase == "started" {
 		return nil
 	}
-	text := firstText(record, "summary")
+	text := firstText(record, "content", "summary")
 	if text == "" {
 		return nil
 	}
 	return []Turn{{
 		ProviderItemID: id,
 		LifecyclePhase: phase,
-		Kind:           KindThinking,
+		Kind:           KindReasoning,
 		Role:           roleAssistant,
 		Text:           text,
 		ContentIndex:   -1,
@@ -267,7 +314,9 @@ func codexLifecyclePhase(providerEvent string) string {
 	case "item/started":
 		return "started"
 	case "item/completed":
-		return "completed"
+		return ReasoningPhaseCompleted
+	case "item/reasoning/summarytextdelta":
+		return ReasoningPhaseStreaming
 	default:
 		return ""
 	}
@@ -318,7 +367,7 @@ func toolResultTurn(record map[string]any, createdAt time.Time) Turn {
 }
 
 func thinkingText(record map[string]any) string {
-	return firstText(record, "thinking", "text", "content")
+	return firstText(record, "thinking", "reasoning", "text", "content")
 }
 
 const (
@@ -404,6 +453,23 @@ func mapValue(record map[string]any, key string) (map[string]any, bool) {
 	return typed, ok
 }
 
+func numberValue(record map[string]any, key string) (int, bool) {
+	value, ok := record[key]
+	if !ok {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case float64:
+		return int(typed), true
+	case int:
+		return typed, true
+	case int64:
+		return int(typed), true
+	default:
+		return 0, false
+	}
+}
+
 func sliceValue(record map[string]any, key string) ([]any, bool) {
 	value, ok := record[key]
 	if !ok {
@@ -462,9 +528,16 @@ func parseHermesACPRecord(record map[string]any, opts ParseOptions, createdAt ti
 		}
 		turnKind := KindText
 		if kind == "agent_thought_chunk" {
-			turnKind = KindThinking
+			turnKind = KindReasoning
 		}
-		return []Turn{{Kind: turnKind, Role: roleAssistant, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+		phase := ""
+		if kind == "agent_thought_chunk" {
+			phase = firstText(update, "phase")
+			if phase == "" {
+				phase = ReasoningPhaseStreaming
+			}
+		}
+		return []Turn{{Kind: turnKind, Role: roleAssistant, Text: text, ProviderItemID: firstText(update, "item_id", "itemId", "provider_item_id"), LifecyclePhase: phase, ContentIndex: -1, CreatedAt: createdAt}}
 	case "tool_call":
 		turn := toolUseTurn(update, createdAt)
 		if turn.Tool == "" {

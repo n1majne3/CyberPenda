@@ -192,6 +192,7 @@ func TestBuildNativeResumeArgsUsesClaudeCodeRuntimePluginContract(t *testing.T) 
 		"--strict-mcp-config", "--mcp-config", "/task/workdir/.mcp.json",
 		"-p",
 		"--output-format", "stream-json",
+		"--include-partial-messages",
 		"--verbose",
 		"--permission-mode", "bypassPermissions",
 		"--dangerously-skip-permissions",

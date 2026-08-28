@@ -17,7 +17,7 @@ import (
 
 const (
 	KindMessage       = "message"
-	KindThinking      = "thinking"
+	KindReasoning     = "reasoning"
 	KindToolCall      = "tool_call"
 	KindToolResult    = "tool_result"
 	KindRuntimeOutput = "runtime_output"
@@ -59,6 +59,7 @@ type Entry struct {
 	Details      map[string]any `json:"details,omitempty"`
 	Stream       string         `json:"stream,omitempty"`
 	Status       string         `json:"status,omitempty"`
+	Incremental  bool           `json:"incremental,omitempty"`
 	CreatedAt    time.Time      `json:"created_at"`
 	Truncated    bool           `json:"truncated,omitempty"`
 	Detail       string         `json:"detail,omitempty"`
@@ -113,6 +114,10 @@ func BuildWindow(subject Subject, events []Event, context WindowContext) []Entry
 	adapter := context.Adapter
 	for _, event := range events {
 		if event.Kind == "lifecycle" {
+			phase := stringValue(event.Payload, "phase")
+			if phase == "completed" || phase == "failed" || phase == "stopped" {
+				collapseStreamingReasoning(entries, continuation)
+			}
 			next, ok := lifecycleEntry(event, continuation)
 			if ok {
 				if stringValue(event.Payload, "phase") == "started" {
@@ -131,6 +136,14 @@ func BuildWindow(subject Subject, events []Event, context WindowContext) []Entry
 
 // appendOrCoalesceTranscript joins adjacent assistant message chunks from one
 // Continuation so a streamed sentence is one row, not one row per token.
+func collapseStreamingReasoning(entries []Entry, continuation int) {
+	for index := range entries {
+		if entries[index].Continuation == continuation && entries[index].Kind == KindReasoning && entries[index].Status == runtimeoutput.ReasoningPhaseStreaming {
+			entries[index].Status = StatusCollapsed
+		}
+	}
+}
+
 func appendOrCoalesceTranscript(entries, next []Entry) []Entry {
 	for _, entry := range next {
 		if entry.ID != "" {
@@ -143,6 +156,9 @@ func appendOrCoalesceTranscript(entries, next []Entry) []Entry {
 					entry.Seq = entries[index].Seq
 					entry.Continuation = entries[index].Continuation
 					entry.CreatedAt = entries[index].CreatedAt
+					if entry.Incremental {
+						entry.Text = entries[index].Text + entry.Text
+					}
 					entries[index] = entry
 					replaced = true
 					break
@@ -370,7 +386,7 @@ func parseRuntimeOutput(event Event, continuation int, adapter, text string) ([]
 	}
 	turns := runtimeoutput.ParseRecordWithMeta(record, runtimeoutput.RecordMeta{
 		ProviderEvent: stringValue(event.Payload, "provider_event"),
-	}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true}, base.CreatedAt)
+	}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true}, base.CreatedAt)
 	if len(turns) == 0 {
 		return nil, false
 	}
@@ -396,7 +412,7 @@ func ParserForAdapter(adapter string, registry *runtimeplugin.Registry) string {
 // derived entries inherit. It is exported so runtime tails can reuse the same
 // parsing as the post-hoc transcript builder.
 func ParseRecord(record map[string]any, base Entry) []Entry {
-	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true}, base.CreatedAt)
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true}, base.CreatedAt)
 	return turnsToEntries(turns, base)
 }
 
@@ -404,8 +420,8 @@ func turnsToEntries(turns []runtimeoutput.Turn, base Entry) []Entry {
 	entries := make([]Entry, 0, len(turns))
 	for _, turn := range runtimeoutput.ReconcileLifecycle(turns) {
 		switch turn.Kind {
-		case runtimeoutput.KindThinking:
-			entries = append(entries, thinkingEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "thinking")))
+		case runtimeoutput.KindReasoning:
+			entries = append(entries, reasoningEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "reasoning")))
 		case runtimeoutput.KindText:
 			// Provider user records are internal prompt/session frames. Operator
 			// text is projected only from durable conversation or steering Events.
@@ -462,17 +478,25 @@ func messageEntry(base Entry, id, role, text string) Entry {
 	}
 }
 
-func thinkingEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry {
+func reasoningEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry {
 	return Entry{
 		ID:           id,
 		Seq:          base.Seq,
 		Continuation: base.Continuation,
-		Kind:         KindThinking,
+		Kind:         KindReasoning,
 		Role:         RoleAssistant,
 		Text:         turn.Text,
-		Status:       StatusCollapsed,
+		Status:       reasoningEntryStatus(turn),
+		Incremental:  turn.Incremental,
 		CreatedAt:    base.CreatedAt,
 	}
+}
+
+func reasoningEntryStatus(turn runtimeoutput.Turn) string {
+	if turn.LifecyclePhase == runtimeoutput.ReasoningPhaseStreaming {
+		return runtimeoutput.ReasoningPhaseStreaming
+	}
+	return StatusCollapsed
 }
 
 func toolCallEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry {

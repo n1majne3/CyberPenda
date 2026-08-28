@@ -142,8 +142,9 @@ func TestProviderRuntimeOutputPersistsOnlyTranscriptFields(t *testing.T) {
 
 	server.persistProviderSessionEvent(created.ID, task.EventKindRuntimeOutput, task.EventPayload{
 		"provider": "claude_code", "provider_event": "claude/runtime_output",
-		"session_id": "claude-1", "provider_turn_id": "turn-1",
-		"stream": "assistant", "text": `{"type":"assistant","message":{"content":[{"type":"text","text":"ready"}]}}`,
+		"session_id": "claude-1", "provider_turn_id": "turn-1", "provider_item_id": "turn-1-thinking-0",
+		"phase":  "streaming",
+		"stream": "assistant", "text": `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"use bearer secret-provider-token-123456 next"}]}}`,
 		"raw": "must not persist",
 	})
 
@@ -156,6 +157,13 @@ func TestProviderRuntimeOutputPersistsOnlyTranscriptFields(t *testing.T) {
 	}
 	if events[0].Payload["stream"] != "assistant" || events[0].Payload["text"] == "" {
 		t.Fatalf("runtime output payload = %#v", events[0].Payload)
+	}
+	if events[0].Payload["provider_item_id"] != "turn-1-thinking-0" || events[0].Payload["phase"] != "streaming" {
+		t.Fatalf("runtime output lost reasoning correlation fields: %#v", events[0].Payload)
+	}
+	text, _ := events[0].Payload["text"].(string)
+	if strings.Contains(text, "secret-provider-token-123456") || !strings.Contains(text, "bearer [REDACTED]") {
+		t.Fatalf("runtime output reasoning was not shape-redacted: %q", text)
 	}
 	if _, leaked := events[0].Payload["raw"]; leaked {
 		t.Fatalf("runtime output leaked raw provider payload: %#v", events[0].Payload)

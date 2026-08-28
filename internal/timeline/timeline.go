@@ -1,5 +1,5 @@
 // Package timeline projects retained task or session events into a
-// multica-style agent transcript timeline: thinking, tool calls, tool results,
+// multica-style agent transcript timeline: reasoning, tool calls, tool results,
 // agent text, and errors. Both owner kinds feed the same normalization chain
 // (runtimeoutput parse + streaming coalesce) so task and session timelines
 // render identically.
@@ -18,16 +18,18 @@ import (
 // window byte budget; Detail references the owner-authorized endpoint that
 // returns the complete retained item.
 type Item struct {
-	ID        string         `json:"id,omitempty"`
-	Seq       int            `json:"seq"`
-	Type      string         `json:"type"`
-	Tool      string         `json:"tool,omitempty"`
-	Content   string         `json:"content,omitempty"`
-	Input     map[string]any `json:"input,omitempty"`
-	Output    string         `json:"output,omitempty"`
-	CreatedAt time.Time      `json:"created_at"`
-	Truncated bool           `json:"truncated,omitempty"`
-	Detail    string         `json:"detail,omitempty"`
+	ID          string         `json:"id,omitempty"`
+	Seq         int            `json:"seq"`
+	Type        string         `json:"type"`
+	Tool        string         `json:"tool,omitempty"`
+	Content     string         `json:"content,omitempty"`
+	Input       map[string]any `json:"input,omitempty"`
+	Output      string         `json:"output,omitempty"`
+	Status      string         `json:"status,omitempty"`
+	Incremental bool           `json:"incremental,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
+	Truncated   bool           `json:"truncated,omitempty"`
+	Detail      string         `json:"detail,omitempty"`
 }
 
 // Event is the minimal owner-event surface Build consumes. Task and Session
@@ -77,6 +79,10 @@ func Build(events []Event) []Item {
 			continue
 		case "lifecycle":
 			flushTurns()
+			phase := stringValue(event.Payload, "phase")
+			if phase == "completed" || phase == "failed" || phase == "stopped" {
+				completeStreamingReasoning(items)
+			}
 			if item, ok := lifecycleItem(event); ok {
 				item.ID = event.ID
 				item.Seq = event.Seq
@@ -131,6 +137,14 @@ func Build(events []Event) []Item {
 	}
 	flushTurns()
 	return items
+}
+
+func completeStreamingReasoning(items []Item) {
+	for index := range items {
+		if items[index].Type == "reasoning" && items[index].Status == runtimeoutput.ReasoningPhaseStreaming {
+			items[index].Status = runtimeoutput.ReasoningPhaseCompleted
+		}
+	}
 }
 
 func blackboardConclusionItem(event Event) (Item, bool) {
@@ -253,8 +267,8 @@ func turnToItem(turn runtimeoutput.Turn) (Item, bool) {
 		id = fmt.Sprintf("%s-%s-%d", id, turn.Kind, turn.ContentIndex)
 	}
 	switch turn.Kind {
-	case runtimeoutput.KindThinking:
-		return Item{ID: id, Seq: turn.SourceSeq, Type: "thinking", Content: turn.Text, CreatedAt: turn.CreatedAt}, true
+	case runtimeoutput.KindReasoning:
+		return Item{ID: id, Seq: turn.SourceSeq, Type: "reasoning", Content: turn.Text, Status: turn.LifecyclePhase, Incremental: turn.Incremental, CreatedAt: turn.CreatedAt}, true
 	case runtimeoutput.KindText:
 		return Item{ID: id, Seq: turn.SourceSeq, Type: "text", Content: turn.Text, CreatedAt: turn.CreatedAt}, true
 	case runtimeoutput.KindToolUse:

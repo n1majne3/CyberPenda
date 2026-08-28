@@ -221,3 +221,82 @@ func TestHermesInvalidControlResultReportsOnlyBoundedFailure(t *testing.T) {
 		t.Fatalf("validation failure = %#v", got)
 	}
 }
+
+func TestHermesProviderSessionStreamsThoughtChunks(t *testing.T) {
+	var events []task.EventPayload
+	session := NewHermesProviderSession(HermesProviderSessionConfig{
+		Transport: &fakeProviderTransport{}, SessionID: "hermes-session", ActiveTurnID: "hermes-turn",
+	})
+	emit := func(_ task.EventKind, payload task.EventPayload) { events = append(events, payload) }
+
+	// Two thought chunks arrive before any other event: batching keeps both
+	// out of the event store until the window or a barrier flushes.
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "session/update",
+		Params: json.RawMessage(`{"sessionId":"hermes-session","turn_id":"hermes-turn","update":{"sessionUpdate":"agent_thought_chunk","text":"checking "}}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "session/update",
+		Params: json.RawMessage(`{"sessionId":"hermes-session","turn_id":"hermes-turn","update":{"sessionUpdate":"agent_thought_chunk","text":"the auth flow"}}`),
+	}, emit)
+	if len(events) != 0 {
+		t.Fatalf("thought chunks must batch before a flush: %#v", events)
+	}
+
+	// The next tool call event barriers the pending reasoning batch so the
+	// durable order matches the wire order.
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "session/update",
+		Params: json.RawMessage(`{"sessionId":"hermes-session","turn_id":"hermes-turn","update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"bash","rawInput":{"command":"ls"}}}`),
+	}, emit)
+
+	if len(events) != 2 {
+		t.Fatalf("events after barrier = %#v", events)
+	}
+	batched := events[0]
+	if batched["provider_event"] != "session/update" || batched["stream"] != "hermes_acp" {
+		t.Fatalf("batched thought payload = %#v", batched)
+	}
+	if batched["provider_item_id"] != "hermes-thought-hermes-turn-1" {
+		t.Fatalf("batched thought identity = %#v", batched)
+	}
+	text, _ := batched["text"].(string)
+	var record map[string]any
+	if err := json.Unmarshal([]byte(text), &record); err != nil {
+		t.Fatalf("batched thought text is not JSON: %q", text)
+	}
+	if record["sessionUpdate"] != "agent_thought_chunk" || record["text"] != "checking the auth flow" {
+		t.Fatalf("batched thought record = %#v", record)
+	}
+	if record["item_id"] != "hermes-thought-hermes-turn-1" {
+		t.Fatalf("batched thought item id = %#v", record)
+	}
+	if events[1]["provider_item_id"] != nil {
+		t.Fatalf("tool call event must not carry reasoning identity: %#v", events[1])
+	}
+
+	// A turn boundary flushes any trailing reasoning tail.
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "session/update",
+		Params: json.RawMessage(`{"sessionId":"hermes-session","turn_id":"hermes-turn","update":{"sessionUpdate":"agent_thought_chunk","text":" tail"}}`),
+	}, emit)
+	if len(events) != 2 {
+		t.Fatalf("trailing chunk must stay batched: %#v", events)
+	}
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "session/update",
+		Params: json.RawMessage(`{"sessionId":"hermes-session","turn_id":"hermes-turn","update":{"sessionUpdate":"turn_ended","stopReason":"end_turn"}}`),
+	}, emit)
+	if len(events) != 3 {
+		t.Fatalf("turn end must complete the trailing reasoning segment: %#v", events)
+	}
+	// The first segment was completed before the tool call. The post-tool tail
+	// is a new reasoning segment with a different stable identity.
+	if events[0]["phase"] != "completed" || events[0]["provider_item_id"] != "hermes-thought-hermes-turn-1" {
+		t.Fatalf("first completed thought segment = %#v", events[0])
+	}
+	tailText, _ := events[2]["text"].(string)
+	if events[2]["phase"] != "completed" || events[2]["provider_item_id"] != "hermes-thought-hermes-turn-2" || !strings.Contains(tailText, " tail") {
+		t.Fatalf("second completed thought segment = %#v", events[2])
+	}
+}

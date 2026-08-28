@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/runtimeoutput"
 	"pentest/internal/timeline"
 )
 
@@ -27,7 +28,7 @@ func TestBuildParsesThinkingToolUseTextAndResult(t *testing.T) {
 	got := timeline.Build(events)
 
 	requireItem(t, got, 0, "lifecycle", "", "Lifecycle: started")
-	requireItem(t, got, 1, "thinking", "", "plan recon")
+	requireItem(t, got, 1, "reasoning", "", "plan recon")
 	requireItem(t, got, 2, "tool_use", "Bash", "")
 	if got[2].Input["command"] != "curl example.com" {
 		t.Fatalf("unexpected tool input: %#v", got[2].Input)
@@ -65,7 +66,7 @@ func TestBuildReconcilesCodexItemLifecycle(t *testing.T) {
 			toolUses++
 		case "tool_result":
 			toolResults++
-		case "thinking":
+		case "reasoning":
 			thinking++
 			if item.Content != "Checked the target." {
 				t.Fatalf("thinking = %#v", item)
@@ -74,6 +75,34 @@ func TestBuildReconcilesCodexItemLifecycle(t *testing.T) {
 	}
 	if toolUses != 1 || toolResults != 1 || thinking != 1 {
 		t.Fatalf("Timeline lifecycle counts: tool_use=%d tool_result=%d thinking=%d items=%#v", toolUses, toolResults, thinking, got)
+	}
+}
+
+func TestBuildProjectsReasoningLifecycleStatus(t *testing.T) {
+	createdAt := time.Now().UTC()
+	got := timeline.Build([]timeline.Event{
+		{ID: "ev-1", Seq: 1, Kind: "runtime_output", Payload: map[string]any{
+			"provider_event": "item/reasoning/summaryTextDelta",
+			"text":           `{"item":{"type":"reasoning","id":"reasoning-1","summary":["checking"]}}`,
+		}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{
+			"provider_event": "item/completed",
+			"text":           `{"item":{"type":"reasoning","id":"reasoning-1","content":["checking auth"]}}`,
+		}, CreatedAt: createdAt.Add(time.Second)},
+	})
+	if len(got) != 1 || got[0].Type != "reasoning" || got[0].Status != "completed" {
+		t.Fatalf("reasoning lifecycle item = %#v", got)
+	}
+}
+
+func TestBuildCompletesStreamingReasoningAtLifecycleSettlement(t *testing.T) {
+	createdAt := time.Now().UTC()
+	got := timeline.Build([]timeline.Event{
+		{ID: "ev-1", Seq: 1, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"stream_event","uuid":"claude-message-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"checking"}}}`}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "lifecycle", Payload: map[string]any{"phase": "completed"}, CreatedAt: createdAt.Add(time.Second)},
+	})
+	if len(got) < 1 || got[0].Type != "reasoning" || got[0].Status != runtimeoutput.ReasoningPhaseCompleted {
+		t.Fatalf("settled Timeline reasoning = %#v", got)
 	}
 }
 
@@ -109,7 +138,7 @@ func TestBuildCoalescesAdjacentThinkingFragments(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 coalesced thinking item, got %d: %#v", len(got), got)
 	}
-	if got[0].Type != "thinking" || got[0].Content != "part one part two" {
+	if got[0].Type != "reasoning" || got[0].Content != "part one part two" {
 		t.Fatalf("unexpected coalesced thinking: %#v", got[0])
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/runtimeoutput"
 	"pentest/internal/transcript"
 )
 
@@ -137,7 +138,7 @@ func TestBuildReconcilesCodexStartedCompletedAndReasoningItems(t *testing.T) {
 			calls = append(calls, entry)
 		case transcript.KindToolResult:
 			results = append(results, entry)
-		case transcript.KindThinking:
+		case transcript.KindReasoning:
 			thinking = append(thinking, entry)
 		}
 	}
@@ -399,14 +400,14 @@ func TestIsIgnorableRuntimeLineDetectsClaudeInitAndResult(t *testing.T) {
 	}
 }
 
-func TestIsIgnorableRuntimeLineDetectsThinkingOnlyAssistant(t *testing.T) {
+func TestIsIgnorableRuntimeLineKeepsThinkingOnlyAssistant(t *testing.T) {
 	line := `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"planning next step"}]}}`
-	if !transcript.IsIgnorableRuntimeLine(line) {
-		t.Fatal("expected thinking-only assistant line to be ignorable")
+	if transcript.IsIgnorableRuntimeLine(line) {
+		t.Fatal("thinking-only assistant lines are durable transcript content and must not be ignored")
 	}
 }
 
-func TestBuildDropsClaudeInitResultAndThinkingOnlyChunks(t *testing.T) {
+func TestBuildProjectsReasoningEntriesAndDropsClaudeInitResult(t *testing.T) {
 	subject := transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: time.Now().UTC()}
 	events := []transcript.Event{
 		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}},
@@ -429,6 +430,131 @@ func TestBuildDropsClaudeInitResultAndThinkingOnlyChunks(t *testing.T) {
 		t.Fatalf("unexpected tool call: %#v", call)
 	}
 	requireEntry(t, got, "ev-6-message-0", "message", "assistant", "Done.")
+	thinking := requireEntry(t, got, "ev-3-reasoning-0", "reasoning", "assistant", "only thoughts")
+	if thinking.Status != transcript.StatusCollapsed {
+		t.Fatalf("reasoning entry should be collapsed: %#v", thinking)
+	}
+}
+
+func TestBuildStreamsCodexReasoningDeltasIntoOneGrowingEntry(t *testing.T) {
+	createdAt := time.Date(2026, 8, 26, 9, 0, 0, 0, time.UTC)
+	subject := transcript.Subject{ID: "session-1", Title: "Inspect", CreatedAt: createdAt}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "provider-session:thread-1"}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/reasoning/summaryTextDelta", "stream": "codex_app_server",
+			"text": `{"item":{"type":"reasoning","id":"item-reasoning","summary":["Checked"]}}`,
+		}, CreatedAt: createdAt.Add(time.Second)},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/reasoning/summaryTextDelta", "stream": "codex_app_server",
+			"text": `{"item":{"type":"reasoning","id":"item-reasoning","summary":["Checked the target."]}}`,
+		}, CreatedAt: createdAt.Add(2 * time.Second)},
+		{ID: "ev-4", Seq: 4, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/started", "stream": "codex_app_server",
+			"text": `{"item":{"type":"commandExecution","id":"item-cmd","command":"curl example.com","status":"inProgress"}}`,
+		}, CreatedAt: createdAt.Add(3 * time.Second)},
+		{ID: "ev-5", Seq: 5, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "codex", "provider_event": "item/completed", "stream": "codex_app_server",
+			"text": `{"item":{"type":"reasoning","id":"item-reasoning","summary":["Checked the target.","Prepared the command."]}}`,
+		}, CreatedAt: createdAt.Add(4 * time.Second)},
+	}
+
+	got := transcript.Build(subject, events)
+
+	stableID := "continuation-1-" + runtimeoutput.StableProviderItemID("item-reasoning", "reasoning")
+	var reasoningEntries []transcript.Entry
+	reasoningIndex := -1
+	toolIndex := -1
+	for index, entry := range got {
+		if entry.Kind == transcript.KindReasoning {
+			reasoningEntries = append(reasoningEntries, entry)
+			reasoningIndex = index
+		}
+		if entry.Kind == transcript.KindToolCall && entry.ToolName == "command_execution" {
+			toolIndex = index
+		}
+	}
+	if len(reasoningEntries) != 1 {
+		t.Fatalf("streamed reasoning must be one growing entry, got %d: %#v", len(reasoningEntries), reasoningEntries)
+	}
+	entry := reasoningEntries[0]
+	if entry.ID != stableID {
+		t.Fatalf("reasoning id = %q, want %q", entry.ID, stableID)
+	}
+	if entry.Seq != 2 {
+		t.Fatalf("reasoning seq = %d, want 2 (first projection position)", entry.Seq)
+	}
+	if entry.Text != "Checked the target.\nPrepared the command." || entry.Status != transcript.StatusCollapsed {
+		t.Fatalf("completed reasoning = text=%q status=%q", entry.Text, entry.Status)
+	}
+	if reasoningIndex == -1 || toolIndex == -1 || reasoningIndex > toolIndex {
+		t.Fatalf("reasoning must interleave before its tool call: reasoning=%d tool=%d", reasoningIndex, toolIndex)
+	}
+}
+
+func TestBuildJoinsClaudeCLIIncrementalThinkingDeltas(t *testing.T) {
+	createdAt := time.Now().UTC()
+	got := transcript.Build(transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: createdAt}, []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"stream_event","uuid":"claude-message-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"checking "}}}`}, CreatedAt: createdAt.Add(time.Second)},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"stream_event","uuid":"claude-message-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"auth"}}}`}, CreatedAt: createdAt.Add(2 * time.Second)},
+	})
+	var reasoning []transcript.Entry
+	for _, entry := range got {
+		if entry.Kind == transcript.KindReasoning {
+			reasoning = append(reasoning, entry)
+		}
+	}
+	if len(reasoning) != 1 || reasoning[0].Text != "checking auth" || !reasoning[0].Incremental {
+		t.Fatalf("incremental Claude CLI reasoning = %#v", reasoning)
+	}
+}
+
+func TestBuildStreamsClaudeThinkingDeltasIntoOneGrowingEntry(t *testing.T) {
+	createdAt := time.Now().UTC()
+	subject := transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: createdAt}
+	events := []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "claude", "provider_event": "claude/runtime_output", "stream": "stream_event",
+			"text": `{"type":"content_block_delta","index":0,"item_id":"t1-thinking-0","delta":{"type":"thinking_delta","thinking":"partial"}}`,
+		}, CreatedAt: createdAt.Add(time.Second)},
+		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{
+			"provider": "claude", "provider_event": "claude/runtime_output", "stream": "stream_event",
+			"text": `{"type":"content_block_delta","index":0,"item_id":"t1-thinking-0","delta":{"type":"thinking_delta","thinking":"partial thought"}}`,
+		}, CreatedAt: createdAt.Add(2 * time.Second)},
+	}
+
+	got := transcript.Build(subject, events)
+
+	stableID := "continuation-1-" + runtimeoutput.StableProviderItemID("t1-thinking-0", "reasoning")
+	var reasoningEntries []transcript.Entry
+	for _, entry := range got {
+		if entry.Kind == transcript.KindReasoning {
+			reasoningEntries = append(reasoningEntries, entry)
+		}
+	}
+	if len(reasoningEntries) != 1 {
+		t.Fatalf("streamed thinking must be one growing entry, got %d: %#v", len(reasoningEntries), reasoningEntries)
+	}
+	entry := reasoningEntries[0]
+	if entry.ID != stableID || entry.Seq != 2 || entry.Text != "partial thought" || entry.Status != "streaming" {
+		t.Fatalf("growing entry = id=%q seq=%d text=%q status=%q", entry.ID, entry.Seq, entry.Text, entry.Status)
+	}
+}
+
+func TestBuildCollapsesStreamingReasoningAtContinuationSettlement(t *testing.T) {
+	createdAt := time.Now().UTC()
+	got := transcript.Build(transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: createdAt}, []transcript.Event{
+		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}, CreatedAt: createdAt},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"text": `{"type":"stream_event","uuid":"claude-message-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"checking auth"}}}`}, CreatedAt: createdAt.Add(time.Second)},
+		{ID: "ev-3", Seq: 3, Kind: "lifecycle", Payload: map[string]any{"phase": "completed"}, CreatedAt: createdAt.Add(2 * time.Second)},
+	})
+	for _, entry := range got {
+		if entry.Kind == transcript.KindReasoning && entry.Status != transcript.StatusCollapsed {
+			t.Fatalf("settled reasoning remained live: %#v", entry)
+		}
+	}
 }
 
 func TestBuildFallsBackForUnknownJSONRuntimeOutput(t *testing.T) {

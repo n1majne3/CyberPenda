@@ -1037,6 +1037,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
               <TranscriptList
                 entries={history.transcript.slice(transcriptWindow.startIndex, transcriptWindow.endIndex)}
                 endRef={conversationEnd}
+                liveReasoningID={liveReasoningEntryID(
+                  history.transcript,
+                  owner.runtimeActivity?.liveness === "live" && owner.runtimeActivity.turn_activity === "busy",
+                )}
               />
               {transcriptWindow.spacerAfter > 0 && (
                 <div aria-hidden="true" data-testid="transcript-spacer-after" style={{ height: transcriptWindow.spacerAfter }} />
@@ -1629,7 +1633,25 @@ function BlackboardConclusionRecovery({
   );
 }
 
-function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; endRef: RefObject<HTMLDivElement | null> }) {
+function liveReasoningEntryID(entries: TaskTranscriptEntry[], runtimeBusy: boolean): string | undefined {
+  if (!runtimeBusy || entries.length === 0) return undefined;
+  const maxSeq = Math.max(...entries.map((entry) => entry.seq));
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.kind === "reasoning" && entry.status === "streaming" && entry.seq === maxSeq) return entry.id;
+  }
+  return undefined;
+}
+
+function TranscriptList({
+  entries,
+  endRef,
+  liveReasoningID,
+}: {
+  entries: TaskTranscriptEntry[];
+  endRef: RefObject<HTMLDivElement | null>;
+  liveReasoningID?: string;
+}) {
   return (
     <div>
       {entries.map((entry, index) => {
@@ -1643,7 +1665,7 @@ function TranscriptList({ entries, endRef }: { entries: TaskTranscriptEntry[]; e
             data-testid="transcript-row"
             className={`[contain-intrinsic-size:72px] [content-visibility:auto] ${spacing}`}
           >
-            <TranscriptRow entry={entry} />
+            <TranscriptRow entry={entry} autoExpandReasoning={entry.id === liveReasoningID} />
           </div>
         );
       })}
@@ -1668,7 +1690,7 @@ function isUserTurnStart(entry: TaskTranscriptEntry): boolean {
   return entry.role === "user";
 }
 
-function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
+function TranscriptRow({ entry, autoExpandReasoning = false }: { entry: TaskTranscriptEntry; autoExpandReasoning?: boolean }) {
   if (entry.kind === "continuation") {
     return (
       <div className="flex items-center justify-center gap-2 py-1 text-xs text-muted-foreground">
@@ -1687,7 +1709,7 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
   }
 
   if (isCollapsedTranscriptEntry(entry)) {
-    return <CollapsedTranscriptRow entry={entry} />;
+    return <CollapsedTranscriptRow entry={entry} autoExpand={autoExpandReasoning && entry.kind === "reasoning"} />;
   }
 
   const isUser = entry.role === "user";
@@ -1724,10 +1746,18 @@ function TranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
   );
 }
 
-function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
+function CollapsedTranscriptRow({ entry, autoExpand = false }: { entry: TaskTranscriptEntry; autoExpand?: boolean }) {
+  const [manuallyOpen, setManuallyOpen] = useState(false);
+  const wasAutoExpanded = useRef(false);
+  useEffect(() => {
+    // A live reasoning row opens automatically. When streaming stops, close
+    // it once; completed rows remain manually expandable across later polls.
+    if (wasAutoExpanded.current && !autoExpand) setManuallyOpen(false);
+    wasAutoExpanded.current = autoExpand;
+  }, [autoExpand]);
   const isError = entry.kind === "tool_result" && (entry.details as { is_error?: boolean } | undefined)?.is_error === true;
   const Icon =
-    entry.kind === "thinking"
+    entry.kind === "reasoning"
       ? Brain
       : entry.kind === "runtime_output"
         ? Terminal
@@ -1737,7 +1767,14 @@ function CollapsedTranscriptRow({ entry }: { entry: TaskTranscriptEntry }) {
           : CheckCircle2
         : Wrench;
   return (
-    <details data-testid={entry.kind === "thinking" ? "transcript-thinking-row" : "transcript-tool-row"} className="group border-b border-border/50 last:border-b-0">
+    <details
+      data-testid={entry.kind === "reasoning" ? "transcript-reasoning-row" : "transcript-tool-row"}
+      open={autoExpand || manuallyOpen}
+      onToggle={(event) => {
+        if (!autoExpand) setManuallyOpen(event.currentTarget.open);
+      }}
+      className="group border-b border-border/50 last:border-b-0"
+    >
       <summary className="-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
         <Icon className={`h-4 w-4 shrink-0 ${isError ? "text-destructive" : "text-muted-foreground"}`} />
@@ -1782,7 +1819,7 @@ function ToolCallDetails({ entry }: { entry: TaskTranscriptEntry }) {
 }
 
 function isCollapsedTranscriptEntry(entry: TaskTranscriptEntry) {
-  return entry.kind === "thinking" || entry.kind === "tool_call" || entry.kind === "tool_result" || entry.kind === "runtime_output";
+  return entry.kind === "reasoning" || entry.kind === "tool_call" || entry.kind === "tool_result" || entry.kind === "runtime_output";
 }
 
 function collapsedBody(entry: TaskTranscriptEntry) {

@@ -529,6 +529,28 @@ func TestRejectedSessionRuntimeTurnsDoNotPersistAttachments(t *testing.T) {
 	}
 }
 
+func TestSessionProviderRuntimeOutputKeepsReasoningCorrelationFields(t *testing.T) {
+	kind, payload := sessionProviderEventPayload(task.EventKindRuntimeOutput, task.EventPayload{
+		"provider": "claude_code", "provider_event": "claude/runtime_output",
+		"session_id": "claude-1", "provider_turn_id": "turn-1", "provider_item_id": "turn-1-thinking-0",
+		"phase": "streaming", "stream": "stream_event", "text": `{"type":"content_block_delta","delta":{"thinking":"bearer secret-session-token-123456"}}`,
+		"raw": "must not persist",
+	}, "continuation-1")
+	if kind != session.EventKindRuntimeOutput {
+		t.Fatalf("provider runtime output kind = %q, want %q", kind, session.EventKindRuntimeOutput)
+	}
+	if payload["provider_item_id"] != "turn-1-thinking-0" || payload["phase"] != "streaming" || payload["continuation_id"] != "continuation-1" {
+		t.Fatalf("provider runtime output lost reasoning correlation: %#v", payload)
+	}
+	text, _ := payload["text"].(string)
+	if strings.Contains(text, "secret-session-token-123456") || !strings.Contains(text, "bearer [REDACTED]") {
+		t.Fatalf("session reasoning was not shape-redacted: %q", text)
+	}
+	if _, leaked := payload["raw"]; leaked {
+		t.Fatalf("provider runtime output leaked raw payload: %#v", payload)
+	}
+}
+
 func TestSessionProviderResultsRemainOnTimelineOutsideConversation(t *testing.T) {
 	kind, payload := sessionProviderEventPayload(task.EventKindConversation, task.EventPayload{
 		"provider": "codex", "request_id": "request-1", "outcome": "applied", "phase": "provider_turn_applied",

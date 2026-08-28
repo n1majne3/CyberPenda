@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"pentest/internal/blackboardconclusion"
+	"pentest/internal/runtimeoutput"
 	"pentest/internal/task"
 )
 
@@ -25,10 +26,11 @@ const (
 	codexAssistedTerminal   codexAssistedEventKind = "terminal"
 )
 
-// codexAssistedEvent is the complete in-memory provider boundary. It contains
-// only bounded correlation metadata and, for a possible control result, at most
-// one decoder-sized assistant message. Tool arguments/results and reasoning are
-// deliberately discarded while parsing the App Server notification.
+// codexAssistedEvent is the complete in-memory assisted-observation boundary.
+// It contains only bounded correlation metadata and, for a possible control
+// result, at most one decoder-sized assistant message. Tool arguments/results
+// and reasoning never enter this semantic observation type; the separate
+// runtime-output projection retains transcript-visible reasoning.
 type codexAssistedEvent struct {
 	kind      codexAssistedEventKind
 	sessionID string
@@ -98,11 +100,22 @@ func (s *CodexProviderSession) InterruptThenReplace(ctx context.Context, request
 }
 
 // HandleEvent keeps the existing interactive lifecycle channel while adding a
-// separate closed semantic-observation channel. Item payloads never enter Task
-// events; only turn/permission notifications are sent through the lifecycle
-// normalizer.
+// separate closed semantic-observation channel. Bounded item projections enter
+// runtime_output Task Events, while only turn/permission notifications enter
+// the lifecycle normalizer. Reasoning deltas stream as batched runtime output;
+// any other event first flushes the pending reasoning batch so durable order
+// follows wire order.
 func (s *CodexProviderSession) HandleEvent(event SandboxBridgeEvent, emit ProviderSessionEmit) {
 	method := strings.ToLower(strings.TrimSpace(event.Method))
+	if method == "item/reasoning/summarytextdelta" {
+		s.acceptCodexReasoningDelta(event, emit)
+		return
+	}
+	if method == "turn/completed" {
+		s.completeCodexReasoning(emit, event.Params)
+	} else {
+		s.reasoning.Barrier()
+	}
 	if strings.HasPrefix(method, "item/") {
 		s.emitCodexRuntimeOutput(event, emit)
 	} else {
@@ -164,7 +177,18 @@ func (s *CodexProviderSession) emitCodexRuntimeOutput(event SandboxBridgeEvent, 
 		}
 		text = codexReasoningRuntimeOutput(params, item)
 		if text == "" {
-			return
+			itemID, cumulative, ok := s.reasoning.Complete()
+			if !ok {
+				return
+			}
+			text = codexCompletedReasoningRuntimeOutput(params, itemID, cumulative)
+			if text == "" {
+				return
+			}
+		} else {
+			// The completed item provides the final cumulative text and closes the
+			// streaming segment. Clear the batcher base after the prior Barrier.
+			s.reasoning.Reset()
 		}
 	default:
 		return
@@ -192,15 +216,38 @@ func (s *CodexProviderSession) emitCodexRuntimeOutput(event SandboxBridgeEvent, 
 	})
 }
 
+func codexCompletedReasoningRuntimeOutput(params map[string]any, itemID, content string) string {
+	if itemID == "" || content == "" {
+		return ""
+	}
+	return codexReasoningRuntimeOutput(params, map[string]any{
+		"type":    "reasoning",
+		"id":      itemID,
+		"content": []any{content},
+	})
+}
+
 func codexReasoningRuntimeOutput(params, item map[string]any) string {
-	summary, ok := item["summary"]
-	if !ok || strings.TrimSpace(providerReasoningSummary(summary)) == "" {
+	content, hasContent := item["content"]
+	summary, hasSummary := item["summary"]
+	// Raw reasoning content is durable transcript content. Third-party model
+	// summaries are not the real thinking, so content is kept and preferred;
+	// the summary stays as the fallback. Shape-based redaction still applies
+	// when the event is stored.
+	hasText := (hasContent && strings.TrimSpace(providerReasoningText(content)) != "") ||
+		(hasSummary && strings.TrimSpace(providerReasoningText(summary)) != "")
+	if !hasText {
 		return ""
 	}
 	minimalItem := map[string]any{
-		"type":    "reasoning",
-		"id":      providerJSONValue(item, "id"),
-		"summary": summary,
+		"type": "reasoning",
+		"id":   providerJSONValue(item, "id"),
+	}
+	if hasContent {
+		minimalItem["content"] = content
+	}
+	if hasSummary {
+		minimalItem["summary"] = summary
 	}
 	minimal := map[string]any{"item": minimalItem}
 	if threadID := providerJSONValue(params, "threadId", "thread_id"); threadID != "" {
@@ -216,21 +263,105 @@ func codexReasoningRuntimeOutput(params, item map[string]any) string {
 	return string(encoded)
 }
 
-func providerReasoningSummary(value any) string {
+// providerReasoningText joins string parts and text-bearing object parts of a
+// reasoning content or summary list.
+func providerReasoningText(value any) string {
 	switch typed := value.(type) {
 	case string:
 		return strings.TrimSpace(typed)
 	case []any:
 		parts := make([]string, 0, len(typed))
 		for _, part := range typed {
-			if text, ok := part.(string); ok && strings.TrimSpace(text) != "" {
-				parts = append(parts, strings.TrimSpace(text))
+			if text, ok := part.(string); ok {
+				if strings.TrimSpace(text) != "" {
+					parts = append(parts, strings.TrimSpace(text))
+				}
+				continue
+			}
+			if partMap, ok := part.(map[string]any); ok {
+				if text := providerJSONValue(partMap, "text", "content"); strings.TrimSpace(text) != "" {
+					parts = append(parts, strings.TrimSpace(text))
+				}
 			}
 		}
 		return strings.Join(parts, "\n")
 	default:
 		return ""
 	}
+}
+
+// acceptCodexReasoningDelta accumulates one reasoning summary text delta into
+// the session batcher. Flushed batches carry the cumulative text so transcript
+// projections grow one stable reasoning entry in place.
+func (s *CodexProviderSession) acceptCodexReasoningDelta(event SandboxBridgeEvent, emit ProviderSessionEmit) {
+	params := map[string]any{}
+	if len(event.Params) == 0 || json.Unmarshal(event.Params, &params) != nil {
+		return
+	}
+	itemID := providerJSONValue(params, "itemId", "item_id")
+	// Delta text must stay untrimmed: a trailing space often separates words.
+	delta, _ := params["delta"].(string)
+	if itemID == "" || delta == "" {
+		return
+	}
+	turnID := providerJSONValue(params, "turnId", "turn_id")
+	if turnID == "" {
+		turnID = s.currentTurn()
+	}
+	sessionID := providerJSONValue(params, "threadId", "thread_id")
+	if sessionID == "" {
+		sessionID = s.SessionID()
+	}
+	s.reasoning.Add(itemID, func(cumulative string) {
+		s.emitBatchedCodexReasoning(emit, sessionID, turnID, itemID, cumulative)
+	}, delta)
+}
+
+func (s *CodexProviderSession) completeCodexReasoning(emit ProviderSessionEmit, raw json.RawMessage) {
+	itemID, content, ok := s.reasoning.Complete()
+	if !ok {
+		return
+	}
+	params := map[string]any{}
+	_ = json.Unmarshal(raw, &params)
+	sessionID := providerJSONValue(params, "threadId", "thread_id")
+	if sessionID == "" {
+		sessionID = s.SessionID()
+	}
+	turnID := providerJSONValue(params, "turnId", "turn_id")
+	if turn, ok := params["turn"].(map[string]any); ok && turnID == "" {
+		turnID = providerJSONValue(turn, "id", "turnId", "turn_id")
+	}
+	if turnID == "" {
+		turnID = s.currentTurn()
+	}
+	text := codexCompletedReasoningRuntimeOutput(params, itemID, content)
+	if text == "" {
+		return
+	}
+	s.emitCodexReasoningRecord(emit, sessionID, turnID, itemID, "item/completed", text, runtimeoutput.ReasoningPhaseCompleted)
+}
+
+func (s *CodexProviderSession) emitBatchedCodexReasoning(emit ProviderSessionEmit, sessionID, turnID, itemID, cumulative string) {
+	encoded, err := json.Marshal(map[string]any{
+		"item": map[string]any{"type": "reasoning", "id": itemID, "summary": []string{cumulative}},
+	})
+	if err != nil {
+		return
+	}
+	s.emitCodexReasoningRecord(emit, sessionID, turnID, itemID, "item/reasoning/summaryTextDelta", string(encoded), runtimeoutput.ReasoningPhaseStreaming)
+}
+
+func (s *CodexProviderSession) emitCodexReasoningRecord(emit ProviderSessionEmit, sessionID, turnID, itemID, providerEvent, text, phase string) {
+	s.emitReasoningRuntimeOutput(emit, reasoningRuntimeOutput{
+		ProviderEvent: providerEvent,
+		SessionID:     sessionID,
+		TurnID:        turnID,
+		ItemID:        itemID,
+		Stream:        "codex_app_server",
+		Phase:         phase,
+		Text:          text,
+	})
 }
 
 func (s *CodexProviderSession) acceptCodexAssisted(event codexAssistedEvent) {

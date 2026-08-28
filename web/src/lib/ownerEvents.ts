@@ -13,39 +13,86 @@ export interface ProjectionDelta<T> {
   cursor: number;
 }
 
-/** mergeTimelineItems appends an ordered timeline delta without duplicates. */
+/** mergeTimelineItems appends new items and updates growing stable items in place. */
 export function mergeTimelineItems(existing: TaskTimelineItem[], delta: TaskTimelineItem[]): TaskTimelineItem[] {
   if (existing.length === 0) return delta;
   if (delta.length === 0) return existing;
-  // A refresh only ever returns items strictly after the committed cursor.
-  // Drop stale overlap (Seq <= existing max) and in-delta duplicates alike.
   const maxSeq = Math.max(...existing.map((item) => item.seq));
+  const updated = [...existing];
+  const existingByIdentity = new Map(updated.map((item, index) => [timelineItemIdentity(item), index]));
   const appended: TaskTimelineItem[] = [];
-  const seen = new Set(existing.map(timelineItemIdentity));
+  const appendedByIdentity = new Map<string, number>();
+  let changed = false;
+
   for (const item of delta) {
     const identity = timelineItemIdentity(item);
-    if (item.seq <= maxSeq || seen.has(identity)) continue;
-    seen.add(identity);
+    const existingIndex = existingByIdentity.get(identity);
+    if (existingIndex !== undefined) {
+      if (item.seq > updated[existingIndex]!.seq) {
+        // Keep the item at its first visible position while replacing its
+        // cumulative reasoning text and latest Seq.
+        const previous = updated[existingIndex]!;
+        updated[existingIndex] = {
+          ...item,
+          content: item.incremental ? `${previous.content ?? ""}${item.content ?? ""}` : item.content,
+          created_at: previous.created_at ?? item.created_at,
+        };
+        changed = true;
+      }
+      continue;
+    }
+    const appendedIndex = appendedByIdentity.get(identity);
+    if (appendedIndex !== undefined) {
+      if (item.seq > appended[appendedIndex]!.seq) appended[appendedIndex] = item;
+      continue;
+    }
+    if (item.seq <= maxSeq) continue;
+    appendedByIdentity.set(identity, appended.length);
     appended.push(item);
   }
-  if (appended.length === 0) return existing;
-  return [...existing, ...appended];
+  if (!changed && appended.length === 0) return existing;
+  return [...updated, ...appended];
 }
 
-/** mergeTranscriptEntries appends an ordered transcript delta without duplicates. */
+/** mergeTranscriptEntries appends new rows and updates growing stable rows in place. */
 export function mergeTranscriptEntries(existing: TaskTranscriptEntry[], delta: TaskTranscriptEntry[]): TaskTranscriptEntry[] {
   if (existing.length === 0) return coalesceAssistantChunks(delta);
   if (delta.length === 0) return existing;
   const maxSeq = Math.max(...existing.map((entry) => entry.seq));
+  const updated = [...existing];
+  const existingByID = new Map(updated.map((entry, index) => [entry.id, index]));
   const appended: TaskTranscriptEntry[] = [];
-  const seen = new Set<string>();
+  const appendedByID = new Map<string, number>();
+  let changed = false;
+
   for (const entry of delta) {
-    if (entry.seq <= maxSeq || seen.has(entry.id)) continue;
-    seen.add(entry.id);
+    const existingIndex = existingByID.get(entry.id);
+    if (existingIndex !== undefined) {
+      if (entry.seq > updated[existingIndex]!.seq) {
+        // A cumulative reasoning batch or completed provider item replaces the
+        // same stable row without changing its visible list position.
+        const previous = updated[existingIndex]!;
+        updated[existingIndex] = {
+          ...entry,
+          continuation: previous.continuation,
+          text: entry.incremental ? `${previous.text ?? ""}${entry.text ?? ""}` : entry.text,
+          created_at: previous.created_at ?? entry.created_at,
+        };
+        changed = true;
+      }
+      continue;
+    }
+    const appendedIndex = appendedByID.get(entry.id);
+    if (appendedIndex !== undefined) {
+      if (entry.seq > appended[appendedIndex]!.seq) appended[appendedIndex] = entry;
+      continue;
+    }
+    if (entry.seq <= maxSeq) continue;
+    appendedByID.set(entry.id, appended.length);
     appended.push(entry);
   }
-  if (appended.length === 0) return existing;
-  return appendCoalescedTranscript(existing, appended);
+  if (!changed && appended.length === 0) return existing;
+  return appendCoalescedTranscript(updated, appended);
 }
 
 function appendCoalescedTranscript(existing: TaskTranscriptEntry[], delta: TaskTranscriptEntry[]): TaskTranscriptEntry[] {
