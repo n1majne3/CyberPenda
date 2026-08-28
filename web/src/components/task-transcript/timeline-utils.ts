@@ -4,8 +4,8 @@ export function getEventColor(item: TimelineItem): EventColor {
   switch (item.type) {
     case "text":
       return "agent";
-    case "thinking":
-      return "thinking";
+    case "reasoning":
+      return "reasoning";
     case "tool_use":
       return "tool";
     case "tool_result":
@@ -23,7 +23,7 @@ export function getEventColor(item: TimelineItem): EventColor {
 
 export const colorClasses: Record<EventColor, { bg: string; bgActive: string; label: string }> = {
   agent: { bg: "bg-emerald-400/60", bgActive: "bg-emerald-500", label: "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300" },
-  thinking: { bg: "bg-violet-400/60", bgActive: "bg-violet-500", label: "bg-violet-500/20 text-violet-700 dark:text-violet-300" },
+  reasoning: { bg: "bg-violet-400/60", bgActive: "bg-violet-500", label: "bg-violet-500/20 text-violet-700 dark:text-violet-300" },
   tool: { bg: "bg-blue-400/60", bgActive: "bg-blue-500", label: "bg-blue-500/20 text-blue-700 dark:text-blue-300" },
   result: { bg: "bg-slate-300/60 dark:bg-slate-600/60", bgActive: "bg-slate-400 dark:bg-slate-500", label: "bg-muted text-muted-foreground" },
   error: { bg: "bg-red-400/60", bgActive: "bg-red-500", label: "bg-red-500/20 text-red-700 dark:text-red-300" },
@@ -33,8 +33,8 @@ export function getEventLabel(item: TimelineItem): string {
   switch (item.type) {
     case "text":
       return "Agent";
-    case "thinking":
-      return "Thinking";
+    case "reasoning":
+      return "Reasoning";
     case "tool_use":
       return item.tool ?? "Tool";
     case "tool_result":
@@ -71,7 +71,7 @@ export function getEventSummary(item: TimelineItem): string {
   switch (item.type) {
     case "text":
       return item.content?.split("\n").find((line) => line.trim().length > 0) ?? "";
-    case "thinking":
+    case "reasoning":
       return item.content?.slice(0, 200) ?? "";
     case "tool_use": {
       if (!item.input) return "";

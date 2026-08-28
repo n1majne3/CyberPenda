@@ -50,7 +50,7 @@ describe("collapsedTranscriptTitle", () => {
       id: "thinking-1",
       seq: 3,
       continuation: 1,
-      kind: "thinking",
+      kind: "reasoning",
       role: "assistant",
       text: "Checked the target and prepared the command.",
       created_at: "",

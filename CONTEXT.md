@@ -328,6 +328,10 @@ _Avoid_: effective effort, supported effort, reasoning token count
 The reasoning level a **Runtime** reports that it actually applied after any native validation or downgrade. It remains unknown when the **Runtime** does not report it.
 _Avoid_: requested effort, assumed effort, profile default
 
+**Runtime Reasoning Entry**:
+A durable, streamable `reasoning` row in one **Runtime Owner** Transcript that projects reasoning text the **Runtime** emitted during one **Runtime Turn**. Partial deltas coalesce by stable provider-item identity, remain interleaved with messages and Tool activity, expand while live, and remain replayable after the Turn settles. Raw reasoning emitted by a provider is retained through the normal runtime-output redaction and history-window controls; a provider summary is only a fallback when raw reasoning is absent.
+_Avoid_: Reasoning Effort, Runtime Activity Indicator, inferred hidden reasoning, temporary typing indicator, Task Event summary
+
 **Model Provider Protocol**:
 The model-service API contract a **Model Provider Endpoint** supports and a **Runtime Plugin** knows how to project for a **Runtime**.
 _Avoid_: runtime provider, endpoint URL, model name
@@ -1138,6 +1142,10 @@ _Avoid_: transcript, export, source of truth
 - **Reasoning Effort** has exactly five user-selectable values: `low`, `medium`, `high`, `xhigh`, and `max`; there is no Auto or Runtime Default choice.
 - A missing stored **Reasoning Effort** resolves to `high` without requiring existing **Runtime Profiles** to be rewritten.
 - Every **Runtime Turn** sends its resolved **Requested Reasoning Effort** explicitly instead of inheriting sticky effort state from the **Runtime**.
+- A **Runtime Reasoning Entry** belongs to one **Runtime Turn** and does not prove the **Effective Reasoning Effort** used by that Turn.
+- Every emitted raw reasoning delta is retained through a Runtime Reasoning Entry; when the provider emits no raw reasoning, an emitted provider summary may supply the entry text instead.
+- Runtime Reasoning Entries retain provider order relative to messages and Tool activity, coalesce repeated projections of one stable provider item, and participate in the same bounded history and detail retrieval as other Transcript entries.
+- A retained Runtime Reasoning Entry is included in the **Hosted Transcript Stream** and does not change the **Runtime Activity Indicator**.
 - A **Task** keeps one **Runtime Plugin** family; changing from Codex, Claude Code, Pi, or Hermes requires a different **Task**.
 - Codex and Claude Code apply model and **Reasoning Effort** changes natively when the **Model Provider** is unchanged.
 - Native **Runtime Turn Selection** changes do not create a **Task Runtime Configuration Version**.
@@ -1624,6 +1632,7 @@ _Avoid_: transcript, export, source of truth
 - TSecBench transient-error recovery is not allowed to endanger the host process; resolved: the **Hosted Challenge Client** returns bounded structured failures without automatic mutation retries, and the Runtime decides whether to retry or switch challenges.
 - A **Hosted Evaluation Run** is not restart-resumable; resolved: Project and Task creation remain non-idempotent, every hosted container process is one fresh run, and any unexpected process exit fails that run without bootstrap recovery.
 - Hosted stdout masking is not persistent Runtime redaction; resolved: the **Hosted Transcript Stream** masks exact `BENCHMARK_TOKEN` and model API key values only when it writes stdout, while internal Task Events, Transcript source records, and diagnostic state retain the accepted disclosure risk.
+- Runtime reasoning is not temporary UI-only liveness text or summary-only output; resolved: every raw reasoning delta a provider emits becomes a durable **Runtime Reasoning Entry**, including Codex raw content from third-party models, with provider summary used only when raw reasoning is absent.
 - TSecBench container termination is not graceful CyberPenda shutdown; resolved: the hosted PID catches and ignores termination signals, does not stop the Task or close the daemon, and stays alive until the platform forcibly terminates the container.
 - Hosted operational diagnostics are not mixed with the **Hosted Transcript Stream**; resolved: standard output contains JSONL Transcript records only, while Hosted Controller and daemon logs use standard error.
 - Real TSecBench local-mode acceptance is not an autonomous solving benchmark; resolved: after the deployer connects the host VPN, validate list, start, submit, and close against the real platform without requiring the Runtime to solve a challenge.

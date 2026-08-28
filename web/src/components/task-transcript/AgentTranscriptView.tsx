@@ -381,7 +381,7 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
             )}
             {visibleItems.map((item, visibleIndex) => (
               <TranscriptEventRow
-                key={item.id ?? `${item.seq}-${visibleIndex}`}
+                key={`${item.id ?? `${item.seq}-${visibleIndex}`}-${item.type === "reasoning" ? item.status ?? "" : ""}`}
                 ref={(el) => {
                   if (el) eventRefs.current.set(item.seq, el);
                   else eventRefs.current.delete(item.seq);
@@ -558,7 +558,7 @@ function TranscriptEventRow({
   item: TimelineItem;
   isSelected: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(item.type === "reasoning" && item.status === "streaming");
   const color = getEventColor(item);
   const label = getEventLabel(item);
   const summary = getEventSummary(item);
@@ -567,7 +567,7 @@ function TranscriptEventRow({
   const hasDetail =
     (item.type === "tool_use" && item.input && Object.keys(item.input).length > 0) ||
     (item.type === "tool_result" && item.output && item.output.length > 0) ||
-    (item.type === "thinking" && item.content && item.content.length > 0) ||
+    (item.type === "reasoning" && item.content && item.content.length > 0) ||
     (item.type === "text" && item.content && item.content.length > 0) ||
     (item.type === "harness" && item.content && item.content.length > 0) ||
     (item.type === "error" && item.content && item.content.length > 0);
@@ -588,7 +588,7 @@ function TranscriptEventRow({
             colorClasses[color].label,
           )}
         >
-          {item.type === "thinking" && <Brain className="mr-1 h-3 w-3 shrink-0" />}
+          {item.type === "reasoning" && <Brain className="mr-1 h-3 w-3 shrink-0" />}
           {item.type === "error" && <AlertCircle className="mr-1 h-3 w-3 shrink-0" />}
           {label}
         </span>
@@ -629,7 +629,7 @@ function TranscriptEventRow({
       </div>
 
       {hasDetail && expanded && (
-        <div className="px-4 pb-3">
+        <div data-testid="timeline-event-detail" className="px-4 pb-3">
           <div className="ml-[72px] border-l-2 border-border/60">
             <EventDetailContent item={item} />
           </div>
@@ -659,7 +659,7 @@ function EventDetailContent({ item }: { item: TimelineItem }) {
         </pre>
       );
     }
-    case "thinking":
+    case "reasoning":
     case "text":
     case "harness":
       return (

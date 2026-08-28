@@ -240,18 +240,32 @@ func launchFinishTask(t *testing.T, server *Server, created task.Task) {
 	if !ok {
 		t.Fatalf("finish fixture provider session %T cannot complete its initial Turn", bound)
 	}
-	state := providerSessionTurnState(bound)
-	if strings.TrimSpace(state.ActiveTurnID) == "" {
-		t.Fatal("finish fixture launch did not create an active provider Turn")
-	}
+	turnID := waitForProviderTurn(t, server, created.ID, bound)
 	if err := emitter.EmitObservation(runtime.ProviderSessionObservation{
 		Kind:           runtime.ProviderSessionObservationTurnCompleted,
-		ProviderTurnID: state.ActiveTurnID,
+		ProviderTurnID: turnID,
 		Status:         "completed",
 	}); err != nil {
 		t.Fatalf("complete initial provider Turn: %v", err)
 	}
 	waitForLiveIdle(t, server, created)
+}
+
+func waitForProviderTurn(t *testing.T, server *Server, taskID string, bound runtime.ProviderSession) string {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		state := providerSessionTurnState(bound)
+		if turnID := strings.TrimSpace(state.ActiveTurnID); turnID != "" {
+			return turnID
+		}
+		if !server.harness.IsActive(taskID) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("finish fixture launch did not create an active provider Turn; harness_active=%v state=%#v", server.harness.IsActive(taskID), providerSessionTurnState(bound))
+	return ""
 }
 
 func waitForLiveIdle(t *testing.T, server *Server, created task.Task) {
@@ -1012,6 +1026,11 @@ type delayedFinishCloseSession struct {
 	closeEntered chan struct{}
 	allowClose   chan struct{}
 	once         sync.Once
+	allowOnce    sync.Once
+}
+
+func (s *delayedFinishCloseSession) releaseClose() {
+	s.allowOnce.Do(func() { close(s.allowClose) })
 }
 
 func (s *delayedFinishCloseSession) Close(ctx context.Context) error {
@@ -1046,6 +1065,7 @@ func TestFinishTaskShutdownHappensBeforeReconciliation(t *testing.T) {
 	adapter := runtime.NewProviderSessionRunAdapter(session, session.closed)
 	factory := &finishSessionFactory{session: session, adapter: adapter}
 	server, created, _ := newFinishTaskFixture(t, factory)
+	t.Cleanup(session.releaseClose)
 
 	counter := &countingFinishReconciler{inner: nil}
 	// Preserve production recon when present; still count calls for order.
@@ -1077,7 +1097,7 @@ func TestFinishTaskShutdownHappensBeforeReconciliation(t *testing.T) {
 		t.Fatal("Task completed before provider resources closed")
 	}
 
-	close(session.allowClose)
+	session.releaseClose()
 	var resp *httptest.ResponseRecorder
 	select {
 	case resp = <-done:

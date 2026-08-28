@@ -1026,7 +1026,8 @@ type CodexProviderSessionConfig struct {
 
 type CodexProviderSession struct {
 	*providerSessionAdapter
-	assisted *codexAssistedSession
+	assisted  *codexAssistedSession
+	reasoning *reasoningDeltaBatcher
 }
 
 func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSession {
@@ -1092,6 +1093,7 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 	return &CodexProviderSession{
 		providerSessionAdapter: newProviderSessionAdapter("codex", config.Transport, threadID, config.ActiveTurnID, capabilities, methods),
 		assisted:               newCodexAssistedSession(),
+		reasoning:              newReasoningDeltaBatcher(reasoningBatchWindow),
 	}
 }
 
@@ -1106,7 +1108,8 @@ type ClaudeCodeProviderSessionConfig struct {
 
 type ClaudeCodeProviderSession struct {
 	*providerSessionAdapter
-	assisted *claudeAssistedSession
+	assisted  *claudeAssistedSession
+	reasoning *reasoningDeltaBatcher
 }
 
 func NewClaudeCodeProviderSession(config ClaudeCodeProviderSessionConfig) *ClaudeCodeProviderSession {
@@ -1121,6 +1124,7 @@ func NewClaudeCodeProviderSession(config ClaudeCodeProviderSessionConfig) *Claud
 	return &ClaudeCodeProviderSession{
 		providerSessionAdapter: newProviderSessionAdapter("claude_code", config.Transport, config.SessionID, config.ActiveTurnID, capabilities, methods),
 		assisted:               newClaudeAssistedSession(),
+		reasoning:              newReasoningDeltaBatcher(reasoningBatchWindow),
 	}
 }
 
@@ -1164,7 +1168,10 @@ type HermesProviderSessionConfig struct {
 	Capabilities runtimeplugin.Capabilities
 }
 
-type HermesProviderSession struct{ *providerSessionAdapter }
+type HermesProviderSession struct {
+	*providerSessionAdapter
+	reasoning *reasoningDeltaBatcher
+}
 
 func NewHermesProviderSession(config HermesProviderSessionConfig) *HermesProviderSession {
 	methods := providerWireMethods{
@@ -1177,7 +1184,10 @@ func NewHermesProviderSession(config HermesProviderSessionConfig) *HermesProvide
 		turnID:    func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") },
 		sessionID: identitySession,
 	}
-	return &HermesProviderSession{newProviderSessionAdapter("hermes", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods)}
+	return &HermesProviderSession{
+		providerSessionAdapter: newProviderSessionAdapter("hermes", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods),
+		reasoning:              newReasoningDeltaBatcher(reasoningBatchWindow),
+	}
 }
 
 func hermesACPParams(sessionID, turnID string, request ProviderSessionRequest) map[string]any {

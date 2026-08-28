@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 
 	"pentest/internal/runtimeplugin"
@@ -234,6 +235,9 @@ func TestClaudeCodeBuiltinDeclaresNativeResume(t *testing.T) {
 	if !plugin.NativeResume.Supported {
 		t.Fatal("expected claude_code native resume support")
 	}
+	if !slices.Contains(plugin.Launch.Args, "--include-partial-messages") {
+		t.Fatalf("claude launch args must request partial messages: %#v", plugin.Launch.Args)
+	}
 	if plugin.NativeResume.SessionSource != "claude_stream_json" {
 		t.Fatalf("session source = %q, want claude_stream_json", plugin.NativeResume.SessionSource)
 	}
@@ -245,6 +249,7 @@ func TestClaudeCodeBuiltinDeclaresNativeResume(t *testing.T) {
 		"{{mcp_args}}",
 		"-p",
 		"--output-format", "stream-json",
+		"--include-partial-messages",
 		"--verbose",
 		"{{custom_args}}",
 		"{{claude_goal_prefix}}",

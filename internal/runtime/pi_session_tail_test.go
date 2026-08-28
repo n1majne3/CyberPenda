@@ -2,14 +2,17 @@ package runtime_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"pentest/internal/runtime"
 	"pentest/internal/task"
+	"pentest/internal/transcript"
 )
 
 // fakeInnerAdapter is a no-op adapter used to isolate the tail decorator.
@@ -105,6 +108,49 @@ func TestPiSessionTailEmitsAppendedLines(t *testing.T) {
 		if stream, _ := e.payload["stream"].(string); stream != "pi_session" {
 			t.Fatalf("expected stream pi_session, got %q", stream)
 		}
+	}
+}
+
+func TestPiSessionTailProjectsReasoningBlock(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions", "--task-workdir--")
+	adapter := runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, sessionDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
+	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
+
+	sessionFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
+	writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"reasoning","id":"pi-reasoning-1","reasoning":"checking the target"}]}}`)
+	waitForCount(t, getEmits, 1, 2*time.Second)
+
+	got := getEmits()
+	text, _ := got[0].payload["text"].(string)
+	var record map[string]any
+	if err := json.Unmarshal([]byte(text), &record); err != nil {
+		t.Fatalf("tail output is not provider JSON: %v", err)
+	}
+	entries := transcript.ParseRecord(record, transcript.Entry{ID: "event-1", Seq: 1, Continuation: 1})
+	if len(entries) != 1 || entries[0].Kind != transcript.KindReasoning || entries[0].Text != "checking the target" {
+		t.Fatalf("Pi reasoning projection = %#v", entries)
+	}
+}
+
+func TestPiSessionTailShapeRedactsReasoning(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions", "--task-workdir--")
+	adapter := runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, sessionDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
+	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
+
+	sessionFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
+	writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"reasoning","reasoning":"use bearer secret-pi-token-123456"}]}}`)
+	waitForCount(t, getEmits, 1, 2*time.Second)
+	text, _ := getEmits()[0].payload["text"].(string)
+	if strings.Contains(text, "secret-pi-token-123456") || !strings.Contains(text, "bearer [REDACTED]") {
+		t.Fatalf("Pi reasoning was not shape-redacted: %q", text)
 	}
 }
 

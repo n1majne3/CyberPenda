@@ -1,7 +1,6 @@
 package runtimeoutput_test
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +15,9 @@ func TestShouldIgnoreForStorageDropsThinkingTokensAndTaskProgress(t *testing.T) 
 		{`{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}`, true},
 		{`{"type":"system","subtype":"task_progress","description":"Exploit"}`, true},
 		{`{"type":"assistant","message":{"content":[{"type":"text","text":"Visible."}]}}`, false},
-		{`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"plan"}]}}`, true},
+		// Reasoning is durable transcript content: thinking-only assistant
+		// frames are stored and projected, never dropped.
+		{`{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"plan"}]}}`, false},
 	}
 	for _, tc := range cases {
 		if got := runtimeoutput.ShouldIgnoreForStorage(tc.line); got != tc.ignore {
@@ -27,11 +28,172 @@ func TestShouldIgnoreForStorageDropsThinkingTokensAndTaskProgress(t *testing.T) 
 
 func TestShouldIgnoreForTimelineAllowsThinkingOnlyAssistant(t *testing.T) {
 	line := `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"plan recon"}]}}`
-	if !runtimeoutput.ShouldIgnoreForStorage(line) {
-		t.Fatal("storage should ignore thinking-only assistant")
+	if runtimeoutput.ShouldIgnoreForStorage(line) {
+		t.Fatal("storage must keep thinking-only assistant frames")
 	}
 	if runtimeoutput.ShouldIgnoreForTimeline(line) {
 		t.Fatal("timeline projection should keep thinking-only assistant")
+	}
+}
+
+func TestParseRecordProjectsReasoningKindForThinkingBlocks(t *testing.T) {
+	record := map[string]any{
+		"type": "assistant",
+		"message": map[string]any{
+			"content": []any{map[string]any{"type": "thinking", "thinking": "plan the recon"}},
+		},
+	}
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeThinking: true}, time.Time{})
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 turn, got %#v", turns)
+	}
+	if turns[0].Kind != runtimeoutput.KindReasoning {
+		t.Fatalf("kind = %q, want %q", turns[0].Kind, runtimeoutput.KindReasoning)
+	}
+	if string(turns[0].Kind) != "reasoning" {
+		t.Fatalf("wire kind = %q, want reasoning", turns[0].Kind)
+	}
+	if turns[0].Text != "plan the recon" {
+		t.Fatalf("text = %q", turns[0].Text)
+	}
+}
+
+func TestParseRecordPiReasoningBlock(t *testing.T) {
+	record := map[string]any{
+		"type": "message",
+		"message": map[string]any{
+			"role": "assistant",
+			"content": []any{
+				map[string]any{"type": "reasoning", "id": "msg-1-think-0", "reasoning": "enumerate endpoints first"},
+				map[string]any{"type": "text", "text": "Starting scan."},
+			},
+		},
+	}
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeThinking: true}, time.Time{})
+	if len(turns) != 2 {
+		t.Fatalf("expected 2 turns, got %#v", turns)
+	}
+	if turns[0].Kind != runtimeoutput.KindReasoning || turns[0].Text != "enumerate endpoints first" {
+		t.Fatalf("reasoning turn = %#v", turns[0])
+	}
+	if turns[0].ProviderItemID != "msg-1-think-0" {
+		t.Fatalf("provider item id = %q, want msg-1-think-0", turns[0].ProviderItemID)
+	}
+	if turns[1].Kind != runtimeoutput.KindText || turns[1].Text != "Starting scan." {
+		t.Fatalf("text turn = %#v", turns[1])
+	}
+	if disabled := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{}, time.Time{}); len(disabled) != 1 || disabled[0].Kind != runtimeoutput.KindText {
+		t.Fatalf("IncludeThinking=false must hide reasoning, got %#v", disabled)
+	}
+}
+
+func TestParseRecordThinkingDeltaCarriesProviderItemID(t *testing.T) {
+	record := map[string]any{
+		"type":    "content_block_delta",
+		"index":   float64(0),
+		"item_id": "t1-thinking-0",
+		"delta":   map[string]any{"type": "thinking_delta", "thinking": "partial thought"},
+	}
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeThinking: true}, time.Time{})
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 turn, got %#v", turns)
+	}
+	if turns[0].Kind != runtimeoutput.KindReasoning || turns[0].Text != "partial thought" {
+		t.Fatalf("delta turn = %#v", turns[0])
+	}
+	if turns[0].ProviderItemID != "t1-thinking-0" || turns[0].LifecyclePhase != "streaming" {
+		t.Fatalf("delta identity/lifecycle = %#v", turns[0])
+	}
+	if disabled := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{}, time.Time{}); len(disabled) != 0 {
+		t.Fatalf("IncludeThinking=false must hide thinking deltas, got %#v", disabled)
+	}
+}
+
+func TestStorageKeepsOnlyReasoningClaudeCLIStreamEvents(t *testing.T) {
+	thinking := `{"type":"stream_event","uuid":"message-1","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"checking"}}}`
+	text := `{"type":"stream_event","uuid":"message-1","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"visible later"}}}`
+	start := `{"type":"stream_event","uuid":"message-1","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}}`
+	if runtimeoutput.ShouldIgnoreForStorage(thinking) {
+		t.Fatal("thinking delta must remain durable")
+	}
+	if !runtimeoutput.ShouldIgnoreForStorage(text) || !runtimeoutput.ShouldIgnoreForStorage(start) {
+		t.Fatal("non-reasoning partial events must not become raw transcript fallback")
+	}
+}
+
+func TestParseRecordClaudeCLIStreamEventReasoningDelta(t *testing.T) {
+	record := map[string]any{
+		"type": "stream_event",
+		"uuid": "claude-message-1",
+		"event": map[string]any{
+			"type":  "content_block_delta",
+			"index": float64(0),
+			"delta": map[string]any{"type": "thinking_delta", "thinking": "checking auth"},
+		},
+	}
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeThinking: true}, time.Time{})
+	if len(turns) != 1 || turns[0].Kind != runtimeoutput.KindReasoning || turns[0].Text != "checking auth" {
+		t.Fatalf("Claude CLI stream event = %#v", turns)
+	}
+	if turns[0].ProviderItemID != "claude-message-1-reasoning-0" || turns[0].LifecyclePhase != "streaming" {
+		t.Fatalf("Claude CLI stream identity/lifecycle = %#v", turns[0])
+	}
+}
+
+func TestReconcileClaudeCLIIncrementalReasoningDeltas(t *testing.T) {
+	parse := func(text string) []runtimeoutput.Turn {
+		return runtimeoutput.ParseRecord(map[string]any{
+			"type": "stream_event",
+			"uuid": "claude-message-1",
+			"event": map[string]any{
+				"type":  "content_block_delta",
+				"index": float64(0),
+				"delta": map[string]any{"type": "thinking_delta", "thinking": text},
+			},
+		}, runtimeoutput.ParseOptions{IncludeThinking: true}, time.Time{})
+	}
+	turns := runtimeoutput.ReconcileLifecycle(append(parse("checking "), parse("auth")...))
+	if len(turns) != 1 || turns[0].Text != "checking auth" {
+		t.Fatalf("incremental reasoning reconciliation = %#v", turns)
+	}
+}
+
+func TestParseRecordClaudeCLICompletedReasoningUsesSameStableItem(t *testing.T) {
+	record := map[string]any{
+		"type": "assistant",
+		"uuid": "claude-message-1",
+		"message": map[string]any{
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "thinking", "thinking": "checking auth"}},
+		},
+	}
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeThinking: true}, time.Time{})
+	if len(turns) != 1 || turns[0].ProviderItemID != "claude-message-1-reasoning-0" {
+		t.Fatalf("completed reasoning identity = %#v", turns)
+	}
+}
+
+func TestParseRecordHermesThoughtChunkProjectsReasoning(t *testing.T) {
+	record := map[string]any{
+		"method": "session/update",
+		"params": map[string]any{
+			"sessionId": "hermes-session",
+			"update": map[string]any{
+				"sessionUpdate": "agent_thought_chunk",
+				"text":          "considering the auth flow",
+				"item_id":       "hermes-thought-turn-1",
+			},
+		},
+	}
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeThinking: true}, time.Time{})
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 turn, got %#v", turns)
+	}
+	if turns[0].Kind != runtimeoutput.KindReasoning || turns[0].Text != "considering the auth flow" {
+		t.Fatalf("thought turn = %#v", turns[0])
+	}
+	if turns[0].ProviderItemID != "hermes-thought-turn-1" {
+		t.Fatalf("provider item id = %q", turns[0].ProviderItemID)
 	}
 }
 
@@ -144,7 +306,7 @@ func TestParseRecordCodexAppServerItems(t *testing.T) {
 			"type":    "reasoning",
 			"id":      "item-reasoning",
 			"summary": []any{},
-			"content": []any{"SECRET_RAW_REASONING"},
+			"content": []any{"raw chain of thought"},
 		},
 	}, runtimeoutput.RecordMeta{ProviderEvent: "item/started"}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true}, at)
 	reasoningCompleted := runtimeoutput.ParseRecordWithMeta(map[string]any{
@@ -152,18 +314,31 @@ func TestParseRecordCodexAppServerItems(t *testing.T) {
 			"type":    "reasoning",
 			"id":      "item-reasoning",
 			"summary": []any{"Checked the target.", "Prepared the command."},
-			"content": []any{"SECRET_RAW_REASONING"},
+			"content": []any{"raw chain of thought"},
 		},
 	}, runtimeoutput.RecordMeta{ProviderEvent: "item/completed"}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true}, at.Add(time.Second))
 	if len(reasoningStarted) != 0 {
-		t.Fatalf("started reasoning should stay hidden without a summary: %#v", reasoningStarted)
+		t.Fatalf("started reasoning should stay hidden until completion: %#v", reasoningStarted)
 	}
+	// Raw reasoning content is durable transcript content. It is preferred over
+	// the provider summary because third-party model summaries are not the real
+	// thinking; the summary remains the fallback when no content exists.
 	reasoning := runtimeoutput.ReconcileLifecycle(reasoningCompleted)
-	if len(reasoning) != 1 || reasoning[0].Kind != runtimeoutput.KindThinking || reasoning[0].Text != "Checked the target.\nPrepared the command." {
+	if len(reasoning) != 1 || reasoning[0].Kind != runtimeoutput.KindReasoning || reasoning[0].Text != "raw chain of thought" {
 		t.Fatalf("reasoning lifecycle = %#v", reasoning)
 	}
-	if strings.Contains(reasoning[0].Text, "SECRET_RAW_REASONING") {
-		t.Fatalf("reasoning leaked raw content: %#v", reasoning[0])
+	if reasoning[0].ProviderItemID != "item-reasoning" {
+		t.Fatalf("provider item id = %q", reasoning[0].ProviderItemID)
+	}
+	summaryOnly := runtimeoutput.ParseRecordWithMeta(map[string]any{
+		"item": map[string]any{
+			"type":    "reasoning",
+			"id":      "item-reasoning-2",
+			"summary": []any{"Checked the target.", "Prepared the command."},
+		},
+	}, runtimeoutput.RecordMeta{ProviderEvent: "item/completed"}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true}, at.Add(time.Second))
+	if len(summaryOnly) != 1 || summaryOnly[0].Kind != runtimeoutput.KindReasoning || summaryOnly[0].Text != "Checked the target.\nPrepared the command." {
+		t.Fatalf("summary-fallback reasoning = %#v", summaryOnly)
 	}
 	if empty := runtimeoutput.ParseRecordWithMeta(map[string]any{
 		"item": map[string]any{"type": "reasoning", "id": "empty", "summary": []any{}},
@@ -185,10 +360,10 @@ func TestParseLinePlainTextFallback(t *testing.T) {
 	}
 }
 
-func TestCoalesceMergesAdjacentThinking(t *testing.T) {
+func TestCoalesceMergesAdjacentReasoning(t *testing.T) {
 	turns := []runtimeoutput.Turn{
-		{Kind: runtimeoutput.KindThinking, Text: "part one"},
-		{Kind: runtimeoutput.KindThinking, Text: " part two"},
+		{Kind: runtimeoutput.KindReasoning, Text: "part one"},
+		{Kind: runtimeoutput.KindReasoning, Text: " part two"},
 		{Kind: runtimeoutput.KindToolUse, Tool: "Bash"},
 	}
 	got := runtimeoutput.CoalesceStreaming(turns)

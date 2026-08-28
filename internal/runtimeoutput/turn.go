@@ -6,11 +6,16 @@ import "time"
 type Kind string
 
 const (
-	KindThinking   Kind = "thinking"
+	KindReasoning  Kind = "reasoning"
 	KindText       Kind = "text"
 	KindToolUse    Kind = "tool_use"
 	KindToolResult Kind = "tool_result"
 	KindError      Kind = "error"
+)
+
+const (
+	ReasoningPhaseStreaming = "streaming"
+	ReasoningPhaseCompleted = "completed"
 )
 
 // Turn is one normalized fragment from a provider stdout/stderr JSON line.
@@ -19,6 +24,7 @@ type Turn struct {
 	SourceSeq      int
 	ProviderItemID string
 	LifecyclePhase string
+	Incremental    bool
 	Kind           Kind
 	Role           string
 	Text           string

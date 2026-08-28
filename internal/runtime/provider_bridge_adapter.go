@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"pentest/internal/adapters"
 	"pentest/internal/task"
 )
 
@@ -71,10 +72,13 @@ func (a *ProviderSessionRunAdapter) Run(ctx context.Context, goal string, emit f
 	if a.session == nil {
 		return fmt.Errorf("provider session is required")
 	}
+	safeEmit := func(kind task.EventKind, payload task.EventPayload) {
+		emit(kind, task.EventPayload(adapters.Redact(map[string]any(payload))))
+	}
 	a.mu.Lock()
 	continuation := a.continuation
 	selection := a.initialTurn
-	a.emit = emit
+	a.emit = safeEmit
 	a.mu.Unlock()
 	if continuation == "" {
 		return fmt.Errorf("provider session continuation is required")
@@ -88,7 +92,7 @@ func (a *ProviderSessionRunAdapter) Run(ctx context.Context, goal string, emit f
 		Model:                    selection.Model,
 		RequestedReasoningEffort: selection.RequestedReasoningEffort,
 	}
-	_, err := a.session.SendTurn(ctx, request, emit)
+	_, err := a.session.SendTurn(ctx, request, safeEmit)
 	if err != nil {
 		return err
 	}

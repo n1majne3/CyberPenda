@@ -44,7 +44,22 @@ func ShouldIgnoreForTimeline(text string) bool {
 }
 
 func isIgnorableStorageRecord(record map[string]any) bool {
-	return isIgnorableSystemRecord(record) || isIgnorableRecordType(record) || isThinkingOnlyAssistantRecord(record)
+	return isIgnorableSystemRecord(record) || isIgnorableRecordType(record) || isNonReasoningStreamEvent(record)
+}
+
+func isNonReasoningStreamEvent(record map[string]any) bool {
+	if !strings.EqualFold(stringValue(record, "type"), "stream_event") {
+		return false
+	}
+	event, ok := mapValue(record, "event")
+	if !ok || !strings.EqualFold(stringValue(event, "type"), "content_block_delta") {
+		return true
+	}
+	delta, ok := mapValue(event, "delta")
+	if !ok {
+		return true
+	}
+	return !strings.EqualFold(stringValue(delta, "type"), "thinking_delta")
 }
 
 func isIgnorableRecordType(record map[string]any) bool {

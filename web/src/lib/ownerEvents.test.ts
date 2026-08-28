@@ -39,6 +39,20 @@ describe("mergeTimelineItems", () => {
     expect(merged.map((item) => item.seq)).toEqual([2, 3]);
   });
 
+  it("updates a growing reasoning item with the same stable id in place", () => {
+    const existing: TaskTimelineItem[] = [
+      { id: "reasoning-1", seq: 2, type: "reasoning", content: "checking", created_at: "2026-01-01T00:00:00Z" },
+      identifiedTimelineItem("tool-1", 3),
+    ];
+    const delta: TaskTimelineItem[] = [
+      { id: "reasoning-1", seq: 4, type: "reasoning", content: "checking the auth flow", created_at: "2026-01-01T00:00:01Z" },
+    ];
+    const merged = mergeTimelineItems(existing, delta);
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toMatchObject({ id: "reasoning-1", seq: 4, content: "checking the auth flow", created_at: "2026-01-01T00:00:00Z" });
+    expect(merged[1]?.id).toBe("tool-1");
+  });
+
   it("keeps distinct Timeline items that share one source Event seq", () => {
     const existing = [identifiedTimelineItem("event-1-text", 1)];
     const delta = [identifiedTimelineItem("event-2-thinking", 2), identifiedTimelineItem("event-2-tool", 2)];
@@ -71,6 +85,30 @@ describe("mergeTranscriptEntries", () => {
     expect(merged.map((entry) => entry.id)).toEqual(["a", "b"]);
   });
 
+  it("appends incremental reasoning text for the same stable id", () => {
+    const existing: TaskTranscriptEntry[] = [
+      { id: "reasoning-cli", seq: 2, continuation: 1, kind: "reasoning", role: "assistant", text: "checking ", status: "streaming", incremental: true, created_at: "2026-01-01T00:00:00Z" },
+    ];
+    const delta: TaskTranscriptEntry[] = [
+      { id: "reasoning-cli", seq: 3, continuation: 1, kind: "reasoning", role: "assistant", text: "auth", status: "streaming", incremental: true, created_at: "2026-01-01T00:00:01Z" },
+    ];
+    expect(mergeTranscriptEntries(existing, delta)[0]).toMatchObject({ text: "checking auth", seq: 3 });
+  });
+
+  it("updates a growing reasoning entry with the same stable id in place", () => {
+    const existing: TaskTranscriptEntry[] = [
+      { id: "reasoning-1", seq: 2, continuation: 1, kind: "reasoning", role: "assistant", text: "checking", created_at: "2026-01-01T00:00:00Z" },
+      transcriptEntry("tool-1", 3),
+    ];
+    const delta: TaskTranscriptEntry[] = [
+      { id: "reasoning-1", seq: 4, continuation: 1, kind: "reasoning", role: "assistant", text: "checking the auth flow", created_at: "2026-01-01T00:00:01Z" },
+    ];
+    const merged = mergeTranscriptEntries(existing, delta);
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toMatchObject({ id: "reasoning-1", seq: 4, text: "checking the auth flow", created_at: "2026-01-01T00:00:00Z" });
+    expect(merged[1]?.id).toBe("tool-1");
+  });
+
   it("joins later Hermes ACP assistant chunks onto the previous sentence", () => {
     const existing = [{ ...transcriptEntry("ev-5-message", 5), text: "Hi", stream: "hermes_acp" }];
     const delta = [
@@ -81,6 +119,16 @@ describe("mergeTranscriptEntries", () => {
     const merged = mergeTranscriptEntries(existing, delta);
     expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ id: "ev-5-message", seq: 8, text: "Hi! 👋" });
+  });
+
+  it("appends incremental reasoning content for the same Timeline id", () => {
+    const existing: TaskTimelineItem[] = [
+      { id: "reasoning-cli", seq: 2, type: "reasoning", content: "checking ", status: "streaming", incremental: true },
+    ];
+    const delta: TaskTimelineItem[] = [
+      { id: "reasoning-cli", seq: 3, type: "reasoning", content: "auth", status: "streaming", incremental: true },
+    ];
+    expect(mergeTimelineItems(existing, delta)[0]).toMatchObject({ content: "checking auth", seq: 3 });
   });
 
   it("keeps complete adjacent assistant messages as separate rows", () => {

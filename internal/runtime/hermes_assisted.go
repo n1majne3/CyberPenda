@@ -2,10 +2,12 @@ package runtime
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"sync"
 
 	"pentest/internal/blackboardconclusion"
+	"pentest/internal/runtimeoutput"
 	"pentest/internal/task"
 )
 
@@ -27,6 +29,8 @@ type hermesAssistedState struct {
 	delivered             map[string]bool
 	deliveredOrder        []string
 	toolNames             map[string]string
+	activeThoughtKey      string
+	thoughtSegment        int
 }
 
 var hermesAssistedStates sync.Map
@@ -59,8 +63,9 @@ func (s *HermesProviderSession) SetAttemptResultValidationFailureSink(sink Provi
 }
 
 // HandleEvent maps Hermes ACP session/update notifications onto the bounded
-// assisted observation and closed Attempt result seams. Raw tool payloads and
-// reasoning never become observations or Task events.
+// assisted observation and closed Attempt result seams. Agent thought chunks
+// stream as batched runtime output so operator reasoning stays visible; raw
+// tool payloads never become observations.
 func (s *HermesProviderSession) HandleEvent(event SandboxBridgeEvent, emit ProviderSessionEmit) {
 	method := strings.ToLower(strings.TrimSpace(event.Method))
 	params := map[string]any{}
@@ -72,23 +77,113 @@ func (s *HermesProviderSession) HandleEvent(event SandboxBridgeEvent, emit Provi
 	switch kind {
 	case "agent_message_chunk":
 		s.captureHermesAttemptCandidate(params, update)
+		s.completeHermesThought(emit, params, event)
 		s.emitHermesRuntimeOutput(event, params, emit)
 		return
+	case "agent_thought_chunk":
+		s.acceptHermesThoughtChunk(event, params, update, emit)
+		return
 	case "tool_call":
+		s.completeHermesThought(emit, params, event)
 		s.emitHermesToolObservation(params, update, ProviderSessionObservationToolUse)
 		s.emitHermesRuntimeOutput(event, params, emit)
 		return
 	case "tool_call_update":
+		s.completeHermesThought(emit, params, event)
 		s.emitHermesToolObservation(params, update, ProviderSessionObservationToolResult)
 		s.emitHermesRuntimeOutput(event, params, emit)
 		return
 	case "turn_ended":
+		s.completeHermesThought(emit, params, event)
 		s.projectHermesTerminalLifecycle(event, params, hermesACPStopStatus(update), emit)
 		s.finishHermesAssistedTurn(params, update)
 		return
 	default:
+		s.completeHermesThought(emit, params, event)
 		s.providerSessionAdapter.HandleEvent(event, emit)
 	}
+}
+
+// acceptHermesThoughtChunk accumulates one agent thought chunk into the
+// session batcher. Flushed batches carry the cumulative text keyed by turn so
+// transcript projections grow one stable reasoning entry in place.
+func (s *HermesProviderSession) acceptHermesThoughtChunk(event SandboxBridgeEvent, params, update map[string]any, emit ProviderSessionEmit) {
+	// Thought text must stay untrimmed: a trailing space often separates words.
+	text := hermesThoughtText(update)
+	if text == "" {
+		return
+	}
+	turnID := providerJSONValue(params, "turn_id", "turnId")
+	if turnID == "" {
+		turnID = s.currentTurn()
+	}
+	sessionID := providerJSONValue(params, "sessionId", "session_id")
+	if sessionID == "" {
+		sessionID = s.SessionID()
+	}
+	key := s.hermesThoughtSegmentKey(turnID)
+	s.reasoning.Add(key, func(cumulative string) {
+		s.emitBatchedHermesThought(emit, sessionID, turnID, key, cumulative, event)
+	}, text)
+}
+
+func (s *HermesProviderSession) hermesThoughtSegmentKey(turnID string) string {
+	state := s.assistedState()
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.activeThoughtKey == "" {
+		state.thoughtSegment++
+		state.activeThoughtKey = "hermes-thought-" + turnID + "-" + strconv.Itoa(state.thoughtSegment)
+	}
+	return state.activeThoughtKey
+}
+
+func (s *HermesProviderSession) completeHermesThought(emit ProviderSessionEmit, params map[string]any, event SandboxBridgeEvent) {
+	key, text, ok := s.reasoning.Complete()
+	state := s.assistedState()
+	state.mu.Lock()
+	state.activeThoughtKey = ""
+	state.mu.Unlock()
+	if !ok {
+		return
+	}
+	turnID := providerJSONValue(params, "turn_id", "turnId")
+	if turnID == "" {
+		turnID = s.currentTurn()
+	}
+	sessionID := providerJSONValue(params, "sessionId", "session_id")
+	if sessionID == "" {
+		sessionID = s.SessionID()
+	}
+	s.emitHermesThoughtRecord(emit, sessionID, turnID, key, text, runtimeoutput.ReasoningPhaseCompleted, event)
+}
+
+func (s *HermesProviderSession) emitBatchedHermesThought(emit ProviderSessionEmit, sessionID, turnID, key, cumulative string, event SandboxBridgeEvent) {
+	s.emitHermesThoughtRecord(emit, sessionID, turnID, key, cumulative, runtimeoutput.ReasoningPhaseStreaming, event)
+}
+
+func (s *HermesProviderSession) emitHermesThoughtRecord(emit ProviderSessionEmit, sessionID, turnID, key, cumulative, phase string, event SandboxBridgeEvent) {
+	if cumulative == "" {
+		return
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"sessionUpdate": "agent_thought_chunk",
+		"text":          cumulative,
+		"item_id":       key,
+		"phase":         phase,
+	})
+	if err != nil {
+		return
+	}
+	s.emitReasoningRuntimeOutput(emit, reasoningRuntimeOutput{
+		ProviderEvent: event.Method,
+		SessionID:     sessionID,
+		TurnID:        turnID,
+		ItemID:        key,
+		Stream:        "hermes_acp",
+		Phase:         phase,
+		Text:          string(encoded),
+	})
 }
 
 func (s *HermesProviderSession) emitHermesRuntimeOutput(event SandboxBridgeEvent, params map[string]any, emit ProviderSessionEmit) {
@@ -295,6 +390,20 @@ func hermesACPAssistantText(update map[string]any) string {
 		return ""
 	}
 	return providerJSONValue(content, "text")
+}
+
+// hermesThoughtText extracts an agent thought chunk without trimming so
+// word boundaries survive delta batching.
+func hermesThoughtText(update map[string]any) string {
+	if text, ok := update["text"].(string); ok && text != "" {
+		return text
+	}
+	if content, ok := update["content"].(map[string]any); ok {
+		if text, ok := content["text"].(string); ok {
+			return text
+		}
+	}
+	return ""
 }
 
 func hermesACPToolResultStatus(update map[string]any) string {

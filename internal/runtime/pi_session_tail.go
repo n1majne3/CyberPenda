@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"pentest/internal/adapters"
 	"pentest/internal/runtimeoutput"
 	"pentest/internal/task"
 )
@@ -138,10 +139,10 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 					if runtimeoutput.ShouldIgnoreForStorage(trimmed) {
 						continue
 					}
-					emit(task.EventKindRuntimeOutput, task.EventPayload{
+					emit(task.EventKindRuntimeOutput, task.EventPayload(adapters.Redact(map[string]any{
 						"stream": "pi_session",
 						"text":   trimmed,
-					})
+					})))
 				}
 			}
 			if err != nil {

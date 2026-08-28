@@ -738,7 +738,7 @@ export interface TaskTranscriptEntry {
   id: string;
   seq: number;
   continuation: number;
-  kind: "message" | "tool_call" | "tool_result" | "runtime_output" | "continuation" | string;
+  kind: "message" | "reasoning" | "tool_call" | "tool_result" | "runtime_output" | "continuation" | string;
   role: "user" | "assistant" | "system" | "runtime" | "tool" | string;
   text?: string;
   tool_call_id?: string;
@@ -746,6 +746,7 @@ export interface TaskTranscriptEntry {
   details?: Record<string, unknown>;
   stream?: string;
   status?: string;
+  incremental?: boolean;
   created_at: string;
   /** True when this row is a bounded preview of an oversized entry. */
   truncated?: boolean;
@@ -766,11 +767,13 @@ export interface TaskTimelineItem {
   /** Stable item identity. Several items can share one source Event Seq. */
   id?: string;
   seq: number;
-  type: "tool_use" | "tool_result" | "thinking" | "text" | "error" | "lifecycle" | "steering" | "harness";
+  type: "tool_use" | "tool_result" | "reasoning" | "text" | "error" | "lifecycle" | "steering" | "harness";
   tool?: string;
   content?: string;
   input?: Record<string, unknown>;
   output?: string;
+  status?: string;
+  incremental?: boolean;
   created_at?: string;
   /** True when this item is a bounded preview of an oversized item. */
   truncated?: boolean;

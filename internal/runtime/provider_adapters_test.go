@@ -1532,7 +1532,7 @@ func TestCodexProviderSessionProjectsVisibleRuntimeOutput(t *testing.T) {
 		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"userMessage","id":"item-user","content":[{"type":"text","text":"operator prompt"}]}}`),
 	}, emit)
 
-	if len(events) != 6 {
+	if len(events) != 7 {
 		t.Fatalf("runtime events = %#v", events)
 	}
 	for i, kind := range kinds {
@@ -1558,12 +1558,84 @@ func TestCodexProviderSessionProjectsVisibleRuntimeOutput(t *testing.T) {
 	if events[3]["provider_event"] != "item/started" || events[4]["provider_event"] != "item/completed" {
 		t.Fatalf("MCP lifecycle = %#v %#v", events[3], events[4])
 	}
+	// Completed reasoning retains the raw content. Third-party model summaries
+	// are not the real thinking, so raw content is durable transcript content;
+	// shape-based redaction still applies at storage time.
 	text, _ := events[5]["text"].(string)
 	if events[5]["provider_event"] != "item/completed" || !strings.Contains(text, "Checked the active challenge.") {
 		t.Fatalf("completed reasoning summary = %#v", events[5])
 	}
-	if strings.Contains(text, "SECRET_RAW_REASONING") || strings.Contains(text, `"content"`) {
-		t.Fatalf("reasoning event leaked raw content: %s", text)
+	if !strings.Contains(text, "SECRET_RAW_REASONING") {
+		t.Fatalf("completed reasoning must retain raw content: %s", text)
+	}
+	// The summary text delta batches and flushes when the next event passes,
+	// carrying the cumulative text and the stable provider item identity.
+	batched, _ := events[6]["text"].(string)
+	if events[6]["provider_event"] != "item/reasoning/summaryTextDelta" {
+		t.Fatalf("batched reasoning provider_event = %#v", events[6])
+	}
+	if events[6]["provider_item_id"] != "item-reasoning" {
+		t.Fatalf("batched reasoning identity = %#v", events[6])
+	}
+	if !strings.Contains(batched, "Checked") {
+		t.Fatalf("batched reasoning text = %q", batched)
+	}
+}
+
+func TestCodexReasoningCompletionFallsBackToStreamedRawContent(t *testing.T) {
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: &fakeProviderTransport{}, SessionID: "thread-1", ActiveTurnID: "turn-1",
+	})
+	var events []task.EventPayload
+	emit := func(_ task.EventKind, payload task.EventPayload) { events = append(events, payload) }
+
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/reasoning/summaryTextDelta",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"reasoning-1","delta":"raw reasoning"}`),
+	}, emit)
+	// Some third-party Codex-compatible models complete the item without a
+	// summary/content body. The accumulated stream must still close the entry.
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/completed",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","item":{"type":"reasoning","id":"reasoning-1","summary":[]}}`),
+	}, emit)
+
+	if len(events) != 2 {
+		t.Fatalf("reasoning events = %#v", events)
+	}
+	completed := events[1]
+	if completed["provider_event"] != "item/completed" {
+		t.Fatalf("completed event = %#v", completed)
+	}
+	text, _ := completed["text"].(string)
+	if !strings.Contains(text, "raw reasoning") || !strings.Contains(text, `"content"`) {
+		t.Fatalf("completed fallback lost streamed raw reasoning: %s", text)
+	}
+}
+
+func TestCodexTurnCompletionClosesDeltaOnlyReasoning(t *testing.T) {
+	session := NewCodexProviderSession(CodexProviderSessionConfig{
+		Transport: &fakeProviderTransport{}, SessionID: "thread-1", ActiveTurnID: "turn-1",
+	})
+	var events []task.EventPayload
+	emit := func(_ task.EventKind, payload task.EventPayload) { events = append(events, payload) }
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "item/reasoning/summaryTextDelta",
+		Params: json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"reasoning-1","delta":"raw reasoning"}`),
+	}, emit)
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "turn/completed",
+		Params: json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+	}, emit)
+	var completed task.EventPayload
+	for _, event := range events {
+		if event["phase"] == "completed" && event["provider_item_id"] == "reasoning-1" {
+			completed = event
+			break
+		}
+	}
+	if completed == nil || completed["provider_event"] != "item/completed" {
+		t.Fatalf("turn completion did not close reasoning: %#v", events)
 	}
 }
 
@@ -1588,6 +1660,82 @@ func TestClaudeProviderSessionProjectsVisibleRuntimeOutput(t *testing.T) {
 	}
 	if _, leaked := events[0]["params"]; leaked {
 		t.Fatalf("runtime output leaked protocol params: %#v", events[0])
+	}
+}
+
+func TestClaudeProviderSessionBatchesThinkingDeltasBeforeVisibleOutput(t *testing.T) {
+	var kinds []task.EventKind
+	var events []task.EventPayload
+	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{
+		Transport: &fakeProviderTransport{}, SessionID: "claude-1", ActiveTurnID: "turn-1",
+	})
+	emit := func(kind task.EventKind, payload task.EventPayload) {
+		kinds = append(kinds, kind)
+		events = append(events, payload)
+	}
+
+	for _, text := range []string{
+		`{"type":"content_block_delta","index":0,"item_id":"turn-1-thinking-0","delta":{"type":"thinking_delta","thinking":"checking "}}`,
+		`{"type":"content_block_delta","index":0,"item_id":"turn-1-thinking-0","delta":{"type":"thinking_delta","thinking":"the auth flow"}}`,
+	} {
+		params, err := json.Marshal(map[string]any{
+			"session_id": "claude-1", "turn_id": "turn-1", "stream": "stream_event", "text": text,
+		})
+		if err != nil {
+			t.Fatalf("marshal delta: %v", err)
+		}
+		session.HandleEvent(SandboxBridgeEvent{Method: "claude/runtime_output", Params: params}, emit)
+	}
+	if len(events) != 0 {
+		t.Fatalf("thinking deltas must batch before a flush: %#v", events)
+	}
+
+	// A normal assistant record barriers reasoning before it passes through.
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "claude/runtime_output",
+		Params: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-1","stream":"assistant","text":"{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ready\"}]}}"}`),
+	}, emit)
+
+	if len(events) != 2 || len(kinds) != 2 {
+		t.Fatalf("events = %#v kinds = %#v", events, kinds)
+	}
+	for index, kind := range kinds {
+		if kind != task.EventKindRuntimeOutput {
+			t.Fatalf("kind[%d] = %q", index, kind)
+		}
+	}
+	batched := events[0]
+	if batched["provider_item_id"] != "turn-1-thinking-0" || batched["stream"] != "stream_event" {
+		t.Fatalf("batched thinking payload = %#v", batched)
+	}
+	batchedText, _ := batched["text"].(string)
+	var record map[string]any
+	if err := json.Unmarshal([]byte(batchedText), &record); err != nil {
+		t.Fatalf("batched thinking text is not JSON: %q", batchedText)
+	}
+	delta, _ := record["delta"].(map[string]any)
+	if record["item_id"] != "turn-1-thinking-0" || delta["thinking"] != "checking the auth flow" {
+		t.Fatalf("batched thinking record = %#v", record)
+	}
+	if events[1]["stream"] != "assistant" {
+		t.Fatalf("assistant event order = %#v", events)
+	}
+
+	// A provider terminal event closes a delta-only segment with one completed
+	// replacement, so the UI does not retain a stale streaming status.
+	session.HandleEvent(SandboxBridgeEvent{
+		Method: "claude/turn/completed",
+		Params: json.RawMessage(`{"request_id":"turn-1","session_id":"claude-1","turn_id":"turn-1","status":"completed"}`),
+	}, emit)
+	var completed task.EventPayload
+	for _, event := range events {
+		if event["phase"] == "completed" && event["provider_item_id"] == "turn-1-thinking-0" {
+			completed = event
+			break
+		}
+	}
+	if completed == nil {
+		t.Fatalf("missing completed reasoning replacement: %#v", events)
 	}
 }
 
