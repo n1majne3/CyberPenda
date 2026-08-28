@@ -1080,7 +1080,10 @@ func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimepr
 // multi-agent behavior); an explicit on projects `features.multi_agent =
 // true` plus `agents.enabled = true` and the caps, which turns the V1 tools
 // on for models whose metadata does not already select a multi-agent
-// version; an explicit off projects both off keys because Codex releases
+// version. An explicit on also enables multi_agent_v2 because Codex resolves
+// that override before model metadata; this keeps the operator's on decision
+// effective for models whose metadata disables multi-agent tools. An explicit
+// off projects both off keys because Codex releases
 // have shipped with the feature default-on, so an absent key cannot carry an
 // operator's off decision. Off also disables multi_agent_v2 because Codex
 // resolves V2 before agents.enabled. An unset cap is not written, so a Custom Config
@@ -1094,7 +1097,11 @@ func appendCodexMultiAgentTOML(b *strings.Builder, profile runtimeprofile.Profil
 	enabled := settings.Enabled != nil && *settings.Enabled
 	b.WriteString("\n[features]\n")
 	fmt.Fprintf(b, "multi_agent = %t\n", enabled)
-	if !enabled {
+	if enabled {
+		// Codex resolves the V2 config override before model metadata. The V1
+		// feature flag alone cannot force tools on for a model marked Disabled.
+		b.WriteString("multi_agent_v2 = true\n")
+	} else {
 		// Codex resolves V2 before agents.enabled, so an explicit operator off
 		// must disable both tool generations.
 		b.WriteString("multi_agent_v2 = false\n")

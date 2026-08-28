@@ -9,6 +9,7 @@ import {
   profileListModelHint,
   selectableModelProviders,
   showLegacyModelFields,
+  type RuntimeProfileFormInput,
   usesModelProvider,
 } from "./runtimeProfileForm";
 
@@ -251,6 +252,42 @@ describe("runtimeProfileForm", () => {
       max_concurrent_threads_per_session: 4,
       max_depth: 2,
     });
+  });
+
+  it("does not silently coerce codex multi-agent integer inputs", () => {
+    const form: RuntimeProfileFormInput = {
+      name: "codex",
+      provider: "codex",
+      binary_path: "",
+      model: "",
+      endpoint: "",
+      model_provider_id: "mimo",
+      model_provider_protocol: "",
+      model_override: "",
+      reasoning_effort: "high",
+      custom_args: "",
+      env: "",
+      api_key_env: "",
+      api_key: "",
+      runtime_extensions: [],
+      mcp_servers: "",
+      default_runner: "sandbox",
+      sandbox_image: "",
+      credential_refs: "",
+      codex_multi_agent_state: "on",
+      codex_multi_agent_max_threads: "",
+      codex_multi_agent_max_depth: "",
+    };
+
+    expect(() =>
+      buildProfileFields({ ...form, codex_multi_agent_max_threads: "1.5" }, plugins),
+    ).toThrow("Codex multi-agent max concurrent threads per session must be a positive integer");
+    expect(() =>
+      buildProfileFields({ ...form, codex_multi_agent_max_depth: "-2" }, plugins),
+    ).toThrow("Codex multi-agent max depth must be a positive integer");
+    expect(
+      buildProfileFields({ ...form, codex_multi_agent_max_threads: "1e1" }, plugins).codex_multi_agent,
+    ).toEqual({ enabled: true, max_concurrent_threads_per_session: 10 });
   });
 
   it("omits the Codex-only multi-agent control for another runtime", () => {

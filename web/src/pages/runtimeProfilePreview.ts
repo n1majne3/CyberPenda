@@ -94,8 +94,7 @@ export function codexMultiAgentTOMLLines(fields: RuntimeProfileFields): string[]
   const settings = fields.codex_multi_agent;
   if (!settings) return [];
   const enabled = settings.enabled === true;
-  const lines = ["[features]", `multi_agent = ${enabled}`];
-  if (!enabled) lines.push("multi_agent_v2 = false");
+  const lines = ["[features]", `multi_agent = ${enabled}`, `multi_agent_v2 = ${enabled}`];
   lines.push("", "[agents]", `enabled = ${enabled}`);
   if (enabled) {
     if (settings.max_concurrent_threads_per_session) {

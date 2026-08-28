@@ -110,6 +110,7 @@ describe("runtimeProfilePreview", () => {
       codexPlugin,
     );
     expect(on.config_toml).toContain("multi_agent = true");
+    expect(on.config_toml).toContain("multi_agent_v2 = true");
     expect(on.config_toml).toContain("max_concurrent_threads_per_session = 4");
     expect(on.config_toml).toContain("max_depth = 2");
   });

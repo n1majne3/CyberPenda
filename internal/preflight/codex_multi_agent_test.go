@@ -2,6 +2,7 @@ package preflight_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"pentest/internal/modelprovider"
@@ -74,8 +75,8 @@ func TestRunPreviewsCodexMultiAgentToolsOnWithCaps(t *testing.T) {
 	if result.CodexMultiAgent.State != "on" {
 		t.Fatalf("expected on preview, got %#v", result.CodexMultiAgent)
 	}
-	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 4 || result.CodexMultiAgent.MaxDepth != 2 {
-		t.Fatalf("expected caps in preview, got %#v", result.CodexMultiAgent)
+	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 4 || result.CodexMultiAgent.MaxDepth != 0 {
+		t.Fatalf("expected the V2 thread cap without the V1-only depth, got %#v", result.CodexMultiAgent)
 	}
 }
 
@@ -158,7 +159,44 @@ max_depth = 3
 	}
 }
 
-func TestRunPreviewsOverlayCapsWhenStructuredControlLeavesThemUnset(t *testing.T) {
+func TestRunRejectsFractionalCodexMultiAgentCapFromCustomConfigFile(t *testing.T) {
+	svc := newTestServices(t)
+	profile := newCodexMultiAgentProfile(t, svc, nil)
+	profile, err := svc.profiles.Update(profile.ID, "", "", runtimeprofile.Fields{
+		ModelProviderID: profile.Fields.ModelProviderID,
+		CustomConfigFile: `
+[features]
+multi_agent = true
+
+[agents]
+enabled = true
+max_depth = 1.5
+`,
+	}, true, false)
+	if err != nil {
+		t.Fatalf("add custom config: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+	})
+
+	if result.Pass {
+		t.Fatalf("fractional max_depth must block launch, got %#v", result.Checks)
+	}
+	for _, check := range result.Checks {
+		if check.Name == "custom_config_file" && check.Status == preflight.CheckFail {
+			if !strings.Contains(check.Detail, "agents.max_depth") || !strings.Contains(check.Detail, "integer") {
+				t.Fatalf("failure must identify the invalid native type, got %q", check.Detail)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected custom_config_file failure, got %#v", result.Checks)
+}
+
+func TestRunPreviewsOverlayThreadCapWhenStructuredControlLeavesItUnset(t *testing.T) {
 	svc := newTestServices(t)
 	enabled := true
 	profile := newCodexMultiAgentProfile(t, svc, &runtimeprofile.CodexMultiAgent{Enabled: &enabled})
@@ -183,8 +221,8 @@ max_depth = 4
 	if result.CodexMultiAgent == nil || result.CodexMultiAgent.State != "on" {
 		t.Fatalf("expected structured on preview, got %#v", result.CodexMultiAgent)
 	}
-	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 9 || result.CodexMultiAgent.MaxDepth != 4 {
-		t.Fatalf("expected overlay caps, got %#v", result.CodexMultiAgent)
+	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 9 || result.CodexMultiAgent.MaxDepth != 0 {
+		t.Fatalf("expected the V2 overlay thread cap without the V1-only depth, got %#v", result.CodexMultiAgent)
 	}
 }
 

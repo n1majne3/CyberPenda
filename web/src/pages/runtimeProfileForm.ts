@@ -194,8 +194,11 @@ export function buildProfileFields(form: RuntimeProfileFormInput, plugins: Runti
       enabled: multiAgentState === "on",
     };
     if (multiAgentState === "on") {
-      const maxThreads = positiveInt(form.codex_multi_agent_max_threads);
-      const maxDepth = positiveInt(form.codex_multi_agent_max_depth);
+      const maxThreads = positiveInt(
+        form.codex_multi_agent_max_threads,
+        "Codex multi-agent max concurrent threads per session",
+      );
+      const maxDepth = positiveInt(form.codex_multi_agent_max_depth, "Codex multi-agent max depth");
       if (maxThreads !== undefined) multiAgent.max_concurrent_threads_per_session = maxThreads;
       if (maxDepth !== undefined) multiAgent.max_depth = maxDepth;
     }
@@ -204,11 +207,13 @@ export function buildProfileFields(form: RuntimeProfileFormInput, plugins: Runti
   return fields;
 }
 
-function positiveInt(value: string): number | undefined {
+function positiveInt(value: string, label: string): number | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
-  const parsed = Number.parseInt(trimmed, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) return undefined;
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${label} must be a positive integer`);
+  }
   return parsed;
 }
 

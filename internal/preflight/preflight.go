@@ -825,11 +825,29 @@ func mergedCodexMultiAgentPreview(profile runtimeprofile.Profile) (*CodexMultiAg
 	if preview.State == "on" {
 		if v2Active {
 			if v2Config, ok := v2Value.(map[string]any); ok {
-				preview.MaxConcurrentThreadsPerSession = positiveConfigInt(v2Config["max_concurrent_threads_per_session"])
+				preview.MaxConcurrentThreadsPerSession, err = positiveConfigInt(
+					"features.multi_agent_v2.max_concurrent_threads_per_session",
+					v2Config["max_concurrent_threads_per_session"],
+				)
+			} else {
+				// A boolean V2 feature uses the legacy agents thread cap as its
+				// compatibility fallback. max_depth remains V1-only.
+				preview.MaxConcurrentThreadsPerSession, err = positiveConfigInt(
+					"agents.max_concurrent_threads_per_session",
+					agents["max_concurrent_threads_per_session"],
+				)
 			}
 		} else {
-			preview.MaxConcurrentThreadsPerSession = positiveConfigInt(agents["max_concurrent_threads_per_session"])
-			preview.MaxDepth = positiveConfigInt(agents["max_depth"])
+			preview.MaxConcurrentThreadsPerSession, err = positiveConfigInt(
+				"agents.max_concurrent_threads_per_session",
+				agents["max_concurrent_threads_per_session"],
+			)
+			if err == nil {
+				preview.MaxDepth, err = positiveConfigInt("agents.max_depth", agents["max_depth"])
+			}
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
 	return preview, nil
@@ -853,28 +871,32 @@ func boolValue(value any) (bool, bool) {
 	return enabled, ok
 }
 
-func positiveConfigInt(value any) int {
+func positiveConfigInt(path string, value any) (int, error) {
+	if value == nil {
+		return 0, nil
+	}
 	var converted int64
 	switch typed := value.(type) {
 	case int:
 		if typed > 0 {
-			return typed
+			return typed, nil
 		}
-		return 0
+		return 0, nil
 	case int64:
 		converted = typed
 	case uint64:
 		if typed > uint64(^uint(0)>>1) {
-			return 0
+			return 0, fmt.Errorf("%s is outside the supported integer range", path)
 		}
-		return int(typed)
-	case float64:
-		converted = int64(typed)
+		return int(typed), nil
 	default:
-		return 0
+		return 0, fmt.Errorf("%s must be an integer", path)
 	}
 	if converted < 1 || int64(int(converted)) != converted {
-		return 0
+		if converted < 1 {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("%s is outside the supported integer range", path)
 	}
-	return int(converted)
+	return int(converted), nil
 }

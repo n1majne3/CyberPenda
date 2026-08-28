@@ -503,7 +503,7 @@ func TestPreflightPreviewsCodexMultiAgentTools(t *testing.T) {
 	}
 	if result.CodexMultiAgent.State != "on" ||
 		result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 4 ||
-		result.CodexMultiAgent.MaxDepth != 2 {
+		result.CodexMultiAgent.MaxDepth != 0 {
 		t.Fatalf("codex multi-agent preview = %#v", result.CodexMultiAgent)
 	}
 

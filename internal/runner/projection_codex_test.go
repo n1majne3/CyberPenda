@@ -367,6 +367,23 @@ func TestProjectCodexConfigMultiAgentOnProjectsFeatureAndCaps(t *testing.T) {
 	}
 }
 
+func TestProjectCodexConfigMultiAgentExplicitOnOverridesModelMetadata(t *testing.T) {
+	enabled := true
+	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{
+		Model:           "model-with-multi-agent-disabled",
+		CodexMultiAgent: &runtimeprofile.CodexMultiAgent{Enabled: &enabled},
+	})
+
+	var parsed map[string]any
+	if err := toml.Unmarshal([]byte(config), &parsed); err != nil {
+		t.Fatalf("parse projected config: %v\n%s", err, config)
+	}
+	features, ok := parsed["features"].(map[string]any)
+	if !ok || features["multi_agent_v2"] != true {
+		t.Fatalf("explicit on must force the V2 override, got %#v", parsed["features"])
+	}
+}
+
 func TestProjectCodexConfigMultiAgentOmitsUnsetCaps(t *testing.T) {
 	enabled := true
 	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{
