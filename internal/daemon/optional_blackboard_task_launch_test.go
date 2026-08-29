@@ -14,7 +14,16 @@ import (
 	"pentest/internal/task"
 )
 
-func TestTaskLaunchPlanCanOmitBlackboardProjectionAndKeepOrdinaryContinuation(t *testing.T) {
+type optionalBlackboardTaskFixture struct {
+	server      *Server
+	runtimeRoot string
+	profile     runtimeprofile.Profile
+	created     task.Task
+	policy      task.TaskPolicy
+}
+
+func newOptionalBlackboardTaskFixture(t *testing.T) optionalBlackboardTaskFixture {
+	t.Helper()
 	runtimeRoot := filepath.Join(t.TempDir(), "runs")
 	server, err := NewServer(Config{
 		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: runtimeRoot,
@@ -25,10 +34,7 @@ func TestTaskLaunchPlanCanOmitBlackboardProjectionAndKeepOrdinaryContinuation(t 
 	}
 	t.Cleanup(func() { _ = server.Close() })
 	createdProject, err := server.projects.Create(
-		"Optional Blackboard",
-		"",
-		project.Scope{Domains: []string{"example.test"}},
-		project.Defaults{},
+		"Optional Blackboard", "", project.Scope{Domains: []string{"example.test"}}, project.Defaults{},
 	)
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
@@ -56,26 +62,28 @@ func TestTaskLaunchPlanCanOmitBlackboardProjectionAndKeepOrdinaryContinuation(t 
 	if _, err := server.tasks.AppendEvent(created.ID, task.EventKindConversation, task.EventPayload{"message": "prior Transcript context"}); err != nil {
 		t.Fatalf("seed Task Transcript context: %v", err)
 	}
+	return optionalBlackboardTaskFixture{server: server, runtimeRoot: runtimeRoot, profile: profile, created: created, policy: policy}
+}
 
-	plan, err := server.buildTaskLaunchPlanForBlackboardProjection(
-		created,
-		created.Goal,
-		"",
-		"",
-		"high",
-		runner.BlackboardProjectionOmitted,
+func (fixture optionalBlackboardTaskFixture) omittedPlan(t *testing.T, goal string) taskLaunchPlan {
+	t.Helper()
+	plan, err := fixture.server.buildTaskLaunchPlanForBlackboardProjection(
+		fixture.created, goal, "", "", "high", runner.BlackboardProjectionOmitted,
 	)
 	if err != nil {
 		t.Fatalf("build Task plan without Blackboard: %v", err)
 	}
+	return plan
+}
+
+func TestTaskLaunchPlanCanOmitBlackboardProjection(t *testing.T) {
+	fixture := newOptionalBlackboardTaskFixture(t)
+	plan := fixture.omittedPlan(t, fixture.created.Goal)
 	if plan.BlackboardProjection != runner.BlackboardProjectionOmitted || plan.BlackboardV2 {
 		t.Fatalf("Task plan did not represent omitted Blackboard projection: %#v", plan)
 	}
-	if plan.LaunchGoal != created.Goal {
-		t.Fatalf("Task Goal = %q, want %q", plan.LaunchGoal, created.Goal)
-	}
-	if plan.Facts.Workdir != filepath.Join(runtimeRoot, created.ID, "workdir") {
-		t.Fatalf("Runtime Workdir = %q", plan.Facts.Workdir)
+	if plan.LaunchGoal != fixture.created.Goal || plan.Facts.Workdir != filepath.Join(fixture.runtimeRoot, fixture.created.ID, "workdir") {
+		t.Fatalf("ordinary Task launch context changed: %#v", plan)
 	}
 	launch, ok := runtime.CommandAdapterLaunch(plan.Adapter)
 	if !ok {
@@ -86,7 +94,7 @@ func TestTaskLaunchPlanCanOmitBlackboardProjectionAndKeepOrdinaryContinuation(t 
 			t.Fatalf("Task launch environment retained %s=%q", forbidden, value)
 		}
 	}
-	if plan.CapturedRuntimeConfig["runtime_profile_id"] != profile.ID || plan.CapturedRuntimeConfig["runner"] != task.RunnerHost {
+	if plan.CapturedRuntimeConfig["runtime_profile_id"] != fixture.profile.ID || plan.CapturedRuntimeConfig["runner"] != task.RunnerHost {
 		t.Fatalf("ordinary Runtime configuration is incomplete: %#v", plan.CapturedRuntimeConfig)
 	}
 	captured, err := json.Marshal(plan.CapturedRuntimeConfig)
@@ -96,36 +104,6 @@ func TestTaskLaunchPlanCanOmitBlackboardProjectionAndKeepOrdinaryContinuation(t 
 	for _, forbidden := range []string{"project-memory", "stale-grant", "PENTEST_INTERFACE_TOKEN"} {
 		if strings.Contains(string(captured), forbidden) {
 			t.Fatalf("captured Runtime configuration retained Blackboard authority %q: %s", forbidden, captured)
-		}
-	}
-	if created.RunControls.Policy != policy || created.ScopeSnapshot.Domains[0] != "example.test" {
-		t.Fatalf("Task Policy or Scope Snapshot changed: %#v", created)
-	}
-
-	continuation, bound, err := server.prepareTaskContinuationLaunch(created, plan, created.Goal)
-	if err != nil {
-		t.Fatalf("prepare ordinary Task Continuation: %v", err)
-	}
-	if continuation.TaskID != created.ID || continuation.RuntimeConfigVersionID == "" {
-		t.Fatalf("ordinary Task Continuation is incomplete: %#v", continuation)
-	}
-	if continuation.BlackboardReconciliationStatus != task.ReconciliationCompleted {
-		t.Fatalf("ordinary Task Continuation retained Blackboard reconciliation: %#v", continuation)
-	}
-	if bound.BlackboardProjection != runner.BlackboardProjectionOmitted || bound.LaunchGoal != created.Goal {
-		t.Fatalf("bound Task plan changed launch context: %#v", bound)
-	}
-	for _, table := range []string{
-		"blackboard_v2_continuation_pins",
-		"blackboard_v2_continuation_state",
-		"blackboard_continuation_grants",
-	} {
-		var count int
-		if err := server.db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE continuation_id=?", continuation.ID).Scan(&count); err != nil {
-			t.Fatalf("count %s: %v", table, err)
-		}
-		if count != 0 {
-			t.Fatalf("%s rows = %d, want 0", table, count)
 		}
 	}
 	for _, absent := range []string{
@@ -139,20 +117,54 @@ func TestTaskLaunchPlanCanOmitBlackboardProjectionAndKeepOrdinaryContinuation(t 
 	if err != nil || !strings.Contains(string(scope), "example.test") {
 		t.Fatalf("Scope Snapshot = %s, err=%v", scope, err)
 	}
-	events, err := server.tasks.Events(created.ID)
+}
+
+func TestTaskLaunchWithoutBlackboardKeepsOrdinaryOwnerContext(t *testing.T) {
+	fixture := newOptionalBlackboardTaskFixture(t)
+	if fixture.created.RunControls.Policy != fixture.policy || fixture.created.ScopeSnapshot.Domains[0] != "example.test" {
+		t.Fatalf("Task Policy or Scope Snapshot changed: %#v", fixture.created)
+	}
+	events, err := fixture.server.tasks.Events(fixture.created.ID)
 	if err != nil || len(events) != 1 || events[0].Payload["message"] != "prior Transcript context" {
 		t.Fatalf("Task Transcript context changed: %#v, err=%v", events, err)
 	}
-	if _, err := server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusStopped); err != nil {
-		t.Fatalf("stop ordinary Task Continuation: %v", err)
+}
+
+func TestTaskLaunchWithoutBlackboardCreatesOrdinaryContinuation(t *testing.T) {
+	fixture := newOptionalBlackboardTaskFixture(t)
+	plan := fixture.omittedPlan(t, fixture.created.Goal)
+	continuation, bound, err := fixture.server.prepareTaskContinuationLaunch(fixture.created, plan, fixture.created.Goal)
+	if err != nil {
+		t.Fatalf("prepare ordinary Task Continuation: %v", err)
 	}
-	replacementPlan, err := server.buildTaskLaunchPlanForBlackboardProjection(
-		created, "continue ordinary Task", "", "", "high", runner.BlackboardProjectionOmitted,
+	if continuation.TaskID != fixture.created.ID || continuation.RuntimeConfigVersionID == "" {
+		t.Fatalf("ordinary Task Continuation is incomplete: %#v", continuation)
+	}
+	if continuation.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		t.Fatalf("ordinary Task Continuation retained Blackboard reconciliation: %#v", continuation)
+	}
+	if bound.BlackboardProjection != runner.BlackboardProjectionOmitted || bound.LaunchGoal != fixture.created.Goal {
+		t.Fatalf("bound Task plan changed launch context: %#v", bound)
+	}
+	if _, err := fixture.server.blackboardV2Continuity.ReadLaunchPin(t.Context(), continuation.ID); err == nil {
+		t.Fatal("ordinary Task Continuation unexpectedly has a Launch Blackboard Pin")
+	}
+}
+
+func TestTaskLaunchWithoutBlackboardCanReplaceOrdinaryContinuation(t *testing.T) {
+	fixture := newOptionalBlackboardTaskFixture(t)
+	continuation, _, err := fixture.server.prepareTaskContinuationLaunch(
+		fixture.created, fixture.omittedPlan(t, fixture.created.Goal), fixture.created.Goal,
 	)
 	if err != nil {
-		t.Fatalf("build replacement Task plan: %v", err)
+		t.Fatalf("prepare ordinary Task Continuation: %v", err)
 	}
-	replacement, _, err := server.prepareTaskContinuationLaunch(created, replacementPlan, "continue ordinary Task")
+	if _, err := fixture.server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusStopped); err != nil {
+		t.Fatalf("stop ordinary Task Continuation: %v", err)
+	}
+	replacement, _, err := fixture.server.prepareTaskContinuationLaunch(
+		fixture.created, fixture.omittedPlan(t, "continue ordinary Task"), "continue ordinary Task",
+	)
 	if err != nil {
 		t.Fatalf("prepare replacement ordinary Task Continuation: %v", err)
 	}

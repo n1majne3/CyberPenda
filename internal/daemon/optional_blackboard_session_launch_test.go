@@ -12,7 +12,18 @@ import (
 	"pentest/internal/session"
 )
 
-func TestSessionLaunchPlanCanOmitBlackboardProjectionAndKeepOrdinaryContinuation(t *testing.T) {
+type optionalBlackboardSessionFixture struct {
+	server   *Server
+	factory  *recordingProviderSessionFactory
+	goal     string
+	found    session.Session
+	profile  runtimeprofile.Profile
+	input    sessionRuntimeInput
+	prepared sessionRuntimePreparation
+}
+
+func newOptionalBlackboardSessionFixture(t *testing.T) optionalBlackboardSessionFixture {
+	t.Helper()
 	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
 		SessionID: "native-session-without-blackboard",
 		Capabilities: runtimeplugin.Capabilities{
@@ -49,26 +60,33 @@ func TestSessionLaunchPlanCanOmitBlackboardProjectionAndKeepOrdinaryContinuation
 	if err != nil {
 		t.Fatalf("prepare Session Runtime: %v", err)
 	}
-	plan, err := server.buildSessionRuntimePlanForBlackboardProjection(
-		found,
-		goal,
-		input,
-		profile,
-		session.RunnerHost,
-		"must-not-project",
-		"",
-		runner.BlackboardProjectionOmitted,
+	return optionalBlackboardSessionFixture{
+		server: server, factory: factory, goal: goal, found: found, profile: profile, input: input, prepared: prepared,
+	}
+}
+
+func (fixture optionalBlackboardSessionFixture) omittedPlan(t *testing.T) sessionRuntimePlan {
+	t.Helper()
+	plan, err := fixture.server.buildSessionRuntimePlanForBlackboardProjection(
+		fixture.found, fixture.goal, fixture.input, fixture.profile, session.RunnerHost,
+		"must-not-project", "", runner.BlackboardProjectionOmitted,
 	)
 	if err != nil {
 		t.Fatalf("build Session plan without Blackboard: %v", err)
 	}
+	return plan
+}
+
+func TestSessionLaunchPlanCanOmitBlackboardProjection(t *testing.T) {
+	fixture := newOptionalBlackboardSessionFixture(t)
+	plan := fixture.omittedPlan(t)
 	if plan.BlackboardProjection != runner.BlackboardProjectionOmitted {
 		t.Fatalf("Session plan did not represent omitted Blackboard projection: %#v", plan)
 	}
-	if plan.LaunchGoal != goal || plan.Profile.ID != profile.ID || plan.Runner != session.RunnerHost {
+	if plan.LaunchGoal != fixture.goal || plan.Profile.ID != fixture.profile.ID || plan.Runner != session.RunnerHost {
 		t.Fatalf("ordinary Session launch context changed: %#v", plan)
 	}
-	if plan.Facts.Workdir != found.Workdir || plan.RuntimeConfig["runtime_profile_id"] != profile.ID {
+	if plan.Facts.Workdir != fixture.found.Workdir || plan.RuntimeConfig["runtime_profile_id"] != fixture.profile.ID {
 		t.Fatalf("ordinary Session Runtime configuration is incomplete: %#v", plan)
 	}
 	launch, ok := runtime.CommandAdapterLaunch(plan.Adapter)
@@ -81,45 +99,39 @@ func TestSessionLaunchPlanCanOmitBlackboardProjectionAndKeepOrdinaryContinuation
 		}
 	}
 	for _, absent := range []string{"AGENTS.md", "CLAUDE.md", ".mcp.json", filepath.Join(".pentest", "context.json"), filepath.Join(".pentest", "blackboard.json")} {
-		if _, err := os.Stat(filepath.Join(found.Workdir, absent)); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(fixture.found.Workdir, absent)); !os.IsNotExist(err) {
 			t.Fatalf("unexpected Session Blackboard launch file %s: %v", absent, err)
 		}
 	}
+}
 
-	continuation, err := server.startPreparedSessionRuntimeForBlackboardProjection(
+func TestSessionLaunchWithoutBlackboardStartsOrdinaryContinuation(t *testing.T) {
+	fixture := newOptionalBlackboardSessionFixture(t)
+	continuation, err := fixture.server.startPreparedSessionRuntimeForBlackboardProjection(
 		t.Context(),
-		found,
-		goal,
-		input,
+		fixture.found,
+		fixture.goal,
+		fixture.input,
 		nil,
-		prepared,
+		fixture.prepared,
 		nil,
 		runner.BlackboardProjectionOmitted,
 	)
 	if err != nil {
 		t.Fatalf("start ordinary Session Continuation: %v", err)
 	}
-	if continuation.SessionID != found.ID || continuation.RuntimeConfigID == "" || continuation.RuntimeProfileID != profile.ID {
+	if continuation.SessionID != fixture.found.ID || continuation.RuntimeConfigID == "" || continuation.RuntimeProfileID != fixture.profile.ID {
 		t.Fatalf("ordinary Session Continuation is incomplete: %#v", continuation)
 	}
-	for _, table := range []string{
-		"blackboard_v2_session_continuation_pins",
-		"session_continuation_interface_grants",
-	} {
-		var count int
-		if err := server.db.QueryRow("SELECT COUNT(*) FROM "+table+" WHERE continuation_id=?", continuation.ID).Scan(&count); err != nil {
-			t.Fatalf("count %s: %v", table, err)
-		}
-		if count != 0 {
-			t.Fatalf("%s rows = %d, want 0", table, count)
-		}
+	if _, err := fixture.server.blackboardV2.ReadSessionContinuationPin(t.Context(), fixture.found.ID, continuation.ID); err == nil {
+		t.Fatal("ordinary Session Continuation unexpectedly has a Launch Blackboard Pin")
 	}
-	requests := factory.Requests()
+	requests := fixture.factory.Requests()
 	if len(requests) != 1 {
 		t.Fatalf("provider launch requests = %d, want 1", len(requests))
 	}
 	request := requests[0]
-	if request.Owner.ID != found.ID || request.Continuation.ID != continuation.ID || request.LaunchGoal != goal || request.Facts.Workdir != found.Workdir {
+	if request.Owner.ID != fixture.found.ID || request.Continuation.ID != continuation.ID || request.LaunchGoal != fixture.goal || request.Facts.Workdir != fixture.found.Workdir {
 		t.Fatalf("provider launch lost ordinary Session context: %#v", request)
 	}
 }

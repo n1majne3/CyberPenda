@@ -134,7 +134,13 @@ func collectMCPServers(profile runtimeprofile.Profile, req ProjectionRequest) ([
 
 func writeProjectionContextFiles(layout Layout, req ProjectionRequest, provider runtimeprofile.Provider, mcpURL string) error {
 	if req.BlackboardProjection != BlackboardProjectionOmitted {
-		return writeTaskContextFiles(layout, taskContextFromProjection(req, provider, mcpURL))
+		if err := writeTaskContextFiles(layout, taskContextFromProjection(req, provider, mcpURL)); err != nil {
+			return err
+		}
+		if strings.TrimSpace(req.Owner.ID) == "" {
+			return nil
+		}
+		return recordBlackboardProjectionArtifacts(layout, blackboardProjectionAgentsFile, blackboardProjectionContextFile)
 	}
 	if !req.Owner.IsTask() {
 		return nil
@@ -144,6 +150,15 @@ func writeProjectionContextFiles(layout Layout, req ProjectionRequest, provider 
 		return fmt.Errorf("prepare task Scope directory: %w", err)
 	}
 	return writeTaskScopeFile(dir, req.ScopeSnapshot)
+}
+
+func hasTrustedProjectInterfaceMCPServer(servers []runtimeprofile.MCPServer) bool {
+	for _, server := range servers {
+		if server.Mode == runtimeprofile.MCPServerTrusted && strings.EqualFold(strings.TrimSpace(server.Name), trustedMCPServerName) {
+			return true
+		}
+	}
+	return false
 }
 
 func claudeTrustedMCPAllowedTools(servers []runtimeprofile.MCPServer) []string {
