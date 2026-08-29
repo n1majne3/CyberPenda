@@ -131,7 +131,7 @@ type RuntimeControls struct {
 }
 
 // RunControls are the owner-local launch controls that remain stable across
-// Session Runtime Continuations. Sessions expose the same conclusion mode
+// Session Runtime Continuations. Sessions expose the same Blackboard Mode
 // vocabulary as Tasks without acquiring a Project identity or Project scope.
 type RunControls struct {
 	BlackboardConclusionMode BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
@@ -144,13 +144,14 @@ type RunControls struct {
 	SandboxVPNTun bool `json:"sandbox_vpn_tun,omitempty"`
 }
 
-// BlackboardConclusionMode selects whether the operator alone prompts the
-// Runtime to persist conclusions or the Harness assists at work-Turn bounds.
+// BlackboardConclusionMode is the persisted compatibility representation of
+// the Runtime Owner's immutable Blackboard Mode.
 type BlackboardConclusionMode string
 
 const (
 	BlackboardConclusionModeInteractive BlackboardConclusionMode = "interactive"
 	BlackboardConclusionModeAssisted    BlackboardConclusionMode = "assisted"
+	BlackboardConclusionModeDisabled    BlackboardConclusionMode = "disabled"
 )
 
 // BlackboardConclusionState is the compact owner-local semantic-debt view.
@@ -408,7 +409,7 @@ var (
 	ErrContinuationNotFound            = errors.New("session continuation not found")
 	ErrContinuationStatusConflict      = errors.New("session continuation status conflicts with its terminal state")
 	ErrMissingRuntimeProfile           = errors.New("session runtime profile is required")
-	ErrInvalidBlackboardConclusionMode = errors.New("invalid Session Blackboard conclusion mode")
+	ErrInvalidBlackboardConclusionMode = errors.New("Session Blackboard Mode must be interactive, assisted, or disabled")
 )
 
 // Service implements Session persistence and lifecycle rules against SQLite.
@@ -1925,6 +1926,8 @@ func normalizeBlackboardConclusionMode(value BlackboardConclusionMode) (Blackboa
 		return BlackboardConclusionModeInteractive, nil
 	case BlackboardConclusionModeAssisted:
 		return BlackboardConclusionModeAssisted, nil
+	case BlackboardConclusionModeDisabled:
+		return BlackboardConclusionModeDisabled, nil
 	default:
 		return "", ErrInvalidBlackboardConclusionMode
 	}
@@ -1942,10 +1945,13 @@ func scanSession(row scanner) (Session, error) {
 		return Session{}, err
 	}
 	found.Lifecycle = Lifecycle(lifecycle)
-	found.RunControls.BlackboardConclusionMode = BlackboardConclusionMode(mode)
+	normalizedMode, err := normalizeBlackboardConclusionMode(BlackboardConclusionMode(mode))
+	if err != nil {
+		return Session{}, err
+	}
+	found.RunControls.BlackboardConclusionMode = normalizedMode
 	found.BlackboardConclusion.Mode = found.RunControls.BlackboardConclusionMode
 	found.BlackboardConclusion.State = BlackboardConclusionStateClean
-	var err error
 	if found.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
 		return Session{}, fmt.Errorf("parse Session created_at: %w", err)
 	}

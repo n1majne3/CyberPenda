@@ -485,17 +485,20 @@ export function RuntimeLaunchControls({
           </Select>
         </div>
         <div>
-          <Label htmlFor="launch-blackboard-conclusions">Blackboard conclusions</Label>
-          <Select id="launch-blackboard-conclusions" name="blackboard_conclusion_mode" value={blackboardConclusionMode} onChange={(event) => { setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode); setPreflight(null); }}>
+          <Label htmlFor="launch-blackboard-mode">Blackboard Mode</Label>
+          <Select id="launch-blackboard-mode" name="blackboard_conclusion_mode" value={blackboardConclusionMode} onChange={(event) => { setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode); setPreflight(null); }}>
             <option value="interactive">Interactive</option>
             <option value="assisted" disabled={!assistedConclusionSupported}>Assisted</option>
+            <option value="disabled">Disabled</option>
           </Select>
           <p className="mt-1 text-xs text-muted-foreground">
-            {blackboardConclusionMode === "assisted"
+            {blackboardConclusionMode === "disabled"
+              ? "The Runtime does not receive Blackboard state or Blackboard access. All non-Blackboard launch context remains available."
+              : blackboardConclusionMode === "assisted"
               ? "After tool-producing work, the Harness runs a bounded Conclude Turn and applies its validated Attempt result to the Blackboard."
               : assistedConclusionSupported
                 ? "The operator decides when Runtime work is written to the Blackboard."
-                : `${assistedConclusionUnavailableReason} Interactive launch remains available.`}
+                : `${assistedConclusionUnavailableReason} Interactive and Disabled launch remain available.`}
           </p>
         </div>
       </div>

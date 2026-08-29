@@ -196,7 +196,14 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 		return
 	}
 
-	plan, err := server.buildTaskLaunchPlan(created, launchGoal, launchModelOverride, "", launchReasoningEffort)
+	blackboardProjection := runner.BlackboardProjectionRequired
+	if created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+		blackboardProjection = runner.BlackboardProjectionOmitted
+		launchGoal = initialDisabledBlackboardLaunchGoal(launchGoal)
+	}
+	plan, err := server.buildTaskLaunchPlanForBlackboardProjection(
+		created, launchGoal, launchModelOverride, "", launchReasoningEffort, blackboardProjection,
+	)
 	if err != nil {
 		writeTaskAdapterError(response, err)
 		return

@@ -125,13 +125,14 @@ func (policy TaskPolicy) validate() error {
 	return nil
 }
 
-// BlackboardConclusionMode selects whether the operator alone prompts the
-// Runtime to persist conclusions or the Harness assists at work-Turn bounds.
+// BlackboardConclusionMode is the persisted compatibility representation of
+// the Runtime Owner's immutable Blackboard Mode.
 type BlackboardConclusionMode string
 
 const (
 	BlackboardConclusionModeInteractive BlackboardConclusionMode = "interactive"
 	BlackboardConclusionModeAssisted    BlackboardConclusionMode = "assisted"
+	BlackboardConclusionModeDisabled    BlackboardConclusionMode = "disabled"
 )
 
 func normalizeBlackboardConclusionMode(mode BlackboardConclusionMode) (BlackboardConclusionMode, error) {
@@ -140,6 +141,8 @@ func normalizeBlackboardConclusionMode(mode BlackboardConclusionMode) (Blackboar
 		return BlackboardConclusionModeInteractive, nil
 	case BlackboardConclusionModeAssisted:
 		return BlackboardConclusionModeAssisted, nil
+	case BlackboardConclusionModeDisabled:
+		return BlackboardConclusionModeDisabled, nil
 	default:
 		return "", ErrInvalidBlackboardConclusionMode
 	}
@@ -588,7 +591,7 @@ var ErrInvalidTaskType = errors.New("Task Type must be pentest or ctf_challenge"
 
 var ErrTaskTypeProjectKindMismatch = errors.New("Task Type must match the current Project Kind")
 
-var ErrInvalidBlackboardConclusionMode = errors.New("Blackboard conclusion mode must be interactive or assisted")
+var ErrInvalidBlackboardConclusionMode = errors.New("Blackboard Mode must be interactive, assisted, or disabled")
 
 var ErrInvalidTaskPolicy = errors.New("Task Policy limits must be zero or positive")
 

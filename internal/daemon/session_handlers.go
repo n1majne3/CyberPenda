@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"pentest/internal/owner"
+	"pentest/internal/runner"
 	"pentest/internal/session"
 )
 
@@ -147,7 +148,15 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 		writeSessionError(response, err)
 		return
 	}
-	if _, launchErr := server.startPreparedSessionRuntime(request.Context(), created, input.value(), runtimeInput, nil, prepared, nil); launchErr != nil {
+	blackboardProjection := runner.BlackboardProjectionRequired
+	launchGoal := input.value()
+	if created.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeDisabled {
+		blackboardProjection = runner.BlackboardProjectionOmitted
+		launchGoal = initialDisabledBlackboardLaunchGoal(launchGoal)
+	}
+	if _, launchErr := server.startPreparedSessionRuntimeForBlackboardProjection(
+		request.Context(), created, launchGoal, runtimeInput, nil, prepared, nil, blackboardProjection,
+	); launchErr != nil {
 		server.recordSessionLaunchDiagnostic(created.ID, "launch_failed", launchErr)
 		writeSessionError(response, launchErr)
 		return

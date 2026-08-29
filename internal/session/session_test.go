@@ -111,6 +111,66 @@ func TestCreateSessionPersistsAssistedBlackboardConclusionRunControl(t *testing.
 	}
 }
 
+func TestCreateSessionPersistsDisabledBlackboardMode(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	created, err := service.Create(CreateRequest{
+		Input:                    "Inspect without Blackboard",
+		BlackboardConclusionMode: BlackboardConclusionModeDisabled,
+	})
+	if err != nil {
+		t.Fatalf("create disabled Session: %v", err)
+	}
+	if created.RunControls.BlackboardConclusionMode != BlackboardConclusionModeDisabled ||
+		created.BlackboardConclusion.Mode != BlackboardConclusionModeDisabled {
+		t.Fatalf("created disabled Session = %#v", created)
+	}
+
+	reloaded, err := service.Get(created.ID)
+	if err != nil {
+		t.Fatalf("reload disabled Session: %v", err)
+	}
+	if reloaded.RunControls.BlackboardConclusionMode != BlackboardConclusionModeDisabled ||
+		reloaded.BlackboardConclusion.Mode != BlackboardConclusionModeDisabled {
+		t.Fatalf("reloaded disabled Session = %#v", reloaded)
+	}
+}
+
+func TestSessionBlackboardModeDefaultsAndRejectsUnknownValues(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	stamp := "2026-08-29T00:00:00Z"
+	if _, err := db.Exec(`INSERT INTO sessions
+		(id,title,lifecycle,workdir,created_at,updated_at,last_activity_at)
+		VALUES ('legacy-session','Legacy Session','open','/tmp/legacy-session',?,?,?)`, stamp, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := service.Get("legacy-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.RunControls.BlackboardConclusionMode != BlackboardConclusionModeInteractive ||
+		reloaded.BlackboardConclusion.Mode != BlackboardConclusionModeInteractive {
+		t.Fatalf("normalized legacy Session = %#v", reloaded)
+	}
+
+	_, err = service.Create(CreateRequest{Input: "invalid mode", BlackboardConclusionMode: "automatic"})
+	if !errors.Is(err, ErrInvalidBlackboardConclusionMode) {
+		t.Fatalf("invalid Blackboard Mode error = %v", err)
+	}
+}
+
 func TestListSessionsAppliesAnOptionalActivityLimit(t *testing.T) {
 	dataRoot := t.TempDir()
 	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))

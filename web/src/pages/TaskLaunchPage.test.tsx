@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
+import { mockApi } from "@/test/mockApi";
 import { TaskLaunchPage } from "./TaskLaunchPage";
 
 const codexPlugin = {
@@ -81,6 +82,58 @@ async function selectPentestTaskType() {
 }
 
 describe("TaskLaunchPage", () => {
+  it("launches a Project Task with Disabled Blackboard Mode", async () => {
+    const fetchMock = mockApi({
+      "/api/projects/project-1/preflight": { pass: true, checks: [] },
+      "/api/projects/project-1/tasks": { id: "task-disabled" },
+      "/api/runtime-profiles/resolve-launch": {
+        profile_id: "resolved-profile",
+        created: true,
+        profile: autoResolvedProfile,
+      },
+      "/api/runtime-plugins": { plugins: [codexPlugin] },
+      "/api/model-providers": { providers: [mimoProvider] },
+      "/api/runtime-profiles": { profiles: [] },
+      "/api/skills?": { skills: [] },
+      "/api/projects/project-1": {
+        id: "project-1",
+        name: "Acme",
+        description: "",
+        kind: "pentest",
+        scope: {},
+        defaults: { runner: "sandbox" },
+        created_at: "",
+        updated_at: "",
+      },
+      "/api/health": {
+        version: "test",
+        database: { status: "ok" },
+        runner: { container_cli: "docker", engine_kind: "docker", engine_name: "Docker" },
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByRole("option", { name: "MiMo" });
+    await user.selectOptions(await screen.findByLabelText("Task type"), "pentest");
+    await user.type(screen.getByLabelText("Task goal"), "Inspect the target");
+    const mode = screen.getByLabelText("Blackboard Mode");
+    expect(screen.getByRole("option", { name: "Disabled" })).toBeEnabled();
+    await user.selectOptions(mode, "disabled");
+    expect(screen.getByText(/does not receive Blackboard state or Blackboard access/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /launch/i }));
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([input, init]) =>
+        String(input).endsWith("/api/projects/project-1/tasks") && init?.method === "POST",
+      );
+      expect(call).toBeDefined();
+      const body = JSON.parse(String(call?.[1]?.body ?? "{}"));
+      expect(body.run_controls?.blackboard_conclusion_mode).toBe("disabled");
+    });
+  });
+
   it("launches a Reason Task with the server-owned planning goal", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -223,7 +276,7 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByText(/must match this Project's kind/i)).toBeInTheDocument();
     await userEvent.selectOptions(taskType, "ctf_challenge");
 
-    const mode = await screen.findByLabelText("Blackboard conclusions");
+    const mode = await screen.findByLabelText("Blackboard Mode");
     expect(mode).toHaveValue("interactive");
     await userEvent.selectOptions(mode, "assisted");
     expect(screen.getByText(/runs a bounded Conclude Turn and applies its validated Attempt result/i)).toBeInTheDocument();
@@ -341,7 +394,7 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    expect(await screen.findByLabelText("Blackboard conclusions")).toHaveValue("interactive");
+    expect(await screen.findByLabelText("Blackboard Mode")).toHaveValue("interactive");
     expect(screen.getByRole("option", { name: "Assisted" })).toBeDisabled();
     expect(screen.getByText(/does not expose the complete persistent Turn, normalized Tool\/Turn event, and closed AttemptResult contract/i)).toBeInTheDocument();
     await selectPentestTaskType();
@@ -433,7 +486,7 @@ describe("TaskLaunchPage", () => {
     expect(await screen.findByText("Skills for this launch")).toBeInTheDocument();
     expect(await screen.findByText(/selected preset/i)).toBeInTheDocument();
     expect(await screen.findByText("Recon Helper")).toBeInTheDocument();
-    expect(screen.queryByText("Disabled")).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText("1 enabled skills")).queryByText("Disabled")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /launch/i })).toBeInTheDocument();
   });
 
