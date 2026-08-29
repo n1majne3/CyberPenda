@@ -84,7 +84,7 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 		return ConfigProjection{}, err
 	}
 	if req.BlackboardProjection == BlackboardProjectionOmitted {
-		if err := clearRecordedBlackboardProjectionArtifacts(layout); err != nil {
+		if err := preflightOmittedBlackboardProjection(layout); err != nil {
 			return ConfigProjection{}, err
 		}
 	}
@@ -470,11 +470,6 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 		if err := writeClaudeMCPConfig(layout.Workdir, mcpServers); err != nil {
 			return ConfigProjection{}, err
 		}
-		if req.BlackboardProjection != BlackboardProjectionOmitted && hasTrustedProjectInterfaceMCPServer(mcpServers) {
-			if err := recordBlackboardProjectionArtifacts(layout, blackboardProjectionClaudeMCPFile); err != nil {
-				return ConfigProjection{}, err
-			}
-		}
 	}
 
 	settings := map[string]any{"env": env}
@@ -688,11 +683,6 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	if len(mcpServers) > 0 {
 		if err := writePiMCPConfig(agentDir, mcpServers); err != nil {
 			return ConfigProjection{}, err
-		}
-		if req.BlackboardProjection != BlackboardProjectionOmitted && hasTrustedProjectInterfaceMCPServer(mcpServers) {
-			if err := recordBlackboardProjectionArtifacts(layout, blackboardProjectionPiMCPFile); err != nil {
-				return ConfigProjection{}, err
-			}
 		}
 	}
 

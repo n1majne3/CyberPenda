@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,168 +14,200 @@ import (
 	"pentest/internal/runtimeprofile"
 )
 
-func TestOmittedProjectionClearsGeneratedBlackboardArtifactsFromReusedLayout(t *testing.T) {
-	providers := []runtimeprofile.Provider{
+func TestRuntimeProvidersRejectRequiredArtifactsWithoutChangingLayout(t *testing.T) {
+	for _, provider := range optionalProjectionProviders() {
+		t.Run(string(provider), func(t *testing.T) {
+			taskID := "required-then-omitted-" + string(provider)
+			layout, err := runner.PrepareBlackboardV2TaskLayout(t.TempDir(), taskID, provider)
+			if err != nil {
+				t.Fatalf("prepare reused Runtime layout: %v", err)
+			}
+			profile := runtimeprofile.Profile{Provider: provider, Fields: runtimeprofile.Fields{
+				Model:   "ordinary-model",
+				Env:     map[string]string{"ORDINARY_RUNTIME_SETTING": "preserve-me"},
+				APIKeys: map[string]string{"OPENAI_API_KEY": "ordinary-model-credential"},
+				MCPServers: []runtimeprofile.MCPServer{
+					{Name: "project-memory", Mode: runtimeprofile.MCPServerTrusted, URL: "http://stale.example.test/mcp?token=stale-token"},
+					{Name: "external-docs", Mode: runtimeprofile.MCPServerExternal, URL: "https://external.example.test/mcp"},
+				},
+			}}
+			required := runner.ProjectionRequest{
+				Owner:         owner.NewTaskContract(taskID, "project-1", layout.Workdir),
+				ScopeSnapshot: project.Scope{Domains: []string{"scope.example.test"}},
+				DaemonAddr:    "127.0.0.1:8787",
+				AuthToken:     "required-token",
+			}
+			if _, err := runner.ProjectBlackboardV2RuntimeConfig(layout, profile, required); err != nil {
+				t.Fatalf("project required Runtime config: %v", err)
+			}
+			if err := runner.ProjectBlackboardV2Files(layout, profile.Provider, blackboardv2.LaunchHeader{
+				Runner: "sandbox", ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
+				Schema: "runtime-blackboard/v2", Revision: 9,
+			}, required.ScopeSnapshot); err != nil {
+				t.Fatalf("project required Blackboard files: %v", err)
+			}
+			legacyProjection, err := runner.ProjectRuntimeConfig(layout, profile, required)
+			if err != nil {
+				t.Fatalf("project legacy required Runtime config: %v", err)
+			}
+			blackboardPath := filepath.Join(layout.Workdir, ".pentest", "blackboard.json")
+			if err := os.WriteFile(blackboardPath, []byte(`{"schema":"runtime-blackboard/v2","revision":9}`), 0o600); err != nil {
+				t.Fatalf("materialize Working Blackboard Snapshot: %v", err)
+			}
+			operatorFile := filepath.Join(layout.Workdir, "operator-notes.md")
+			if err := os.WriteFile(operatorFile, []byte("preserve operator data"), 0o600); err != nil {
+				t.Fatalf("write operator file: %v", err)
+			}
+			for _, path := range []string{
+				filepath.Join(layout.Workdir, "AGENTS.md"),
+				filepath.Join(layout.Workdir, ".pentest", "context.json"),
+				blackboardPath,
+				providerMCPConfigPath(layout, provider, legacyProjection),
+				operatorFile,
+			} {
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("required projection artifact %s is missing: %v", path, err)
+				}
+			}
+			if provider == runtimeprofile.ProviderClaudeCode {
+				if _, err := os.Stat(filepath.Join(layout.Workdir, "CLAUDE.md")); err != nil {
+					t.Fatalf("required Claude checklist is missing: %v", err)
+				}
+			}
+			before := snapshotRuntimeLayout(t, layout.TaskRoot)
+			omitted := required
+			omitted.BlackboardProjection = runner.BlackboardProjectionOmitted
+			if _, err := runner.ProjectRuntimeConfig(layout, profile, omitted); err == nil {
+				t.Fatal("omitted projection accepted a reused layout with required Blackboard artifacts")
+			}
+			assertRuntimeLayoutUnchanged(t, layout.TaskRoot, before)
+		})
+	}
+}
+
+func TestRuntimeProvidersRejectModifiedGeneratedInstructionsWithoutChangingLayout(t *testing.T) {
+	for _, provider := range optionalProjectionProviders() {
+		t.Run(string(provider), func(t *testing.T) {
+			taskID := "modified-generated-instructions-" + string(provider)
+			layout, err := runner.PrepareBlackboardV2TaskLayout(t.TempDir(), taskID, provider)
+			if err != nil {
+				t.Fatalf("prepare Runtime layout: %v", err)
+			}
+			scope := project.Scope{Domains: []string{"scope.example.test"}}
+			if err := runner.ProjectBlackboardV2Files(layout, provider, blackboardv2.LaunchHeader{
+				Runner: "sandbox", ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
+				Schema: "runtime-blackboard/v2", Revision: 9,
+			}, scope); err != nil {
+				t.Fatalf("project required Blackboard files: %v", err)
+			}
+			instructionPath := filepath.Join(layout.Workdir, "AGENTS.md")
+			if provider == runtimeprofile.ProviderClaudeCode {
+				instructionPath = filepath.Join(layout.Workdir, "CLAUDE.md")
+			}
+			generated, err := os.ReadFile(instructionPath)
+			if err != nil {
+				t.Fatalf("read generated instructions: %v", err)
+			}
+			modified := append(generated, []byte("\nRuntime-added note.\n")...)
+			if err := os.WriteFile(instructionPath, modified, 0o600); err != nil {
+				t.Fatalf("modify generated instructions: %v", err)
+			}
+			before := snapshotRuntimeLayout(t, layout.TaskRoot)
+			_, err = runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+				Provider: provider,
+			}, runner.ProjectionRequest{
+				Owner:                owner.NewTaskContract(taskID, "project-1", layout.Workdir),
+				ScopeSnapshot:        scope,
+				BlackboardProjection: runner.BlackboardProjectionOmitted,
+			})
+			if err == nil {
+				t.Fatal("omitted projection accepted Runtime-modified Blackboard instructions")
+			}
+			assertRuntimeLayoutUnchanged(t, layout.TaskRoot, before)
+		})
+	}
+}
+
+func TestRuntimeProvidersSupportFreshAndRepeatedOmittedProjection(t *testing.T) {
+	for _, provider := range optionalProjectionProviders() {
+		for _, externalMCP := range []bool{false, true} {
+			name := "zero-external-mcp"
+			if externalMCP {
+				name = "external-mcp"
+			}
+			t.Run(string(provider)+"/"+name, func(t *testing.T) {
+				taskID := "repeated-" + string(provider) + "-" + name
+				layout, err := runner.PrepareTaskLayout(t.TempDir(), taskID, provider)
+				if err != nil {
+					t.Fatalf("prepare Runtime layout: %v", err)
+				}
+				profile := runtimeprofile.Profile{Provider: provider, Fields: runtimeprofile.Fields{Model: "ordinary-model"}}
+				if externalMCP {
+					profile.Fields.MCPServers = []runtimeprofile.MCPServer{{
+						Name: "external-docs", Mode: runtimeprofile.MCPServerExternal, URL: "https://external.example.test/mcp",
+					}}
+				}
+				userFiles := map[string][]byte{
+					filepath.Join(layout.Workdir, "AGENTS.md"):         []byte("# Operator notes\n\nBlackboard workflow is discussed here, but this is not generated instructions.\n"),
+					filepath.Join(layout.Workdir, "CLAUDE.md"):         []byte("Claude operator preferences; no Project Interface authority.\n"),
+					filepath.Join(layout.Workdir, "operator-notes.md"): []byte("Trusted MCP is pre-configured\n## Required workflow\nblackboard_finish\n.pentest/context.json\nPENTEST_INTERFACE_TOKEN=operator-example\n"),
+				}
+				for path, raw := range userFiles {
+					if err := os.WriteFile(path, raw, 0o600); err != nil {
+						t.Fatalf("write user file %s: %v", path, err)
+					}
+				}
+				request := runner.ProjectionRequest{
+					Owner:                owner.NewTaskContract(taskID, "project-1", layout.Workdir),
+					ScopeSnapshot:        project.Scope{Domains: []string{"scope.example.test"}},
+					BlackboardProjection: runner.BlackboardProjectionOmitted,
+				}
+				first, err := runner.ProjectRuntimeConfig(layout, profile, request)
+				if err != nil {
+					t.Fatalf("project fresh omitted Runtime config: %v", err)
+				}
+				mcpPath := providerMCPConfigPath(layout, provider, first)
+				var firstMCP []byte
+				if externalMCP {
+					firstMCP, err = os.ReadFile(mcpPath)
+					if err != nil || !strings.Contains(string(firstMCP), "external-docs") {
+						t.Fatalf("External MCP Server projection = %s, err=%v", firstMCP, err)
+					}
+				}
+				scopePath := filepath.Join(layout.Workdir, ".pentest", "scope.json")
+				firstScope, err := os.ReadFile(scopePath)
+				if err != nil || !strings.Contains(string(firstScope), "scope.example.test") {
+					t.Fatalf("Scope projection = %s, err=%v", firstScope, err)
+				}
+				if _, err := runner.ProjectRuntimeConfig(layout, profile, request); err != nil {
+					t.Fatalf("repeat omitted Runtime projection: %v", err)
+				}
+				for path, want := range userFiles {
+					got, err := os.ReadFile(path)
+					if err != nil || !bytes.Equal(got, want) {
+						t.Errorf("user file %s changed: %q, err=%v", path, got, err)
+					}
+				}
+				if externalMCP {
+					secondMCP, err := os.ReadFile(mcpPath)
+					if err != nil || !bytes.Equal(secondMCP, firstMCP) {
+						t.Errorf("repeated Omitted projection changed External MCP config: %s, err=%v", secondMCP, err)
+					}
+				}
+				if secondScope, err := os.ReadFile(scopePath); err != nil || !bytes.Equal(secondScope, firstScope) {
+					t.Errorf("repeated Omitted projection changed Scope: %s, err=%v", secondScope, err)
+				}
+			})
+		}
+	}
+}
+
+func optionalProjectionProviders() []runtimeprofile.Provider {
+	return []runtimeprofile.Provider{
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.ProviderClaudeCode,
 		runtimeprofile.ProviderPi,
 		runtimeprofile.ProviderHermes,
-	}
-	for _, provider := range providers {
-		for _, externalMCP := range []bool{false, true} {
-			name := "zero-external-mcp"
-			if externalMCP {
-				name = "preserve-external-mcp"
-			}
-			t.Run(string(provider)+"/"+name, func(t *testing.T) {
-				taskID := "reused-" + string(provider)
-				layout, err := runner.PrepareBlackboardV2TaskLayout(t.TempDir(), taskID, provider)
-				if err != nil {
-					t.Fatalf("prepare reused Runtime layout: %v", err)
-				}
-				profile := runtimeprofile.Profile{Provider: provider, Fields: runtimeprofile.Fields{
-					Model: "ordinary-model",
-					Env: map[string]string{
-						"NORMAL_RUNTIME_SETTING":  "keep-setting",
-						"PENTEST_INTERFACE_TOKEN": "stale-profile-token",
-					},
-					MCPServers: []runtimeprofile.MCPServer{{
-						Name: "project-memory", Mode: runtimeprofile.MCPServerTrusted,
-						URL: "http://stale-blackboard.example.test/mcp?token=stale-profile-token",
-					}},
-				}}
-				if externalMCP {
-					profile.Fields.MCPServers = append(profile.Fields.MCPServers, runtimeprofile.MCPServer{
-						Name: "external-docs", Mode: runtimeprofile.MCPServerExternal,
-						URL: "https://external.example.test/mcp",
-					})
-				}
-				required := runner.ProjectionRequest{
-					Owner:                   owner.NewTaskContract(taskID, "project-1", layout.Workdir),
-					ScopeSnapshot:           project.Scope{Domains: []string{"scope.example.test"}},
-					DaemonAddr:              "127.0.0.1:8787",
-					AuthToken:               "required-launch-token",
-					MaterializedCredentials: map[string]string{"MODEL_API_KEY": "keep-credential"},
-				}
-				if _, err := runner.ProjectBlackboardV2RuntimeConfig(layout, profile, required); err != nil {
-					t.Fatalf("project required Runtime config: %v", err)
-				}
-				if err := runner.ProjectBlackboardV2Files(layout, profile.Provider, blackboardv2.LaunchHeader{
-					Runner: "sandbox", ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
-					Schema: "runtime-blackboard/v2", Revision: 7,
-				}, required.ScopeSnapshot); err != nil {
-					t.Fatalf("project required Blackboard files: %v", err)
-				}
-				// Re-project the legacy required contract to model a reused layout
-				// that has every CyberPenda-generated discovery file from an
-				// earlier launch path.
-				if _, err := runner.ProjectRuntimeConfig(layout, profile, required); err != nil {
-					t.Fatalf("project legacy required Runtime config: %v", err)
-				}
-				blackboardPath := filepath.Join(layout.Workdir, ".pentest", "blackboard.json")
-				if err := os.WriteFile(blackboardPath, []byte(`{"schema":"runtime-blackboard/v2","revision":7}`), 0o600); err != nil {
-					t.Fatalf("materialize required Working Blackboard Snapshot: %v", err)
-				}
-				requiredFiles := readRegularFiles(t, layout.TaskRoot)
-				for _, want := range []string{"required-launch-token", "stale-profile-token", "scope.example.test"} {
-					if !strings.Contains(requiredFiles, want) {
-						t.Errorf("Required projection lost %q before omission", want)
-					}
-				}
-				operatorFile := filepath.Join(layout.Workdir, "operator-notes.md")
-				if err := os.WriteFile(operatorFile, []byte("keep operator notes"), 0o600); err != nil {
-					t.Fatalf("write user-owned file: %v", err)
-				}
-
-				omitted := required
-				omitted.AuthToken = "must-not-remain"
-				omitted.BlackboardProjection = runner.BlackboardProjectionOmitted
-				projection, err := runner.ProjectRuntimeConfig(layout, profile, omitted)
-				if err != nil {
-					t.Fatalf("project omitted Runtime config: %v", err)
-				}
-				if projection.ConfigPath == "" {
-					t.Fatal("normal Runtime config path is missing")
-				}
-				for _, absent := range []string{
-					"AGENTS.md",
-					"CLAUDE.md",
-					filepath.Join(".pentest", "context.json"),
-					filepath.Join(".pentest", "blackboard.json"),
-				} {
-					if _, err := os.Stat(filepath.Join(layout.Workdir, absent)); !os.IsNotExist(err) {
-						t.Errorf("generated Blackboard artifact remains at %s: %v", absent, err)
-					}
-				}
-				if raw, err := os.ReadFile(filepath.Join(layout.Workdir, ".pentest", "scope.json")); err != nil {
-					t.Errorf("read retained Scope Snapshot: %v", err)
-				} else if !strings.Contains(string(raw), "scope.example.test") {
-					t.Errorf("retained Scope Snapshot changed: %s", raw)
-				}
-				if raw, err := os.ReadFile(operatorFile); err != nil {
-					t.Errorf("read user-owned file: %v", err)
-				} else if string(raw) != "keep operator notes" {
-					t.Errorf("user-owned file changed: %q", raw)
-				}
-				mcpPath := providerMCPConfigPath(layout, provider, projection)
-				if externalMCP {
-					if raw, err := os.ReadFile(mcpPath); err != nil {
-						t.Errorf("read retained External MCP Server config: %v", err)
-					} else if !strings.Contains(string(raw), "external-docs") || strings.Contains(string(raw), "project-memory") {
-						t.Errorf("External MCP Server config was not isolated from Blackboard authority: %s", raw)
-					}
-				} else if provider == runtimeprofile.ProviderClaudeCode || provider == runtimeprofile.ProviderPi {
-					if _, err := os.Stat(mcpPath); !os.IsNotExist(err) {
-						t.Errorf("stale provider MCP file remains with zero External MCP Servers: %v", err)
-					}
-				}
-				if _, err := os.Stat(filepath.Join(layout.RuntimeHome, ".cyberpenda-blackboard-projection-files.json")); !os.IsNotExist(err) {
-					t.Errorf("Blackboard projection ownership record remains after omission: %v", err)
-				}
-				projectedFiles := readRegularFiles(t, layout.TaskRoot)
-				for _, forbidden := range []string{
-					"required-launch-token",
-					"must-not-remain",
-					"stale-profile-token",
-					"project-memory",
-					"stale-blackboard.example.test",
-					"mcp__pentest__blackboard_",
-					"127.0.0.1:8787/mcp",
-				} {
-					if strings.Contains(projectedFiles, forbidden) {
-						t.Errorf("trusted Blackboard value %q remains in reused Runtime layout", forbidden)
-					}
-				}
-				for _, retained := range []string{"ordinary-model", "keep operator notes"} {
-					if !strings.Contains(projectedFiles, retained) {
-						t.Errorf("ordinary Runtime value %q is missing after omission", retained)
-					}
-				}
-				if externalMCP && !strings.Contains(projectedFiles, "external-docs") {
-					t.Error("External MCP Server is missing after omission")
-				}
-				processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, profile, false, runner.RuntimeOwnerContext{
-					Owner: required.Owner, MCPURL: "http://forbidden.example.test/mcp",
-					APIURL: "http://forbidden.example.test/api", InterfaceToken: "forbidden-token",
-				}, omitted)
-				if err != nil {
-					t.Fatalf("build ordinary Runtime environment: %v", err)
-				}
-				for key, want := range map[string]string{
-					"NORMAL_RUNTIME_SETTING": "keep-setting",
-					"MODEL_API_KEY":          "keep-credential",
-				} {
-					if got := processEnv[key]; got != want {
-						t.Errorf("ordinary Runtime environment %s = %q, want %q", key, got, want)
-					}
-				}
-				for _, key := range []string{"PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_MCP_URL", "PENTEST_API_URL", "PENTEST_INTERFACE_TOKEN"} {
-					if got := processEnv[key]; got != "" {
-						t.Errorf("Blackboard authority environment %s remains: %q", key, got)
-					}
-				}
-			})
-		}
 	}
 }
 
@@ -189,126 +222,198 @@ func providerMCPConfigPath(layout runner.Layout, provider runtimeprofile.Provide
 	}
 }
 
-func TestOmittedProjectionDoesNotTrustRuntimeWritableOwnershipMetadata(t *testing.T) {
-	t.Run("unrecorded-lookalike", func(t *testing.T) {
-		layout, err := runner.PrepareTaskLayout(t.TempDir(), "unrecorded-lookalike", runtimeprofile.ProviderClaudeCode)
-		if err != nil {
-			t.Fatalf("prepare Runtime layout: %v", err)
-		}
-		userAgents := filepath.Join(layout.Workdir, "AGENTS.md")
-		if err := os.WriteFile(userAgents, []byte("operator-owned instructions"), 0o600); err != nil {
-			t.Fatalf("write unrecorded user file: %v", err)
-		}
-		if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
-			Provider: runtimeprofile.ProviderClaudeCode,
-		}, runner.ProjectionRequest{
-			Owner:                owner.NewTaskContract("unrecorded-lookalike", "project-1", layout.Workdir),
-			BlackboardProjection: runner.BlackboardProjectionOmitted,
-		}); err != nil {
-			t.Fatalf("project omitted Runtime config: %v", err)
-		}
-		if raw, err := os.ReadFile(userAgents); err != nil {
-			t.Fatalf("read unrecorded user file: %v", err)
-		} else if string(raw) != "operator-owned instructions" {
-			t.Fatalf("unrecorded user file changed: %q", raw)
-		}
-	})
-
-	t.Run("unknown-record-entry", func(t *testing.T) {
-		layout, err := runner.PrepareTaskLayout(t.TempDir(), "tampered-record", runtimeprofile.ProviderClaudeCode)
-		if err != nil {
-			t.Fatalf("prepare Runtime layout: %v", err)
-		}
-		userFile := filepath.Join(layout.Workdir, "operator-notes.md")
-		if err := os.WriteFile(userFile, []byte("must survive"), 0o600); err != nil {
-			t.Fatalf("write user file: %v", err)
-		}
-		tampered := `{"schema":"cyberpenda-blackboard-projection-files/v1","artifacts":["../../operator-notes.md"]}`
-		if err := os.WriteFile(filepath.Join(layout.RuntimeHome, ".cyberpenda-blackboard-projection-files.json"), []byte(tampered), 0o600); err != nil {
-			t.Fatalf("write tampered ownership record: %v", err)
-		}
-		_, err = runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
-			Provider: runtimeprofile.ProviderClaudeCode,
-		}, runner.ProjectionRequest{
-			Owner:                owner.NewTaskContract("tampered-record", "project-1", layout.Workdir),
-			BlackboardProjection: runner.BlackboardProjectionOmitted,
+func TestRuntimeProvidersRejectTrustedMCPConfigWithoutChangingIt(t *testing.T) {
+	for _, provider := range optionalProjectionProviders() {
+		t.Run(string(provider), func(t *testing.T) {
+			taskID := "stale-trusted-mcp-" + string(provider)
+			layout, err := runner.PrepareTaskLayout(t.TempDir(), taskID, provider)
+			if err != nil {
+				t.Fatalf("prepare Runtime layout: %v", err)
+			}
+			path, raw := staleTrustedMCPConfig(layout, provider)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatalf("prepare stale MCP config directory: %v", err)
+			}
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatalf("write stale trusted MCP config: %v", err)
+			}
+			operatorFile := filepath.Join(layout.Workdir, "operator-notes.md")
+			if err := os.WriteFile(operatorFile, []byte("preserve operator data"), 0o600); err != nil {
+				t.Fatalf("write operator file: %v", err)
+			}
+			before := snapshotRuntimeLayout(t, layout.TaskRoot)
+			_, err = runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+				Provider: provider,
+				Fields: runtimeprofile.Fields{MCPServers: []runtimeprofile.MCPServer{{
+					Name: "external-docs", Mode: runtimeprofile.MCPServerExternal, URL: "https://external.example.test/mcp",
+				}}},
+			}, runner.ProjectionRequest{
+				Owner:                owner.NewTaskContract(taskID, "project-1", layout.Workdir),
+				BlackboardProjection: runner.BlackboardProjectionOmitted,
+			})
+			if err == nil {
+				t.Fatal("omitted projection accepted a stale trusted Project Interface config")
+			}
+			assertRuntimeLayoutUnchanged(t, layout.TaskRoot, before)
 		})
-		if err == nil || !strings.Contains(err.Error(), "unknown artifact") {
-			t.Fatalf("omitted projection accepted a tampered ownership target: %v", err)
-		}
-		if raw, err := os.ReadFile(userFile); err != nil {
-			t.Fatalf("read user file after rejected cleanup: %v", err)
-		} else if string(raw) != "must survive" {
-			t.Fatalf("tampered ownership record changed user file: %q", raw)
-		}
-	})
+	}
+}
 
-	t.Run("forged-allowlisted-entry", func(t *testing.T) {
-		layout, err := runner.PrepareTaskLayout(t.TempDir(), "forged-allowlisted-entry", runtimeprofile.ProviderClaudeCode)
-		if err != nil {
-			t.Fatalf("prepare Runtime layout: %v", err)
-		}
-		userFile := filepath.Join(layout.Workdir, "CLAUDE.md")
-		if err := os.WriteFile(userFile, []byte("operator-owned Claude instructions"), 0o600); err != nil {
-			t.Fatalf("write user file at allowlisted path: %v", err)
-		}
-		forged := `{"schema":"cyberpenda-blackboard-projection-files/v1","artifacts":["workdir-claude"]}`
-		if err := os.WriteFile(filepath.Join(layout.RuntimeHome, ".cyberpenda-blackboard-projection-files.json"), []byte(forged), 0o600); err != nil {
-			t.Fatalf("write forged ownership record: %v", err)
-		}
-		_, err = runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
-			Provider: runtimeprofile.ProviderClaudeCode,
-		}, runner.ProjectionRequest{
-			Owner:                owner.NewTaskContract("forged-allowlisted-entry", "project-1", layout.Workdir),
-			BlackboardProjection: runner.BlackboardProjectionOmitted,
+func TestRuntimeProvidersRejectProjectInterfaceTokensWithoutChangingConfig(t *testing.T) {
+	for _, provider := range optionalProjectionProviders() {
+		t.Run(string(provider), func(t *testing.T) {
+			taskID := "stale-project-interface-token-" + string(provider)
+			layout, err := runner.PrepareTaskLayout(t.TempDir(), taskID, provider)
+			if err != nil {
+				t.Fatalf("prepare Runtime layout: %v", err)
+			}
+			path, raw := staleProjectInterfaceTokenConfig(layout, provider)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatalf("prepare stale token config directory: %v", err)
+			}
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatalf("write stale Project Interface token: %v", err)
+			}
+			before := snapshotRuntimeLayout(t, layout.TaskRoot)
+			_, err = runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+				Provider: provider,
+			}, runner.ProjectionRequest{
+				Owner:                owner.NewTaskContract(taskID, "project-1", layout.Workdir),
+				BlackboardProjection: runner.BlackboardProjectionOmitted,
+			})
+			if err == nil {
+				t.Fatal("omitted projection accepted a stale Project Interface token")
+			}
+			assertRuntimeLayoutUnchanged(t, layout.TaskRoot, before)
 		})
-		if err == nil || !strings.Contains(err.Error(), "generator contract") {
-			t.Fatalf("omitted projection trusted forged ownership of a user file: %v", err)
-		}
-		if raw, err := os.ReadFile(userFile); err != nil {
-			t.Fatalf("read user file after rejected cleanup: %v", err)
-		} else if string(raw) != "operator-owned Claude instructions" {
-			t.Fatalf("forged allowlisted record changed user file: %q", raw)
-		}
-	})
+	}
+}
 
-	t.Run("recorded-symlink", func(t *testing.T) {
-		layout, err := runner.PrepareTaskLayout(t.TempDir(), "recorded-symlink", runtimeprofile.ProviderClaudeCode)
+func TestRuntimeProvidersRejectKnownProjectionSymlinksWithoutDeletion(t *testing.T) {
+	for _, provider := range optionalProjectionProviders() {
+		t.Run(string(provider), func(t *testing.T) {
+			taskID := "omitted-symlink-" + string(provider)
+			layout, err := runner.PrepareTaskLayout(t.TempDir(), taskID, provider)
+			if err != nil {
+				t.Fatalf("prepare Runtime layout: %v", err)
+			}
+			target := filepath.Join(t.TempDir(), "operator-owned-target.md")
+			want := []byte("must survive Omitted preflight")
+			if err := os.WriteFile(target, want, 0o600); err != nil {
+				t.Fatalf("write symlink target: %v", err)
+			}
+			knownPath := filepath.Join(layout.Workdir, "AGENTS.md")
+			if provider == runtimeprofile.ProviderClaudeCode {
+				knownPath = filepath.Join(layout.Workdir, "CLAUDE.md")
+			}
+			if err := os.Symlink(target, knownPath); err != nil {
+				t.Fatalf("install Runtime-controlled symlink: %v", err)
+			}
+			_, err = runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+				Provider: provider,
+			}, runner.ProjectionRequest{
+				Owner:                owner.NewTaskContract(taskID, "project-1", layout.Workdir),
+				BlackboardProjection: runner.BlackboardProjectionOmitted,
+			})
+			if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+				t.Fatalf("omitted projection did not reject known projection symlink: %v", err)
+			}
+			if got, err := os.Readlink(knownPath); err != nil || got != target {
+				t.Fatalf("known projection symlink changed: target=%q err=%v", got, err)
+			}
+			if got, err := os.ReadFile(target); err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("symlink target changed: %q, err=%v", got, err)
+			}
+		})
+	}
+}
+
+func staleTrustedMCPConfig(layout runner.Layout, provider runtimeprofile.Provider) (string, []byte) {
+	const url = "http://stale.example.test/mcp"
+	switch provider {
+	case runtimeprofile.ProviderCodex:
+		return filepath.Join(layout.ProviderHome, "config.toml"), []byte("model = \"ordinary-model\"\n\n[mcp_servers.pentest]\nurl = \"" + url + "\"\n")
+	case runtimeprofile.ProviderClaudeCode:
+		return filepath.Join(layout.Workdir, ".mcp.json"), []byte(`{"mcpServers":{"external-docs":{"type":"http","url":"https://external.example.test/mcp"},"pentest":{"type":"http","url":"` + url + `"}}}`)
+	case runtimeprofile.ProviderPi:
+		return filepath.Join(layout.ProviderHome, "agent", "mcp.json"), []byte(`{"mcpServers":{"external-docs":{"type":"http","url":"https://external.example.test/mcp"},"pentest":{"type":"http","url":"` + url + `"}}}`)
+	case runtimeprofile.ProviderHermes:
+		return filepath.Join(layout.ProviderHome, "config.yaml"), []byte("model: ordinary-model\nmcp_servers:\n  external-docs:\n    url: https://external.example.test/mcp\n  pentest:\n    url: " + url + "\n")
+	default:
+		panic("unsupported Runtime Provider")
+	}
+}
+
+func staleProjectInterfaceTokenConfig(layout runner.Layout, provider runtimeprofile.Provider) (string, []byte) {
+	const token = "stale-project-interface-token"
+	switch provider {
+	case runtimeprofile.ProviderCodex:
+		return filepath.Join(layout.ProviderHome, "auth.json"), []byte(`{"PENTEST_INTERFACE_TOKEN":"` + token + `","OPENAI_API_KEY":"ordinary-model-credential"}`)
+	case runtimeprofile.ProviderClaudeCode:
+		return filepath.Join(layout.ProviderHome, "settings.json"), []byte(`{"env":{"PENTEST_INTERFACE_TOKEN":"` + token + `","ORDINARY_RUNTIME_SETTING":"preserve-me"}}`)
+	case runtimeprofile.ProviderPi:
+		return filepath.Join(layout.ProviderHome, "agent", "auth.json"), []byte(`{"PENTEST_INTERFACE_TOKEN":"` + token + `","ordinary":{"token":"ordinary-model-credential"}}`)
+	case runtimeprofile.ProviderHermes:
+		return filepath.Join(layout.ProviderHome, ".env"), []byte("PENTEST_INTERFACE_TOKEN=" + token + "\nORDINARY_MODEL_CREDENTIAL=preserve-me\n")
+	default:
+		panic("unsupported Runtime Provider")
+	}
+}
+
+type runtimeLayoutEntry struct {
+	mode    os.FileMode
+	content string
+}
+
+func snapshotRuntimeLayout(t *testing.T, root string) map[string]runtimeLayoutEntry {
+	t.Helper()
+	snapshot := map[string]runtimeLayoutEntry{}
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
-			t.Fatalf("prepare Runtime layout: %v", err)
+			return err
 		}
-		required := runner.ProjectionRequest{
-			Owner: owner.NewTaskContract("recorded-symlink", "project-1", layout.Workdir),
+		info, err := entry.Info()
+		if err != nil {
+			return err
 		}
-		if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
-			Provider: runtimeprofile.ProviderClaudeCode,
-		}, required); err != nil {
-			t.Fatalf("project required Runtime config: %v", err)
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
 		}
-		outside := filepath.Join(t.TempDir(), "operator-owned-target.md")
-		if err := os.WriteFile(outside, []byte("must survive symlink cleanup"), 0o600); err != nil {
-			t.Fatalf("write symlink target: %v", err)
+		item := runtimeLayoutEntry{mode: info.Mode()}
+		switch {
+		case info.Mode()&os.ModeSymlink != 0:
+			item.content, err = os.Readlink(path)
+		case info.Mode().IsRegular():
+			var raw []byte
+			raw, err = os.ReadFile(path)
+			item.content = string(raw)
 		}
-		agents := filepath.Join(layout.Workdir, "AGENTS.md")
-		if err := os.Remove(agents); err != nil {
-			t.Fatalf("replace generated instruction in test: %v", err)
+		if err != nil {
+			return err
 		}
-		if err := os.Symlink(outside, agents); err != nil {
-			t.Fatalf("install Runtime-controlled symlink: %v", err)
-		}
-		omitted := required
-		omitted.BlackboardProjection = runner.BlackboardProjectionOmitted
-		if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
-			Provider: runtimeprofile.ProviderClaudeCode,
-		}, omitted); err == nil || !strings.Contains(err.Error(), "not a regular file") {
-			t.Fatalf("omitted projection followed a recorded symlink: %v", err)
-		}
-		if raw, err := os.ReadFile(outside); err != nil {
-			t.Fatalf("read symlink target after rejected cleanup: %v", err)
-		} else if string(raw) != "must survive symlink cleanup" {
-			t.Fatalf("recorded symlink changed its target: %q", raw)
-		}
+		snapshot[relative] = item
+		return nil
 	})
+	if err != nil {
+		t.Fatalf("snapshot Runtime layout: %v", err)
+	}
+	return snapshot
+}
+
+func assertRuntimeLayoutUnchanged(t *testing.T, root string, before map[string]runtimeLayoutEntry) {
+	t.Helper()
+	after := snapshotRuntimeLayout(t, root)
+	if len(after) != len(before) {
+		t.Fatalf("rejected Omitted projection changed Runtime layout entries: before=%d after=%d", len(before), len(after))
+	}
+	for path, want := range before {
+		if got, ok := after[path]; !ok {
+			t.Errorf("rejected Omitted projection removed %s", path)
+		} else if got != want {
+			t.Errorf("rejected Omitted projection changed %s", path)
+		}
+	}
 }
 
 func readRegularFiles(t *testing.T, root string) string {

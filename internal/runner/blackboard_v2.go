@@ -89,11 +89,7 @@ func ProjectBlackboardV2Files(layout Layout, provider runtimeprofile.Provider, h
 			return fmt.Errorf("task context file %q is not a confined regular file", entry.Name())
 		}
 	}
-	instructionArtifact := blackboardProjectionAgentsFile
-	if instructionName == "CLAUDE.md" {
-		instructionArtifact = blackboardProjectionClaudeFile
-	}
-	return recordBlackboardProjectionArtifacts(layout, instructionArtifact, blackboardProjectionSnapshotFile)
+	return nil
 }
 
 func blackboardV2InstructionFile(provider runtimeprofile.Provider) string {
