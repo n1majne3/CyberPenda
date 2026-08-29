@@ -3,6 +3,7 @@ package runtime
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -80,15 +81,32 @@ func (a *piSessionTailAdapter) Run(ctx context.Context, goal string, emit func(t
 	return err
 }
 
-// tailPiSession polls sessionDir until a *.jsonl file appears, then follows it
-// line-by-line, emitting each new line as a runtime_output event. When ctx is
-// cancelled it performs one final read pass so lines written just before the
-// runtime exited are drained rather than dropped, then returns.
+// piSessionTailFile tracks the read position of one tailed session file.
+type piSessionTailFile struct {
+	file   *os.File
+	reader *bufio.Reader
+	offset int64
+}
+
+// tailPiSession polls sessionDir for *.jsonl session files and follows every
+// one of them, emitting each new line as a runtime_output event. Pi writes a
+// subagent's transcript to its own newer session file, so following only the
+// newest file would strand the parent's settle records (subagents:record)
+// while a child is active. Tracking every file keeps parent and child lines
+// observable. When ctx is cancelled it performs one final read pass across all
+// files so lines written just before the runtime exited are drained rather
+// than dropped, then returns.
 func tailPiSession(ctx context.Context, sessionDir string, observe func(string), emit func(task.EventKind, task.EventPayload)) {
-	currentPath := ""
-	var reader *bufio.Reader
-	var file *os.File
-	var offset int64
+	tailed := map[string]*piSessionTailFile{}
+	// headerParent caches each discovered file's parentSession so nesting depth
+	// is classified once per file without re-reading headers every pass.
+	headerParent := map[string]string{}
+	closeAll := func() {
+		for _, tf := range tailed {
+			_ = tf.file.Close()
+		}
+	}
+	defer closeAll()
 
 	for {
 		stopping := false
@@ -98,86 +116,121 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 		case <-time.After(100 * time.Millisecond):
 		}
 
-		// (Re)resolve the newest session file when we don't have one yet, or
-		// when the current file has been rotated/replaced.
-		latest, ok := newestSessionFile(sessionDir)
-		if !ok {
-			if stopping {
-				if file != nil {
-					_ = file.Close()
-				}
-				return
-			}
-			continue
-		}
-		if currentPath != latest {
-			if file != nil {
-				_ = file.Close()
-			}
-			f, err := os.Open(latest)
-			if err != nil {
-				if stopping {
-					return
-				}
+		// Discover session files, opening any we have not tailed yet. Follow a
+		// root session (no parentSession header) and the session files of its
+		// top-level subagents (parentSession naming a root); skip deeper nested
+		// files, whose settle records are never emitted (the extension reports
+		// top-level agents only), so tailing them would grow open file handles
+		// without adding attribution.
+		for _, path := range listSessionFiles(sessionDir) {
+			if _, ok := tailed[path]; ok {
 				continue
 			}
-			file = f
-			currentPath = latest
-			offset = 0
-			reader = bufio.NewReader(file)
-		}
-
-		// Read all complete lines currently available.
-		for {
-			line, err := reader.ReadString('\n')
-			if len(line) > 0 {
-				offset += int64(len(line))
-				if trimmed := strings.TrimRight(line, "\n"); trimmed != "" {
-					if observe != nil {
-						observe(trimmed)
-					}
-					if runtimeoutput.ShouldIgnoreForStorage(trimmed) {
-						continue
-					}
-					emit(task.EventKindRuntimeOutput, task.EventPayload(adapters.Redact(map[string]any{
-						"stream": "pi_session",
-						"text":   trimmed,
-					})))
+			parent, ok := headerParent[path]
+			if !ok {
+				parent = piSessionParent(path)
+				headerParent[path] = parent
+			}
+			if parent != "" {
+				// A top-level subagent's parent is a root session (itself no
+				// parentSession). If the parent names its own parent, this file
+				// is a nested (grandchild) transcript — skip it.
+				grandparent, ok := headerParent[parent]
+				if !ok {
+					grandparent = piSessionParent(parent)
+					headerParent[parent] = grandparent
+				}
+				if grandparent != "" {
+					continue
 				}
 			}
+			f, err := os.Open(path)
 			if err != nil {
-				break
+				continue
+			}
+			tailed[path] = &piSessionTailFile{file: f, reader: bufio.NewReader(f)}
+		}
+
+		// Drain every tailed file in path order so emission is deterministic.
+		paths := make([]string, 0, len(tailed))
+		for path := range tailed {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		for _, path := range paths {
+			tf := tailed[path]
+			for {
+				line, err := tf.reader.ReadString('\n')
+				if len(line) > 0 {
+					tf.offset += int64(len(line))
+					if trimmed := strings.TrimRight(line, "\n"); trimmed != "" {
+						if observe != nil {
+							observe(trimmed)
+						}
+						if runtimeoutput.ShouldIgnoreForStorage(trimmed) {
+							continue
+						}
+						emit(task.EventKindRuntimeOutput, task.EventPayload(adapters.Redact(map[string]any{
+							"stream": "pi_session",
+							"text":   trimmed,
+						})))
+					}
+				}
+				if err != nil {
+					break
+				}
+			}
+			// If a file shrank (truncated/rotated in place), restart it from
+			// the beginning on the next pass.
+			if info, statErr := os.Stat(path); statErr == nil && info.Size() < tf.offset {
+				_ = tf.file.Close()
+				f, err := os.Open(path)
+				if err == nil {
+					tailed[path] = &piSessionTailFile{file: f, reader: bufio.NewReader(f)}
+				} else {
+					delete(tailed, path)
+				}
 			}
 		}
 
 		// A final drain pass has now emitted the last available lines; stop.
 		if stopping {
-			if file != nil {
-				_ = file.Close()
-			}
 			return
-		}
-
-		// If the file shrank (truncated), reset to its current end next round.
-		if info, err := os.Stat(currentPath); err == nil && info.Size() < offset {
-			offset = 0
-			if file != nil {
-				_ = file.Close()
-			}
-			f, err := os.Open(currentPath)
-			if err == nil {
-				file = f
-				reader = bufio.NewReader(file)
-			}
 		}
 	}
 }
 
-// newestSessionFile returns the lexicographically newest *.jsonl file under
-// dir, including cwd-specific child directories. Pi names files with a leading
-// ISO timestamp, so newest == most recent. ok is false when the directory or no
-// matching file exists yet.
-func newestSessionFile(dir string) (string, bool) {
+// piSessionParent returns the parentSession named by a session file's header,
+// or "" when the file is a root session (no parentSession) or its header is
+// not yet readable. A missing/unreadable header yields "" so a file is not
+// misclassified before its header lands.
+func piSessionParent(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	line, err := bufio.NewReader(f).ReadString('\n')
+	if err != nil && len(line) == 0 {
+		return ""
+	}
+	var header struct {
+		Type          string `json:"type"`
+		ParentSession string `json:"parentSession"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(line)), &header) != nil {
+		return ""
+	}
+	if header.Type != "session" {
+		return ""
+	}
+	return strings.TrimSpace(header.ParentSession)
+}
+
+// listSessionFiles returns every *.jsonl file under dir, including
+// cwd-specific child directories, sorted lexicographically. Pi names files
+// with a leading ISO timestamp, so the order is also chronological.
+func listSessionFiles(dir string) []string {
 	var paths []string
 	if err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -189,11 +242,8 @@ func newestSessionFile(dir string) (string, bool) {
 		paths = append(paths, path)
 		return nil
 	}); err != nil {
-		return "", false
-	}
-	if len(paths) == 0 {
-		return "", false
+		return nil
 	}
 	sort.Strings(paths)
-	return paths[len(paths)-1], true
+	return paths
 }

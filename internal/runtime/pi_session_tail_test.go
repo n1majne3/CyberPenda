@@ -266,6 +266,109 @@ func TestPiSessionTailDrainsAndStopsWhenInnerReturns(t *testing.T) {
 	}
 }
 
+// TestPiSessionTailFollowsSubagentSessionFiles proves the tailer keeps reading
+// the parent session file after a subagent spawns a newer session file, so the
+// parent's settle records (subagents:record) are not stranded while the child
+// file is newest.
+func TestPiSessionTailFollowsSubagentSessionFiles(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions", "--task-workdir--")
+
+	adapter := runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, sessionDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
+	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
+
+	// Parent session appears first.
+	parentFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_parent.jsonl")
+	writeSessionLine(t, parentFile, `{"type":"session","version":3,"id":"sess-parent","cwd":"/task/workdir"}`)
+	writeSessionLine(t, parentFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"parent working"}]}}`)
+	waitForCount(t, getEmits, 2, 2*time.Second)
+
+	// A subagent spawns and writes a NEWER session file.
+	childFile := filepath.Join(sessionDir, "2026-06-19T12-12-30-500Z_child.jsonl")
+	writeSessionLine(t, childFile, `{"type":"session","version":3,"id":"sess-child","parentSession":"`+parentFile+`"}`)
+	waitForCount(t, getEmits, 3, 2*time.Second)
+
+	// While the child file is newest, the parent settles the subagent. That
+	// record must still be observed.
+	before := len(getEmits())
+	writeSessionLine(t, parentFile, `{"type":"custom","customType":"subagents:record","data":{"id":"agent-1","type":"Explore","description":"Scan","status":"completed"}}`)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		emits := getEmits()
+		for _, e := range emits[before:] {
+			if text, _ := e.payload["text"].(string); strings.Contains(text, "subagents:record") {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("parent subagents:record was stranded once the child file became newest; emits=%d", len(getEmits()))
+}
+
+// TestPiSessionTailDoesNotDuplicateOnStableNewest proves a line already read
+// from the newest file is not re-emitted on later polls (offset bookkeeping is
+// per-file and stable).
+func TestPiSessionTailDoesNotDuplicateOnStableNewest(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions", "--task-workdir--")
+	adapter := runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, sessionDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
+	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
+
+	sessionFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
+	writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"once"}]}}`)
+	waitForCount(t, getEmits, 1, 2*time.Second)
+
+	// Let several poll intervals pass with no new line; the count must stay 1.
+	time.Sleep(400 * time.Millisecond)
+	if got := len(getEmits()); got != 1 {
+		t.Fatalf("expected exactly 1 emit with no new lines, got %d", got)
+	}
+}
+
+// TestPiSessionTailSkipsDeeplyNestedSessionFiles proves the tailer does not
+// open session files for nested (grandchild) subagents. The subagents
+// extension only emits settle records for top-level agents, so following
+// deeper files would only grow open file handles without adding attribution.
+func TestPiSessionTailSkipsDeeplyNestedSessionFiles(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions", "--task-workdir--")
+	adapter := runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, sessionDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
+	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
+
+	parentFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_parent.jsonl")
+	writeSessionLine(t, parentFile, `{"type":"session","version":3,"id":"sess-parent","cwd":"/task/workdir"}`)
+	waitForCount(t, getEmits, 1, 2*time.Second)
+
+	childFile := filepath.Join(sessionDir, "2026-06-19T12-12-30-500Z_child.jsonl")
+	writeSessionLine(t, childFile, `{"type":"session","version":3,"id":"sess-child","parentSession":"`+parentFile+`"}`)
+	waitForCount(t, getEmits, 2, 2*time.Second)
+
+	// A grandchild (nested) subagent file appears. Its transcript must not be
+	// tailed.
+	grandchildFile := filepath.Join(sessionDir, "2026-06-19T12-13-40-600Z_grandchild.jsonl")
+	before := len(getEmits())
+	writeSessionLine(t, grandchildFile, `{"type":"session","version":3,"id":"sess-grandchild","parentSession":"`+childFile+`"}`)
+	writeSessionLine(t, grandchildFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"nested work"}]}}`)
+
+	// Allow several poll intervals; the grandchild lines must never appear.
+	time.Sleep(400 * time.Millisecond)
+	for _, e := range getEmits()[before:] {
+		if text, _ := e.payload["text"].(string); strings.Contains(text, "sess-grandchild") || strings.Contains(text, "nested work") {
+			t.Fatalf("nested subagent session file should not be tailed, got %q", text)
+		}
+	}
+}
+
 func waitForCount(t *testing.T, get func() []recordedEmit, want int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
