@@ -109,11 +109,17 @@ func TestRuntimeProvidersRejectModifiedGeneratedInstructionsWithoutChangingLayou
 				t.Fatalf("read generated instructions: %v", err)
 			}
 			modified := append([]byte(nil), generated...)
-			changedAt := bytes.Index(modified, []byte("semantic milestones"))
-			if changedAt < 0 {
-				t.Fatal("generated checklist does not contain the expected edit point")
+			for _, marker := range [][]byte{
+				[]byte("Reread Scope and the Blackboard snapshot"),
+				[]byte("Write with Blackboard Keys and current versions"),
+				[]byte("Blackboard scope labels never grant authorization"),
+			} {
+				changedAt := bytes.Index(modified, marker)
+				if changedAt < 0 {
+					t.Fatalf("generated checklist does not contain marker %q", marker)
+				}
+				modified[changedAt] += 'a' - 'A'
 			}
-			modified[changedAt] = 'S'
 			if err := os.WriteFile(instructionPath, modified, 0o600); err != nil {
 				t.Fatalf("modify generated instructions: %v", err)
 			}
@@ -127,6 +133,36 @@ func TestRuntimeProvidersRejectModifiedGeneratedInstructionsWithoutChangingLayou
 			})
 			if err == nil {
 				t.Fatal("omitted projection accepted Runtime-modified Blackboard instructions")
+			}
+			assertRuntimeLayoutUnchanged(t, layout.TaskRoot, before)
+		})
+	}
+}
+
+func TestRuntimeProvidersRejectGeneratedInstructionHeaderWithoutChangingLayout(t *testing.T) {
+	for _, provider := range optionalProjectionProviders() {
+		t.Run(string(provider), func(t *testing.T) {
+			taskID := "generated-instruction-header-" + string(provider)
+			layout, err := runner.PrepareTaskLayout(t.TempDir(), taskID, provider)
+			if err != nil {
+				t.Fatalf("prepare Runtime layout: %v", err)
+			}
+			instructionPath := filepath.Join(layout.Workdir, "AGENTS.md")
+			if provider == runtimeprofile.ProviderClaudeCode {
+				instructionPath = filepath.Join(layout.Workdir, "CLAUDE.md")
+			}
+			if err := os.WriteFile(instructionPath, []byte("# Blackboard workflow\n\n"), 0o600); err != nil {
+				t.Fatalf("write generated instruction header: %v", err)
+			}
+			before := snapshotRuntimeLayout(t, layout.TaskRoot)
+			_, err = runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+				Provider: provider,
+			}, runner.ProjectionRequest{
+				Owner:                owner.NewTaskContract(taskID, "project-1", layout.Workdir),
+				BlackboardProjection: runner.BlackboardProjectionOmitted,
+			})
+			if err == nil {
+				t.Fatal("omitted projection accepted the generated Blackboard instruction header")
 			}
 			assertRuntimeLayoutUnchanged(t, layout.TaskRoot, before)
 		})
@@ -204,6 +240,47 @@ func TestRuntimeProvidersSupportFreshAndRepeatedOmittedProjection(t *testing.T) 
 				}
 			})
 		}
+	}
+}
+
+func TestRuntimeProvidersSupportRepeatedOmittedProjectionWithExternalPentestServer(t *testing.T) {
+	for _, provider := range optionalProjectionProviders() {
+		t.Run(string(provider), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("USERPROFILE", t.TempDir())
+			taskID := "external-pentest-" + string(provider)
+			layout, err := runner.PrepareTaskLayout(t.TempDir(), taskID, provider)
+			if err != nil {
+				t.Fatalf("prepare Runtime layout: %v", err)
+			}
+			profile := runtimeprofile.Profile{Provider: provider, Fields: runtimeprofile.Fields{
+				Model: "ordinary-model",
+				MCPServers: []runtimeprofile.MCPServer{{
+					Name: "pentest", Mode: runtimeprofile.MCPServerExternal, URL: "https://external.example.test/mcp?token=external-token",
+				}},
+			}}
+			request := runner.ProjectionRequest{
+				Owner:                owner.NewTaskContract(taskID, "project-1", layout.Workdir),
+				ScopeSnapshot:        project.Scope{Domains: []string{"scope.example.test"}},
+				BlackboardProjection: runner.BlackboardProjectionOmitted,
+			}
+			first, err := runner.ProjectRuntimeConfig(layout, profile, request)
+			if err != nil {
+				t.Fatalf("project fresh Omitted Runtime config: %v", err)
+			}
+			mcpPath := providerMCPConfigPath(layout, provider, first)
+			firstMCP, err := os.ReadFile(mcpPath)
+			if err != nil || !strings.Contains(string(firstMCP), "pentest") || !strings.Contains(string(firstMCP), "external-token") {
+				t.Fatalf("External MCP Server projection = %s, err=%v", firstMCP, err)
+			}
+			if _, err := runner.ProjectRuntimeConfig(layout, profile, request); err != nil {
+				t.Fatalf("repeat Omitted Runtime projection: %v", err)
+			}
+			secondMCP, err := os.ReadFile(mcpPath)
+			if err != nil || !bytes.Equal(secondMCP, firstMCP) {
+				t.Fatalf("repeat Omitted projection changed External MCP config: %s, err=%v", secondMCP, err)
+			}
+		})
 	}
 }
 

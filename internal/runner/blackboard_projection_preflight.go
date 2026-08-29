@@ -93,18 +93,7 @@ func preflightOmittedBlackboardProjection(layout Layout, profile runtimeprofile.
 }
 
 func containsGeneratedBlackboardInstructions(raw []byte) bool {
-	markers := [][]byte{
-		[]byte("Reread Scope and the Blackboard snapshot"),
-		[]byte("Write with Blackboard Keys and current versions"),
-		[]byte("Blackboard scope labels never grant authorization"),
-	}
-	markerCount := 0
-	for _, marker := range markers {
-		if bytes.Contains(raw, marker) {
-			markerCount++
-		}
-	}
-	if bytes.Contains(raw, []byte("# Blackboard workflow\n\n")) && markerCount >= 2 {
+	if bytes.Contains(raw, []byte("# Blackboard workflow\n\n")) {
 		return true
 	}
 	return bytes.Contains(raw, []byte("Trusted MCP is pre-configured")) &&
@@ -168,12 +157,22 @@ func containsTrustedHermesConfig(raw []byte, trustedNames map[string]struct{}) (
 }
 
 func omittedProjectionTrustedMCPNames(profile runtimeprofile.Profile) map[string]struct{} {
-	names := map[string]struct{}{trustedMCPServerName: {}}
+	names := map[string]struct{}{}
+	reservedNameDeclaredExternal := false
 	for _, server := range profile.Fields.MCPServers {
 		name := strings.ToLower(strings.TrimSpace(server.Name))
-		if name != "" && server.Mode == runtimeprofile.MCPServerTrusted {
+		if name == "" {
+			continue
+		}
+		if name == trustedMCPServerName && server.Mode == runtimeprofile.MCPServerExternal {
+			reservedNameDeclaredExternal = true
+		}
+		if server.Mode == runtimeprofile.MCPServerTrusted {
 			names[name] = struct{}{}
 		}
+	}
+	if _, declaredTrusted := names[trustedMCPServerName]; !declaredTrusted && !reservedNameDeclaredExternal {
+		names[trustedMCPServerName] = struct{}{}
 	}
 	return names
 }
