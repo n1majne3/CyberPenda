@@ -353,21 +353,21 @@ func TestIsIgnorableRuntimeLineDetectsThinkingTokens(t *testing.T) {
 	}
 }
 
-func TestIsIgnorableRuntimeLineDetectsTaskProgress(t *testing.T) {
-	line := `{"type":"system","subtype":"task_progress","description":"Exploit: privacy-policy","workflow_progress":[{"label":"privacy-policy"}]}`
-	if !transcript.IsIgnorableRuntimeLine(line) {
-		t.Fatal("expected task_progress line to be ignorable")
+func TestIsIgnorableRuntimeLineKeepsTaskProgress(t *testing.T) {
+	line := `{"type":"system","subtype":"task_progress","task_id":"t1","description":"Exploit: privacy-policy","workflow_progress":[{"label":"privacy-policy"}]}`
+	if transcript.IsIgnorableRuntimeLine(line) {
+		t.Fatal("expected task_progress subagent activity to be kept for the timeline")
 	}
 }
 
-func TestIsIgnorableRuntimeLineDetectsTaskStartedAndFailed(t *testing.T) {
+func TestIsIgnorableRuntimeLineKeepsTaskStartedAndFailed(t *testing.T) {
 	started := `{"type":"system","subtype":"task_started","task_id":"bbr05bd75","summary":"Explore FTP directory"}`
-	if !transcript.IsIgnorableRuntimeLine(started) {
-		t.Fatal("expected task_started line to be ignorable")
+	if transcript.IsIgnorableRuntimeLine(started) {
+		t.Fatal("expected task_started subagent activity to be kept")
 	}
 	failed := `{"type":"system","subtype":"task_failed","task_id":"bbr05bd75","status":"failed","summary":"Explore FTP directory"}`
-	if !transcript.IsIgnorableRuntimeLine(failed) {
-		t.Fatal("expected task_failed line to be ignorable")
+	if transcript.IsIgnorableRuntimeLine(failed) {
+		t.Fatal("expected task_failed subagent activity to be kept")
 	}
 }
 
@@ -375,15 +375,18 @@ func TestBuildDropsTaskProgressNoise(t *testing.T) {
 	subject := transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: time.Now().UTC()}
 	events := []transcript.Event{
 		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}},
-		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"stream": "stdout", "text": `{"type":"system","subtype":"task_progress","description":"Exploit: privacy-policy","workflow_progress":[{"label":"privacy-policy","phaseTitle":"Exploit"}]}`}},
+		{ID: "ev-2", Seq: 2, Kind: "runtime_output", Payload: map[string]any{"stream": "stdout", "text": `{"type":"system","subtype":"task_progress","task_id":"t1","description":"Exploit: privacy-policy","workflow_progress":[{"label":"privacy-policy","phaseTitle":"Exploit"}]}`}},
 		{ID: "ev-3", Seq: 3, Kind: "runtime_output", Payload: map[string]any{"stream": "stdout", "text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Found the policy hash."}]}}`}},
 	}
 
 	got := transcript.Build(subject, events)
 
+	// task_progress is kept for the timeline's Subagent Activity projection,
+	// but the transcript message flow must not surface the raw record as a
+	// message or tool entry.
 	for _, entry := range got {
-		if entry.Kind == "runtime_output" && strings.Contains(entry.Text, "task_progress") {
-			t.Fatalf("expected task_progress noise to be dropped, got %#v", entry)
+		if (entry.Kind == "message" || entry.Kind == "tool_call") && strings.Contains(entry.Text, "task_progress") {
+			t.Fatalf("expected task_progress to stay out of the message flow, got %#v", entry)
 		}
 	}
 	requireEntry(t, got, "ev-3-message-0", "message", "assistant", "Found the policy hash.")

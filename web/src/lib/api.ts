@@ -773,7 +773,7 @@ export interface TaskTimelineItem {
   /** Stable item identity. Several items can share one source Event Seq. */
   id?: string;
   seq: number;
-  type: "tool_use" | "tool_result" | "reasoning" | "text" | "error" | "lifecycle" | "steering" | "harness";
+  type: "tool_use" | "tool_result" | "reasoning" | "text" | "error" | "lifecycle" | "steering" | "harness" | "subagent_activity";
   tool?: string;
   content?: string;
   input?: Record<string, unknown>;

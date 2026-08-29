@@ -61,6 +61,19 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 	if turns := parseHermesACPRecord(record, opts, createdAt); len(turns) > 0 || isHermesACPRecord(record) {
 		return turns
 	}
+	recordType := strings.ToLower(stringValue(record, "type"))
+	// Subagent activity is recognized before the generic message and item
+	// handling so a wrapped {"item": {...}} record dispatches on its inner type.
+	switch recordType {
+	case "subagentactivity":
+		return parseCodexSubAgentActivity(record, createdAt)
+	case "collabagenttoolcall":
+		return parseCodexCollabAgentToolCall(record, createdAt)
+	case "system":
+		if isClaudeSubagentSystemRecord(record) {
+			return parseClaudeSubagentActivity(record, createdAt)
+		}
+	}
 	if item, ok := mapValue(record, "item"); ok {
 		if turns := ParseRecordWithMeta(item, meta, opts, createdAt); len(turns) > 0 {
 			return turns
@@ -83,7 +96,6 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 		}
 	}
 
-	recordType := strings.ToLower(stringValue(record, "type"))
 	switch recordType {
 	case "system":
 		if isIgnorableSystemRecord(record) {

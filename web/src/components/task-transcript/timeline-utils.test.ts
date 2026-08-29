@@ -25,4 +25,22 @@ describe("timeline-utils", () => {
     expect(itemFilterKey(item)).toBe("tool:Bash");
   });
 
+  it("renders subagent activity with a label, state, and provider tag", () => {
+    const item: TimelineItem = {
+      seq: 1,
+      type: "subagent_activity",
+      tool: "codex",
+      content: "security/recon",
+      status: "started",
+    };
+    expect(getEventLabel(item)).toBe("Subagent");
+    expect(getEventSummary(item)).toBe("security/recon");
+    // Provider stays visible so operators can tell where the child ran.
+    expect(itemFilterKey(item)).toBe("subagent:codex");
+  });
+
+  it("maps subagent activity to a distinct color role", () => {
+    expect(getEventColor({ seq: 1, type: "subagent_activity", tool: "codex" })).toBe("subagent");
+  });
+
 });

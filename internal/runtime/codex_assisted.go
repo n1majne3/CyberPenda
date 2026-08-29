@@ -167,6 +167,9 @@ func (s *CodexProviderSession) emitCodexRuntimeOutput(event SandboxBridgeEvent, 
 			return
 		}
 	case "commandexecution", "mcptoolcall":
+	case "subagentactivity", "collabagenttoolcall":
+		// Subagent Activity: project child-thread lifecycle onto the timeline.
+		// The Harness only observes these; it never spawns or schedules.
 	case "filechange", "websearch":
 		if method != "item/completed" {
 			return

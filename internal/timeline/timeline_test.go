@@ -146,14 +146,16 @@ func TestBuildCoalescesAdjacentThinkingFragments(t *testing.T) {
 func TestBuildDropsTaskProgressAndThinkingTokens(t *testing.T) {
 	events := []timeline.Event{
 		event("runtime_output", `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}`, time.Now()),
-		event("runtime_output", `{"type":"system","subtype":"task_progress","description":"Exploit"}`, time.Now()),
+		event("runtime_output", `{"type":"system","subtype":"task_progress","task_id":"t1","description":"Exploit"}`, time.Now()),
 		event("runtime_output", `{"type":"assistant","message":{"content":[{"type":"text","text":"Visible."}]}}`, time.Now()),
 	}
 
 	got := timeline.Build(events)
 
-	if len(got) != 1 || got[0].Type != "text" || got[0].Content != "Visible." {
-		t.Fatalf("expected only visible assistant text, got %#v", got)
+	// thinking_tokens stays noise; task_progress now projects a subagent
+	// activity entry ahead of the visible assistant text.
+	if len(got) != 2 || got[0].Type != "subagent_activity" || got[1].Type != "text" || got[1].Content != "Visible." {
+		t.Fatalf("expected subagent activity then visible text, got %#v", got)
 	}
 }
 

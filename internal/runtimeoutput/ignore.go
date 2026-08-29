@@ -80,6 +80,13 @@ func isIgnorableSystemRecord(record map[string]any) bool {
 	case "thinking_tokens", "init":
 		return true
 	}
+	// Task-tool subagent activity (task_started / task_progress / task_failed)
+	// is projected onto the timeline as Subagent Activity; any other task_*
+	// subtype remains noise.
+	switch strings.ToLower(subtype) {
+	case "task_started", "task_progress", "task_failed":
+		return false
+	}
 	return strings.HasPrefix(subtype, "task_")
 }
 

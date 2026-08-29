@@ -46,8 +46,19 @@ func ReconcileLifecycle(turns []Turn) []Turn {
 	toolUses := map[string]int{}
 	toolResults := map[string]int{}
 	reasoning := map[string]int{}
+	subagents := map[string]int{}
 	for _, turn := range turns {
 		switch turn.Kind {
+		case KindSubagentActivity:
+			// One subagent identity keeps a single timeline entry whose coarse
+			// state advances as later activity arrives.
+			if key := strings.TrimSpace(turn.ProviderItemID); key != "" {
+				if index, ok := subagents[key]; ok {
+					out[index] = mergeLifecycleTurn(out[index], turn)
+					continue
+				}
+				subagents[key] = len(out)
+			}
 		case KindToolUse:
 			if key := strings.TrimSpace(turn.ToolCallID); key != "" {
 				if index, ok := toolUses[key]; ok {

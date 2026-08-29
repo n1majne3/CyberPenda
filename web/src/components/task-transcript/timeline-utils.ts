@@ -12,6 +12,8 @@ export function getEventColor(item: TimelineItem): EventColor {
       return "result";
     case "error":
       return "error";
+    case "subagent_activity":
+      return "subagent";
     case "lifecycle":
     case "steering":
     case "harness":
@@ -27,6 +29,7 @@ export const colorClasses: Record<EventColor, { bg: string; bgActive: string; la
   tool: { bg: "bg-blue-400/60", bgActive: "bg-blue-500", label: "bg-blue-500/20 text-blue-700 dark:text-blue-300" },
   result: { bg: "bg-slate-300/60 dark:bg-slate-600/60", bgActive: "bg-slate-400 dark:bg-slate-500", label: "bg-muted text-muted-foreground" },
   error: { bg: "bg-red-400/60", bgActive: "bg-red-500", label: "bg-red-500/20 text-red-700 dark:text-red-300" },
+  subagent: { bg: "bg-cyan-400/60", bgActive: "bg-cyan-500", label: "bg-cyan-500/20 text-cyan-700 dark:text-cyan-300" },
 };
 
 export function getEventLabel(item: TimelineItem): string {
@@ -41,6 +44,8 @@ export function getEventLabel(item: TimelineItem): string {
       return item.tool ? item.tool : "Result";
     case "error":
       return "Error";
+    case "subagent_activity":
+      return "Subagent";
     case "lifecycle":
       return "Lifecycle";
     case "steering":
@@ -99,6 +104,8 @@ export function getEventSummary(item: TimelineItem): string {
       return item.output?.slice(0, 200) ?? "";
     case "error":
       return item.content ?? "";
+    case "subagent_activity":
+      return item.content ?? "";
     case "lifecycle":
     case "steering":
     case "harness":
@@ -115,9 +122,13 @@ export function shortenPath(path: string): string {
 }
 
 export function itemFilterKey(item: TimelineItem): string {
-  return item.tool && (item.type === "tool_use" || item.type === "tool_result")
-    ? `tool:${item.tool}`
-    : item.type;
+  if (item.tool && (item.type === "tool_use" || item.type === "tool_result")) {
+    return `tool:${item.tool}`;
+  }
+  if (item.type === "subagent_activity" && item.tool) {
+    return `subagent:${item.tool}`;
+  }
+  return item.type;
 }
 
 export function buildFilterOptions(items: TimelineItem[]): [string, string][] {
@@ -126,6 +137,9 @@ export function buildFilterOptions(items: TimelineItem[]): [string, string][] {
     if (item.tool && (item.type === "tool_use" || item.type === "tool_result")) {
       const key = `tool:${item.tool}`;
       if (!options.has(key)) options.set(key, item.tool);
+    } else if (item.type === "subagent_activity" && item.tool) {
+      const key = `subagent:${item.tool}`;
+      if (!options.has(key)) options.set(key, `Subagent (${item.tool})`);
     } else {
       const value = item.type;
       if (!options.has(value)) {

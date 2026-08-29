@@ -13,7 +13,8 @@ func TestShouldIgnoreForStorageDropsThinkingTokensAndTaskProgress(t *testing.T) 
 		ignore bool
 	}{
 		{`{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}`, true},
-		{`{"type":"system","subtype":"task_progress","description":"Exploit"}`, true},
+		// task_progress now projects a Subagent Activity, so it is kept.
+		{`{"type":"system","subtype":"task_progress","task_id":"t1","description":"Exploit"}`, false},
 		{`{"type":"assistant","message":{"content":[{"type":"text","text":"Visible."}]}}`, false},
 		// Reasoning is durable transcript content: thinking-only assistant
 		// frames are stored and projected, never dropped.

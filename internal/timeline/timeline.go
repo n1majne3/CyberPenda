@@ -277,6 +277,8 @@ func turnToItem(turn runtimeoutput.Turn) (Item, bool) {
 		return Item{ID: id, Seq: turn.SourceSeq, Type: "tool_result", Tool: turn.Tool, Output: turn.Output, CreatedAt: turn.CreatedAt}, true
 	case runtimeoutput.KindError:
 		return Item{ID: id, Seq: turn.SourceSeq, Type: "error", Content: turn.Text, CreatedAt: turn.CreatedAt}, true
+	case runtimeoutput.KindSubagentActivity:
+		return Item{ID: id, Seq: turn.SourceSeq, Type: "subagent_activity", Tool: turn.Tool, Content: turn.Text, Status: turn.LifecyclePhase, Input: turn.Details, CreatedAt: turn.CreatedAt}, true
 	default:
 		return Item{}, false
 	}

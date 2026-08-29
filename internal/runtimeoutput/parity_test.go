@@ -64,7 +64,6 @@ func assertSemanticParity(t *testing.T, gotTranscript, gotTimeline []semanticSte
 	}
 }
 
-
 func toTranscriptEvents(events []task.Event) []transcript.Event {
 	converted := make([]transcript.Event, 0, len(events))
 	for _, event := range events {
@@ -128,7 +127,7 @@ func TestTranscriptTimelineParityDropsSharedNoise(t *testing.T) {
 	events := []task.Event{
 		{ID: "ev-0", Seq: 0, Kind: task.EventKindLifecycle, Payload: task.EventPayload{"phase": "started", "adapter": "claude_code"}},
 		{ID: "ev-1", Seq: 1, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}`}},
-		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"system","subtype":"task_progress","description":"Exploit"}`}},
+		{ID: "ev-2", Seq: 2, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"system","subtype":"task_progress","task_id":"t1","description":"Exploit"}`}},
 		{ID: "ev-3", Seq: 3, Kind: task.EventKindRuntimeOutput, Payload: task.EventPayload{"text": `{"type":"assistant","message":{"content":[{"type":"text","text":"Visible."}]}}`}},
 	}
 
@@ -136,8 +135,21 @@ func TestTranscriptTimelineParityDropsSharedNoise(t *testing.T) {
 	transcriptEntries := transcript.Build(transcript.Subject{ID: subject.ID, Title: subject.Goal, CreatedAt: subject.CreatedAt}, toTranscriptEvents(events))
 	timelineItems := timeline.Build(toTimelineEvents(events))
 
+	// Subagent activity projects onto the timeline but not into the transcript
+	// message flow, so the semantic steps stay in parity while the timeline
+	// carries one additional subagent_activity item before the visible text.
 	assertSemanticParity(t, transcriptSteps(transcriptEntries), timelineSteps(timelineItems))
-	if len(timelineSteps(timelineItems)) != 1 || timelineSteps(timelineItems)[0].text != "Visible." {
-		t.Fatalf("expected one visible text step, got %#v", timelineSteps(timelineItems))
+	steps := timelineSteps(timelineItems)
+	if len(steps) != 1 || steps[0].text != "Visible." {
+		t.Fatalf("expected one visible text step, got %#v", steps)
+	}
+	var sawSubagent bool
+	for _, item := range timelineItems {
+		if item.Type == "subagent_activity" {
+			sawSubagent = true
+		}
+	}
+	if !sawSubagent {
+		t.Fatalf("expected a subagent_activity timeline item, got %#v", timelineItems)
 	}
 }

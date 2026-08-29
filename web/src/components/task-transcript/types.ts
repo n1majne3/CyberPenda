@@ -1,4 +1,4 @@
-export type TimelineItemType = "tool_use" | "tool_result" | "reasoning" | "text" | "error" | "lifecycle" | "steering" | "harness";
+export type TimelineItemType = "tool_use" | "tool_result" | "reasoning" | "text" | "error" | "lifecycle" | "steering" | "harness" | "subagent_activity";
 
 export interface TimelineItem {
   id?: string;
@@ -15,4 +15,4 @@ export interface TimelineItem {
 
 export type TranscriptSortDirection = "chronological" | "newest_first";
 
-export type EventColor = "agent" | "reasoning" | "tool" | "result" | "error";
+export type EventColor = "agent" | "reasoning" | "tool" | "result" | "error" | "subagent";

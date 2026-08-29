@@ -11,6 +11,19 @@ const (
 	KindToolUse    Kind = "tool_use"
 	KindToolResult Kind = "tool_result"
 	KindError      Kind = "error"
+	// KindSubagentActivity is one normalized Subagent Activity projection: a
+	// provider child agent observed inside a Work Runtime Turn. ProviderItemID
+	// carries the durable child identity, LifecyclePhase the coarse activity
+	// state, Text the operator-facing label, and Tool the provider id.
+	KindSubagentActivity Kind = "subagent_activity"
+)
+
+// Coarse Subagent Activity states shared by every provider parser.
+const (
+	SubagentActivityStarted     = "started"
+	SubagentActivityInterrupted = "interrupted"
+	SubagentActivityCompleted   = "completed"
+	SubagentActivityFailed      = "failed"
 )
 
 const (
