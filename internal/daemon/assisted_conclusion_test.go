@@ -637,9 +637,9 @@ func TestAssistedConclusionStartupFailsClosedWhenValidatedBaseAdvancedWithoutLiv
 		}
 	}
 	waitForAssistedProviderRequests(t, session, 2)
-	receipt, err := server.tasks.LatestBlackboardConclusion(created.ID)
-	if err != nil || receipt == nil || receipt.BaseRevision == nil {
-		t.Fatalf("load awaiting receipt: %#v, %v", receipt, err)
+	receipt := waitForBlackboardConclusionReceiptState(t, server, created.ID, task.BlackboardConclusionReceiptAwaitingResult)
+	if receipt.BaseRevision == nil {
+		t.Fatalf("awaiting receipt has no base revision: %#v", receipt)
 	}
 	decoded, err := blackboardconclusion.Decode([]byte(assistedAttemptResultJSON(*receipt.BaseRevision, "attempt:startup-conflict", "objective:startup-conflict")))
 	if err != nil {
@@ -2511,9 +2511,10 @@ func newAssistedConclusionFixtureAtWithDecorator(t *testing.T, root string, repo
 func waitForAssistedProviderRequests(t *testing.T, session *runtime.FakeProviderSession, count int) {
 	t.Helper()
 	// The conclusion dispatch chain is multi-hop and asynchronous; a 5s
-	// budget still flaked on loaded CI runners (see #228), so keep a
-	// load-safe 10s window. The assertion is about dispatch order, not a
-	// latency bound.
+	// budget still flaked on loaded CI runners (see #228), so both
+	// waitForAssistedProviderRequests and waitForBlackboardConclusionState
+	// keep a load-safe 10s window. The assertion is about dispatch order,
+	// not a latency bound.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(session.LastRequests()) >= count {
@@ -2526,7 +2527,9 @@ func waitForAssistedProviderRequests(t *testing.T, session *runtime.FakeProvider
 
 func waitForBlackboardConclusionState(t *testing.T, server *Server, projectID, taskID string, state task.BlackboardConclusionState) task.Task {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// Load-safe 10s window for the same reason as
+	// waitForAssistedProviderRequests (see #228).
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		request := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
 		response := httptest.NewRecorder()
@@ -2541,6 +2544,30 @@ func waitForBlackboardConclusionState(t *testing.T, server *Server, projectID, t
 	}
 	t.Fatalf("Task %s did not reach Blackboard conclusion state %q", taskID, state)
 	return task.Task{}
+}
+
+// waitForBlackboardConclusionReceiptState waits until the newest durable
+// Blackboard Conclusion obligation reaches the given internal receipt state.
+// The provider-request signal can fire before the daemon durably persists
+// that state, so tests that act on a receipt must wait for it here instead of
+// assuming request ordering implies receipt persistence.
+func waitForBlackboardConclusionReceiptState(t *testing.T, server *Server, taskID string, state task.BlackboardConclusionReceiptState) *task.BlackboardConclusionReceipt {
+	t.Helper()
+	// Load-safe 10s window for the same reason as
+	// waitForAssistedProviderRequests (see #228).
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		receipt, err := server.tasks.LatestBlackboardConclusion(taskID)
+		if err != nil {
+			t.Fatalf("load Blackboard conclusion receipt: %v", err)
+		}
+		if receipt != nil && receipt.InternalState == state {
+			return receipt
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("Task %s did not reach Blackboard conclusion receipt state %q", taskID, state)
+	return nil
 }
 
 func assistedTaskEvents(t *testing.T, server *Server, projectID, taskID string) []task.Event {
