@@ -34,7 +34,7 @@ func projectHermesHome(layout Layout, profile runtimeprofile.Profile, req Projec
 		return ConfigProjection{}, err
 	}
 	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
-	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, profile.Provider, mcpURL)); err != nil {
+	if err := writeProjectionContextFiles(layout, req, profile.Provider, mcpURL); err != nil {
 		return ConfigProjection{}, err
 	}
 

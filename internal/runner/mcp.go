@@ -87,6 +87,15 @@ func trustedMCPDisabled(profile runtimeprofile.Profile) bool {
 
 func collectMCPServers(profile runtimeprofile.Profile, req ProjectionRequest) ([]runtimeprofile.MCPServer, error) {
 	servers := append([]runtimeprofile.MCPServer{}, profile.Fields.MCPServers...)
+	if req.BlackboardProjection == BlackboardProjectionOmitted {
+		external := make([]runtimeprofile.MCPServer, 0, len(servers))
+		for _, server := range servers {
+			if server.Mode != runtimeprofile.MCPServerTrusted {
+				external = append(external, server)
+			}
+		}
+		return external, nil
+	}
 	if trustedMCPDisabled(profile) {
 		return servers, nil
 	}
@@ -121,6 +130,20 @@ func collectMCPServers(profile runtimeprofile.Profile, req ProjectionRequest) ([
 		Mode: runtimeprofile.MCPServerTrusted,
 		URL:  trustedURL,
 	}}, kept...), nil
+}
+
+func writeProjectionContextFiles(layout Layout, req ProjectionRequest, provider runtimeprofile.Provider, mcpURL string) error {
+	if req.BlackboardProjection != BlackboardProjectionOmitted {
+		return writeTaskContextFiles(layout, taskContextFromProjection(req, provider, mcpURL))
+	}
+	if !req.Owner.IsTask() {
+		return nil
+	}
+	dir := filepath.Join(layout.Workdir, ".pentest")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("prepare task Scope directory: %w", err)
+	}
+	return writeTaskScopeFile(dir, req.ScopeSnapshot)
 }
 
 func claudeTrustedMCPAllowedTools(servers []runtimeprofile.MCPServer) []string {

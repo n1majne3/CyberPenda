@@ -1454,6 +1454,34 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	return config, continuation, nil
 }
 
+// CreateContinuationLaunchWithoutBlackboard stores the ordinary Task Runtime
+// configuration and Continuation identity without a Blackboard launch
+// transaction. Blackboard-enabled launches use CreateContinuationLaunchTx
+// through their continuity coordinator so the Snapshot pin and grant still
+// commit atomically.
+func (s *Service) CreateContinuationLaunchWithoutBlackboard(ctx context.Context, req ContinuationLaunchRequest) (RuntimeConfigVersion, TaskContinuation, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("begin Task Continuation launch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	config, continuation, err := s.CreateContinuationLaunchTx(ctx, tx, req)
+	if err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE task_continuations SET blackboard_reconciliation_status=? WHERE id=?`,
+		string(ReconciliationCompleted), continuation.ID,
+	); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("settle omitted Blackboard reconciliation: %w", err)
+	}
+	continuation.BlackboardReconciliationStatus = ReconciliationCompleted
+	if err := tx.Commit(); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("commit Task Continuation launch: %w", err)
+	}
+	return config, continuation, nil
+}
+
 func consumeHarnessSteeringTx(ctx context.Context, tx *sql.Tx, taskID, continuationID string, eventIDs []string, now time.Time) error {
 	if len(eventIDs) == 0 {
 		return nil

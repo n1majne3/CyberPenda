@@ -248,6 +248,7 @@ type taskLaunchPlan struct {
 	GlobalModelProviderSnapshot  *runner.GlobalModelProviderSnapshot
 	SkillBundles                 []skill.Bundle
 	LaunchGoal                   string
+	BlackboardProjection         runner.BlackboardProjection
 	BlackboardV2                 bool
 	ValidatedLayout              *runner.Layout
 	BlackboardV2SteeringEventIDs []string
@@ -260,7 +261,7 @@ type continuationLaunchBinding struct {
 }
 
 func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchPlan, goal string) error {
-	if !plan.BlackboardV2 {
+	if plan.BlackboardProjection != runner.BlackboardProjectionOmitted && !plan.BlackboardV2 {
 		return fmt.Errorf("Blackboard v2 launch projection is required")
 	}
 	// Replacement launches must not start while a prior Runtime is still owned
@@ -269,7 +270,7 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		return err
 	}
 	server.logTaskLaunchStage(created, "prepare_continuation")
-	continuation, boundPlan, err := server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
+	continuation, boundPlan, err := server.prepareTaskContinuationLaunch(created, plan, goal)
 	if err != nil {
 		return err
 	}
@@ -359,6 +360,22 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		}
 	}()
 	return nil
+}
+
+func (server *Server) prepareTaskContinuationLaunch(created task.Task, plan taskLaunchPlan, goal string) (task.TaskContinuation, taskLaunchPlan, error) {
+	if plan.BlackboardProjection != runner.BlackboardProjectionOmitted {
+		return server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
+	}
+	_, continuation, err := server.tasks.CreateContinuationLaunchWithoutBlackboard(context.Background(), task.ContinuationLaunchRequest{
+		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
+		RuntimeProvider: string(plan.ResolvedProfile.Provider), Runner: created.Runner,
+		RuntimeConfig: plan.CapturedRuntimeConfig, SteeringEventIDs: plan.BlackboardV2SteeringEventIDs,
+		NativeSessionID: plan.NativeResumeSessionID, NativeSessionPath: plan.NativeResumeSessionPath,
+	})
+	if err != nil {
+		return task.TaskContinuation{}, taskLaunchPlan{}, err
+	}
+	return continuation, plan, nil
 }
 
 func (server *Server) failProviderSessionLaunch(taskID, continuationID string, cause error) {
@@ -622,15 +639,25 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 }
 
 func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string) (taskLaunchPlan, error) {
+	return server.buildTaskLaunchPlanForBlackboardProjection(
+		created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, runner.BlackboardProjectionRequired,
+	)
+}
+
+func (server *Server) buildTaskLaunchPlanForBlackboardProjection(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string, blackboardProjection runner.BlackboardProjection) (taskLaunchPlan, error) {
 	server.logTaskLaunchStage(created, "build_plan")
 	profile, err := server.resolveTaskRuntimeProfile(created)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
+	if blackboardProjection == runner.BlackboardProjectionOmitted {
+		seed := &taskLaunchPlan{ResolvedProfile: profile, BlackboardProjection: blackboardProjection}
+		return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, seed)
+	}
 	if server.blackboardV2Continuity != nil && runner.BlackboardV2SupportsProvider(profile.Provider) {
 		return server.prepareBlackboardV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, profile)
 	}
-	seed := &taskLaunchPlan{ResolvedProfile: profile}
+	seed := &taskLaunchPlan{ResolvedProfile: profile, BlackboardProjection: runner.BlackboardProjectionRequired}
 	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, seed)
 }
 
@@ -690,6 +717,7 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 		GlobalModelProviderSnapshot: globalSnapshot,
 		SkillBundles:                append([]skill.Bundle(nil), skillBundles...),
 		LaunchGoal:                  goal,
+		BlackboardProjection:        runner.BlackboardProjectionRequired,
 		BlackboardV2:                true,
 		ValidatedLayout:             &layout,
 	}, nil
@@ -713,6 +741,10 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		launchReasoningEffort = captured.LaunchReasoningEffort
 	}
 	v2 := binding != nil && binding.V2Header != nil
+	blackboardProjection := runner.BlackboardProjectionRequired
+	if captured != nil {
+		blackboardProjection = captured.BlackboardProjection
+	}
 	runtimeConfig := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
 		"runner":             created.Runner,
@@ -764,7 +796,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		if captured != nil {
 			capturedRuntimeConfig = captured.CapturedRuntimeConfig
 		}
-		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, LaunchReasoningEffort: launchReasoningEffort, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal}, nil
+		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, LaunchReasoningEffort: launchReasoningEffort, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal, BlackboardProjection: blackboardProjection}, nil
 	}
 	// Do not re-enter SQLite from BindGrant: that callback runs under
 	// CreateContinuation's open transaction. Load skills only on the
@@ -828,6 +860,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		LaunchModelOverride:         launchModelOverride,
 		SkillBundles:                skillBundles,
 		CapabilityCache:             server.capabilityCache,
+		BlackboardProjection:        blackboardProjection,
 	}
 	var projection runner.ConfigProjection
 	if v2 {
@@ -908,6 +941,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot:               projection.ModelSnapshot,
 		SkillBundles:                skillBundles,
+		BlackboardProjection:        blackboardProjection,
 	})
 	if err != nil {
 		return taskLaunchPlan{}, err
@@ -1064,6 +1098,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		GlobalModelProviderSnapshot: globalSnapshot,
 		SkillBundles:                append([]skill.Bundle(nil), skillBundles...),
 		LaunchGoal:                  launchGoal,
+		BlackboardProjection:        blackboardProjection,
 		BlackboardV2:                v2,
 		ValidatedLayout:             &layout,
 		Facts:                       launchFacts,

@@ -68,16 +68,17 @@ func (input sessionRuntimeInput) provider() runtimeprofile.Provider {
 }
 
 type sessionRuntimePlan struct {
-	Adapter          runtime.Adapter
-	Profile          runtimeprofile.Profile
-	Runner           session.Runner
-	LaunchGoal       string
-	RuntimeConfig    map[string]any
-	Selection        runtime.ProviderSessionRequest
-	Metadata         func() (runtime.NativeSessionMetadata, error)
-	StopConfirmation runtime.StopConfirmation
-	ProviderHome     string
-	Facts            ProviderSessionLaunchFacts
+	Adapter              runtime.Adapter
+	Profile              runtimeprofile.Profile
+	Runner               session.Runner
+	LaunchGoal           string
+	RuntimeConfig        map[string]any
+	Selection            runtime.ProviderSessionRequest
+	BlackboardProjection runner.BlackboardProjection
+	Metadata             func() (runtime.NativeSessionMetadata, error)
+	StopConfirmation     runtime.StopConfirmation
+	ProviderHome         string
+	Facts                ProviderSessionLaunchFacts
 }
 
 func sessionGoalWithAttachmentReferences(goal, workdir string, run session.Runner, references []session.AttachmentReference) string {
@@ -253,6 +254,12 @@ func stringConfig(config map[string]any, key string) string {
 }
 
 func (server *Server) buildSessionRuntimePlan(found session.Session, goal string, input sessionRuntimeInput, profile runtimeprofile.Profile, run session.Runner, interfaceToken, nativeResumeSessionID string) (sessionRuntimePlan, error) {
+	return server.buildSessionRuntimePlanForBlackboardProjection(
+		found, goal, input, profile, run, interfaceToken, nativeResumeSessionID, runner.BlackboardProjectionRequired,
+	)
+}
+
+func (server *Server) buildSessionRuntimePlanForBlackboardProjection(found session.Session, goal string, input sessionRuntimeInput, profile runtimeprofile.Profile, run session.Runner, interfaceToken, nativeResumeSessionID string, blackboardProjection runner.BlackboardProjection) (sessionRuntimePlan, error) {
 	launchGoal, err := server.sessionLaunchGoal(found, goal, run)
 	if err != nil {
 		return sessionRuntimePlan{}, err
@@ -272,7 +279,7 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 	if profile.Provider == runtimeprofile.ProviderFake {
 		return sessionRuntimePlan{
 			Adapter: runtime.NewFakeAdapter(), Profile: profile, Runner: run,
-			LaunchGoal: launchGoal, RuntimeConfig: config, Selection: selection,
+			LaunchGoal: launchGoal, RuntimeConfig: config, Selection: selection, BlackboardProjection: blackboardProjection,
 		}, nil
 	}
 
@@ -304,6 +311,7 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 		Owner:       found.OwnerContract(),
 		Credentials: server.creds, ModelProviders: server.modelProviders,
 		GlobalModelProviderSnapshot: globalSnapshot, ModelSnapshot: modelSnapshot,
+		BlackboardProjection: blackboardProjection,
 	})
 	if err != nil {
 		return sessionRuntimePlan{}, err
@@ -322,9 +330,10 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 		ModelProviders: server.modelProviders, GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot: modelSnapshot, RuntimePlugins: server.runtimePlugins,
 		RuntimeExtensions: server.runtimeExtensions, SkillBundles: skillBundles,
-		LaunchModelOverride: selection.Model,
-		Sandbox:             run == session.RunnerSandbox,
-		CapabilityCache:     server.capabilityCache,
+		LaunchModelOverride:  selection.Model,
+		Sandbox:              run == session.RunnerSandbox,
+		CapabilityCache:      server.capabilityCache,
+		BlackboardProjection: blackboardProjection,
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, launchProfile, projectionRequest)
 	if err != nil {
@@ -365,7 +374,8 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 		ModelProviders: server.modelProviders, GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot: projection.ModelSnapshot, RuntimePlugins: server.runtimePlugins,
 		RuntimeExtensions: server.runtimeExtensions, SkillBundles: skillBundles,
-		Sandbox: run == session.RunnerSandbox,
+		Sandbox:              run == session.RunnerSandbox,
+		BlackboardProjection: blackboardProjection,
 	})
 	if err != nil {
 		return sessionRuntimePlan{}, err
@@ -424,7 +434,8 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 	stopConfirmation := dockerStopConfirmation(input.ContainerCLI, server.containerCLI, containerIDFile)
 	return sessionRuntimePlan{
 		Adapter: adapter, Profile: launchProfile, Runner: run, LaunchGoal: launchGoal, RuntimeConfig: config, Selection: selection,
-		Metadata: metadata, StopConfirmation: stopConfirmation, ProviderHome: layout.ProviderHome, Facts: launchFacts,
+		BlackboardProjection: blackboardProjection,
+		Metadata:             metadata, StopConfirmation: stopConfirmation, ProviderHome: layout.ProviderHome, Facts: launchFacts,
 	}, nil
 }
 
@@ -528,6 +539,12 @@ func (err sessionConversationInputCommitError) Error() string { return err.cause
 func (err sessionConversationInputCommitError) Unwrap() error { return err.cause }
 
 func (server *Server) startPreparedSessionRuntime(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput, previous *session.Continuation, prepared sessionRuntimePreparation, conversationInput *session.ConversationInput) (session.Continuation, error) {
+	return server.startPreparedSessionRuntimeForBlackboardProjection(
+		ctx, found, goal, input, previous, prepared, conversationInput, runner.BlackboardProjectionRequired,
+	)
+}
+
+func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput, previous *session.Continuation, prepared sessionRuntimePreparation, conversationInput *session.ConversationInput, blackboardProjection runner.BlackboardProjection) (session.Continuation, error) {
 	profile, run, runtimeConfig := prepared.Profile, prepared.Runner, prepared.RuntimeConfig
 	var err error
 	var continuation session.Continuation
@@ -554,21 +571,25 @@ func (server *Server) startPreparedSessionRuntime(ctx context.Context, found ses
 		server.recordSessionLaunchDiagnostic(found.ID, "continuation_create_failed", err)
 		return session.Continuation{}, err
 	}
-	if _, pinErr := server.blackboardV2.BindSessionContinuation(ctx, found.ID, continuation.ID); pinErr != nil {
-		server.failSessionProviderLaunch(found.ID, continuation.ID, pinErr)
-		return continuation, pinErr
+	interfaceToken := ""
+	if blackboardProjection != runner.BlackboardProjectionOmitted {
+		if _, pinErr := server.blackboardV2.BindSessionContinuation(ctx, found.ID, continuation.ID); pinErr != nil {
+			server.failSessionProviderLaunch(found.ID, continuation.ID, pinErr)
+			return continuation, pinErr
+		}
+		var grantErr error
+		interfaceToken, _, grantErr = server.projectInterfaceGrants.IssueSession(ctx, projectinterface.IssueSessionGrantRequest{
+			SessionID: found.ID, ContinuationID: continuation.ID,
+			RuntimeConfigVersionID: continuation.RuntimeConfigID,
+			RuntimeProfileID:       continuation.RuntimeProfileID,
+			RuntimePluginID:        string(profile.Provider), Runner: string(run),
+		})
+		if grantErr != nil {
+			server.failSessionProviderLaunch(found.ID, continuation.ID, grantErr)
+			return continuation, grantErr
+		}
 	}
-	interfaceToken, _, grantErr := server.projectInterfaceGrants.IssueSession(ctx, projectinterface.IssueSessionGrantRequest{
-		SessionID: found.ID, ContinuationID: continuation.ID,
-		RuntimeConfigVersionID: continuation.RuntimeConfigID,
-		RuntimeProfileID:       continuation.RuntimeProfileID,
-		RuntimePluginID:        string(profile.Provider), Runner: string(run),
-	})
-	if grantErr != nil {
-		server.failSessionProviderLaunch(found.ID, continuation.ID, grantErr)
-		return continuation, grantErr
-	}
-	plan, err := server.buildSessionRuntimePlan(found, goal, input, profile, run, interfaceToken, continuation.NativeSessionID)
+	plan, err := server.buildSessionRuntimePlanForBlackboardProjection(found, goal, input, profile, run, interfaceToken, continuation.NativeSessionID, blackboardProjection)
 	if err != nil {
 		server.failSessionProviderLaunch(found.ID, continuation.ID, err)
 		return continuation, err
