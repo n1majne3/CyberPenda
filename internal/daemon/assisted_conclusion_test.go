@@ -2508,14 +2508,25 @@ func newAssistedConclusionFixtureAtWithDecorator(t *testing.T, root string, repo
 	return server, createdProject.ID, profile.ID, fake
 }
 
+// assistedConclusionWaitBudget is the shared poll ceiling for the
+// assisted-conclusion wait helpers below. The conclusion chain
+// (observe → pending → dispatch → conclude turn → drain → validate → apply)
+// is multi-hop, asynchronous, and traverses the serialized provider-control
+// queue, so its latency is bounded by scheduler availability, not by any
+// fixed work cost. When goroutines get scheduled the chain settles in tens to
+// hundreds of milliseconds; the failures seen in #228 and #244 were loaded-CI
+// scheduler stalls exceeding first a 5s then a 10s wall-clock budget (the
+// last flake blew 10s at ~11.2s). Because the chain is correct and fast when
+// scheduled, the helpers assert on reaching the durable state, not on a tight
+// latency bound, and use a generous ceiling that absorbs pathological CI
+// scheduling while still failing a genuinely stuck chain. The ceiling is not
+// a performance assertion; local runs return as soon as the state appears.
+const assistedConclusionWaitBudget = 60 * time.Second
+
 func waitForAssistedProviderRequests(t *testing.T, session *runtime.FakeProviderSession, count int) {
 	t.Helper()
-	// The conclusion dispatch chain is multi-hop and asynchronous; a 5s
-	// budget still flaked on loaded CI runners (see #228), so both
-	// waitForAssistedProviderRequests and waitForBlackboardConclusionState
-	// keep a load-safe 10s window. The assertion is about dispatch order,
-	// not a latency bound.
-	deadline := time.Now().Add(10 * time.Second)
+	// See assistedConclusionWaitBudget: assert dispatch order, not latency.
+	deadline := time.Now().Add(assistedConclusionWaitBudget)
 	for time.Now().Before(deadline) {
 		if len(session.LastRequests()) >= count {
 			return
@@ -2527,9 +2538,8 @@ func waitForAssistedProviderRequests(t *testing.T, session *runtime.FakeProvider
 
 func waitForBlackboardConclusionState(t *testing.T, server *Server, projectID, taskID string, state task.BlackboardConclusionState) task.Task {
 	t.Helper()
-	// Load-safe 10s window for the same reason as
-	// waitForAssistedProviderRequests (see #228).
-	deadline := time.Now().Add(10 * time.Second)
+	// See assistedConclusionWaitBudget: assert reaching the durable state.
+	deadline := time.Now().Add(assistedConclusionWaitBudget)
 	for time.Now().Before(deadline) {
 		request := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
 		response := httptest.NewRecorder()
@@ -2553,9 +2563,8 @@ func waitForBlackboardConclusionState(t *testing.T, server *Server, projectID, t
 // assuming request ordering implies receipt persistence.
 func waitForBlackboardConclusionReceiptState(t *testing.T, server *Server, taskID string, state task.BlackboardConclusionReceiptState) *task.BlackboardConclusionReceipt {
 	t.Helper()
-	// Load-safe 10s window for the same reason as
-	// waitForAssistedProviderRequests (see #228).
-	deadline := time.Now().Add(10 * time.Second)
+	// See assistedConclusionWaitBudget: assert reaching the durable state.
+	deadline := time.Now().Add(assistedConclusionWaitBudget)
 	for time.Now().Before(deadline) {
 		receipt, err := server.tasks.LatestBlackboardConclusion(taskID)
 		if err != nil {
