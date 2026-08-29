@@ -369,6 +369,39 @@ func TestPiSessionTailSkipsDeeplyNestedSessionFiles(t *testing.T) {
 	}
 }
 
+// TestPiSessionTailDoesNotReopenAliasedSessionFile proves a session file
+// reachable under two paths (e.g. a Windows 8.3 short name and its long form,
+// or a symlinked directory alias) is tailed once, not reopened and re-read as
+// a second file — which would duplicate every emitted line.
+func TestPiSessionTailDoesNotReopenAliasedSessionFile(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real", "sessions", "--task-workdir--")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
+
+	// Alias the session DIRECTORY so the same file appears under two walked
+	// paths. Pi on Windows may resolve the session dir to a short name while
+	// the daemon watches the long name.
+	aliasRoot := filepath.Join(root, "alias")
+	if err := os.Symlink(filepath.Join(root, "real"), aliasRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// Point the tailer at the aliased dir while files live under the real dir.
+	aliasDir := filepath.Join(aliasRoot, "sessions", "--task-workdir--")
+
+	go func() { _ = runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, aliasDir).Run(ctx, "goal", emitCalls) }()
+
+	sessionFile := filepath.Join(realDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
+	writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"once"}]}}`)
+	waitForCount(t, getEmits, 1, 2*time.Second)
+
+	time.Sleep(400 * time.Millisecond)
+	if got := len(getEmits()); got != 1 {
+		t.Fatalf("aliased session file was reopened/re-read: expected 1 emit, got %d", got)
+	}
+}
+
 func waitForCount(t *testing.T, get func() []recordedEmit, want int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

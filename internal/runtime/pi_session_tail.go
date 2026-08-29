@@ -99,7 +99,9 @@ type piSessionTailFile struct {
 func tailPiSession(ctx context.Context, sessionDir string, observe func(string), emit func(task.EventKind, task.EventPayload)) {
 	tailed := map[string]*piSessionTailFile{}
 	// headerParent caches each discovered file's parentSession so nesting depth
-	// is classified once per file without re-reading headers every pass.
+	// is classified once per file without re-reading headers every pass. Keys
+	// and parentSession values are canonicalized so a Windows 8.3 short path in
+	// a header matches the walker's long-form path for the same file.
 	headerParent := map[string]string{}
 	closeAll := func() {
 		for _, tf := range tailed {
@@ -123,22 +125,26 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 		// top-level agents only), so tailing them would grow open file handles
 		// without adding attribution.
 		for _, path := range listSessionFiles(sessionDir) {
-			if _, ok := tailed[path]; ok {
+			key := normalizePiSessionPath(path)
+			if _, ok := tailed[key]; ok {
 				continue
 			}
-			parent, ok := headerParent[path]
+			parent, ok := headerParent[key]
 			if !ok {
 				parent = piSessionParent(path)
-				headerParent[path] = parent
+				headerParent[key] = parent
 			}
 			if parent != "" {
 				// A top-level subagent's parent is a root session (itself no
 				// parentSession). If the parent names its own parent, this file
-				// is a nested (grandchild) transcript — skip it.
-				grandparent, ok := headerParent[parent]
+				// is a nested (grandchild) transcript — skip it. The header's
+				// parentSession is canonicalized before lookup so a short-path
+				// or aliased form still resolves to the tailed root.
+				parentKey := normalizePiSessionPath(parent)
+				grandparent, ok := headerParent[parentKey]
 				if !ok {
 					grandparent = piSessionParent(parent)
-					headerParent[parent] = grandparent
+					headerParent[parentKey] = grandparent
 				}
 				if grandparent != "" {
 					continue
@@ -148,17 +154,19 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 			if err != nil {
 				continue
 			}
-			tailed[path] = &piSessionTailFile{file: f, reader: bufio.NewReader(f)}
+			tailed[key] = &piSessionTailFile{file: f, reader: bufio.NewReader(f)}
 		}
 
-		// Drain every tailed file in path order so emission is deterministic.
-		paths := make([]string, 0, len(tailed))
-		for path := range tailed {
-			paths = append(paths, path)
+		// Drain every tailed file in canonical-path order so emission is
+		// deterministic. The map key is the canonical form; the on-disk path to
+		// open is recovered from it for the truncation check below.
+		keys := make([]string, 0, len(tailed))
+		for key := range tailed {
+			keys = append(keys, key)
 		}
-		sort.Strings(paths)
-		for _, path := range paths {
-			tf := tailed[path]
+		sort.Strings(keys)
+		for _, key := range keys {
+			tf := tailed[key]
 			for {
 				line, err := tf.reader.ReadString('\n')
 				if len(line) > 0 {
@@ -181,14 +189,15 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 				}
 			}
 			// If a file shrank (truncated/rotated in place), restart it from
-			// the beginning on the next pass.
-			if info, statErr := os.Stat(path); statErr == nil && info.Size() < tf.offset {
+			// the beginning on the next pass. The canonical key is a clean
+			// absolute path, so it is safe to stat/open directly.
+			if info, statErr := os.Stat(key); statErr == nil && info.Size() < tf.offset {
 				_ = tf.file.Close()
-				f, err := os.Open(path)
+				f, err := os.Open(key)
 				if err == nil {
-					tailed[path] = &piSessionTailFile{file: f, reader: bufio.NewReader(f)}
+					tailed[key] = &piSessionTailFile{file: f, reader: bufio.NewReader(f)}
 				} else {
-					delete(tailed, path)
+					delete(tailed, key)
 				}
 			}
 		}
@@ -198,6 +207,18 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 			return
 		}
 	}
+}
+
+// normalizePiSessionPath canonicalizes a session-file path so the same file
+// reached under different spellings — a Windows 8.3 short name, a symlinked
+// directory, or redundant separators — maps to one key. EvalSymlinks resolves
+// short names and symlink aliases; Clean collapses separators. When the path
+// does not exist yet (EvalSymlinks fails), the cleaned form is used.
+func normalizePiSessionPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
 }
 
 // piSessionParent returns the parentSession named by a session file's header,
