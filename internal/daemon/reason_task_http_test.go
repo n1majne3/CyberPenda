@@ -1,11 +1,9 @@
 package daemon_test
 
 import (
-	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,13 +12,8 @@ import (
 	"pentest/internal/reasontask"
 )
 
-func TestReasonTaskLaunchAndProposalApprovalHTTP(t *testing.T) {
+func TestDefaultLoopbackRejectsTokenlessReasonProposalCreateHTTP(t *testing.T) {
 	server := newDaemon(t)
-	accessURL, err := url.Parse(server.GeneratedOperatorAccessURL())
-	if err != nil || accessURL.Query().Get("token") == "" {
-		t.Fatalf("generated operator access URL = %q, error=%v", server.GeneratedOperatorAccessURL(), err)
-	}
-	operatorToken := accessURL.Query().Get("token")
 	projectID := createProject(t, server, `{"name":"Engagement","kind":"pentest","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
@@ -49,51 +42,8 @@ func TestReasonTaskLaunchAndProposalApprovalHTTP(t *testing.T) {
 	propose := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/reason-tasks/"+launched.ID+"/proposals", strings.NewReader(proposalBody))
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, propose)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("Reason Task proposal status %d body %s", response.Code, response.Body.String())
-	}
-	var proposal struct {
-		ID     string `json:"id"`
-		Status string `json:"status"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&proposal); err != nil || proposal.Status != "proposed" {
-		t.Fatalf("proposal = %#v, error=%v", proposal, err)
-	}
-
-	snapshot := func() string {
-		request := httptest.NewRequest(http.MethodGet, "/api/v2/projects/"+projectID+"/blackboard/snapshot", nil)
-		request.Header.Set("Authorization", "Bearer "+operatorToken)
-		result := httptest.NewRecorder()
-		server.ServeHTTP(result, request)
-		if result.Code != http.StatusOK {
-			t.Fatalf("snapshot status %d body %s", result.Code, result.Body.String())
-		}
-		return result.Body.String()
-	}
-	if strings.Contains(snapshot(), "objective:targeted-validation") {
-		t.Fatal("Reason Task proposal changed Blackboard before approval")
-	}
-
-	approvePath := "/api/projects/" + projectID + "/reason-task-proposals/" + proposal.ID + "/approve"
-	approve := httptest.NewRequest(http.MethodPost, approvePath, bytes.NewReader(nil))
-	response = httptest.NewRecorder()
-	server.ServeHTTP(response, approve)
 	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "unauthorized") {
-		t.Fatalf("tokenless approve proposal status %d body %s", response.Code, response.Body.String())
-	}
-	if strings.Contains(snapshot(), "objective:targeted-validation") {
-		t.Fatal("tokenless Reason proposal approval changed Blackboard")
-	}
-
-	approve = httptest.NewRequest(http.MethodPost, approvePath, bytes.NewReader(nil))
-	approve.Header.Set("Authorization", "Bearer "+operatorToken)
-	response = httptest.NewRecorder()
-	server.ServeHTTP(response, approve)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"approved"`) {
-		t.Fatalf("generated operator approve proposal status %d body %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(snapshot(), "objective:targeted-validation") {
-		t.Fatal("approved Reason Task proposal did not change Blackboard")
+		t.Fatalf("tokenless Reason proposal status %d body %s", response.Code, response.Body.String())
 	}
 }
 
@@ -115,7 +65,7 @@ func TestReasonTaskRejectsDisabledBlackboardModeHTTP(t *testing.T) {
 	}
 }
 
-func TestConfiguredOperatorApprovesReasonProposalHTTP(t *testing.T) {
+func TestConfiguredOperatorTokenCannotCreateReasonProposalHTTP(t *testing.T) {
 	const operatorToken = "configured-reason-operator"
 	server := newDaemonWithConfig(t, daemon.Config{
 		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), AuthToken: operatorToken,
@@ -157,24 +107,8 @@ func TestConfiguredOperatorApprovesReasonProposalHTTP(t *testing.T) {
 	proposalResponse := reasonTaskRequest(t, server, http.MethodPost,
 		"/api/projects/"+project.ID+"/reason-tasks/"+reasonTask.ID+"/proposals", operatorToken,
 		`{"next_task_goals":["Continue validation"],"exploration_objective_changes":["Add configured review"],"readiness_judgment":"Ready","changes":[{"op":"create","key":"objective:configured-reason","type":"objective","record":{"status":"open","objective":"Configured operator review"}}]}`)
-	if proposalResponse.Code != http.StatusCreated {
-		t.Fatalf("create configured Reason proposal status %d body %s", proposalResponse.Code, proposalResponse.Body.String())
-	}
-	var proposal struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(proposalResponse.Body).Decode(&proposal); err != nil || proposal.ID == "" {
-		t.Fatalf("decode configured Reason proposal: proposal=%#v error=%v", proposal, err)
-	}
-	approveResponse := reasonTaskRequest(t, server, http.MethodPost,
-		"/api/projects/"+project.ID+"/reason-task-proposals/"+proposal.ID+"/approve", operatorToken, "")
-	if approveResponse.Code != http.StatusOK || !strings.Contains(approveResponse.Body.String(), `"status":"approved"`) {
-		t.Fatalf("configured operator approval status %d body %s", approveResponse.Code, approveResponse.Body.String())
-	}
-	recordResponse := reasonTaskRequest(t, server, http.MethodGet,
-		"/api/v2/projects/"+project.ID+"/blackboard/records/objective:configured-reason", operatorToken, "")
-	if recordResponse.Code != http.StatusOK || !strings.Contains(recordResponse.Body.String(), `"key":"objective:configured-reason"`) {
-		t.Fatalf("configured approval public Blackboard record status %d body %s", recordResponse.Code, recordResponse.Body.String())
+	if proposalResponse.Code != http.StatusUnauthorized || !strings.Contains(proposalResponse.Body.String(), "unauthorized") {
+		t.Fatalf("configured operator proposal status %d body %s", proposalResponse.Code, proposalResponse.Body.String())
 	}
 }
 

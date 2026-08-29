@@ -642,10 +642,12 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}
 	if server.authToken != "" && !server.publicPath(request) {
 		if !server.authorized(request) {
-			// Project-interface and Blackboard v2 HTTP handlers own their structured
-			// credential errors. Let those narrow routes classify a missing/invalid
-			// grant; every other API and MCP route remains behind the daemon middleware.
-			if !(server.blackboardV2 != nil && isBlackboardV2HTTPTransport(request)) {
+			// Blackboard v2 and Reason proposal-create handlers own their narrower
+			// Continuation capability checks. Let only those exact transports classify
+			// a missing or invalid grant; every other API remains behind this middleware.
+			handlerOwnsCapability := server.blackboardV2 != nil &&
+				(isBlackboardV2HTTPTransport(request) || isReasonTaskProposalCreateHTTPTransport(request))
+			if !handlerOwnsCapability {
 				writeError(response, http.StatusUnauthorized, "unauthorized")
 				return
 			}
