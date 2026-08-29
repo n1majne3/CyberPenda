@@ -197,7 +197,10 @@ func TestTaskTimelineWindowScansPastInvisibleRecentEventChunk(t *testing.T) {
 	if _, err := server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{"phase": "visible-old-event"}); err != nil {
 		t.Fatal(err)
 	}
-	ignored := `{"type":"system","subtype":"task_progress","description":"internal"}`
+	// thinking_tokens projects to no Timeline item, so a full query-limit chunk
+	// of them stays invisible. (task_progress no longer qualifies: #237 now
+	// projects it as a Subagent Activity.)
+	ignored := `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}`
 	for index := 0; index < historyEventQueryLimit+1; index++ {
 		if _, err := server.tasks.AppendEvent(taskID, task.EventKindRuntimeOutput, task.EventPayload{"text": ignored}); err != nil {
 			t.Fatal(err)
