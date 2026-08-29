@@ -539,7 +539,7 @@ func (err sessionConversationInputCommitError) Error() string { return err.cause
 func (err sessionConversationInputCommitError) Unwrap() error { return err.cause }
 
 func (server *Server) startPreparedSessionRuntime(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput, previous *session.Continuation, prepared sessionRuntimePreparation, conversationInput *session.ConversationInput) (session.Continuation, error) {
-	launch := resolveInitialOwnerBlackboardLaunch(
+	launch := resolveOwnerBlackboardRuntimeLaunch(
 		goal, found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeDisabled,
 	)
 	return server.startPreparedSessionRuntimeForBlackboardProjection(

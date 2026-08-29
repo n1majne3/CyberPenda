@@ -200,7 +200,7 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 		return
 	}
 
-	initialLaunch := resolveInitialOwnerBlackboardLaunch(
+	initialLaunch := resolveOwnerBlackboardRuntimeLaunch(
 		launchGoal, created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled,
 	)
 	plan, err := server.buildTaskLaunchPlanForBlackboardProjection(
@@ -648,7 +648,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 }
 
 func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string) (taskLaunchPlan, error) {
-	launch := resolveInitialOwnerBlackboardLaunch(
+	launch := resolveOwnerBlackboardRuntimeLaunch(
 		goal, created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled,
 	)
 	return server.buildTaskLaunchPlanForBlackboardProjection(
@@ -1914,9 +1914,11 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 				return
 			}
 		}
-		if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
-			writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
-			return
+		if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+			if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
+				writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
+				return
+			}
 		}
 		// Durable Task may still be running when harness/session already gone
 		// (finish abort, orphan cleanup). Always settle stopped after cleanup.
@@ -1937,9 +1939,11 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeError(response, http.StatusConflict, "provider session did not close")
 		return
 	}
-	if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
-		writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
-		return
+	if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+		if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
+			writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
+			return
+		}
 	}
 	if err := server.settleTaskStopped(taskID); err != nil {
 		writeTaskError(response, err)
@@ -2023,6 +2027,7 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
+	blackboardDisabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
 	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
 		if err := server.acquireTaskControlAfterAssistedSettlement(request.Context(), found, false, false); err != nil {
 			if errors.Is(err, errSemanticConclusionActionRequired) {
@@ -2099,8 +2104,9 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		}
 	}
 
-	// 4) Sole owner: mark Continuation completed (triggers recon), verify
-	// durable marker, then Task completed. Fail-closed — no silent fallbacks.
+	// 4) Sole owner: mark Continuation completed. Blackboard-enabled owners
+	// trigger reconciliation and verify its durable marker. Disabled owners have
+	// no Blackboard reconciliation obligation. Then mark the Task completed.
 	// After runtime is already closed, any failure here must settle Task to a
 	// recoverable terminal (failed) so it does not remain durable running.
 	cont, contErr := server.tasks.LatestContinuation(taskID)
@@ -2112,13 +2118,13 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		server.finishFailClosed(response, taskID, "continuation_missing", "no Continuation for Task", http.StatusConflict)
 		return
 	}
-	// Complete Continuation and/or retry terminal reconciliation when the
-	// durable marker is not yet completed (fail-closed, no silent skip).
-	if cont.Status != task.StatusCompleted || cont.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+	// Complete the Continuation. For Blackboard-enabled owners, the same
+	// idempotent call retries an incomplete terminal reconciliation marker.
+	if cont.Status != task.StatusCompleted || (!blackboardDisabled && cont.BlackboardReconciliationStatus != task.ReconciliationCompleted) {
 		if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusCompleted); err != nil {
 			// Classify from durable re-read, never string-matching.
 			refreshed, refErr := server.tasks.Continuation(cont.ID)
-			if refErr == nil && refreshed.Status == task.StatusCompleted && refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+			if !blackboardDisabled && refErr == nil && refreshed.Status == task.StatusCompleted && refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
 				server.finishFailClosed(response, taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus), http.StatusConflict)
 				return
 			}
@@ -2139,12 +2145,13 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		server.finishFailClosed(response, taskID, "continuation_status", "status="+string(refreshed.Status), http.StatusConflict)
 		return
 	}
-	if refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+	if !blackboardDisabled && refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
 		server.finishFailClosed(response, taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus), http.StatusConflict)
 		return
 	}
 
-	// 5) Only after durable recon marker is completed may the Task be completed.
+	// 5) Blackboard-enabled owners require a completed reconciliation marker.
+	// Disabled owners retain the ordinary lifecycle gate only.
 	if _, err := server.tasks.UpdateStatus(taskID, task.StatusCompleted); err != nil {
 		server.finishFailClosed(response, taskID, "task_complete", err.Error(), http.StatusInternalServerError)
 		return

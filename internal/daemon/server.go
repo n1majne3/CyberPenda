@@ -517,6 +517,14 @@ func (server *Server) reconcileInterruptedTasks(lifecycleProtectedTaskIDs []stri
 			return
 		}
 		for _, continuation := range continuations {
+			owner, ownerErr := server.tasks.Get(continuation.TaskID)
+			if ownerErr != nil {
+				server.logger.Printf("task reconcile: failed to load Task %s for terminal Continuation %s: %v", continuation.TaskID, continuation.ID, ownerErr)
+				continue
+			}
+			if owner.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+				continue
+			}
 			if reconcileErr := server.blackboardV2.ReconcileTerminalContinuation(context.Background(), continuation.ID, "daemon_restart"); reconcileErr != nil {
 				server.logger.Printf("task reconcile: failed to reconcile Continuation %s: %v", continuation.ID, reconcileErr)
 			}

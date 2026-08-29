@@ -1381,13 +1381,18 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	if req.Runner != RunnerSandbox && req.Runner != RunnerHost {
 		return RuntimeConfigVersion{}, TaskContinuation{}, ErrUnsupportedRunner
 	}
-	var projectID string
-	if err := tx.QueryRowContext(ctx, `SELECT project_id FROM tasks WHERE id=?`, req.TaskID).Scan(&projectID); err != nil {
+	var projectID, runControlsJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT project_id,run_controls_json FROM tasks WHERE id=?`, req.TaskID).Scan(&projectID, &runControlsJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return RuntimeConfigVersion{}, TaskContinuation{}, ErrNotFound
 		}
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("read launch task: %w", err)
 	}
+	var runControls RunControls
+	if err := json.Unmarshal([]byte(runControlsJSON), &runControls); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("decode launch task Run Controls: %w", err)
+	}
+	blackboardDisabled := runControls.BlackboardConclusionMode == BlackboardConclusionModeDisabled
 	if projectID != req.ProjectID {
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("launch task does not belong to project")
 	}
@@ -1399,7 +1404,7 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	if err == nil && !isTerminalStatus(Status(latestStatus)) {
 		return RuntimeConfigVersion{}, TaskContinuation{}, ErrActiveContinuation
 	}
-	if err == nil && (Status(latestStatus) == StatusFailed || Status(latestStatus) == StatusStopped || Status(latestStatus) == StatusInterrupted) && latestReconciliation != string(ReconciliationCompleted) {
+	if !blackboardDisabled && err == nil && (Status(latestStatus) == StatusFailed || Status(latestStatus) == StatusStopped || Status(latestStatus) == StatusInterrupted) && latestReconciliation != string(ReconciliationCompleted) {
 		return RuntimeConfigVersion{}, TaskContinuation{}, ErrContinuationReconciliationIncomplete
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -1892,8 +1897,14 @@ func (s *Service) notifyTerminalContinuation(found TaskContinuation, reason stri
 		}
 	}
 	if s.reconciler != nil {
-		if err := s.reconciler.ReconcileTerminalContinuation(context.Background(), found.ID, reason); err != nil {
-			return found, fmt.Errorf("reconcile terminal Continuation: %w", err)
+		owner, err := s.Get(found.TaskID)
+		if err != nil {
+			return found, fmt.Errorf("load terminal Continuation Task: %w", err)
+		}
+		if owner.RunControls.BlackboardConclusionMode != BlackboardConclusionModeDisabled {
+			if err := s.reconciler.ReconcileTerminalContinuation(context.Background(), found.ID, reason); err != nil {
+				return found, fmt.Errorf("reconcile terminal Continuation: %w", err)
+			}
 		}
 	}
 	return found, nil

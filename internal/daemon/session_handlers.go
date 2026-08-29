@@ -147,7 +147,7 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 		writeSessionError(response, err)
 		return
 	}
-	initialLaunch := resolveInitialOwnerBlackboardLaunch(
+	initialLaunch := resolveOwnerBlackboardRuntimeLaunch(
 		input.value(), created.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeDisabled,
 	)
 	if _, launchErr := server.startPreparedSessionRuntimeForBlackboardProjection(

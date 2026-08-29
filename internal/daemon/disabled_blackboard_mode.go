@@ -2,19 +2,19 @@ package daemon
 
 import "pentest/internal/runner"
 
-const disabledBlackboardInitialStateFileReminder = "You may use a state file to keep a lightweight work trace."
+const disabledBlackboardRuntimeLaunchStateFileReminder = "You may use a state file to keep a lightweight work trace."
 
-type initialOwnerBlackboardLaunch struct {
+type ownerBlackboardRuntimeLaunch struct {
 	goal       string
 	projection runner.BlackboardProjection
 }
 
-// resolveInitialOwnerBlackboardLaunch maps each owner's typed Disabled mode
-// decision to the shared initial Runtime launch boundary.
-func resolveInitialOwnerBlackboardLaunch(goal string, disabled bool) initialOwnerBlackboardLaunch {
-	launch := initialOwnerBlackboardLaunch{goal: goal, projection: runner.BlackboardProjectionRequired}
+// resolveOwnerBlackboardRuntimeLaunch maps each owner's typed Disabled mode
+// decision to every initial or replacement Runtime launch boundary.
+func resolveOwnerBlackboardRuntimeLaunch(goal string, disabled bool) ownerBlackboardRuntimeLaunch {
+	launch := ownerBlackboardRuntimeLaunch{goal: goal, projection: runner.BlackboardProjectionRequired}
 	if disabled {
-		launch.goal += "\n\n" + disabledBlackboardInitialStateFileReminder
+		launch.goal += "\n\n" + disabledBlackboardRuntimeLaunchStateFileReminder
 		launch.projection = runner.BlackboardProjectionOmitted
 	}
 	return launch
