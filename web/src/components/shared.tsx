@@ -12,7 +12,7 @@ import { Card, type CardProps } from "@/components/ui";
 /** Consistent page padding + max width wrapper used by every page body. */
 export const PageContainer = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
   ({ className, children, ...props }, ref) => (
-    <div ref={ref} className={cn("p-6 lg:p-8", className)} {...props}>
+    <div ref={ref} className={cn("w-full p-6 lg:p-8", className)} {...props}>
       {children}
     </div>
   ),

@@ -56,6 +56,15 @@ describe("PageContainer", () => {
     );
     expect(getByText("content")).toBeInTheDocument();
   });
+
+  it("constrains the page body to the available width so a max-width column can shrink below its cap", () => {
+    const { getByText } = render(
+      <PageContainer>
+        <span>content</span>
+      </PageContainer>,
+    );
+    expect(getByText("content").parentElement).toHaveClass("w-full");
+  });
 });
 
 describe("settings helpers", () => {
