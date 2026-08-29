@@ -951,8 +951,37 @@ func migrations() []migration {
 		newMigration(64, "accepted_steering_operator_message", migration64SQL, migration64Up),
 		newMigration(65, "accepted_steering_client_selection_identity", migration65SQL, migration65Up),
 		newMigration(66, "disabled_session_blackboard_mode", migration66SQL, migration66Up),
+		newMigration(67, "operator_disabled_output_origins", migration67SQL, migration67Up),
 	}
 }
+
+const migration67SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_operator_attempt_origins (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	actor_id TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, key),
+	CHECK (actor_id <> '')
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_operator_evidence_origins (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	actor_id TEXT NOT NULL,
+	source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+	source_continuation_id TEXT NOT NULL REFERENCES task_continuations(id) ON DELETE RESTRICT,
+	source_path TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, key, version),
+	CHECK (actor_id <> ''),
+	CHECK (source_path <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_operator_evidence_source_task
+	ON blackboard_v2_operator_evidence_origins (source_task_id);
+`
+
+func migration67Up(tx *sql.Tx) error { return execStatements(tx, migration67SQL) }
 
 const migration66SQL = `
 -- Relax the existing Session Blackboard Mode compatibility column so it also

@@ -193,6 +193,23 @@ type retainedEvidenceMetadata struct {
 	size   int64
 }
 
+// RetainEvidenceForOperator retains one file selected from a Disabled Task by
+// an authenticated operator. The source Continuation identifies the confined
+// Workdir only; it receives no Blackboard authority or synchronization.
+func (s *Service) RetainEvidenceForOperator(ctx context.Context, projectID, taskID, continuationID, actorID string, request RetainEvidenceRequest) (ChangeResult, error) {
+	projectID = strings.TrimSpace(projectID)
+	taskID = strings.TrimSpace(taskID)
+	continuationID = strings.TrimSpace(continuationID)
+	actorID = strings.TrimSpace(actorID)
+	if projectID == "" || taskID == "" || continuationID == "" || actorID == "" {
+		return ChangeResult{}, semanticError("authority_denied", "operator, Project, Task, and source Continuation identity are required", "authorization", nil)
+	}
+	ctx = withOperatorAuthority(ctx, operatorAuthority{
+		actorID: actorID, sourceTaskID: taskID, sourceContinuationID: continuationID,
+	})
+	return s.RetainEvidenceForContinuation(ctx, projectID, continuationID, request)
+}
+
 // RetainEvidenceForContinuation retains one confined payload and atomically
 // publishes its semantic Evidence record and relationships.
 func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, continuationID string, request RetainEvidenceRequest) (ChangeResult, error) {
@@ -242,7 +259,11 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 	if err != nil {
 		return ChangeResult{}, err
 	}
-	if !exists && !continuationCanWrite(status) {
+	operator, operatorRequest := operatorAuthorityFromContext(ctx)
+	if operatorRequest && (operator.sourceTaskID != taskID || operator.sourceContinuationID != continuationID) {
+		return ChangeResult{}, semanticError("authority_denied", "selected Task output does not match its source Continuation", "authorization", nil)
+	}
+	if !exists && !operatorRequest && !continuationCanWrite(status) {
 		return ChangeResult{}, semanticError("closed_continuation", "trusted Continuation is closed for new Blackboard writes", "", nil)
 	}
 	if strings.TrimSpace(s.evidenceConfig.RuntimeRoot) == "" || strings.TrimSpace(s.evidenceConfig.ArtifactRoot) == "" {
@@ -430,8 +451,14 @@ func (s *Service) validateRetainedEvidencePreconditions(ctx context.Context, pro
 	if attempt.typ != "attempt" {
 		return semanticError("semantic_validation", "attempt must reference an Attempt", "attempt", nil)
 	}
-	if err := requireAttemptOwner(ctx, tx, projectID, request.Attempt, continuationID, "attempt"); err != nil {
-		return err
+	if operator, ok := operatorAuthorityFromContext(ctx); ok {
+		if err := requireOperatorAttemptOwner(ctx, tx, projectID, request.Attempt, operator.actorID, "attempt"); err != nil {
+			return err
+		}
+	} else {
+		if err := requireAttemptOwner(ctx, tx, projectID, request.Attempt, continuationID, "attempt"); err != nil {
+			return err
+		}
 	}
 	if attempt.record.attemptRecord().Status != "open" {
 		return semanticError("semantic_validation", "producing Attempt must be current and open", "attempt", map[string]any{"key": request.Attempt})
@@ -2359,6 +2386,7 @@ func openSecureDirectoryDurable(root *os.Root, relative string, checkpoint func(
 }
 
 func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continuationID string, request RetainEvidenceRequest, requestHash, managedPath string, metadata retainedEvidenceMetadata, durablyReserved bool) (ChangeResult, error) {
+	operator, operatorRequest := operatorAuthorityFromContext(ctx)
 	receiptKey := "retain-evidence-v2:" + continuationID + ":" + request.IdempotencyKey
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2374,8 +2402,10 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continua
 		if err := tx.Commit(); err != nil {
 			return ChangeResult{}, fmt.Errorf("commit retained Evidence replay: %w", err)
 		}
-		if err := s.rematerializeContinuationWorkingSnapshot(ctx, continuationID); err != nil {
-			return ChangeResult{}, fmt.Errorf("recover retained Evidence Working Snapshot: %w", err)
+		if !operatorRequest {
+			if err := s.rematerializeContinuationWorkingSnapshot(ctx, continuationID); err != nil {
+				return ChangeResult{}, fmt.Errorf("recover retained Evidence Working Snapshot: %w", err)
+			}
 		}
 		return replay, nil
 	}
@@ -2408,18 +2438,26 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continua
 			return ChangeResult{}, &Error{Code: "evidence_reservation_changed", Message: "Evidence reservation changed during retention", Path: "idempotency_key", Retryable: true}
 		}
 	}
-	status, err := continuationProjectStatus(ctx, tx, projectID, continuationID)
-	if err != nil {
-		return ChangeResult{}, err
-	}
-	if !durablyReserved && !continuationCanWrite(status) {
-		return ChangeResult{}, semanticError("closed_continuation", "trusted Continuation is closed for new Blackboard writes", "", nil)
+	if !operatorRequest {
+		status, err := continuationProjectStatus(ctx, tx, projectID, continuationID)
+		if err != nil {
+			return ChangeResult{}, err
+		}
+		if !durablyReserved && !continuationCanWrite(status) {
+			return ChangeResult{}, semanticError("closed_continuation", "trusted Continuation is closed for new Blackboard writes", "", nil)
+		}
 	}
 	attempt, err := loadCurrentRecord(ctx, tx, projectID, request.Attempt)
 	historicalAttempt := false
 	if errors.Is(err, sql.ErrNoRows) && durablyReserved {
-		if err := requireAttemptOwner(ctx, tx, projectID, request.Attempt, continuationID, "attempt"); err != nil {
-			return ChangeResult{}, err
+		if operatorRequest {
+			if err := requireOperatorAttemptOwner(ctx, tx, projectID, request.Attempt, operator.actorID, "attempt"); err != nil {
+				return ChangeResult{}, err
+			}
+		} else {
+			if err := requireAttemptOwner(ctx, tx, projectID, request.Attempt, continuationID, "attempt"); err != nil {
+				return ChangeResult{}, err
+			}
 		}
 		var raw string
 		if err := tx.QueryRowContext(ctx, `SELECT record_json FROM blackboard_v2_record_history WHERE project_id=? AND key=? AND type='attempt' ORDER BY version DESC LIMIT 1`, projectID, request.Attempt).Scan(&raw); err != nil {
@@ -2446,8 +2484,14 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continua
 		if attempt.typ != "attempt" {
 			return ChangeResult{}, semanticError("semantic_validation", "attempt must reference an Attempt", "attempt", nil)
 		}
-		if err := requireAttemptOwner(ctx, tx, projectID, request.Attempt, continuationID, "attempt"); err != nil {
-			return ChangeResult{}, err
+		if operatorRequest {
+			if err := requireOperatorAttemptOwner(ctx, tx, projectID, request.Attempt, operator.actorID, "attempt"); err != nil {
+				return ChangeResult{}, err
+			}
+		} else {
+			if err := requireAttemptOwner(ctx, tx, projectID, request.Attempt, continuationID, "attempt"); err != nil {
+				return ChangeResult{}, err
+			}
 		}
 		if attempt.record.attemptRecord().Status != "open" {
 			return ChangeResult{}, semanticError("semantic_validation", "producing Attempt must be open for a new retain", "attempt", nil)
@@ -2537,9 +2581,19 @@ func (s *Service) applyRetainedEvidence(ctx context.Context, projectID, continua
 			changedRelations[relationKey(tuple)] = tuple
 		}
 	}
-	_, _, workingAdvanced, err := s.advanceContinuationWorkingSnapshotTx(ctx, tx, projectID, continuationID)
-	if err != nil {
-		return ChangeResult{}, err
+	if operatorRequest {
+		if version, changed := changedRecords[request.Key]; changed {
+			if err := recordOperatorEvidenceOrigin(ctx, tx, projectID, request.Key, version, operator, request.SourcePath, now); err != nil {
+				return ChangeResult{}, err
+			}
+		}
+	}
+	workingAdvanced := false
+	if !operatorRequest {
+		_, _, workingAdvanced, err = s.advanceContinuationWorkingSnapshotTx(ctx, tx, projectID, continuationID)
+		if err != nil {
+			return ChangeResult{}, err
+		}
 	}
 	result := makeChangeResult(revision, changedRecords, changedRelations)
 	resultJSON, err := json.Marshal(result)

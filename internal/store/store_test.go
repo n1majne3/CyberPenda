@@ -878,6 +878,8 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		"blackboard_v2_relationship_history",
 		"blackboard_v2_idempotency_receipts",
 		"blackboard_v2_attempt_origins",
+		"blackboard_v2_operator_attempt_origins",
+		"blackboard_v2_operator_evidence_origins",
 		"blackboard_v2_evidence_requests",
 		"blackboard_v2_evidence_payloads",
 		"blackboard_v2_key_redirects",

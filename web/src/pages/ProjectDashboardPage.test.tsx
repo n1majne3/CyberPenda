@@ -100,6 +100,10 @@ describe("ProjectDashboardPage", () => {
     expect(screen.getByRole("link", { name: /launch task/i })).toHaveClass("rounded-md", "bg-primary");
     expect(screen.getByRole("link", { name: /edit scope/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /open report/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Blackboard" })).toHaveAttribute(
+      "href",
+      "/projects/project-1/blackboard",
+    );
 
     const scope = screen.getByRole("region", { name: /scope readiness/i });
     expect(scope).toHaveClass("rounded-lg", "border", "bg-card");
