@@ -402,6 +402,51 @@ func TestPiSessionTailDoesNotReopenAliasedSessionFile(t *testing.T) {
 	}
 }
 
+// TestPiSessionTailClassifiesAliasedParentSession proves the nesting
+// classification canonicalizes the header's parentSession before comparing it
+// to tailed roots. A child whose parentSession carries an aliased/short form of
+// the root's path must be tailed as a top-level subagent, and a grandchild
+// whose parentSession aliases the child must be skipped as nested — the
+// Windows 8.3 scenario the CI failure exercised.
+func TestPiSessionTailClassifiesAliasedParentSession(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real", "sessions", "--task-workdir--")
+	aliasRoot := filepath.Join(root, "alias")
+	if err := os.Symlink(filepath.Join(root, "real"), aliasRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	// The same session dir reachable under an alias; a header written through
+	// the alias carries the aliased path spelling.
+	aliasDir := filepath.Join(aliasRoot, "sessions", "--task-workdir--")
+
+	parentFile := filepath.Join(realDir, "2026-06-19T12-11-46-221Z_parent.jsonl")
+	writeSessionLine(t, parentFile, `{"type":"session","version":3,"id":"sess-parent","cwd":"/task/workdir"}`)
+	// Child header names its parent via the ALIASED path.
+	aliasedParent := filepath.Join(aliasDir, "2026-06-19T12-11-46-221Z_parent.jsonl")
+	childFile := filepath.Join(realDir, "2026-06-19T12-12-30-500Z_child.jsonl")
+	writeSessionLine(t, childFile, `{"type":"session","version":3,"id":"sess-child","parentSession":"`+aliasedParent+`"}`)
+	writeSessionLine(t, childFile, `{"type":"custom","customType":"subagents:record","data":{"id":"agent-1","status":"completed"}}`)
+
+	adapter := runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, realDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
+	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
+
+	// The child is a top-level subagent of the root (via aliased parentSession)
+	// and its settle record must be observed, not stranded by a misclassification.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, e := range getEmits() {
+			if text, _ := e.payload["text"].(string); strings.Contains(text, "subagents:record") {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("child with aliased parentSession was not tailed as a top-level subagent")
+}
+
 func waitForCount(t *testing.T, get func() []recordedEmit, want int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
