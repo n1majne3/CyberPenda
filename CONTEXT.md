@@ -748,6 +748,10 @@ _Avoid_: Project, Task, Hosted Evaluation Run
 The TSecBench-specific bootstrap process that validates hosted configuration, starts the daemon, creates one CTF Challenge Project and one CTF Challenge Task, projects the **Hosted Transcript Stream**, and observes the Runtime until TSecBench forcibly terminates the container. It is fail-fast and does not resume an interrupted process. It does not list, schedule, solve, submit, close, formally finish, stop, gracefully terminate, or recover Benchmark Challenges, Tasks, or the Hosted Evaluation Run.
 _Avoid_: Runtime, Challenge Workflow, challenge scheduler
 
+**Subagent Activity**:
+A provider-neutral Timeline projection of one child agent that a **Runtime** spawned inside a **Work Runtime Turn**, such as a Codex child thread from the in-turn multi-agent tools or a Claude Code Task-tool subagent. It carries durable child identity, a coarse started-to-settled activity state, and its provider, and is a Timeline entry rather than a conversation message. The **Runtime Harness** only observes it and never gains a spawn RPC or a Harness-owned subagent scheduling surface.
+_Avoid_: Harness-owned subagent, Runtime Continuation per child, raw provider JSON dump, Task
+
 **Hosted Challenge Client**:
 A bounded, one-command process inside the TSecBench Hosted Image that performs one list, start, hint, submit, or guarded close operation for the Runtime. It has no background lifecycle, never controls the Hosted Controller or daemon, and derives safety decisions from current platform state so its failure cannot terminate the host process. It loads one Challenge Platform adapter by `CYBERPENDA_CHALLENGE_ADAPTER`. Overlay manifests under `/data/adapters` replace baked adapters without rebuilding the image.
 _Avoid_: Hosted Controller, background sidecar, challenge scheduler, direct curl procedure
