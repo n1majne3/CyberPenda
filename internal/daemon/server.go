@@ -63,7 +63,8 @@ type Config struct {
 	// AuthToken gates every mutating route when non-empty. A non-loopback bind
 	// refuses to start unless this is set, so a daemon exposed to the network
 	// cannot become an unauthenticated control plane. Loopback dev (make dev)
-	// leaves it empty, so no enforcement applies.
+	// leaves it empty, so ordinary routes stay open. Operator workflows that can
+	// mutate Blackboard still require the generated operator capability.
 	AuthToken string
 	// Logger receives request and task-lifecycle log lines. When nil the daemon
 	// uses the standard library default logger, so output appears under
@@ -741,6 +742,19 @@ func (server *Server) authorized(request *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// requireOperatorAuthority protects local operator workflows that can mutate
+// Blackboard outside the versioned Project Interface. The Actor header is
+// provenance only; it never authenticates the caller.
+func (server *Server) requireOperatorAuthority(response http.ResponseWriter, request *http.Request) bool {
+	token := projectinterface.BearerToken(request)
+	if token == "" || server.operatorToken == "" ||
+		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) != 1 {
+		writeError(response, http.StatusUnauthorized, "unauthorized")
+		return false
+	}
+	return true
 }
 
 // publicPath reports whether the request targets a route that stays reachable

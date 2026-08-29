@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"pentest/internal/daemon"
 	"pentest/internal/reasontask"
 )
 
@@ -72,11 +74,23 @@ func TestReasonTaskLaunchAndProposalApprovalHTTP(t *testing.T) {
 		t.Fatal("Reason Task proposal changed Blackboard before approval")
 	}
 
-	approve := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/reason-task-proposals/"+proposal.ID+"/approve", bytes.NewReader(nil))
+	approvePath := "/api/projects/" + projectID + "/reason-task-proposals/" + proposal.ID + "/approve"
+	approve := httptest.NewRequest(http.MethodPost, approvePath, bytes.NewReader(nil))
+	response = httptest.NewRecorder()
+	server.ServeHTTP(response, approve)
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "unauthorized") {
+		t.Fatalf("tokenless approve proposal status %d body %s", response.Code, response.Body.String())
+	}
+	if strings.Contains(snapshot(), "objective:targeted-validation") {
+		t.Fatal("tokenless Reason proposal approval changed Blackboard")
+	}
+
+	approve = httptest.NewRequest(http.MethodPost, approvePath, bytes.NewReader(nil))
+	approve.Header.Set("Authorization", "Bearer "+operatorToken)
 	response = httptest.NewRecorder()
 	server.ServeHTTP(response, approve)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"status":"approved"`) {
-		t.Fatalf("approve proposal status %d body %s", response.Code, response.Body.String())
+		t.Fatalf("generated operator approve proposal status %d body %s", response.Code, response.Body.String())
 	}
 	if !strings.Contains(snapshot(), "objective:targeted-validation") {
 		t.Fatal("approved Reason Task proposal did not change Blackboard")
@@ -99,4 +113,81 @@ func TestReasonTaskRejectsDisabledBlackboardModeHTTP(t *testing.T) {
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Reason Task Blackboard Mode cannot be disabled") {
 		t.Fatalf("disabled Reason Task status %d body %s", response.Code, response.Body.String())
 	}
+}
+
+func TestConfiguredOperatorApprovesReasonProposalHTTP(t *testing.T) {
+	const operatorToken = "configured-reason-operator"
+	server := newDaemonWithConfig(t, daemon.Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), AuthToken: operatorToken,
+		DisableBuiltinSkills: true,
+	})
+	createProjectResponse := reasonTaskRequest(t, server, http.MethodPost, "/api/projects", operatorToken,
+		`{"name":"Configured Reason","kind":"pentest","scope":{"domains":["example.test"]}}`)
+	if createProjectResponse.Code != http.StatusCreated {
+		t.Fatalf("create configured Project status %d body %s", createProjectResponse.Code, createProjectResponse.Body.String())
+	}
+	var project struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(createProjectResponse.Body).Decode(&project); err != nil || project.ID == "" {
+		t.Fatalf("decode configured Project: project=%#v error=%v", project, err)
+	}
+	profileResponse := reasonTaskRequest(t, server, http.MethodPost, "/api/runtime-profiles", operatorToken,
+		`{"name":"Configured Fake","provider":"fake"}`)
+	if profileResponse.Code != http.StatusCreated {
+		t.Fatalf("create configured Runtime Profile status %d body %s", profileResponse.Code, profileResponse.Body.String())
+	}
+	var profile struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(profileResponse.Body).Decode(&profile); err != nil || profile.ID == "" {
+		t.Fatalf("decode configured Runtime Profile: profile=%#v error=%v", profile, err)
+	}
+	launchResponse := reasonTaskRequest(t, server, http.MethodPost, "/api/projects/"+project.ID+"/reason-tasks", operatorToken,
+		`{"runtime_profile_id":"`+profile.ID+`","runner":"host","run_controls":{"host_activated":true}}`)
+	if launchResponse.Code != http.StatusCreated {
+		t.Fatalf("launch configured Reason Task status %d body %s", launchResponse.Code, launchResponse.Body.String())
+	}
+	var reasonTask struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(launchResponse.Body).Decode(&reasonTask); err != nil || reasonTask.ID == "" {
+		t.Fatalf("decode configured Reason Task: task=%#v error=%v", reasonTask, err)
+	}
+	proposalResponse := reasonTaskRequest(t, server, http.MethodPost,
+		"/api/projects/"+project.ID+"/reason-tasks/"+reasonTask.ID+"/proposals", operatorToken,
+		`{"next_task_goals":["Continue validation"],"exploration_objective_changes":["Add configured review"],"readiness_judgment":"Ready","changes":[{"op":"create","key":"objective:configured-reason","type":"objective","record":{"status":"open","objective":"Configured operator review"}}]}`)
+	if proposalResponse.Code != http.StatusCreated {
+		t.Fatalf("create configured Reason proposal status %d body %s", proposalResponse.Code, proposalResponse.Body.String())
+	}
+	var proposal struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(proposalResponse.Body).Decode(&proposal); err != nil || proposal.ID == "" {
+		t.Fatalf("decode configured Reason proposal: proposal=%#v error=%v", proposal, err)
+	}
+	approveResponse := reasonTaskRequest(t, server, http.MethodPost,
+		"/api/projects/"+project.ID+"/reason-task-proposals/"+proposal.ID+"/approve", operatorToken, "")
+	if approveResponse.Code != http.StatusOK || !strings.Contains(approveResponse.Body.String(), `"status":"approved"`) {
+		t.Fatalf("configured operator approval status %d body %s", approveResponse.Code, approveResponse.Body.String())
+	}
+	recordResponse := reasonTaskRequest(t, server, http.MethodGet,
+		"/api/v2/projects/"+project.ID+"/blackboard/records/objective:configured-reason", operatorToken, "")
+	if recordResponse.Code != http.StatusOK || !strings.Contains(recordResponse.Body.String(), `"key":"objective:configured-reason"`) {
+		t.Fatalf("configured approval public Blackboard record status %d body %s", recordResponse.Code, recordResponse.Body.String())
+	}
+}
+
+func reasonTaskRequest(t *testing.T, server *daemon.Server, method, path, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	return response
 }

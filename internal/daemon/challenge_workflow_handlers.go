@@ -35,6 +35,9 @@ func (server *Server) handleChallengeAttempts(response http.ResponseWriter, requ
 }
 
 func (server *Server) handleChallengeClaim(response http.ResponseWriter, request *http.Request) {
+	if !server.requireOperatorAuthority(response, request) {
+		return
+	}
 	input, ok := server.decodeChallengeOperation(response, request)
 	if !ok {
 		return
@@ -51,6 +54,9 @@ func (server *Server) handleChallengeClaim(response http.ResponseWriter, request
 }
 
 func (server *Server) handleChallengeSubmit(response http.ResponseWriter, request *http.Request) {
+	if !server.requireOperatorAuthority(response, request) {
+		return
+	}
 	input, ok := server.decodeChallengeOperation(response, request)
 	if !ok {
 		return
@@ -67,6 +73,9 @@ func (server *Server) handleChallengeSubmit(response http.ResponseWriter, reques
 }
 
 func (server *Server) handleChallengeAbandon(response http.ResponseWriter, request *http.Request) {
+	if !server.requireOperatorAuthority(response, request) {
+		return
+	}
 	input, ok := server.decodeChallengeOperation(response, request)
 	if !ok {
 		return
@@ -83,6 +92,9 @@ func (server *Server) handleChallengeAbandon(response http.ResponseWriter, reque
 }
 
 func (server *Server) handleChallengeFinalize(response http.ResponseWriter, request *http.Request) {
+	if !server.requireOperatorAuthority(response, request) {
+		return
+	}
 	input, ok := server.decodeChallengeOperation(response, request)
 	if !ok {
 		return
@@ -135,7 +147,7 @@ func writeChallengeWorkflowError(response http.ResponseWriter, err error) {
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, challengeworkflow.ErrAttemptNotFound), errors.Is(err, task.ErrNotFound):
 		writeError(response, http.StatusNotFound, err.Error())
-	case errors.Is(err, challengeworkflow.ErrOperationConflict), errors.Is(err, challengeworkflow.ErrOperationActionRequired), errors.Is(err, challengeworkflow.ErrAttemptNotOpen):
+	case errors.Is(err, challengeworkflow.ErrOperationConflict), errors.Is(err, challengeworkflow.ErrOperationActionRequired), errors.Is(err, challengeworkflow.ErrAttemptNotOpen), errors.Is(err, challengeworkflow.ErrBlackboardDisabled):
 		writeError(response, http.StatusConflict, err.Error())
 	default:
 		writeError(response, http.StatusBadGateway, err.Error())

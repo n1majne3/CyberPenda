@@ -53,6 +53,9 @@ func (server *Server) handleProposeReasonTaskChanges(response http.ResponseWrite
 }
 
 func (server *Server) handleApproveReasonTaskProposal(response http.ResponseWriter, request *http.Request) {
+	if !server.requireOperatorAuthority(response, request) {
+		return
+	}
 	projectID := request.PathValue("id")
 	if !server.requireProject(response, projectID) {
 		return

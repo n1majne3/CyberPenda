@@ -287,7 +287,7 @@ func (server *Server) handleDisabledTaskOutputEvidenceRetain(response http.Respo
 		if contractErr := blackboardv2input.DecodeContractInput("retainEvidenceRequest", false, contractRaw, &retain); contractErr != nil {
 			return nil, contractErr
 		}
-		result, retainErr := server.blackboardV2.RetainEvidenceForOperator(
+		result, retainErr := server.blackboardV2.RetainTaskEvidenceForOperator(
 			ctx, principal.projectID, found.ID, continuation.ID, principal.actorID, retain,
 		)
 		if retainErr != nil && server.logger != nil {

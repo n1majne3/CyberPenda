@@ -1342,6 +1342,7 @@ func TestRecoveryGenerationAwaitingResultBecomesActionRequiredAfterRestart(t *te
 				waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
 				retry := httptest.NewRequest(http.MethodPost,
 					"/api/projects/"+projectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+				authorizeOperatorTestRequest(server, retry)
 				retry.Header.Set("Idempotency-Key", "restart-awaiting-retry")
 				response := httptest.NewRecorder()
 				server.ServeHTTP(response, retry)
@@ -2122,6 +2123,7 @@ func TestAssistedConclusionWrongBaseRevisionAfterExplicitRetryRequiresAction(t *
 	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
 	retry := httptest.NewRequest(http.MethodPost,
 		"/api/projects/"+projectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	authorizeOperatorTestRequest(server, retry)
 	retry.Header.Set("Idempotency-Key", "wrong-base-retry")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, retry)
@@ -2212,6 +2214,7 @@ func TestAssistedConclusionRetryDispatchFailureBecomesActionRequired(t *testing.
 	waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateActionRequired)
 	retry := httptest.NewRequest(http.MethodPost,
 		"/api/projects/"+projectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	authorizeOperatorTestRequest(server, retry)
 	retry.Header.Set("Idempotency-Key", "dispatch-failure-retry")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, retry)
@@ -2255,6 +2258,7 @@ func TestAssistedConclusionRetryIsIdempotentAndValidResultRecovers(t *testing.T)
 	retryURL := "/api/projects/" + projectID + "/tasks/" + created.ID + "/blackboard-conclusion/retry"
 	for attempt := 0; attempt < 2; attempt++ {
 		request := httptest.NewRequest(http.MethodPost, retryURL, bytes.NewBufferString(`{}`))
+		authorizeOperatorTestRequest(server, request)
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Idempotency-Key", "operator-retry-1")
 		response := httptest.NewRecorder()

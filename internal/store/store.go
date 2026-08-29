@@ -952,8 +952,29 @@ func migrations() []migration {
 		newMigration(65, "accepted_steering_client_selection_identity", migration65SQL, migration65Up),
 		newMigration(66, "disabled_session_blackboard_mode", migration66SQL, migration66Up),
 		newMigration(67, "operator_disabled_output_origins", migration67SQL, migration67Up),
+		newMigration(68, "operator_evidence_request_sources", migration68SQL, migration68Up),
 	}
 }
+
+const migration68SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_operator_evidence_requests (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+	idempotency_key TEXT NOT NULL,
+	request_hash TEXT NOT NULL,
+	actor_id TEXT NOT NULL,
+	source_continuation_id TEXT NOT NULL REFERENCES task_continuations(id) ON DELETE RESTRICT,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, source_task_id, idempotency_key),
+	CHECK (idempotency_key <> ''),
+	CHECK (request_hash <> ''),
+	CHECK (actor_id <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_operator_evidence_request_continuation
+	ON blackboard_v2_operator_evidence_requests (source_continuation_id);
+`
+
+func migration68Up(tx *sql.Tx) error { return execStatements(tx, migration68SQL) }
 
 const migration67SQL = `
 CREATE TABLE IF NOT EXISTS blackboard_v2_operator_attempt_origins (

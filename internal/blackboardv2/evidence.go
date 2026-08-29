@@ -210,6 +210,76 @@ func (s *Service) RetainEvidenceForOperator(ctx context.Context, projectID, task
 	return s.RetainEvidenceForContinuation(ctx, projectID, continuationID, request)
 }
 
+// RetainTaskEvidenceForOperator fixes the source Continuation and actor on the
+// first Task-scoped idempotency reservation. A retry after Runtime replacement
+// therefore reuses the original receipt and cannot read replacement output or
+// change Trusted Origin.
+func (s *Service) RetainTaskEvidenceForOperator(ctx context.Context, projectID, taskID, candidateContinuationID, actorID string, request RetainEvidenceRequest) (ChangeResult, error) {
+	projectID = strings.TrimSpace(projectID)
+	taskID = strings.TrimSpace(taskID)
+	candidateContinuationID = strings.TrimSpace(candidateContinuationID)
+	actorID = strings.TrimSpace(actorID)
+	if projectID == "" || taskID == "" || candidateContinuationID == "" || actorID == "" {
+		return ChangeResult{}, semanticError("authority_denied", "operator, Project, Task, and source Continuation identity are required", "authorization", nil)
+	}
+	if err := validateRetainEvidenceRequest(request); err != nil {
+		return ChangeResult{}, err
+	}
+	actualTaskID, _, err := s.continuationTaskStatus(ctx, projectID, candidateContinuationID)
+	if err != nil {
+		return ChangeResult{}, err
+	}
+	if actualTaskID != taskID {
+		return ChangeResult{}, semanticError("authority_denied", "selected Task output does not match its source Continuation", "authorization", nil)
+	}
+	requestHash, err := retainedEvidenceRequestHash(request)
+	if err != nil {
+		return ChangeResult{}, fmt.Errorf("hash operator Evidence request: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ChangeResult{}, fmt.Errorf("begin operator Evidence source reservation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO blackboard_v2_operator_evidence_requests
+		(project_id,source_task_id,idempotency_key,request_hash,actor_id,source_continuation_id,created_at)
+		VALUES(?,?,?,?,?,?,?)`, projectID, taskID, request.IdempotencyKey, requestHash, actorID, candidateContinuationID, now); err != nil {
+		return ChangeResult{}, fmt.Errorf("reserve operator Evidence source: %w", err)
+	}
+	var boundHash, boundActorID, boundContinuationID string
+	if err := tx.QueryRowContext(ctx, `SELECT request_hash,actor_id,source_continuation_id
+		FROM blackboard_v2_operator_evidence_requests
+		WHERE project_id=? AND source_task_id=? AND idempotency_key=?`,
+		projectID, taskID, request.IdempotencyKey).Scan(&boundHash, &boundActorID, &boundContinuationID); err != nil {
+		return ChangeResult{}, fmt.Errorf("read operator Evidence source reservation: %w", err)
+	}
+	if boundHash != requestHash {
+		return ChangeResult{}, semanticError("idempotency_conflict", "idempotency key was already used with different semantics", "idempotency_key", map[string]any{"idempotency_key": request.IdempotencyKey})
+	}
+	if boundContinuationID != candidateContinuationID {
+		var retainedRequestCount int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*)
+			FROM blackboard_v2_evidence_requests
+			WHERE project_id=? AND continuation_id=? AND idempotency_key=?`,
+			projectID, boundContinuationID, request.IdempotencyKey).Scan(&retainedRequestCount); err != nil {
+			return ChangeResult{}, fmt.Errorf("read bound Evidence request: %w", err)
+		}
+		if retainedRequestCount == 0 {
+			return ChangeResult{}, semanticError(
+				"evidence_source_forbidden",
+				"the original source Continuation has no retained request to replay",
+				"source_path",
+				nil,
+			)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return ChangeResult{}, fmt.Errorf("commit operator Evidence source reservation: %w", err)
+	}
+	return s.RetainEvidenceForOperator(ctx, projectID, taskID, boundContinuationID, boundActorID, request)
+}
+
 // RetainEvidenceForContinuation retains one confined payload and atomically
 // publishes its semantic Evidence record and relationships.
 func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, continuationID string, request RetainEvidenceRequest) (ChangeResult, error) {

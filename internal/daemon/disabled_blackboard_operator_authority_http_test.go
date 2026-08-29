@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -271,10 +272,127 @@ func TestDisabledEvidenceRetentionEnforcesOperatorProvenanceReplayAndConfinement
 	assertBlackboardV2Error(t, missing, http.StatusNotFound, "not_found")
 }
 
+func TestDisabledEvidenceReplayAfterReplacementKeepsOriginalSourceContinuation(t *testing.T) {
+	fixture := newDisabledOutputAuthorityFixture(t, "")
+	const sourcePath = "replacement-proof.txt"
+	originalContents := []byte("proof from original Continuation\n")
+	created := createDisabledOutputTask(
+		t, fixture, task.BlackboardConclusionModeDisabled, sourcePath, originalContents,
+	)
+	original := readDisabledOutputTask(t, fixture, created.ID)
+	if original.LatestContinuation == nil {
+		t.Fatal("Disabled Task public detail omitted original Continuation")
+	}
+
+	base := "/api/v2/projects/" + fixture.projectID
+	workBatch := `{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:replacement-replay","type":"objective","record":{"status":"open","objective":"Review replacement-safe retention"}},{"op":"create","key":"attempt:replacement-replay","type":"attempt","record":{"status":"open","summary":"Operator reviews original Disabled output"}},{"op":"relate","from":"attempt:replacement-replay","relation":"tests","to":"objective:replacement-replay"}]}`
+	mustOperatorV2Request(t, fixture, "operator-replay", http.MethodPost, base+"/blackboard/changes", "replacement-replay-open", workBatch, http.StatusOK)
+	retainPath := base + "/tasks/" + created.ID + "/blackboard/evidence:retain"
+	retainBody := `{"key":"evidence:replacement-replay","attempt":"attempt:replacement-replay","source_path":"replacement-proof.txt","artifact_type":"text","summary":"Original Continuation proof","media_type":"text/plain"}`
+	first := mustOperatorV2Request(
+		t, fixture, "operator-replay", http.MethodPost, retainPath,
+		"replacement-replay-retain", retainBody, http.StatusOK,
+	)
+	var before blackboardv2.CurrentDetail
+	getDisabledOutputJSON(t, fixture, base+"/blackboard/records/evidence:replacement-replay", fixture.operatorToken, &before)
+
+	// Setup a replacement Continuation and different source bytes. Final
+	// behavior assertions below use only public HTTP responses and DTOs.
+	replacement, err := fixture.server.tasks.CreateContinuation(
+		created.ID, fixture.profileID, string(runtimeprofile.ProviderCodex), task.RunnerHost,
+	)
+	if err != nil {
+		t.Fatalf("create replacement Continuation fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.runtimeRoot, created.ID, "workdir", sourcePath), []byte("proof from replacement Continuation\n"), 0o600); err != nil {
+		t.Fatalf("replace source fixture: %v", err)
+	}
+	afterReplacement := readDisabledOutputTask(t, fixture, created.ID)
+	if afterReplacement.LatestContinuation == nil || afterReplacement.LatestContinuation.ID != replacement.ID ||
+		afterReplacement.LatestContinuation.ID == original.LatestContinuation.ID {
+		t.Fatalf("public Task detail did not expose replacement Continuation: original=%#v replacement=%#v task=%#v", original.LatestContinuation, replacement, afterReplacement)
+	}
+
+	replay := mustOperatorV2Request(
+		t, fixture, "operator-replay", http.MethodPost, retainPath,
+		"replacement-replay-retain", retainBody, http.StatusOK,
+	)
+	if !bytes.Equal(first, replay) {
+		t.Fatalf("replacement retry did not replay original public response: first=%s replay=%s", first, replay)
+	}
+	var after blackboardv2.CurrentDetail
+	getDisabledOutputJSON(t, fixture, base+"/blackboard/records/evidence:replacement-replay", fixture.operatorToken, &after)
+	originalDigest := sha256.Sum256(originalContents)
+	if before.Record.SHA256 != hex.EncodeToString(originalDigest[:]) ||
+		after.Record.SHA256 != before.Record.SHA256 || after.Record.ManagedPath != before.Record.ManagedPath {
+		t.Fatalf("replacement retry changed public Evidence artifact: before=%#v after=%#v", before.Record, after.Record)
+	}
+}
+
+func TestDisabledEvidenceRetryAfterPreReservationFailureDoesNotReadReplacementWorkdir(t *testing.T) {
+	fixture := newDisabledOutputAuthorityFixture(t, "")
+	const sourcePath = "failed-before-reservation.txt"
+	created := createDisabledOutputTask(
+		t, fixture, task.BlackboardConclusionModeDisabled, sourcePath, []byte("original bytes\n"),
+	)
+	base := "/api/v2/projects/" + fixture.projectID
+	workBatch := `{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:failed-retain","type":"objective","record":{"status":"open","objective":"Review safely bound output"}},{"op":"create","key":"attempt:failed-retain","type":"attempt","record":{"status":"open","summary":"Operator reviews bound Disabled output"}},{"op":"relate","from":"attempt:failed-retain","relation":"tests","to":"objective:failed-retain"}]}`
+	mustOperatorV2Request(t, fixture, "operator-retry", http.MethodPost, base+"/blackboard/changes", "failed-retain-open", workBatch, http.StatusOK)
+	retainPath := base + "/tasks/" + created.ID + "/blackboard/evidence:retain"
+	retainBody := `{"key":"evidence:failed-retain","attempt":"attempt:failed-retain","source_path":"failed-before-reservation.txt","artifact_type":"text","summary":"Bound source must not drift","media_type":"text/plain"}`
+
+	// Setup injects a failure after the Task-scoped source binding but before the
+	// continuation-scoped Evidence request reserves the source bytes.
+	fixture.server.blackboardV2 = blackboardv2.NewServiceWithEvidence(fixture.server.db, blackboardv2.EvidenceConfig{
+		RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.artifactRoot,
+		Failures: failBeforeEvidenceReservation{},
+	})
+	failed := disabledOutputRequest(
+		fixture, http.MethodPost, retainPath, fixture.operatorToken, "operator-retry",
+		"failed-retain-request", retainBody,
+	)
+	if failed.Code != http.StatusInternalServerError {
+		t.Fatalf("injected retain status=%d body=%s, want internal server error", failed.Code, failed.Body.String())
+	}
+	fixture.server.blackboardV2 = blackboardv2.NewServiceWithEvidence(fixture.server.db, blackboardv2.EvidenceConfig{
+		RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.artifactRoot,
+	})
+	if _, err := fixture.server.tasks.CreateContinuation(
+		created.ID, fixture.profileID, string(runtimeprofile.ProviderCodex), task.RunnerHost,
+	); err != nil {
+		t.Fatalf("create replacement Continuation fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.runtimeRoot, created.ID, "workdir", sourcePath), []byte("replacement bytes must not be retained\n"), 0o600); err != nil {
+		t.Fatalf("replace source fixture: %v", err)
+	}
+
+	retry := disabledOutputRequest(
+		fixture, http.MethodPost, retainPath, fixture.operatorToken, "operator-retry",
+		"failed-retain-request", retainBody,
+	)
+	assertBlackboardV2Error(t, retry, http.StatusUnprocessableEntity, "evidence_source_forbidden")
+	missing := disabledOutputRequest(
+		fixture, http.MethodGet, base+"/blackboard/records/evidence:failed-retain",
+		fixture.operatorToken, "operator-retry", "", "",
+	)
+	assertBlackboardV2Error(t, missing, http.StatusNotFound, "not_found")
+}
+
+type failBeforeEvidenceReservation struct{}
+
+func (failBeforeEvidenceReservation) FailAfter(point blackboardv2.EvidenceFailurePoint) error {
+	if point == blackboardv2.EvidenceFailureBeforeReservation {
+		return errors.New("injected failure before Evidence reservation")
+	}
+	return nil
+}
+
 type disabledOutputAuthorityFixture struct {
 	server        *Server
 	projectID     string
 	profileID     string
+	runtimeRoot   string
+	artifactRoot  string
 	operatorToken string
 }
 
@@ -303,8 +421,9 @@ func newDisabledOutputAuthorityFixture(t *testing.T, authToken string) disabledO
 	})
 	recordingFactory := &recordingProviderSessionFactory{session: providerSession, adapter: &persistentTestAdapter{}}
 	factory := &authorityProviderSessionFactory{recordingProviderSessionFactory: recordingFactory}
+	runtimeRoot := filepath.Join(root, "runs")
 	server, err := NewServer(Config{
-		Version: "test", DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		Version: "test", DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: runtimeRoot,
 		ArtifactRoot: artifactRoot, AuthToken: authToken,
 		DisableBuiltinSkills:   true,
 		ProviderSessionFactory: factory,
@@ -347,7 +466,7 @@ func newDisabledOutputAuthorityFixture(t *testing.T, authToken string) disabledO
 		}
 	}
 	return disabledOutputAuthorityFixture{
-		server: server, projectID: createdProject.ID, profileID: profile.ID,
+		server: server, projectID: createdProject.ID, profileID: profile.ID, runtimeRoot: runtimeRoot, artifactRoot: artifactRoot,
 		operatorToken: operatorToken,
 	}
 }

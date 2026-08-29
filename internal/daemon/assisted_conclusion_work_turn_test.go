@@ -65,9 +65,19 @@ func TestAssistedConclusionNonSettlingWorkTurnBecomesNonRetryableTerminal(t *tes
 
 	// Two explicit retries also conflict. The bounded budget is exhausted on the
 	// second retry, flipping the receipt into the distinct non-retryable terminal.
+	unauthorized := httptest.NewRequest(http.MethodPost,
+		"/api/projects/"+projectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	unauthorized.Header.Set("Idempotency-Key", "host-runtime-must-not-retry")
+	unauthorizedResponse := httptest.NewRecorder()
+	server.ServeHTTP(unauthorizedResponse, unauthorized)
+	if unauthorizedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("tokenless retry status = %d body %s, want unauthorized", unauthorizedResponse.Code, unauthorizedResponse.Body.String())
+	}
+
 	retry := func(key string) int {
 		request := httptest.NewRequest(http.MethodPost,
 			"/api/projects/"+projectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+		request.Header.Set("Authorization", "Bearer "+server.operatorToken)
 		request.Header.Set("Idempotency-Key", key)
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)
