@@ -69,11 +69,8 @@ func (server *Server) authenticateBlackboardV2(request *http.Request, requireCon
 		return blackboardV2Principal{}, blackboardV2HTTPError("invalid_schema", "project id is required", "path.project_id")
 	}
 	token := projectinterface.BearerToken(request)
-	operatorRequest := token == "" && server.authToken == ""
-	if token != "" && server.authToken != "" &&
-		subtle.ConstantTimeCompare([]byte(token), []byte(server.authToken)) == 1 {
-		operatorRequest = true
-	}
+	operatorRequest := token != "" &&
+		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) == 1
 	if operatorRequest {
 		if requireContinuation {
 			return blackboardV2Principal{}, blackboardV2HTTPError("authority_denied", "this Blackboard capability requires a trusted Continuation", "authority")

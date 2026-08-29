@@ -31,8 +31,11 @@ PENTEST_RUNNER=sandbox \
 python3 scripts/validate-juice-shop-assisted-live.py
 ```
 
-Optional controls are `PENTEST_AUTH_TOKEN`, `PENTEST_JUICE_TIMEOUT_SEC`,
-`PENTEST_JUICE_POLL_SEC`, and `PENTEST_JUICE_URL`.
+Set `PENTEST_AUTH_TOKEN` to the configured daemon token or to the token from
+the generated loopback operator access URL. The validator reads operator
+Blackboard endpoints and does not use tokenless loopback authority. Optional
+controls are `PENTEST_JUICE_TIMEOUT_SEC`, `PENTEST_JUICE_POLL_SEC`, and
+`PENTEST_JUICE_URL`.
 
 The script creates a fresh scoped Project and launches the Task with:
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -13,6 +14,11 @@ import (
 
 func TestReasonTaskLaunchAndProposalApprovalHTTP(t *testing.T) {
 	server := newDaemon(t)
+	accessURL, err := url.Parse(server.GeneratedOperatorAccessURL())
+	if err != nil || accessURL.Query().Get("token") == "" {
+		t.Fatalf("generated operator access URL = %q, error=%v", server.GeneratedOperatorAccessURL(), err)
+	}
+	operatorToken := accessURL.Query().Get("token")
 	projectID := createProject(t, server, `{"name":"Engagement","kind":"pentest","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 
@@ -54,6 +60,7 @@ func TestReasonTaskLaunchAndProposalApprovalHTTP(t *testing.T) {
 
 	snapshot := func() string {
 		request := httptest.NewRequest(http.MethodGet, "/api/v2/projects/"+projectID+"/blackboard/snapshot", nil)
+		request.Header.Set("Authorization", "Bearer "+operatorToken)
 		result := httptest.NewRecorder()
 		server.ServeHTTP(result, request)
 		if result.Code != http.StatusOK {
