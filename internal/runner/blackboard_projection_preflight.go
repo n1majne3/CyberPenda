@@ -10,9 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
 
-	"pentest/internal/blackboardv2"
+	"pentest/internal/runtimeprofile"
 )
 
 type omittedProjectionFileKind uint8
@@ -37,7 +38,8 @@ type omittedProjectionFile struct {
 // Mode is immutable, so a valid Omitted launch uses a fresh or already-Omitted
 // Runtime Layout. A layout with stale Required projection must fail closed and
 // remain unchanged for operator recovery.
-func preflightOmittedBlackboardProjection(layout Layout) error {
+func preflightOmittedBlackboardProjection(layout Layout, profile runtimeprofile.Profile) error {
+	trustedMCPNames := omittedProjectionTrustedMCPNames(profile)
 	files := []omittedProjectionFile{
 		{layout.Workdir, "AGENTS.md", omittedProjectionInstruction},
 		{layout.Workdir, "CLAUDE.md", omittedProjectionInstruction},
@@ -60,22 +62,28 @@ func preflightOmittedBlackboardProjection(layout Layout) error {
 		if !found {
 			continue
 		}
-		stale := false
+		var (
+			stale      bool
+			inspectErr error
+		)
 		switch file.kind {
 		case omittedProjectionInstruction:
 			stale = containsGeneratedBlackboardInstructions(raw)
 		case omittedProjectionContext:
 			stale = true
 		case omittedProjectionMCPJSON:
-			stale = containsTrustedMCPJSON(raw)
+			stale, inspectErr = containsTrustedMCPJSON(raw, trustedMCPNames)
 		case omittedProjectionCodexConfig:
-			stale = containsTrustedCodexConfig(raw)
+			stale, inspectErr = containsTrustedCodexConfig(raw, trustedMCPNames)
 		case omittedProjectionClaudeSettings:
 			stale = containsBlackboardAuthorityText(raw) || bytes.Contains(raw, []byte("mcp__pentest__"))
 		case omittedProjectionHermesConfig:
-			stale = containsTrustedHermesConfig(raw)
+			stale, inspectErr = containsTrustedHermesConfig(raw, trustedMCPNames)
 		case omittedProjectionCredentialConfig:
 			stale = containsBlackboardAuthorityText(raw)
+		}
+		if inspectErr != nil {
+			return fmt.Errorf("Omitted Blackboard projection preflight could not inspect %s: %w", file.relative, inspectErr)
 		}
 		if stale {
 			return fmt.Errorf("Omitted Blackboard projection preflight found stale Blackboard artifact %s", file.relative)
@@ -85,8 +93,18 @@ func preflightOmittedBlackboardProjection(layout Layout) error {
 }
 
 func containsGeneratedBlackboardInstructions(raw []byte) bool {
-	v2 := []byte("# Blackboard workflow\n\n" + blackboardv2.CodexChecklist())
-	if bytes.Contains(raw, v2) {
+	markers := [][]byte{
+		[]byte("Reread Scope and the Blackboard snapshot"),
+		[]byte("Write with Blackboard Keys and current versions"),
+		[]byte("Blackboard scope labels never grant authorization"),
+	}
+	markerCount := 0
+	for _, marker := range markers {
+		if bytes.Contains(raw, marker) {
+			markerCount++
+		}
+	}
+	if bytes.Contains(raw, []byte("# Blackboard workflow\n\n")) && markerCount >= 2 {
 		return true
 	}
 	return bytes.Contains(raw, []byte("Trusted MCP is pre-configured")) &&
@@ -95,45 +113,74 @@ func containsGeneratedBlackboardInstructions(raw []byte) bool {
 		bytes.Contains(raw, []byte(".pentest/context.json"))
 }
 
-func containsTrustedMCPJSON(raw []byte) bool {
-	if containsBlackboardAuthorityText(raw) {
-		return true
-	}
+func containsTrustedMCPJSON(raw []byte, trustedNames map[string]struct{}) (bool, error) {
 	var config struct {
 		MCPServers map[string]json.RawMessage `json:"mcpServers"`
 	}
 	if err := json.Unmarshal(raw, &config); err != nil {
-		return false
+		return false, fmt.Errorf("parse known MCP JSON: %w", err)
+	}
+	if containsBlackboardAuthorityText(raw) {
+		return true, nil
 	}
 	for name := range config.MCPServers {
-		if strings.EqualFold(strings.TrimSpace(name), trustedMCPServerName) {
-			return true
+		if isOmittedProjectionTrustedMCPName(name, trustedNames) {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
 }
 
-func containsTrustedCodexConfig(raw []byte) bool {
-	return containsBlackboardAuthorityText(raw) ||
-		bytes.Contains(raw, []byte("[mcp_servers.pentest]"))
-}
-
-func containsTrustedHermesConfig(raw []byte) bool {
-	if containsBlackboardAuthorityText(raw) {
-		return true
+func containsTrustedCodexConfig(raw []byte, trustedNames map[string]struct{}) (bool, error) {
+	var config struct {
+		MCPServers map[string]any `toml:"mcp_servers"`
 	}
+	if err := toml.Unmarshal(raw, &config); err != nil {
+		return false, fmt.Errorf("parse known Codex TOML: %w", err)
+	}
+	if containsBlackboardAuthorityText(raw) {
+		return true, nil
+	}
+	for name := range config.MCPServers {
+		if isOmittedProjectionTrustedMCPName(name, trustedNames) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func containsTrustedHermesConfig(raw []byte, trustedNames map[string]struct{}) (bool, error) {
 	var config struct {
 		MCPServers map[string]any `yaml:"mcp_servers"`
 	}
 	if err := yaml.Unmarshal(raw, &config); err != nil {
-		return false
+		return false, fmt.Errorf("parse known Hermes YAML: %w", err)
+	}
+	if containsBlackboardAuthorityText(raw) {
+		return true, nil
 	}
 	for name := range config.MCPServers {
-		if strings.EqualFold(strings.TrimSpace(name), trustedMCPServerName) {
-			return true
+		if isOmittedProjectionTrustedMCPName(name, trustedNames) {
+			return true, nil
 		}
 	}
-	return false
+	return false, nil
+}
+
+func omittedProjectionTrustedMCPNames(profile runtimeprofile.Profile) map[string]struct{} {
+	names := map[string]struct{}{trustedMCPServerName: {}}
+	for _, server := range profile.Fields.MCPServers {
+		name := strings.ToLower(strings.TrimSpace(server.Name))
+		if name != "" && server.Mode == runtimeprofile.MCPServerTrusted {
+			names[name] = struct{}{}
+		}
+	}
+	return names
+}
+
+func isOmittedProjectionTrustedMCPName(name string, trustedNames map[string]struct{}) bool {
+	_, trusted := trustedNames[strings.ToLower(strings.TrimSpace(name))]
+	return trusted
 }
 
 func containsBlackboardAuthorityText(raw []byte) bool {
@@ -144,8 +191,7 @@ func containsBlackboardAuthorityText(raw []byte) bool {
 		bytes.Contains(upper, []byte("PENTEST_API_URL")) {
 		return true
 	}
-	lower := bytes.ToLower(raw)
-	return bytes.Contains(lower, []byte("/mcp?token="))
+	return false
 }
 
 func readOmittedProjectionFile(base, relative string) ([]byte, bool, error) {

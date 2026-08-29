@@ -84,7 +84,7 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 		return ConfigProjection{}, err
 	}
 	if req.BlackboardProjection == BlackboardProjectionOmitted {
-		if err := preflightOmittedBlackboardProjection(layout); err != nil {
+		if err := preflightOmittedBlackboardProjection(layout, profile); err != nil {
 			return ConfigProjection{}, err
 		}
 	}

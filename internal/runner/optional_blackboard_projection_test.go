@@ -108,7 +108,12 @@ func TestRuntimeProvidersRejectModifiedGeneratedInstructionsWithoutChangingLayou
 			if err != nil {
 				t.Fatalf("read generated instructions: %v", err)
 			}
-			modified := append(generated, []byte("\nRuntime-added note.\n")...)
+			modified := append([]byte(nil), generated...)
+			changedAt := bytes.Index(modified, []byte("semantic milestones"))
+			if changedAt < 0 {
+				t.Fatal("generated checklist does not contain the expected edit point")
+			}
+			modified[changedAt] = 'S'
 			if err := os.WriteFile(instructionPath, modified, 0o600); err != nil {
 				t.Fatalf("modify generated instructions: %v", err)
 			}
@@ -144,7 +149,7 @@ func TestRuntimeProvidersSupportFreshAndRepeatedOmittedProjection(t *testing.T) 
 				profile := runtimeprofile.Profile{Provider: provider, Fields: runtimeprofile.Fields{Model: "ordinary-model"}}
 				if externalMCP {
 					profile.Fields.MCPServers = []runtimeprofile.MCPServer{{
-						Name: "external-docs", Mode: runtimeprofile.MCPServerExternal, URL: "https://external.example.test/mcp",
+						Name: "external-docs", Mode: runtimeprofile.MCPServerExternal, URL: "https://external.example.test/mcp?token=external-token",
 					}}
 				}
 				userFiles := map[string][]byte{
@@ -253,6 +258,113 @@ func TestRuntimeProvidersRejectTrustedMCPConfigWithoutChangingIt(t *testing.T) {
 			})
 			if err == nil {
 				t.Fatal("omitted projection accepted a stale trusted Project Interface config")
+			}
+			assertRuntimeLayoutUnchanged(t, layout.TaskRoot, before)
+		})
+	}
+}
+
+func TestRuntimeProvidersRejectStaleCustomTrustedMCPWithoutChangingLayout(t *testing.T) {
+	for _, provider := range optionalProjectionProviders() {
+		t.Run(string(provider), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("USERPROFILE", t.TempDir())
+			taskID := "stale-custom-trusted-mcp-" + string(provider)
+			layout, err := runner.PrepareTaskLayout(t.TempDir(), taskID, provider)
+			if err != nil {
+				t.Fatalf("prepare Runtime layout: %v", err)
+			}
+			profile := runtimeprofile.Profile{Provider: provider, Fields: runtimeprofile.Fields{
+				Env: map[string]string{"PENTEST_DISABLE_TRUSTED_MCP": "1"},
+				MCPServers: []runtimeprofile.MCPServer{{
+					Name: "project-memory", Mode: runtimeprofile.MCPServerTrusted, URL: "https://memory.example.test/mcp",
+				}},
+			}}
+			required := runner.ProjectionRequest{
+				Owner:         owner.NewTaskContract(taskID, "project-1", layout.Workdir),
+				ScopeSnapshot: project.Scope{Domains: []string{"scope.example.test"}},
+			}
+			projection, err := runner.ProjectRuntimeConfig(layout, profile, required)
+			if err != nil {
+				t.Fatalf("project required Runtime config with custom trusted MCP: %v", err)
+			}
+			mcpPath := providerMCPConfigPath(layout, provider, projection)
+			if raw, err := os.ReadFile(mcpPath); err != nil || !strings.Contains(string(raw), "project-memory") {
+				t.Fatalf("required custom trusted MCP projection = %s, err=%v", raw, err)
+			}
+			for _, path := range []string{
+				filepath.Join(layout.Workdir, "AGENTS.md"),
+				filepath.Join(layout.Workdir, ".pentest", "context.json"),
+			} {
+				if err := os.Remove(path); err != nil {
+					t.Fatalf("remove isolated Required projection artifact %s: %v", path, err)
+				}
+			}
+			before := snapshotRuntimeLayout(t, layout.TaskRoot)
+			omitted := required
+			omitted.BlackboardProjection = runner.BlackboardProjectionOmitted
+			if _, err := runner.ProjectRuntimeConfig(layout, profile, omitted); err == nil {
+				t.Fatal("omitted projection accepted stale custom trusted MCP configuration")
+			}
+			assertRuntimeLayoutUnchanged(t, layout.TaskRoot, before)
+		})
+	}
+}
+
+func TestRuntimeProvidersRejectMalformedKnownMCPConfigWithoutChangingLayout(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		provider runtimeprofile.Provider
+		path     func(runner.Layout) string
+		content  []byte
+	}{
+		{
+			name:     "claude .mcp.json",
+			provider: runtimeprofile.ProviderClaudeCode,
+			path:     func(layout runner.Layout) string { return filepath.Join(layout.Workdir, ".mcp.json") },
+			content:  []byte(`{"mcpServers":{"external-docs":`),
+		},
+		{
+			name:     "pi agent/mcp.json",
+			provider: runtimeprofile.ProviderPi,
+			path:     func(layout runner.Layout) string { return filepath.Join(layout.ProviderHome, "agent", "mcp.json") },
+			content:  []byte(`{"mcpServers":{"external-docs":`),
+		},
+		{
+			name:     "hermes config.yaml",
+			provider: runtimeprofile.ProviderHermes,
+			path:     func(layout runner.Layout) string { return filepath.Join(layout.ProviderHome, "config.yaml") },
+			content:  []byte("mcp_servers:\n  external-docs: [unterminated\n"),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			taskID := "malformed-known-mcp-" + string(test.provider)
+			layout, err := runner.PrepareTaskLayout(t.TempDir(), taskID, test.provider)
+			if err != nil {
+				t.Fatalf("prepare Runtime layout: %v", err)
+			}
+			path := test.path(layout)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatalf("prepare malformed MCP config directory: %v", err)
+			}
+			if err := os.WriteFile(path, test.content, 0o600); err != nil {
+				t.Fatalf("write malformed MCP config: %v", err)
+			}
+			before := snapshotRuntimeLayout(t, layout.TaskRoot)
+			_, err = runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+				Provider: test.provider,
+				Fields: runtimeprofile.Fields{MCPServers: []runtimeprofile.MCPServer{{
+					Name: "external-docs", Mode: runtimeprofile.MCPServerExternal, URL: "https://external.example.test/mcp",
+				}}},
+			}, runner.ProjectionRequest{
+				Owner:                owner.NewTaskContract(taskID, "project-1", layout.Workdir),
+				BlackboardProjection: runner.BlackboardProjectionOmitted,
+			})
+			if err == nil {
+				t.Fatal("omitted projection accepted malformed known MCP configuration")
+			}
+			if !strings.Contains(err.Error(), "parse known") {
+				t.Fatalf("malformed known MCP configuration error = %v, want parse failure", err)
 			}
 			assertRuntimeLayoutUnchanged(t, layout.TaskRoot, before)
 		})
