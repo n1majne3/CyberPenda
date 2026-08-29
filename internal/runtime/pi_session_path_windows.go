@@ -3,10 +3,30 @@
 package runtime
 
 import (
+	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
+
+// piSessionFileIdentity identifies an existing session file by its Windows
+// volume and file index. These values are stable for every spelling of the
+// same file, including long and 8.3 names, case differences, symlinks, and
+// hard links. A missing file falls back to a normalized case-insensitive path;
+// callers do not cache its header classification and retry after it appears.
+func piSessionFileIdentity(path string) string {
+	f, err := os.Open(path)
+	if err == nil {
+		defer f.Close()
+		var info windows.ByHandleFileInformation
+		if err := windows.GetFileInformationByHandle(windows.Handle(f.Fd()), &info); err == nil {
+			return fmt.Sprintf("windows:%08x:%08x%08x", info.VolumeSerialNumber, info.FileIndexHigh, info.FileIndexLow)
+		}
+	}
+	return "path:" + strings.ToLower(canonicalPathForCompare(path))
+}
 
 // canonicalPathForCompare resolves a session-file path to a single canonical
 // key. Windows may hand the daemon an 8.3 short path (C:\Users\RUNNER~1\...)

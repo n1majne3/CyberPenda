@@ -7,11 +7,10 @@ import (
 )
 
 // The tailer must map every spelling of one session file to a single canonical
-// key. A header may carry a symlinked or separator-mangled spelling of the
-// walker's path; both must produce the same key so nesting classification and
-// dedup match. (On Windows the same normalizer also expands 8.3 short names via
-// GetLongPathName; that path is exercised by TestPiSessionTailSkipsDeeplyNested
-// SessionFiles under the windows-build CI job.)
+// path. A header may carry a symlinked or separator-mangled spelling of the
+// walker's path; both must produce the same canonical form. The tailer uses
+// piSessionFileIdentity for graph and dedup keys; native Windows tests cover
+// its long-name, 8.3, case, and hard-link aliases separately.
 func TestNormalizePiSessionPathCollapsesEquivalentSpellings(t *testing.T) {
 	root := t.TempDir()
 	real := filepath.Join(root, "sessions", "child.jsonl")

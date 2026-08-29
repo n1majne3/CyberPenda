@@ -86,6 +86,7 @@ type piSessionTailFile struct {
 	file   *os.File
 	reader *bufio.Reader
 	offset int64
+	path   string
 }
 
 // tailPiSession polls sessionDir for *.jsonl session files and follows every
@@ -99,9 +100,9 @@ type piSessionTailFile struct {
 func tailPiSession(ctx context.Context, sessionDir string, observe func(string), emit func(task.EventKind, task.EventPayload)) {
 	tailed := map[string]*piSessionTailFile{}
 	// headerParent caches each discovered file's parentSession so nesting depth
-	// is classified once per file without re-reading headers every pass. Keys
-	// and parentSession values are canonicalized so a Windows 8.3 short path in
-	// a header matches the walker's long-form path for the same file.
+	// is classified once per file without re-reading complete headers every
+	// pass. Keys use the same stable file identity as the tail state so Windows
+	// path aliases cannot split one physical session into multiple graph nodes.
 	headerParent := map[string]string{}
 	closeAll := func() {
 		for _, tf := range tailed {
@@ -125,25 +126,33 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 		// top-level agents only), so tailing them would grow open file handles
 		// without adding attribution.
 		for _, path := range listSessionFiles(sessionDir) {
-			key := normalizePiSessionPath(path)
+			key := piSessionFileIdentity(path)
 			if _, ok := tailed[key]; ok {
 				continue
 			}
 			parent, ok := headerParent[key]
 			if !ok {
-				parent = piSessionParent(path)
+				var classified bool
+				parent, classified = piSessionParent(path)
+				if !classified {
+					continue
+				}
 				headerParent[key] = parent
 			}
 			if parent != "" {
 				// A top-level subagent's parent is a root session (itself no
 				// parentSession). If the parent names its own parent, this file
 				// is a nested (grandchild) transcript — skip it. The header's
-				// parentSession is canonicalized before lookup so a short-path
-				// or aliased form still resolves to the tailed root.
-				parentKey := normalizePiSessionPath(parent)
+				// parentSession resolves to a stable file identity before lookup
+				// so a short-path or aliased form still finds the same parent.
+				parentKey := piSessionFileIdentity(parent)
 				grandparent, ok := headerParent[parentKey]
 				if !ok {
-					grandparent = piSessionParent(parent)
+					var classified bool
+					grandparent, classified = piSessionParent(parent)
+					if !classified {
+						continue
+					}
 					headerParent[parentKey] = grandparent
 				}
 				if grandparent != "" {
@@ -154,12 +163,12 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 			if err != nil {
 				continue
 			}
-			tailed[key] = &piSessionTailFile{file: f, reader: bufio.NewReader(f)}
+			tailed[key] = &piSessionTailFile{file: f, reader: bufio.NewReader(f), path: path}
 		}
 
-		// Drain every tailed file in canonical-path order so emission is
-		// deterministic. The map key is the canonical form; the on-disk path to
-		// open is recovered from it for the truncation check below.
+		// Drain every tailed file in identity-key order so emission is
+		// deterministic. Each tail state retains the on-disk path used to open
+		// it because a Windows file identity is not itself an openable path.
 		keys := make([]string, 0, len(tailed))
 		for key := range tailed {
 			keys = append(keys, key)
@@ -189,13 +198,13 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 				}
 			}
 			// If a file shrank (truncated/rotated in place), restart it from
-			// the beginning on the next pass. The canonical key is a clean
-			// absolute path, so it is safe to stat/open directly.
-			if info, statErr := os.Stat(key); statErr == nil && info.Size() < tf.offset {
+			// the beginning on the next pass. A Windows identity key is not a
+			// path, so use the discovered path kept with the open tail state.
+			if info, statErr := os.Stat(tf.path); statErr == nil && info.Size() < tf.offset {
 				_ = tf.file.Close()
-				f, err := os.Open(key)
+				f, err := os.Open(tf.path)
 				if err == nil {
-					tailed[key] = &piSessionTailFile{file: f, reader: bufio.NewReader(f)}
+					tailed[key] = &piSessionTailFile{file: f, reader: bufio.NewReader(f), path: tf.path}
 				} else {
 					delete(tailed, key)
 				}
@@ -209,41 +218,39 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 	}
 }
 
-// normalizePiSessionPath canonicalizes a session-file path so the same file
-// reached under different spellings — a Windows 8.3 short name, a symlinked
-// directory, or redundant separators — maps to one key. The OS-specific
-// canonicalPathForCompare expands short names and resolves symlinks; Clean
-// collapses separators. When the path does not exist yet, the cleaned form is
-// used so classification still has a stable key.
+// normalizePiSessionPath exposes path canonicalization for focused tests. The
+// tailer uses piSessionFileIdentity for graph and tail-state keys; this helper
+// still verifies symlink, separator, and missing-path behavior independently.
 func normalizePiSessionPath(path string) string {
 	return canonicalPathForCompare(path)
 }
 
 // piSessionParent returns the parentSession named by a session file's header,
-// or "" when the file is a root session (no parentSession) or its header is
-// not yet readable. A missing/unreadable header yields "" so a file is not
-// misclassified before its header lands.
-func piSessionParent(path string) string {
+// plus true when a complete session header was read. An empty parent with true
+// identifies a root session. Missing, incomplete, unreadable, or invalid
+// headers return false so discovery retries them instead of caching a root
+// classification.
+func piSessionParent(path string) (string, bool) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	defer f.Close()
 	line, err := bufio.NewReader(f).ReadString('\n')
-	if err != nil && len(line) == 0 {
-		return ""
+	if err != nil {
+		return "", false
 	}
 	var header struct {
 		Type          string `json:"type"`
 		ParentSession string `json:"parentSession"`
 	}
 	if json.Unmarshal([]byte(strings.TrimSpace(line)), &header) != nil {
-		return ""
+		return "", false
 	}
 	if header.Type != "session" {
-		return ""
+		return "", false
 	}
-	return strings.TrimSpace(header.ParentSession)
+	return strings.TrimSpace(header.ParentSession), true
 }
 
 // listSessionFiles returns every *.jsonl file under dir, including

@@ -14,3 +14,10 @@ func canonicalPathForCompare(path string) string {
 	}
 	return filepath.Clean(path)
 }
+
+// piSessionFileIdentity returns the stable key used by the parent graph and
+// per-file tail state. On non-Windows systems the existing canonical path is
+// the deterministic file identity.
+func piSessionFileIdentity(path string) string {
+	return canonicalPathForCompare(path)
+}

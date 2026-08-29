@@ -75,6 +75,26 @@ func writeSessionLine(t *testing.T, path, line string) {
 	}
 }
 
+func sessionHeaderLine(t *testing.T, id, parentSession string) string {
+	t.Helper()
+	header := struct {
+		Type          string `json:"type"`
+		Version       int    `json:"version"`
+		ID            string `json:"id"`
+		ParentSession string `json:"parentSession,omitempty"`
+	}{
+		Type:          "session",
+		Version:       3,
+		ID:            id,
+		ParentSession: parentSession,
+	}
+	encoded, err := json.Marshal(header)
+	if err != nil {
+		t.Fatalf("marshal session header: %v", err)
+	}
+	return string(encoded)
+}
+
 // TestPiSessionTailEmitsAppendedLines proves the tail decorator reads pi
 // session jsonl lines appended after launch and re-emits each as a
 // runtime_output event carrying the raw JSON, so the existing transcript
@@ -121,11 +141,12 @@ func TestPiSessionTailProjectsReasoningBlock(t *testing.T) {
 	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
 
 	sessionFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
+	writeSessionLine(t, sessionFile, sessionHeaderLine(t, "sess-reasoning", ""))
 	writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"reasoning","id":"pi-reasoning-1","reasoning":"checking the target"}]}}`)
-	waitForCount(t, getEmits, 1, 2*time.Second)
+	waitForCount(t, getEmits, 2, 2*time.Second)
 
 	got := getEmits()
-	text, _ := got[0].payload["text"].(string)
+	text, _ := got[1].payload["text"].(string)
 	var record map[string]any
 	if err := json.Unmarshal([]byte(text), &record); err != nil {
 		t.Fatalf("tail output is not provider JSON: %v", err)
@@ -146,9 +167,10 @@ func TestPiSessionTailShapeRedactsReasoning(t *testing.T) {
 	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
 
 	sessionFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
+	writeSessionLine(t, sessionFile, sessionHeaderLine(t, "sess-redaction", ""))
 	writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"reasoning","reasoning":"use bearer secret-pi-token-123456"}]}}`)
-	waitForCount(t, getEmits, 1, 2*time.Second)
-	text, _ := getEmits()[0].payload["text"].(string)
+	waitForCount(t, getEmits, 2, 2*time.Second)
+	text, _ := getEmits()[1].payload["text"].(string)
 	if strings.Contains(text, "secret-pi-token-123456") || !strings.Contains(text, "bearer [REDACTED]") {
 		t.Fatalf("Pi reasoning was not shape-redacted: %q", text)
 	}
@@ -235,6 +257,7 @@ func TestPiSessionTailDrainsAndStopsWhenInnerReturns(t *testing.T) {
 	inner := funcInnerAdapter{name: "pi", run: func(context.Context, func(task.EventKind, task.EventPayload)) error {
 		// Write a line just before exiting and never touch the context, mirroring
 		// a persistent Pi session that completes on its own.
+		writeSessionLine(t, sessionFile, sessionHeaderLine(t, "sess-final", ""))
 		writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"final"}]}}`)
 		return nil
 	}}
@@ -282,13 +305,13 @@ func TestPiSessionTailFollowsSubagentSessionFiles(t *testing.T) {
 
 	// Parent session appears first.
 	parentFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_parent.jsonl")
-	writeSessionLine(t, parentFile, `{"type":"session","version":3,"id":"sess-parent","cwd":"/task/workdir"}`)
+	writeSessionLine(t, parentFile, sessionHeaderLine(t, "sess-parent", ""))
 	writeSessionLine(t, parentFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"parent working"}]}}`)
 	waitForCount(t, getEmits, 2, 2*time.Second)
 
 	// A subagent spawns and writes a NEWER session file.
 	childFile := filepath.Join(sessionDir, "2026-06-19T12-12-30-500Z_child.jsonl")
-	writeSessionLine(t, childFile, `{"type":"session","version":3,"id":"sess-child","parentSession":"`+parentFile+`"}`)
+	writeSessionLine(t, childFile, sessionHeaderLine(t, "sess-child", parentFile))
 	waitForCount(t, getEmits, 3, 2*time.Second)
 
 	// While the child file is newest, the parent settles the subagent. That
@@ -322,13 +345,14 @@ func TestPiSessionTailDoesNotDuplicateOnStableNewest(t *testing.T) {
 	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
 
 	sessionFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
+	writeSessionLine(t, sessionFile, sessionHeaderLine(t, "sess-once", ""))
 	writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"once"}]}}`)
-	waitForCount(t, getEmits, 1, 2*time.Second)
+	waitForCount(t, getEmits, 2, 2*time.Second)
 
 	// Let several poll intervals pass with no new line; the count must stay 1.
 	time.Sleep(400 * time.Millisecond)
-	if got := len(getEmits()); got != 1 {
-		t.Fatalf("expected exactly 1 emit with no new lines, got %d", got)
+	if got := len(getEmits()); got != 2 {
+		t.Fatalf("expected exactly 2 emits with no new lines, got %d", got)
 	}
 }
 
@@ -346,18 +370,18 @@ func TestPiSessionTailSkipsDeeplyNestedSessionFiles(t *testing.T) {
 	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
 
 	parentFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_parent.jsonl")
-	writeSessionLine(t, parentFile, `{"type":"session","version":3,"id":"sess-parent","cwd":"/task/workdir"}`)
+	writeSessionLine(t, parentFile, sessionHeaderLine(t, "sess-parent", ""))
 	waitForCount(t, getEmits, 1, 2*time.Second)
 
 	childFile := filepath.Join(sessionDir, "2026-06-19T12-12-30-500Z_child.jsonl")
-	writeSessionLine(t, childFile, `{"type":"session","version":3,"id":"sess-child","parentSession":"`+parentFile+`"}`)
+	writeSessionLine(t, childFile, sessionHeaderLine(t, "sess-child", equivalentSessionPath(t, parentFile)))
 	waitForCount(t, getEmits, 2, 2*time.Second)
 
 	// A grandchild (nested) subagent file appears. Its transcript must not be
 	// tailed.
 	grandchildFile := filepath.Join(sessionDir, "2026-06-19T12-13-40-600Z_grandchild.jsonl")
 	before := len(getEmits())
-	writeSessionLine(t, grandchildFile, `{"type":"session","version":3,"id":"sess-grandchild","parentSession":"`+childFile+`"}`)
+	writeSessionLine(t, grandchildFile, sessionHeaderLine(t, "sess-grandchild", equivalentSessionPath(t, childFile)))
 	writeSessionLine(t, grandchildFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"nested work"}]}}`)
 
 	// Allow several poll intervals; the grandchild lines must never appear.
@@ -365,6 +389,43 @@ func TestPiSessionTailSkipsDeeplyNestedSessionFiles(t *testing.T) {
 	for _, e := range getEmits()[before:] {
 		if text, _ := e.payload["text"].(string); strings.Contains(text, "sess-grandchild") || strings.Contains(text, "nested work") {
 			t.Fatalf("nested subagent session file should not be tailed, got %q", text)
+		}
+	}
+}
+
+// TestPiSessionTailRetriesIncompleteHeader proves discovery does not cache an
+// unreadable header as a root session. Pi can create a session file before it
+// finishes the first JSONL record; once that header is complete, the parent
+// graph must still classify a grandchild as nested and skip its transcript.
+func TestPiSessionTailRetriesIncompleteHeader(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions", "--task-workdir--")
+	parentFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_parent.jsonl")
+	childFile := filepath.Join(sessionDir, "2026-06-19T12-12-30-500Z_child.jsonl")
+	grandchildFile := filepath.Join(sessionDir, "2026-06-19T12-13-40-600Z_grandchild.jsonl")
+
+	writeSessionLine(t, parentFile, sessionHeaderLine(t, "sess-parent", ""))
+	writeSessionLine(t, childFile, sessionHeaderLine(t, "sess-child", parentFile))
+	if err := os.WriteFile(grandchildFile, []byte(`{"type":"session"`), 0o600); err != nil {
+		t.Fatalf("write incomplete session header: %v", err)
+	}
+
+	adapter := runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, sessionDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
+	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
+
+	// Let discovery observe the incomplete file before its first record lands.
+	time.Sleep(250 * time.Millisecond)
+	completeHeader := sessionHeaderLine(t, "sess-grandchild", childFile)
+	writeSessionLine(t, grandchildFile, strings.TrimPrefix(completeHeader, `{"type":"session"`))
+	writeSessionLine(t, grandchildFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"nested after retry"}]}}`)
+
+	time.Sleep(400 * time.Millisecond)
+	for _, e := range getEmits() {
+		if text, _ := e.payload["text"].(string); strings.Contains(text, "sess-grandchild") || strings.Contains(text, "nested after retry") {
+			t.Fatalf("session with a retried nested header should not be tailed, got %q", text)
 		}
 	}
 }
@@ -393,12 +454,13 @@ func TestPiSessionTailDoesNotReopenAliasedSessionFile(t *testing.T) {
 	go func() { _ = runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, aliasDir).Run(ctx, "goal", emitCalls) }()
 
 	sessionFile := filepath.Join(realDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
+	writeSessionLine(t, sessionFile, sessionHeaderLine(t, "sess-alias-once", ""))
 	writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"once"}]}}`)
-	waitForCount(t, getEmits, 1, 2*time.Second)
+	waitForCount(t, getEmits, 2, 2*time.Second)
 
 	time.Sleep(400 * time.Millisecond)
-	if got := len(getEmits()); got != 1 {
-		t.Fatalf("aliased session file was reopened/re-read: expected 1 emit, got %d", got)
+	if got := len(getEmits()); got != 2 {
+		t.Fatalf("aliased session file was reopened/re-read: expected 2 emits, got %d", got)
 	}
 }
 
@@ -420,11 +482,11 @@ func TestPiSessionTailClassifiesAliasedParentSession(t *testing.T) {
 	aliasDir := filepath.Join(aliasRoot, "sessions", "--task-workdir--")
 
 	parentFile := filepath.Join(realDir, "2026-06-19T12-11-46-221Z_parent.jsonl")
-	writeSessionLine(t, parentFile, `{"type":"session","version":3,"id":"sess-parent","cwd":"/task/workdir"}`)
+	writeSessionLine(t, parentFile, sessionHeaderLine(t, "sess-parent", ""))
 	// Child header names its parent via the ALIASED path.
 	aliasedParent := filepath.Join(aliasDir, "2026-06-19T12-11-46-221Z_parent.jsonl")
 	childFile := filepath.Join(realDir, "2026-06-19T12-12-30-500Z_child.jsonl")
-	writeSessionLine(t, childFile, `{"type":"session","version":3,"id":"sess-child","parentSession":"`+aliasedParent+`"}`)
+	writeSessionLine(t, childFile, sessionHeaderLine(t, "sess-child", aliasedParent))
 	writeSessionLine(t, childFile, `{"type":"custom","customType":"subagents:record","data":{"id":"agent-1","status":"completed"}}`)
 
 	adapter := runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, realDir)
