@@ -75,3 +75,21 @@ func TestReasonTaskLaunchAndProposalApprovalHTTP(t *testing.T) {
 		t.Fatal("approved Reason Task proposal did not change Blackboard")
 	}
 }
+
+func TestReasonTaskRejectsDisabledBlackboardModeHTTP(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Engagement","kind":"pentest","scope":{"domains":["example.com"]}}`)
+	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/reason-tasks", strings.NewReader(`{
+		"runtime_profile_id":"`+profileID+`",
+		"runner":"host",
+		"run_controls":{"host_activated":true,"blackboard_conclusion_mode":"disabled"}
+	}`))
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "Reason Task Blackboard Mode cannot be disabled") {
+		t.Fatalf("disabled Reason Task status %d body %s", response.Code, response.Body.String())
+	}
+}

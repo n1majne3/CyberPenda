@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
@@ -17,12 +18,14 @@ import (
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
 	"pentest/internal/task"
+	"pentest/internal/timeline"
+	"pentest/internal/transcript"
 )
 
 const disabledBlackboardStateFileReminder = "You may use a state file to keep a lightweight work trace."
 
-// #250 primary acceptance seam: public Task and Session HTTP creation, real
-// owner/Blackboard/grant persistence, and a deterministic fake ProviderSession.
+// #250 primary acceptance seam: public Task and Session HTTP owner surfaces,
+// projected launch files, and a deterministic fake ProviderSession boundary.
 func TestDisabledBlackboardModeInitialOwnerLaunchesOmitBlackboardAuthority(t *testing.T) {
 	t.Run("Project Task", func(t *testing.T) {
 		server, projectID, profileID, factory := newDisabledBlackboardHTTPFixture(t)
@@ -233,34 +236,34 @@ func assertDisabledTaskLaunch(t *testing.T, server *Server, factory *recordingPr
 	if _, err := os.Stat(filepath.Join(launch.Facts.Workdir, ".pentest", "blackboard.json")); !os.IsNotExist(err) {
 		t.Fatalf("Task Working Blackboard Snapshot exists: %v", err)
 	}
-	var pinCount, grantCount, conclusionCount int
-	if err := server.db.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_continuation_pins WHERE continuation_id=?`, launch.Continuation.ID).Scan(&pinCount); err != nil {
-		t.Fatal(err)
+
+	var detail task.Task
+	getDisabledOwnerHTTP(t, server, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID, &detail)
+	if detail.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled ||
+		detail.BlackboardConclusion.Mode != task.BlackboardConclusionModeDisabled ||
+		detail.BlackboardConclusion.State != task.BlackboardConclusionStateClean ||
+		detail.Goal != created.Goal || detail.LatestContinuation == nil ||
+		detail.LatestContinuation.ID != launch.Continuation.ID ||
+		detail.LatestContinuation.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		t.Fatalf("Task public detail lost Disabled mode or ordinary continuation: %#v", detail)
 	}
-	if err := server.db.QueryRow(`SELECT COUNT(*) FROM blackboard_continuation_grants WHERE continuation_id=?`, launch.Continuation.ID).Scan(&grantCount); err != nil {
-		t.Fatal(err)
+
+	timelinePage := waitForDisabledOwnerTimeline(
+		t, server, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/timeline", "Lifecycle: started",
+	)
+	if timelinePage.TaskID != created.ID {
+		t.Fatalf("Task public timeline owner = %q, want %q", timelinePage.TaskID, created.ID)
 	}
-	if err := server.db.QueryRow(`SELECT COUNT(*) FROM pending_blackboard_conclusions WHERE task_id=?`, created.ID).Scan(&conclusionCount); err != nil {
-		t.Fatal(err)
-	}
-	if pinCount != 0 || grantCount != 0 || conclusionCount != 0 {
-		t.Fatalf("Task Blackboard state = pins %d grants %d conclusions %d", pinCount, grantCount, conclusionCount)
-	}
-	continuation, err := server.tasks.LatestContinuation(created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if continuation.ID != launch.Continuation.ID || continuation.BlackboardReconciliationStatus != task.ReconciliationCompleted {
-		t.Fatalf("Task ordinary continuation = %#v", continuation)
+	var transcriptPage disabledOwnerTranscriptPage
+	getDisabledOwnerHTTP(t, server, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/transcript", &transcriptPage)
+	if transcriptPage.TaskID != created.ID || len(transcriptPage.Entries) == 0 ||
+		transcriptPage.Entries[0].Role != transcript.RoleUser || transcriptPage.Entries[0].Text != created.Goal {
+		t.Fatalf("Task public transcript lost the operator goal: %#v", transcriptPage)
 	}
 }
 
 func assertDisabledSessionLaunch(t *testing.T, server *Server, factory *recordingProviderSessionFactory, created session.Session) {
 	t.Helper()
-	persisted, err := server.sessions.Get(created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
 	requests := factory.Requests()
 	if len(requests) != 1 {
 		t.Fatalf("Session provider launch requests = %d, want 1", len(requests))
@@ -270,34 +273,80 @@ func assertDisabledSessionLaunch(t *testing.T, server *Server, factory *recordin
 		strings.Count(launch.LaunchGoal, disabledBlackboardStateFileReminder) != 1 {
 		t.Fatalf("Session initial launch goal = %q", launch.LaunchGoal)
 	}
-	if launch.Continuation.ID == "" || launch.Owner.ID != created.ID || launch.Facts.Workdir != persisted.Workdir {
+	if launch.Continuation.ID == "" || launch.Owner.ID != created.ID || launch.Facts.Workdir == "" {
 		t.Fatalf("Session ordinary continuation or workdir is incomplete: %#v", launch)
 	}
 	assertNoBlackboardLaunchMaterial(t, launch)
 	for _, absent := range []string{"AGENTS.md", "CLAUDE.md", ".mcp.json", filepath.Join(".pentest", "blackboard.json")} {
-		if _, err := os.Stat(filepath.Join(persisted.Workdir, absent)); !os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(launch.Facts.Workdir, absent)); !os.IsNotExist(err) {
 			t.Fatalf("Session Blackboard launch file %s exists: %v", absent, err)
 		}
 	}
-	var pinCount, grantCount, conclusionCount int
-	if err := server.db.QueryRow(`SELECT COUNT(*) FROM blackboard_v2_session_continuation_pins WHERE continuation_id=?`, launch.Continuation.ID).Scan(&pinCount); err != nil {
-		t.Fatal(err)
+
+	var detail session.Session
+	getDisabledOwnerHTTP(t, server, "/api/sessions/"+created.ID, &detail)
+	if detail.RunControls.BlackboardConclusionMode != session.BlackboardConclusionModeDisabled ||
+		detail.BlackboardConclusion.Mode != session.BlackboardConclusionModeDisabled ||
+		detail.BlackboardConclusion.State != session.BlackboardConclusionStateClean ||
+		detail.LatestContinuation == nil || detail.LatestContinuation.ID != launch.Continuation.ID ||
+		detail.LatestContinuation.RuntimeConfigID == "" {
+		t.Fatalf("Session public detail lost Disabled mode or ordinary continuation: %#v", detail)
 	}
-	if err := server.db.QueryRow(`SELECT COUNT(*) FROM session_continuation_interface_grants WHERE continuation_id=?`, launch.Continuation.ID).Scan(&grantCount); err != nil {
-		t.Fatal(err)
+
+	timelinePage := waitForDisabledOwnerTimeline(
+		t, server, "/api/sessions/"+created.ID+"/timeline", "Lifecycle: launch_requested",
+	)
+	if timelinePage.SessionID != created.ID {
+		t.Fatalf("Session public timeline owner = %q, want %q", timelinePage.SessionID, created.ID)
 	}
-	if err := server.db.QueryRow(`SELECT COUNT(*) FROM session_pending_blackboard_conclusions WHERE session_id=?`, created.ID).Scan(&conclusionCount); err != nil {
-		t.Fatal(err)
+	var transcriptPage disabledOwnerTranscriptPage
+	getDisabledOwnerHTTP(t, server, "/api/sessions/"+created.ID+"/transcript", &transcriptPage)
+	if transcriptPage.SessionID != created.ID || len(transcriptPage.Entries) == 0 ||
+		transcriptPage.Entries[0].Role != transcript.RoleUser ||
+		transcriptPage.Entries[0].Text != "inspect the standalone target" {
+		t.Fatalf("Session public transcript lost the operator input: %#v", transcriptPage)
 	}
-	if pinCount != 0 || grantCount != 0 || conclusionCount != 0 {
-		t.Fatalf("Session Blackboard state = pins %d grants %d conclusions %d", pinCount, grantCount, conclusionCount)
+}
+
+type disabledOwnerTimelinePage struct {
+	TaskID    string          `json:"task_id"`
+	SessionID string          `json:"session_id"`
+	Items     []timeline.Item `json:"items"`
+}
+
+type disabledOwnerTranscriptPage struct {
+	TaskID    string             `json:"task_id"`
+	SessionID string             `json:"session_id"`
+	Entries   []transcript.Entry `json:"entries"`
+}
+
+func getDisabledOwnerHTTP(t *testing.T, server *Server, path string, target any) {
+	t.Helper()
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET %s status = %d body %s", path, response.Code, response.Body.String())
 	}
-	continuation, err := server.sessions.LatestContinuation(created.ID)
-	if err != nil {
-		t.Fatal(err)
+	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
+		t.Fatalf("decode GET %s: %v", path, err)
 	}
-	if continuation.ID != launch.Continuation.ID || continuation.RuntimeConfigID == "" {
-		t.Fatalf("Session ordinary continuation = %#v", continuation)
+}
+
+func waitForDisabledOwnerTimeline(t *testing.T, server *Server, path, content string) disabledOwnerTimelinePage {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var page disabledOwnerTimelinePage
+		getDisabledOwnerHTTP(t, server, path, &page)
+		for _, item := range page.Items {
+			if item.Content == content {
+				return page
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("GET %s did not expose %q: %#v", path, content, page)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

@@ -307,10 +307,12 @@ export function RuntimeLaunchControls({
   controller,
   ownerLabel,
   initialInput,
+  allowDisabledBlackboardMode = true,
 }: {
   controller: RuntimeLaunchController;
   ownerLabel: "task" | "session";
   initialInput: string;
+  allowDisabledBlackboardMode?: boolean;
 }) {
   const {
     form,
@@ -347,6 +349,12 @@ export function RuntimeLaunchControls({
     updateModelProvider,
     updatePreset,
   } = controller;
+  useEffect(() => {
+    if (!allowDisabledBlackboardMode && blackboardConclusionMode === "disabled") {
+      setBlackboardConclusionMode("interactive");
+      setPreflight(null);
+    }
+  }, [allowDisabledBlackboardMode, blackboardConclusionMode, setBlackboardConclusionMode, setPreflight]);
   const hostRunner = form.runner === "host";
   const hostBlocked = hostRunner && !hostActivated;
   const assistedConclusionUnsupported = blackboardConclusionMode === "assisted" && !assistedConclusionSupported;
@@ -489,7 +497,7 @@ export function RuntimeLaunchControls({
           <Select id="launch-blackboard-mode" name="blackboard_conclusion_mode" value={blackboardConclusionMode} onChange={(event) => { setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode); setPreflight(null); }}>
             <option value="interactive">Interactive</option>
             <option value="assisted" disabled={!assistedConclusionSupported}>Assisted</option>
-            <option value="disabled">Disabled</option>
+            {allowDisabledBlackboardMode && <option value="disabled">Disabled</option>}
           </Select>
           <p className="mt-1 text-xs text-muted-foreground">
             {blackboardConclusionMode === "disabled"
@@ -498,7 +506,7 @@ export function RuntimeLaunchControls({
               ? "After tool-producing work, the Harness runs a bounded Conclude Turn and applies its validated Attempt result to the Blackboard."
               : assistedConclusionSupported
                 ? "The operator decides when Runtime work is written to the Blackboard."
-                : `${assistedConclusionUnavailableReason} Interactive and Disabled launch remain available.`}
+                : `${assistedConclusionUnavailableReason} ${allowDisabledBlackboardMode ? "Interactive and Disabled launch remain available." : "Interactive launch remains available."}`}
           </p>
         </div>
       </div>

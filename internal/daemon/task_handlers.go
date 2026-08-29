@@ -102,6 +102,10 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 	if input.RunControls.Extras == nil && input.Extras != nil {
 		input.RunControls.Extras = input.Extras
 	}
+	if reasonTask && input.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+		writeError(response, http.StatusBadRequest, "Reason Task Blackboard Mode cannot be disabled")
+		return
+	}
 	if reasonTask {
 		input.Goal = reasontask.LaunchGoal
 	} else if input.Type != task.TypePentest && input.Type != task.TypeCTFChallenge {
@@ -196,13 +200,11 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 		return
 	}
 
-	blackboardProjection := runner.BlackboardProjectionRequired
-	if created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
-		blackboardProjection = runner.BlackboardProjectionOmitted
-		launchGoal = initialDisabledBlackboardLaunchGoal(launchGoal)
-	}
+	initialLaunch := resolveInitialOwnerBlackboardLaunch(
+		launchGoal, created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled,
+	)
 	plan, err := server.buildTaskLaunchPlanForBlackboardProjection(
-		created, launchGoal, launchModelOverride, "", launchReasoningEffort, blackboardProjection,
+		created, initialLaunch.goal, launchModelOverride, "", launchReasoningEffort, initialLaunch.projection,
 	)
 	if err != nil {
 		writeTaskAdapterError(response, err)
@@ -224,7 +226,7 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 
 	server.recordLoopbackRewriteEvent(created)
 
-	if err := server.launchTaskInBackground(created, plan, launchGoal); err != nil {
+	if err := server.launchTaskInBackground(created, plan, initialLaunch.goal); err != nil {
 		writeTaskLaunchError(response, err)
 		return
 	}

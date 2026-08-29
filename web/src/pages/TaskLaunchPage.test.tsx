@@ -174,6 +174,8 @@ describe("TaskLaunchPage", () => {
     expect(await screen.findByRole("heading", { name: /Launch Reason Task/i })).toBeInTheDocument();
     expect(screen.queryByLabelText("Task type")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Reason Task goal")).toHaveAttribute("readonly");
+    expect(screen.getByLabelText("Blackboard Mode")).toHaveValue("interactive");
+    expect(screen.queryByRole("option", { name: "Disabled" })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("button", { name: /Launch Reason Task/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /Launch Reason Task/i }));
 

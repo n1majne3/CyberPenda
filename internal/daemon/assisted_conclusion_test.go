@@ -1154,7 +1154,7 @@ func TestTaskLaunchRejectsUnknownBlackboardConclusionMode(t *testing.T) {
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "interactive or assisted") {
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "interactive, assisted, or disabled") {
 		t.Fatalf("invalid conclusion mode status = %d body %s", response.Code, response.Body.String())
 	}
 	if requests := session.LastRequests(); len(requests) != 0 {
