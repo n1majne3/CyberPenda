@@ -58,6 +58,31 @@ func TestBuildAdvancesCodexChildEntryOnSettle(t *testing.T) {
 	}
 }
 
+// A Pi one-shot session subagents:record entry becomes a settled
+// subagent_activity entry keyed by the durable AgentRecord id.
+func TestBuildProjectsPiSubagentRecord(t *testing.T) {
+	at := time.Date(2026, 8, 29, 6, 0, 0, 0, time.UTC)
+	events := []timeline.Event{
+		event("runtime_output", `{"type":"custom","customType":"subagents:record","data":{"id":"agent-abc123","type":"Explore","description":"Scan the target","status":"completed"}}`, at),
+	}
+
+	got := timeline.Build(events)
+
+	if len(got) != 1 {
+		t.Fatalf("expected one timeline item, got %#v", got)
+	}
+	item := got[0]
+	if item.Type != "subagent_activity" || item.Tool != "pi" {
+		t.Fatalf("item = %#v", item)
+	}
+	if item.Status != "completed" {
+		t.Fatalf("status = %q, want completed", item.Status)
+	}
+	if item.Content != "Scan the target" {
+		t.Fatalf("label = %q", item.Content)
+	}
+}
+
 // Claude Code task_* records become a subagent_activity entry labeled by the
 // task summary and keyed by task_id.
 func TestBuildProjectsClaudeSubagentActivity(t *testing.T) {

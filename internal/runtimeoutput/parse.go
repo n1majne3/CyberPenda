@@ -74,6 +74,11 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 			return parseClaudeSubagentActivity(record, createdAt)
 		}
 	}
+	// Pi subagent settle records (one-shot session custom entries and
+	// bridge-forwarded entry_appended frames).
+	if isPiSubagentRecord(record) {
+		return parsePiSubagentActivity(record, createdAt)
+	}
 	if item, ok := mapValue(record, "item"); ok {
 		if turns := ParseRecordWithMeta(item, meta, opts, createdAt); len(turns) > 0 {
 			return turns

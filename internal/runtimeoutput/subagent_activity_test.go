@@ -172,6 +172,60 @@ func TestParseRecordClaudeTaskProgressStaysStarted(t *testing.T) {
 	}
 }
 
+// Pi one-shot mode: a session custom entry with customType subagents:record
+// projects one settled Subagent Activity keyed by the durable AgentRecord id.
+func TestParseRecordPiSubagentRecordSessionEntry(t *testing.T) {
+	at := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+	turns := runtimeoutput.ParseRecord(map[string]any{
+		"type":       "custom",
+		"customType": "subagents:record",
+		"data": map[string]any{
+			"id":          "agent-abc123",
+			"type":        "Explore",
+			"description": "Scan the target",
+			"status":      "completed",
+			"startedAt":   1,
+			"completedAt": 2,
+		},
+	}, runtimeoutput.ParseOptions{}, at)
+	if len(turns) != 1 {
+		t.Fatalf("pi subagents:record turns = %#v", turns)
+	}
+	got := turns[0]
+	if got.Kind != runtimeoutput.KindSubagentActivity {
+		t.Fatalf("kind = %q, want subagent_activity", got.Kind)
+	}
+	if got.ProviderItemID != "agent-abc123" {
+		t.Fatalf("ProviderItemID = %q, want AgentRecord id", got.ProviderItemID)
+	}
+	if got.LifecyclePhase != "completed" {
+		t.Fatalf("LifecyclePhase = %q, want completed", got.LifecyclePhase)
+	}
+	if got.Tool != "pi" {
+		t.Fatalf("provider Tool = %q, want pi", got.Tool)
+	}
+	if got.Text != "Scan the target" {
+		t.Fatalf("label = %q", got.Text)
+	}
+}
+
+// Pi persistent RPC mode: the bridge forwards entry_appended frames whose
+// params carry the subagents:record entry.
+func TestParseRecordPiSubagentRecordEntryAppended(t *testing.T) {
+	at := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+	turns := runtimeoutput.ParseRecordWithMeta(map[string]any{
+		"type": "entry_appended",
+		"entry": map[string]any{
+			"type":       "custom",
+			"customType": "subagents:record",
+			"data":       map[string]any{"id": "agent-xyz", "type": "Exploit", "status": "error"},
+		},
+	}, runtimeoutput.RecordMeta{ProviderEvent: "pi/entry_appended"}, runtimeoutput.ParseOptions{}, at)
+	if len(turns) != 1 || turns[0].ProviderItemID != "agent-xyz" || turns[0].LifecyclePhase != "failed" {
+		t.Fatalf("pi entry_appended subagent = %#v", turns)
+	}
+}
+
 // ReconcileLifecycle must collapse repeated activity for one subagent identity
 // into a single entry whose status advances, preserving original ordering.
 func TestReconcileLifecycleAdvancesSubagentActivity(t *testing.T) {

@@ -157,6 +157,66 @@ func claudeSubagentActivityState(subtype, status string) string {
 	return SubagentActivityStarted
 }
 
+// isPiSubagentRecord reports whether a Pi record carries a settled top-level
+// subagent record. One-shot mode: a session custom entry
+// {type:"custom", customType:"subagents:record"}. Persistent RPC mode: the
+// bridge-forwarded entry_appended frame
+// {type:"entry_appended", entry:{customType:"subagents:record", ...}}.
+func isPiSubagentRecord(record map[string]any) bool {
+	if firstText(record, "customType", "custom_type") == "subagents:record" {
+		return true
+	}
+	if entry, ok := mapValue(record, "entry"); ok {
+		return firstText(entry, "customType", "custom_type") == "subagents:record"
+	}
+	return false
+}
+
+// parsePiSubagentActivity projects a Pi subagents:record into one settled
+// Subagent Activity turn keyed by the durable AgentRecord id. The Harness only
+// observes these records; it never spawns or schedules subagents.
+func parsePiSubagentActivity(record map[string]any, createdAt time.Time) []Turn {
+	source := record
+	if entry, ok := mapValue(record, "entry"); ok {
+		source = entry
+	}
+	data, ok := mapValue(source, "data")
+	if !ok {
+		return nil
+	}
+	id := firstText(data, "id")
+	if id == "" {
+		return nil
+	}
+	label := firstText(data, "description", "type")
+	if label == "" {
+		label = "Subagent " + id
+	}
+	return []Turn{{
+		ProviderItemID: id,
+		LifecyclePhase: piSubagentActivityState(firstText(data, "status")),
+		Kind:           KindSubagentActivity,
+		Role:           roleAssistant,
+		Text:           label,
+		Tool:           "pi",
+		ContentIndex:   -1,
+		CreatedAt:      createdAt,
+	}}
+}
+
+// piSubagentActivityState maps the AgentRecord status vocabulary onto the
+// coarse shared state. Running/queued agents stay started.
+func piSubagentActivityState(status string) string {
+	switch strings.ToLower(status) {
+	case "completed", "steered":
+		return SubagentActivityCompleted
+	case "error", "aborted", "stopped":
+		return SubagentActivityFailed
+	default:
+		return SubagentActivityStarted
+	}
+}
+
 func stringSlice(record map[string]any, keys ...string) []string {
 	for _, key := range keys {
 		value, ok := record[key]

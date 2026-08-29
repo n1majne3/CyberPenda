@@ -69,6 +69,12 @@ func (s *PiProviderSession) HandleEvent(event SandboxBridgeEvent, emit ProviderS
 	}
 
 	switch {
+	case method == "pi/entry_appended":
+		// A subagents:record entry is the only structured, id-carrying settled
+		// subagent signal on the Pi RPC wire. Project it as runtime output so
+		// the Timeline shows the child agent; the Harness only observes it.
+		s.emitPiSubagentRecord(event, params, emit)
+		return
 	case piStartedBoundary(method):
 		s.emitPiLifecycle(event.Method, params, "started", emit)
 		return
@@ -125,6 +131,38 @@ func (s *PiProviderSession) projectPiTerminalLifecycle(event SandboxBridgeEvent,
 	if !projected {
 		s.emitPiLifecycle(event.Method, params, outcome, emit)
 	}
+}
+
+// emitPiSubagentRecord forwards an entry_appended subagents:record frame as a
+// runtime_output event so the Timeline projects the settled subagent. Frames
+// without a subagents:record entry are ignored (other entry types keep their
+// existing handling).
+func (s *PiProviderSession) emitPiSubagentRecord(event SandboxBridgeEvent, params map[string]any, emit ProviderSessionEmit) {
+	entry, ok := params["entry"].(map[string]any)
+	if !ok {
+		return
+	}
+	if customType, _ := entry["customType"].(string); customType != "subagents:record" {
+		return
+	}
+	if emit == nil {
+		s.mu.Lock()
+		emit = s.eventSink
+		s.mu.Unlock()
+	}
+	if emit == nil {
+		return
+	}
+	lineage, sessionID, turnID, ok := s.piEventLineage(params)
+	if !ok {
+		return
+	}
+	emit(task.EventKindRuntimeOutput, task.EventPayload{
+		"provider": "pi", "provider_event": event.Method,
+		"request_id": lineage.RequestID, "session_id": sessionID,
+		"provider_turn_id": turnID,
+		"stream":           "pi_rpc", "text": string(event.Params),
+	})
 }
 
 func (s *PiProviderSession) emitPiLifecycle(providerEvent string, params map[string]any, outcome string, emit ProviderSessionEmit) {
