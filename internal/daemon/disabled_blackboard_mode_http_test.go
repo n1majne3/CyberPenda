@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/finishreadiness"
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
 	"pentest/internal/runtime"
@@ -170,14 +171,321 @@ func TestBlackboardModeHTTPDefaultsAndValidationApplyToBothOwnerTypes(t *testing
 	}
 }
 
+// #251 primary acceptance seam: a stopped Disabled Task resumes through the
+// public HTTP API with a replacement Runtime that keeps Blackboard omitted.
+func TestDisabledTaskHTTPResumePreservesOmittedBlackboardProjection(t *testing.T) {
+	server, projectID, profileID, factory := newDisabledBlackboardHTTPFixture(t)
+	create := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
+		"type":"pentest",
+		"goal":"inspect replacement behavior",
+		"runtime_profile_id":"`+profileID+`",
+		"runner":"host",
+		"run_controls":{"host_activated":true,"blackboard_conclusion_mode":"disabled"}
+	}`))
+	create.Header.Set("Content-Type", "application/json")
+	createdResponse := httptest.NewRecorder()
+	server.ServeHTTP(createdResponse, create)
+	if createdResponse.Code != http.StatusCreated {
+		t.Fatalf("create disabled Task status = %d body %s", createdResponse.Code, createdResponse.Body.String())
+	}
+	var created task.Task
+	if err := json.NewDecoder(createdResponse.Body).Decode(&created); err != nil {
+		t.Fatalf("decode disabled Task: %v", err)
+	}
+
+	stoppedResponse := httptest.NewRecorder()
+	server.ServeHTTP(stoppedResponse, httptest.NewRequest(
+		http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/stop", nil,
+	))
+	if stoppedResponse.Code != http.StatusOK {
+		t.Fatalf("stop disabled Task status = %d body %s", stoppedResponse.Code, stoppedResponse.Body.String())
+	}
+
+	replacementSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "disabled-owner-replacement-session",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
+		},
+	})
+	factory.mu.Lock()
+	factory.session = replacementSession
+	factory.adapter = &persistentTestAdapter{}
+	factory.mu.Unlock()
+
+	resume := httptest.NewRequest(
+		http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/resume", bytes.NewBufferString(`{}`),
+	)
+	resume.Header.Set("Content-Type", "application/json")
+	resumedResponse := httptest.NewRecorder()
+	server.ServeHTTP(resumedResponse, resume)
+	if resumedResponse.Code != http.StatusAccepted {
+		t.Fatalf("resume disabled Task status = %d body %s", resumedResponse.Code, resumedResponse.Body.String())
+	}
+
+	requests := factory.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider Runtime launches = %d, want initial and replacement", len(requests))
+	}
+	replacement := requests[1]
+	if strings.Count(replacement.LaunchGoal, disabledBlackboardStateFileReminder) != 1 {
+		t.Fatalf("replacement launch reminder count = %d goal = %q", strings.Count(replacement.LaunchGoal, disabledBlackboardStateFileReminder), replacement.LaunchGoal)
+	}
+	assertNoBlackboardLaunchMaterial(t, replacement)
+	assertDisabledTaskBlackboardRows(t, server, created.ID, 2)
+}
+
+func TestDisabledSessionHTTPReplacementPreservesOmittedBlackboardProjection(t *testing.T) {
+	server, _, profileID, factory := newDisabledBlackboardHTTPFixture(t)
+	create := httptest.NewRequest(http.MethodPost, "/api/sessions", bytes.NewBufferString(`{
+		"input":"inspect Session replacement behavior",
+		"runtime_profile_id":"`+profileID+`",
+		"runner":"host",
+		"host_activated":true,
+		"run_controls":{"blackboard_conclusion_mode":"disabled"}
+	}`))
+	create.Header.Set("Content-Type", "application/json")
+	createdResponse := httptest.NewRecorder()
+	server.ServeHTTP(createdResponse, create)
+	if createdResponse.Code != http.StatusCreated {
+		t.Fatalf("create disabled Session status = %d body %s", createdResponse.Code, createdResponse.Body.String())
+	}
+	var created session.Session
+	if err := json.NewDecoder(createdResponse.Body).Decode(&created); err != nil {
+		t.Fatalf("decode disabled Session: %v", err)
+	}
+
+	stoppedResponse := httptest.NewRecorder()
+	server.ServeHTTP(stoppedResponse, httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/stop", nil))
+	if stoppedResponse.Code != http.StatusOK {
+		t.Fatalf("stop disabled Session status = %d body %s", stoppedResponse.Code, stoppedResponse.Body.String())
+	}
+
+	replacementSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		SessionID: "disabled-session-replacement-runtime",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
+		},
+	})
+	factory.mu.Lock()
+	factory.session = replacementSession
+	factory.adapter = &persistentTestAdapter{}
+	factory.mu.Unlock()
+
+	message := httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/messages", bytes.NewBufferString(`{
+		"input":"continue after Stop",
+		"host_activated":true
+	}`))
+	message.Header.Set("Content-Type", "application/json")
+	replacedResponse := httptest.NewRecorder()
+	server.ServeHTTP(replacedResponse, message)
+	if replacedResponse.Code != http.StatusAccepted {
+		t.Fatalf("replace disabled Session status = %d body %s", replacedResponse.Code, replacedResponse.Body.String())
+	}
+
+	requests := factory.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("Session provider Runtime launches = %d, want initial and replacement", len(requests))
+	}
+	replacement := requests[1]
+	if strings.Count(replacement.LaunchGoal, disabledBlackboardStateFileReminder) != 1 {
+		t.Fatalf("Session replacement reminder count = %d goal = %q", strings.Count(replacement.LaunchGoal, disabledBlackboardStateFileReminder), replacement.LaunchGoal)
+	}
+	assertNoBlackboardLaunchMaterial(t, replacement)
+	assertDisabledSessionBlackboardRows(t, server, created.ID, 2)
+}
+
+func TestDisabledTaskHTTPSteerCreatesOrdinaryContinuationWithoutBlackboard(t *testing.T) {
+	server, projectID, profileID, factory := newDisabledBlackboardHTTPFixture(t)
+	create := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
+		"type":"pentest",
+		"goal":"inspect ordinary continuation behavior",
+		"runtime_profile_id":"`+profileID+`",
+		"runner":"host",
+		"run_controls":{"host_activated":true,"blackboard_conclusion_mode":"disabled"}
+	}`))
+	create.Header.Set("Content-Type", "application/json")
+	createdResponse := httptest.NewRecorder()
+	server.ServeHTTP(createdResponse, create)
+	if createdResponse.Code != http.StatusCreated {
+		t.Fatalf("create disabled Task status = %d body %s", createdResponse.Code, createdResponse.Body.String())
+	}
+	var created task.Task
+	if err := json.NewDecoder(createdResponse.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	steer := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{
+		"request_id":"disabled-task-steer",
+		"message":"focus on the alternate path"
+	}`))
+	steer.Header.Set("Content-Type", "application/json")
+	steerResponse := httptest.NewRecorder()
+	server.ServeHTTP(steerResponse, steer)
+	if steerResponse.Code != http.StatusAccepted {
+		t.Fatalf("steer disabled Task status = %d body %s", steerResponse.Code, steerResponse.Body.String())
+	}
+
+	latest := waitForDisabledTaskContinuationNumber(t, server, created.ID, 2)
+	if latest.Status != task.StatusRunning || latest.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		t.Fatalf("disabled Task replacement Continuation = %#v", latest)
+	}
+	assertDisabledTaskBlackboardRows(t, server, created.ID, 2)
+	factory.mu.Lock()
+	provider, _ := factory.session.(*runtime.FakeProviderSession)
+	factory.mu.Unlock()
+	if provider == nil {
+		t.Fatal("disabled Task provider session is unavailable")
+	}
+	requests := provider.LastRequests()
+	if len(requests) == 0 || requests[len(requests)-1].Message != "focus on the alternate path" ||
+		strings.Contains(requests[len(requests)-1].Message, disabledBlackboardStateFileReminder) {
+		t.Fatalf("ordinary Task steer request = %#v", requests)
+	}
+}
+
+func TestDisabledSessionHTTPSteerCreatesOrdinaryContinuationWithoutBlackboard(t *testing.T) {
+	server, _, profileID, factory := newDisabledBlackboardHTTPFixture(t)
+	create := httptest.NewRequest(http.MethodPost, "/api/sessions", bytes.NewBufferString(`{
+		"input":"inspect Session continuation behavior",
+		"runtime_profile_id":"`+profileID+`",
+		"runner":"host",
+		"host_activated":true,
+		"run_controls":{"blackboard_conclusion_mode":"disabled"}
+	}`))
+	create.Header.Set("Content-Type", "application/json")
+	createdResponse := httptest.NewRecorder()
+	server.ServeHTTP(createdResponse, create)
+	if createdResponse.Code != http.StatusCreated {
+		t.Fatalf("create disabled Session status = %d body %s", createdResponse.Code, createdResponse.Body.String())
+	}
+	var created session.Session
+	if err := json.NewDecoder(createdResponse.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	steer := httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/steer", bytes.NewBufferString(`{
+		"request_id":"disabled-session-steer",
+		"message":"focus on the alternate Session path"
+	}`))
+	steer.Header.Set("Content-Type", "application/json")
+	steerResponse := httptest.NewRecorder()
+	server.ServeHTTP(steerResponse, steer)
+	if steerResponse.Code != http.StatusAccepted {
+		t.Fatalf("steer disabled Session status = %d body %s", steerResponse.Code, steerResponse.Body.String())
+	}
+
+	latest := waitForDisabledSessionContinuationNumber(t, server, created.ID, 2)
+	if latest.Status != session.RuntimeStatusRunning {
+		t.Fatalf("disabled Session replacement Continuation = %#v", latest)
+	}
+	assertDisabledSessionBlackboardRows(t, server, created.ID, 2)
+	factory.mu.Lock()
+	provider, _ := factory.session.(*runtime.FakeProviderSession)
+	factory.mu.Unlock()
+	if provider == nil {
+		t.Fatal("disabled Session provider session is unavailable")
+	}
+	requests := provider.LastRequests()
+	if len(requests) == 0 || requests[len(requests)-1].Message != "focus on the alternate Session path" ||
+		strings.Contains(requests[len(requests)-1].Message, disabledBlackboardStateFileReminder) {
+		t.Fatalf("ordinary Session steer request = %#v", requests)
+	}
+}
+
+func TestDisabledTaskHTTPFinishIgnoresOnlyBlackboardReconciliationDebt(t *testing.T) {
+	server, projectID, profileID, factory := newDisabledBlackboardHTTPFixture(t)
+	create := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
+		"type":"pentest",
+		"goal":"finish disabled work",
+		"runtime_profile_id":"`+profileID+`",
+		"runner":"host",
+		"run_controls":{"host_activated":true,"blackboard_conclusion_mode":"disabled"}
+	}`))
+	create.Header.Set("Content-Type", "application/json")
+	createdResponse := httptest.NewRecorder()
+	server.ServeHTTP(createdResponse, create)
+	if createdResponse.Code != http.StatusCreated {
+		t.Fatalf("create disabled Task status = %d body %s", createdResponse.Code, createdResponse.Body.String())
+	}
+	var created task.Task
+	if err := json.NewDecoder(createdResponse.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	busyFinish := httptest.NewRecorder()
+	server.ServeHTTP(busyFinish, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/finish", nil))
+	if busyFinish.Code != http.StatusConflict || !strings.Contains(busyFinish.Body.String(), "busy") {
+		t.Fatalf("busy Disabled Finish status = %d body %s", busyFinish.Code, busyFinish.Body.String())
+	}
+
+	factory.mu.Lock()
+	provider, _ := factory.session.(*runtime.FakeProviderSession)
+	factory.mu.Unlock()
+	if provider == nil {
+		t.Fatal("disabled Task provider session is unavailable")
+	}
+	if err := provider.EmitObservation(runtime.ProviderSessionObservation{
+		Kind: runtime.ProviderSessionObservationTurnCompleted, RequestID: "disabled-initial-turn",
+		ProviderTurnID: "disabled-owner-initial-turn", Status: "completed",
+	}); err != nil {
+		t.Fatalf("settle disabled initial Turn: %v", err)
+	}
+	waitForLiveIdle(t, server, created)
+	continuation, err := server.tasks.LatestContinuation(created.ID)
+	if err != nil || continuation == nil {
+		t.Fatalf("load disabled Task Continuation: %#v %v", continuation, err)
+	}
+	if _, err := server.db.Exec(`UPDATE task_continuations SET blackboard_reconciliation_status=? WHERE id=?`, task.ReconciliationPending, continuation.ID); err != nil {
+		t.Fatalf("seed Blackboard-only reconciliation debt: %v", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := server.db.Exec(`
+		INSERT INTO pending_blackboard_conclusions (
+			id,task_id,source_request_id,source_request_correlation_exact,source_continuation_id,
+			source_session_id,source_turn_id,state,source_work_watermark,semantic_persistence_watermark,
+			created_at,updated_at
+		) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"disabled-finish-debt", created.ID, "legacy-disabled-request", 1, continuation.ID,
+		"legacy-disabled-session", "legacy-disabled-turn", "pending", 1, 0, now, now,
+	); err != nil {
+		t.Fatalf("seed Pending Blackboard Conclusion: %v", err)
+	}
+
+	readinessResponse := httptest.NewRecorder()
+	server.ServeHTTP(readinessResponse, httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+created.ID+"/finish-readiness", nil))
+	if readinessResponse.Code != http.StatusOK {
+		t.Fatalf("Disabled Finish Readiness status = %d body %s", readinessResponse.Code, readinessResponse.Body.String())
+	}
+	var readiness finishreadiness.Readiness
+	if err := json.NewDecoder(readinessResponse.Body).Decode(&readiness); err != nil {
+		t.Fatal(err)
+	}
+	if !readiness.ReadyToFinish || len(readiness.Blockers) != 0 {
+		t.Fatalf("Disabled Finish Readiness retained Blackboard blocker: %#v", readiness)
+	}
+
+	finishedResponse := httptest.NewRecorder()
+	server.ServeHTTP(finishedResponse, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/finish", nil))
+	if finishedResponse.Code != http.StatusOK {
+		t.Fatalf("finish Disabled Task status = %d body %s", finishedResponse.Code, finishedResponse.Body.String())
+	}
+	var finished task.Task
+	if err := json.NewDecoder(finishedResponse.Body).Decode(&finished); err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != task.StatusCompleted || finished.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+		t.Fatalf("finished Disabled Task = %#v", finished)
+	}
+}
+
 func newDisabledBlackboardHTTPFixture(t *testing.T) (*Server, string, string, *recordingProviderSessionFactory) {
 	t.Helper()
 	root := t.TempDir()
 	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID:    "disabled-owner-session",
-		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
+		SessionID: "disabled-owner-session", ActiveTurnID: "disabled-owner-initial-turn",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
-	factory := &recordingProviderSessionFactory{session: providerSession, adapter: &persistentTestAdapter{}}
+	factory := &recordingProviderSessionFactory{session: providerSession, adapter: &persistentTestAdapter{}, bindContinuation: true}
 	server, err := NewServer(Config{
 		Version: "test", DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
 		SessionRoot: filepath.Join(root, "sessions"), DisableBuiltinSkills: true, ProviderSessionFactory: factory,
@@ -372,4 +680,80 @@ func assertNoBlackboardLaunchMaterial(t *testing.T, launch ProviderSessionLaunch
 			t.Fatalf("disabled launch environment retained %s=%q", forbidden, value)
 		}
 	}
+}
+
+func assertDisabledTaskBlackboardRows(t *testing.T, server *Server, taskID string, wantContinuations int) {
+	t.Helper()
+	queries := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{name: "ordinary continuations", query: `SELECT COUNT(*) FROM task_continuations WHERE task_id=?`, want: wantContinuations},
+		{name: "Blackboard pins", query: `SELECT COUNT(*) FROM blackboard_v2_continuation_pins pins JOIN task_continuations continuations ON continuations.id=pins.continuation_id WHERE continuations.task_id=?`},
+		{name: "Project Interface grants", query: `SELECT COUNT(*) FROM blackboard_continuation_grants WHERE task_id=?`},
+		{name: "Pending Blackboard Conclusions", query: `SELECT COUNT(*) FROM pending_blackboard_conclusions WHERE task_id=?`},
+	}
+	for _, item := range queries {
+		var count int
+		if err := server.db.QueryRow(item.query, taskID).Scan(&count); err != nil {
+			t.Fatalf("count disabled Task %s: %v", item.name, err)
+		}
+		if count != item.want {
+			t.Fatalf("disabled Task %s = %d, want %d", item.name, count, item.want)
+		}
+	}
+}
+
+func assertDisabledSessionBlackboardRows(t *testing.T, server *Server, sessionID string, wantContinuations int) {
+	t.Helper()
+	queries := []struct {
+		name  string
+		query string
+		want  int
+	}{
+		{name: "ordinary continuations", query: `SELECT COUNT(*) FROM session_continuations WHERE session_id=?`, want: wantContinuations},
+		{name: "Blackboard pins", query: `SELECT COUNT(*) FROM blackboard_v2_session_continuation_pins WHERE session_id=?`},
+		{name: "Project Interface grants", query: `SELECT COUNT(*) FROM session_continuation_interface_grants WHERE session_id=?`},
+		{name: "Pending Blackboard Conclusions", query: `SELECT COUNT(*) FROM session_pending_blackboard_conclusions WHERE session_id=?`},
+	}
+	for _, item := range queries {
+		var count int
+		if err := server.db.QueryRow(item.query, sessionID).Scan(&count); err != nil {
+			t.Fatalf("count disabled Session %s: %v", item.name, err)
+		}
+		if count != item.want {
+			t.Fatalf("disabled Session %s = %d, want %d", item.name, count, item.want)
+		}
+	}
+}
+
+func waitForDisabledTaskContinuationNumber(t *testing.T, server *Server, taskID string, number int) task.TaskContinuation {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		latest, err := server.tasks.LatestContinuation(taskID)
+		if err == nil && latest != nil && latest.Number >= number && latest.Status != task.StatusPending {
+			return *latest
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	latest, err := server.tasks.LatestContinuation(taskID)
+	t.Fatalf("wait for disabled Task Continuation %d: latest=%#v err=%v", number, latest, err)
+	return task.TaskContinuation{}
+}
+
+func waitForDisabledSessionContinuationNumber(t *testing.T, server *Server, sessionID string, number int) session.Continuation {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		latest, err := server.sessions.LatestContinuation(sessionID)
+		if err == nil && latest != nil && latest.Number >= number && latest.Status != session.RuntimeStatusPending {
+			return *latest
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	latest, err := server.sessions.LatestContinuation(sessionID)
+	t.Fatalf("wait for disabled Session Continuation %d: latest=%#v err=%v", number, latest, err)
+	return session.Continuation{}
 }

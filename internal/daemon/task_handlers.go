@@ -648,8 +648,11 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 }
 
 func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string) (taskLaunchPlan, error) {
+	launch := resolveInitialOwnerBlackboardLaunch(
+		goal, created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled,
+	)
 	return server.buildTaskLaunchPlanForBlackboardProjection(
-		created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, runner.BlackboardProjectionRequired,
+		created, launch.goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, launch.projection,
 	)
 }
 
@@ -2667,7 +2670,9 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
 	var steeringEventIDs []string
-	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && server.isBlackboardV2Task(found) {
+	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+		resumedMessage, steeringEventIDs, err = server.taskResumeContextWithoutBlackboard(found)
+	} else if server.canonicalStore == store.CanonicalStoreBlackboardV2 && server.isBlackboardV2Task(found) {
 		resumedMessage, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
 		if err != nil {
 			return task.Task{}, "", taskLaunchPlan{}, err
@@ -2720,7 +2725,9 @@ func (server *Server) prepareFreshResumeContinuation(found task.Task) (task.Task
 
 	resumeGoal := ""
 	var steeringEventIDs []string
-	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && runner.BlackboardV2SupportsProvider(effectiveProfile.Provider) {
+	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+		resumeGoal, steeringEventIDs, err = server.taskResumeContextWithoutBlackboard(found)
+	} else if server.canonicalStore == store.CanonicalStoreBlackboardV2 && runner.BlackboardV2SupportsProvider(effectiveProfile.Provider) {
 		resumeGoal, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
 	} else {
 		resumeGoal, err = server.buildResumeGoal(found)
@@ -2748,6 +2755,10 @@ func (server *Server) resumeTurnSelectionOverrides(found task.Task) (modelOverri
 }
 
 func (server *Server) buildResumeGoal(found task.Task) (string, error) {
+	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+		goal, _, err := server.taskResumeContextWithoutBlackboard(found)
+		return goal, err
+	}
 	events, err := server.tasks.Events(found.ID)
 	if err != nil {
 		return "", err
@@ -2764,6 +2775,23 @@ func (server *Server) buildResumeGoal(found task.Task) (string, error) {
 	return adapters.BuildBlackboardV2ResumePrompt(adapters.BlackboardV2ResumeRequest{
 		TaskGoal: found.Goal, Steering: unconsumedHarnessSteering(events),
 	}), nil
+}
+
+func (server *Server) taskResumeContextWithoutBlackboard(found task.Task) (string, []string, error) {
+	steering, err := server.tasks.UnconsumedHarnessSteering(context.Background(), found.ID)
+	if err != nil {
+		return "", nil, err
+	}
+	directives := make([]string, len(steering))
+	eventIDs := make([]string, len(steering))
+	for index, directive := range steering {
+		directives[index] = directive.Directive
+		eventIDs[index] = directive.EventID
+	}
+	return adapters.BuildBlackboardV2ResumePrompt(adapters.BlackboardV2ResumeRequest{
+		TaskGoal: found.Goal,
+		Steering: directives,
+	}), eventIDs, nil
 }
 
 func (server *Server) isCodexTask(found task.Task) bool {
@@ -3471,7 +3499,17 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 	if err != nil {
 		return fmt.Errorf("load old continuation: %w", err)
 	}
-	next, err := server.tasks.CreateReplacementContinuation(old)
+	found, err := server.tasks.Get(old.TaskID)
+	if err != nil {
+		return fmt.Errorf("load Task for replacement continuation: %w", err)
+	}
+	disabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
+	var next task.TaskContinuation
+	if disabled {
+		next, err = server.tasks.CreateReplacementContinuationWithoutBlackboard(old)
+	} else {
+		next, err = server.tasks.CreateReplacementContinuation(old)
+	}
 	if err != nil {
 		return fmt.Errorf("create replacement continuation: %w", err)
 	}
@@ -3496,7 +3534,7 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 	// token is immutable, so this rebind keeps the still-running agent's
 	// Blackboard writes alive on the replacement instead of resolving to the
 	// completed old Continuation (closed_continuation).
-	if server.blackboardV2Continuity != nil {
+	if !disabled && server.blackboardV2Continuity != nil {
 		if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), old.ID, next.ID); err != nil {
 			_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
 			return fmt.Errorf("rebind Blackboard continuation grant: %w", err)
@@ -3507,7 +3545,9 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 	// retry delivers its control turn against the live replacement session
 	// instead of looping on the pre-steer (now dead) session. Historical
 	// dispatch identity is never rewritten (ADR 0021).
-	server.recoverConclusionObligationsForReplacedContinuation(old.TaskID, old.ID, next.ID, session.SessionID())
+	if !disabled {
+		server.recoverConclusionObligationsForReplacedContinuation(old.TaskID, old.ID, next.ID, session.SessionID())
+	}
 	if _, err := server.tasks.UpdateContinuationStatus(old.ID, task.StatusCompleted); err != nil {
 		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
 		return fmt.Errorf("settle old continuation: %w", err)
@@ -3537,7 +3577,13 @@ func (server *Server) createWritableContinuationForLiveSession(found task.Task, 
 	if previous == nil {
 		return nil, errNoContinuationToContinue
 	}
-	next, err := server.tasks.CreateReplacementContinuation(*previous)
+	disabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
+	var next task.TaskContinuation
+	if disabled {
+		next, err = server.tasks.CreateReplacementContinuationWithoutBlackboard(*previous)
+	} else {
+		next, err = server.tasks.CreateReplacementContinuation(*previous)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create writable continuation: %w", err)
 	}
@@ -3557,18 +3603,22 @@ func (server *Server) createWritableContinuationForLiveSession(found task.Task, 
 	// immutable, so this rebind keeps Blackboard writes alive on the
 	// replacement instead of resolving to the terminal Continuation
 	// (closed_continuation).
-	if server.blackboardV2Continuity == nil {
-		return fail(fmt.Errorf("Blackboard continuation rebind is unavailable"))
-	}
-	if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), previous.ID, next.ID); err != nil {
-		return fail(fmt.Errorf("rebind Blackboard continuation grant: %w", err))
+	if !disabled {
+		if server.blackboardV2Continuity == nil {
+			return fail(fmt.Errorf("Blackboard continuation rebind is unavailable"))
+		}
+		if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), previous.ID, next.ID); err != nil {
+			return fail(fmt.Errorf("rebind Blackboard continuation grant: %w", err))
+		}
 	}
 	// Recover any in-flight assisted-conclusion obligation with a NEW Conclusion
 	// Dispatch bound to the replacement Continuation + live session so a later
 	// retry delivers its control turn against the live replacement session
 	// instead of looping on the pre-steer (now dead) session. Historical
 	// dispatch identity is never rewritten (ADR 0021).
-	server.recoverConclusionObligationsForReplacedContinuation(found.ID, previous.ID, next.ID, session.SessionID())
+	if !disabled {
+		server.recoverConclusionObligationsForReplacedContinuation(found.ID, previous.ID, next.ID, session.SessionID())
+	}
 	if _, err := server.tasks.UpdateContinuationStatus(next.ID, task.StatusRunning); err != nil {
 		return fail(fmt.Errorf("start writable continuation: %w", err))
 	}

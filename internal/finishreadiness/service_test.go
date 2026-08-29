@@ -45,6 +45,10 @@ func (noOpRecorder) RecordFinalize(context.Context, challengeworkflow.RecordFina
 }
 
 func fixture(t *testing.T) (*store.DB, *project.Service, *task.Service, project.Project, task.Task, string) {
+	return fixtureWithBlackboardMode(t, task.BlackboardConclusionModeInteractive)
+}
+
+func fixtureWithBlackboardMode(t *testing.T, mode task.BlackboardConclusionMode) (*store.DB, *project.Service, *task.Service, project.Project, task.Task, string) {
 	t.Helper()
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "db.sqlite"))
@@ -58,7 +62,15 @@ func fixture(t *testing.T) (*store.DB, *project.Service, *task.Service, project.
 		t.Fatal(err)
 	}
 	tasks := task.NewService(db, projects)
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypeCTFChallenge, Goal: "solve", Runner: task.RunnerSandbox})
+	created, err := tasks.Create(task.CreateRequest{
+		ProjectID: proj.ID,
+		Type:      task.TypeCTFChallenge,
+		Goal:      "solve",
+		Runner:    task.RunnerSandbox,
+		RunControls: task.RunControls{
+			BlackboardConclusionMode: mode,
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +92,25 @@ func TestReadinessReportsOpenWorkflowAndMissingEvidence(t *testing.T) {
 	}
 	if readiness.ReadyToFinish {
 		t.Fatalf("expected blockers, got %#v", readiness)
+	}
+	if !hasCode(readiness, finishreadiness.BlockerOpenChallengeAttempts) || !hasCode(readiness, finishreadiness.BlockerMissingChallengeEvidence) {
+		t.Fatalf("blockers = %#v", readiness.Blockers)
+	}
+}
+
+func TestDisabledReadinessRetainsChallengeWorkflowBlockers(t *testing.T) {
+	db, projects, tasks, proj, created, _ := fixtureWithBlackboardMode(t, task.BlackboardConclusionModeDisabled)
+	workflow := challengeworkflow.NewService(db, projects, tasks, map[string]challengeworkflow.PlatformAdapter{"arena": adapter{}}, noOpRecorder{})
+	if _, err := workflow.Claim(context.Background(), challengeworkflow.ClaimRequest{ProjectID: proj.ID, TaskID: created.ID, Platform: "arena", OperationID: "disabled-claim", ChallengeID: "3121"}); err != nil {
+		t.Fatal(err)
+	}
+
+	readiness, err := finishreadiness.NewService(db, tasks).Evaluate(context.Background(), proj.ID, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readiness.ReadyToFinish {
+		t.Fatalf("expected challenge workflow blockers, got %#v", readiness)
 	}
 	if !hasCode(readiness, finishreadiness.BlockerOpenChallengeAttempts) || !hasCode(readiness, finishreadiness.BlockerMissingChallengeEvidence) {
 		t.Fatalf("blockers = %#v", readiness.Blockers)

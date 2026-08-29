@@ -1550,7 +1550,14 @@ func (s *Service) CreateContinuation(taskID, runtimeProfileID, runtimeProvider s
 // Task session while retaining the prior runtime configuration pin and any
 // discovered provider/container metadata.
 func (s *Service) CreateReplacementContinuation(previous TaskContinuation) (TaskContinuation, error) {
-	next, err := s.createContinuation(previous.TaskID, previous.RuntimeProfileID, previous.RuntimeProvider, previous.Runner, previous.RuntimeConfigVersionID)
+	return s.createReplacementContinuation(previous, ReconciliationPending)
+}
+
+func (s *Service) createReplacementContinuation(previous TaskContinuation, reconciliationStatus ReconciliationStatus) (TaskContinuation, error) {
+	next, err := s.createContinuationWithReconciliationStatus(
+		previous.TaskID, previous.RuntimeProfileID, previous.RuntimeProvider, previous.Runner,
+		previous.RuntimeConfigVersionID, reconciliationStatus,
+	)
 	if err != nil {
 		return TaskContinuation{}, err
 	}
@@ -1563,7 +1570,20 @@ func (s *Service) CreateReplacementContinuation(previous TaskContinuation) (Task
 	return next, nil
 }
 
+// CreateReplacementContinuationWithoutBlackboard creates the ordinary Runtime
+// turn boundary for a Disabled owner and records that no Blackboard
+// reconciliation is required for that boundary.
+func (s *Service) CreateReplacementContinuationWithoutBlackboard(previous TaskContinuation) (TaskContinuation, error) {
+	return s.createReplacementContinuation(previous, ReconciliationCompleted)
+}
+
 func (s *Service) createContinuation(taskID, runtimeProfileID, runtimeProvider string, runner Runner, runtimeConfigVersionID string) (TaskContinuation, error) {
+	return s.createContinuationWithReconciliationStatus(
+		taskID, runtimeProfileID, runtimeProvider, runner, runtimeConfigVersionID, ReconciliationPending,
+	)
+}
+
+func (s *Service) createContinuationWithReconciliationStatus(taskID, runtimeProfileID, runtimeProvider string, runner Runner, runtimeConfigVersionID string, reconciliationStatus ReconciliationStatus) (TaskContinuation, error) {
 	if _, err := s.Get(taskID); err != nil {
 		return TaskContinuation{}, err
 	}
@@ -1576,7 +1596,7 @@ func (s *Service) createContinuation(taskID, runtimeProfileID, runtimeProvider s
 		RuntimeProvider:                runtimeProvider,
 		Runner:                         runner,
 		Status:                         StatusPending,
-		BlackboardReconciliationStatus: ReconciliationPending,
+		BlackboardReconciliationStatus: reconciliationStatus,
 		StartedAt:                      now,
 		UpdatedAt:                      now,
 	}

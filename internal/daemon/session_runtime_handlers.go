@@ -539,8 +539,11 @@ func (err sessionConversationInputCommitError) Error() string { return err.cause
 func (err sessionConversationInputCommitError) Unwrap() error { return err.cause }
 
 func (server *Server) startPreparedSessionRuntime(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput, previous *session.Continuation, prepared sessionRuntimePreparation, conversationInput *session.ConversationInput) (session.Continuation, error) {
+	launch := resolveInitialOwnerBlackboardLaunch(
+		goal, found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeDisabled,
+	)
 	return server.startPreparedSessionRuntimeForBlackboardProjection(
-		ctx, found, goal, input, previous, prepared, conversationInput, runner.BlackboardProjectionRequired,
+		ctx, found, launch.goal, input, previous, prepared, conversationInput, launch.projection,
 	)
 }
 
@@ -1376,6 +1379,11 @@ func payloadOutcome(payload task.EventPayload) string {
 }
 
 func (server *Server) advanceSessionRuntimeContinuation(ctx context.Context, sessionID string, provider runtime.ProviderSession, currentID string, continuationID *string) error {
+	found, err := server.sessions.Get(sessionID)
+	if err != nil {
+		return fmt.Errorf("load Session for replacement continuation: %w", err)
+	}
+	disabled := found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeDisabled
 	old, err := server.sessions.Continuation(currentID)
 	if err != nil {
 		return fmt.Errorf("load Session continuation: %w", err)
@@ -1402,7 +1410,7 @@ func (server *Server) advanceSessionRuntimeContinuation(ctx context.Context, ses
 		_, _ = server.sessions.UpdateContinuationStatus(next.ID, session.RuntimeStatusFailed)
 		return fmt.Errorf("start Session replacement continuation: %w", err)
 	}
-	if server.blackboardV2 != nil {
+	if !disabled && server.blackboardV2 != nil {
 		if err := server.blackboardV2.RebindSessionContinuation(ctx, sessionID, old.ID, next.ID); err != nil {
 			_, _ = server.sessions.UpdateContinuationStatus(next.ID, session.RuntimeStatusFailed)
 			return fmt.Errorf("rebind Session Blackboard continuation: %w", err)
