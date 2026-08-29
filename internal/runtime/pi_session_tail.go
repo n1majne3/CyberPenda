@@ -211,14 +211,12 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 
 // normalizePiSessionPath canonicalizes a session-file path so the same file
 // reached under different spellings — a Windows 8.3 short name, a symlinked
-// directory, or redundant separators — maps to one key. EvalSymlinks resolves
-// short names and symlink aliases; Clean collapses separators. When the path
-// does not exist yet (EvalSymlinks fails), the cleaned form is used.
+// directory, or redundant separators — maps to one key. The OS-specific
+// canonicalPathForCompare expands short names and resolves symlinks; Clean
+// collapses separators. When the path does not exist yet, the cleaned form is
+// used so classification still has a stable key.
 func normalizePiSessionPath(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return filepath.Clean(resolved)
-	}
-	return filepath.Clean(path)
+	return canonicalPathForCompare(path)
 }
 
 // piSessionParent returns the parentSession named by a session file's header,
