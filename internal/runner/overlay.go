@@ -1040,7 +1040,7 @@ func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile
 		if err != nil {
 			return "", err
 		}
-		return buildHermesConfigYAML(profile, projected, servers, string(effort)), nil
+		return buildHermesConfigYAML(profile, projected, servers, string(effort), req), nil
 	case runtimeprofile.ProviderPi:
 		models := buildPiModels(profile, nil, req)
 		if len(projected) > 0 {

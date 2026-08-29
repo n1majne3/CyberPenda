@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"pentest/internal/modelprovider"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -288,5 +290,217 @@ func TestProjectHermesHomeProjectsDefaultHighReasoningEffort(t *testing.T) {
 	}
 	if !strings.Contains(string(configRaw), "  reasoning_effort: high\n") {
 		t.Fatalf("empty Reasoning Effort must project high, got:\n%s", configRaw)
+	}
+}
+
+type hermesConfigModel struct {
+	Provider      string `yaml:"provider"`
+	Default       string `yaml:"default"`
+	MaxTokens     int    `yaml:"max_tokens"`
+	ContextLength int    `yaml:"context_length"`
+}
+
+type hermesConfigDocument struct {
+	Model          hermesConfigModel `yaml:"model"`
+	ModelOverrides map[string]struct {
+		Models map[string]struct {
+			MaxOutputTokens int `yaml:"max_output_tokens"`
+			ContextWindow   int `yaml:"context_window"`
+		} `yaml:"models"`
+	} `yaml:"model_overrides"`
+}
+
+func decodeHermesConfig(t *testing.T, path string) hermesConfigDocument {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+	var doc hermesConfigDocument
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode config.yaml: %v\n%s", err, raw)
+	}
+	return doc
+}
+
+func newHermesLimitsProviders(t *testing.T) *modelprovider.Service {
+	t.Helper()
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return modelprovider.NewService(db)
+}
+
+func TestProjectHermesHomeWritesResolvedModelLimits(t *testing.T) {
+	providers := newHermesLimitsProviders(t)
+	created, err := providers.Create(modelprovider.CreateRequest{
+		Name:    "Hermes Limits Gateway",
+		BaseURL: "https://limits.example.test/v1",
+		Protocols: []modelprovider.Protocol{
+			modelprovider.ProtocolOpenAIChatCompletions,
+		},
+		Catalog: modelprovider.Catalog{
+			Manual:       []string{"cached-model", "override-model"},
+			DefaultModel: "cached-model",
+			Limits: map[string]modelprovider.CatalogLimits{
+				"override-model": {ContextWindow: 999999, MaxOutputTokens: 1111},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(created.APIKeyEnv, "sk-hermes-limits")
+	cache := modelprovider.NewCapabilityCache(map[string]modelprovider.CatalogLimits{
+		"cached-model": {ContextWindow: 200000, MaxOutputTokens: 32000},
+	}, "", nil)
+
+	t.Run("catalog override", func(t *testing.T) {
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-hermes-limits-override", runtimeprofile.ProviderHermes)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderHermes,
+			Fields: runtimeprofile.Fields{
+				ModelProviderID: created.ID,
+				ModelOverride:   "override-model",
+			},
+		}, runner.ProjectionRequest{
+			ModelProviders:  providers,
+			CapabilityCache: cache,
+		}); err != nil {
+			t.Fatalf("project runtime config: %v", err)
+		}
+		doc := decodeHermesConfig(t, filepath.Join(layout.ProviderHome, "config.yaml"))
+		if doc.Model.MaxTokens != 1111 {
+			t.Fatalf("model.max_tokens = %d, want 1111", doc.Model.MaxTokens)
+		}
+		if doc.Model.ContextLength != 999999 {
+			t.Fatalf("model.context_length = %d, want 999999", doc.Model.ContextLength)
+		}
+		overrides := doc.ModelOverrides["custom:"+created.ID]
+		entry, ok := overrides.Models["override-model"]
+		if !ok {
+			t.Fatalf("missing model_overrides entry for custom:%s override-model: %#v", created.ID, doc.ModelOverrides)
+		}
+		if entry.MaxOutputTokens != 1111 || entry.ContextWindow != 999999 {
+			t.Fatalf("model_overrides entry = %#v", entry)
+		}
+	})
+
+	t.Run("capability cache", func(t *testing.T) {
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-hermes-limits-cache", runtimeprofile.ProviderHermes)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderHermes,
+			Fields: runtimeprofile.Fields{
+				ModelProviderID: created.ID,
+				ModelOverride:   "cached-model",
+			},
+		}, runner.ProjectionRequest{
+			ModelProviders:  providers,
+			CapabilityCache: cache,
+		}); err != nil {
+			t.Fatalf("project runtime config: %v", err)
+		}
+		doc := decodeHermesConfig(t, filepath.Join(layout.ProviderHome, "config.yaml"))
+		if doc.Model.MaxTokens != 32000 {
+			t.Fatalf("model.max_tokens = %d, want 32000", doc.Model.MaxTokens)
+		}
+		if doc.Model.ContextLength != 200000 {
+			t.Fatalf("model.context_length = %d, want 200000", doc.Model.ContextLength)
+		}
+		entry := doc.ModelOverrides["custom:"+created.ID].Models["cached-model"]
+		if entry.MaxOutputTokens != 32000 || entry.ContextWindow != 200000 {
+			t.Fatalf("model_overrides entry = %#v", entry)
+		}
+	})
+
+	t.Run("partial resolution per field", func(t *testing.T) {
+		partial, err := providers.Create(modelprovider.CreateRequest{
+			Name:    "Hermes Partial Gateway",
+			BaseURL: "https://partial.example.test/v1",
+			Protocols: []modelprovider.Protocol{
+				modelprovider.ProtocolOpenAIChatCompletions,
+			},
+			Catalog: modelprovider.Catalog{
+				Manual:       []string{"partial-model"},
+				DefaultModel: "partial-model",
+				Limits: map[string]modelprovider.CatalogLimits{
+					"partial-model": {MaxOutputTokens: 4444},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("create partial provider: %v", err)
+		}
+		t.Setenv(partial.APIKeyEnv, "sk-hermes-partial")
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-hermes-limits-partial", runtimeprofile.ProviderHermes)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderHermes,
+			Fields:   runtimeprofile.Fields{ModelProviderID: partial.ID},
+		}, runner.ProjectionRequest{
+			ModelProviders: providers,
+			CapabilityCache: modelprovider.NewCapabilityCache(map[string]modelprovider.CatalogLimits{
+				"partial-model": {ContextWindow: 150000, MaxOutputTokens: 9999},
+			}, "", nil),
+		}); err != nil {
+			t.Fatalf("project runtime config: %v", err)
+		}
+		doc := decodeHermesConfig(t, filepath.Join(layout.ProviderHome, "config.yaml"))
+		if doc.Model.MaxTokens != 4444 {
+			t.Fatalf("model.max_tokens = %d, want catalog override 4444", doc.Model.MaxTokens)
+		}
+		if doc.Model.ContextLength != 150000 {
+			t.Fatalf("model.context_length = %d, want cache 150000", doc.Model.ContextLength)
+		}
+	})
+}
+
+func TestProjectHermesHomeOmitsLimitsWhenUnresolved(t *testing.T) {
+	providers := newHermesLimitsProviders(t)
+	created, err := providers.Create(modelprovider.CreateRequest{
+		Name:    "Hermes No Limits Gateway",
+		BaseURL: "https://nolimits.example.test/v1",
+		Protocols: []modelprovider.Protocol{
+			modelprovider.ProtocolOpenAIChatCompletions,
+		},
+		Catalog: modelprovider.Catalog{
+			Manual:       []string{"unknown-model"},
+			DefaultModel: "unknown-model",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(created.APIKeyEnv, "sk-hermes-nolimits")
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-hermes-limits-none", runtimeprofile.ProviderHermes)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderHermes,
+		Fields:   runtimeprofile.Fields{ModelProviderID: created.ID},
+	}, runner.ProjectionRequest{
+		ModelProviders:  providers,
+		CapabilityCache: modelprovider.NewCapabilityCache(map[string]modelprovider.CatalogLimits{}, "", nil),
+	}); err != nil {
+		t.Fatalf("project runtime config: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+	config := string(raw)
+	if strings.Contains(config, "max_tokens") || strings.Contains(config, "context_length") || strings.Contains(config, "model_overrides") {
+		t.Fatalf("unresolved limits must keep Hermes native fallback, got:\n%s", config)
 	}
 }

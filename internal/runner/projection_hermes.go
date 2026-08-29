@@ -55,7 +55,7 @@ func projectHermesHome(layout Layout, profile runtimeprofile.Profile, req Projec
 	}
 
 	configPath := filepath.Join(layout.ProviderHome, "config.yaml")
-	configYAML, err := applyHermesConfigOverlay(profile, buildHermesConfigYAML(profile, projected, mcpServers, string(effort)))
+	configYAML, err := applyHermesConfigOverlay(profile, buildHermesConfigYAML(profile, projected, mcpServers, string(effort), req))
 	if err != nil {
 		return ConfigProjection{}, err
 	}
@@ -249,7 +249,7 @@ const (
 	hermesProjectedMaxTurns = 100000
 )
 
-func buildHermesConfigYAML(profile runtimeprofile.Profile, projected []piProjectedProvider, servers []runtimeprofile.MCPServer, reasoningEffort string) string {
+func buildHermesConfigYAML(profile runtimeprofile.Profile, projected []piProjectedProvider, servers []runtimeprofile.MCPServer, reasoningEffort string, req ProjectionRequest) string {
 	var b strings.Builder
 	b.WriteString("approvals:\n")
 	b.WriteString("  mode: off\n")
@@ -276,10 +276,14 @@ func buildHermesConfigYAML(profile runtimeprofile.Profile, projected []piProject
 		}
 	}
 	fmt.Fprintf(&b, "  provider: %s\n", yamlScalar(providerName))
-	if model := strings.TrimSpace(profile.Fields.Model); model != "" {
-		fmt.Fprintf(&b, "  default: %s\n", yamlScalar(model))
-	} else if selected := hermesSelectedProvider(profile, projected); selected != nil && len(selected.Models) > 0 {
-		fmt.Fprintf(&b, "  default: %s\n", yamlScalar(selected.Models[0]))
+	modelID := strings.TrimSpace(profile.Fields.Model)
+	if modelID == "" {
+		if selected := hermesSelectedProvider(profile, projected); selected != nil && len(selected.Models) > 0 {
+			modelID = selected.Models[0]
+		}
+	}
+	if modelID != "" {
+		fmt.Fprintf(&b, "  default: %s\n", yamlScalar(modelID))
 	}
 	if endpoint := strings.TrimSpace(profile.Fields.Endpoint); endpoint != "" {
 		fmt.Fprintf(&b, "  base_url: %s\n", yamlScalar(endpoint))
@@ -287,6 +291,20 @@ func buildHermesConfigYAML(profile runtimeprofile.Profile, projected []piProject
 		fmt.Fprintf(&b, "  base_url: %s\n", yamlScalar(selected.Endpoint.BaseURL))
 	}
 	fmt.Fprintf(&b, "  api_mode: %s\n", yamlScalar(hermesAPIMode(hermesSelectedProtocol(profile, projected))))
+	// Hermes resolves unknown models through its own models.dev table, where
+	// one model can report different per-provider limits (issue #235). Take
+	// over both limits from the shared resolution chain: model.max_tokens and
+	// model.context_length drive the request layer, while the model_overrides
+	// entry corrects get_model_capabilities for the projected provider+model.
+	// Unresolved limits stay absent so Hermes keeps its native fallback
+	// (ADR 0029).
+	limits := resolveLaunchModelLimits(profile, req)
+	if limits.MaxOutputTokens >= 1 {
+		fmt.Fprintf(&b, "  max_tokens: %d\n", limits.MaxOutputTokens)
+	}
+	if limits.ContextWindow >= 1 {
+		fmt.Fprintf(&b, "  context_length: %d\n", limits.ContextWindow)
+	}
 	if len(projected) > 0 {
 		b.WriteString("providers:\n")
 		for _, entry := range projected {
@@ -294,6 +312,18 @@ func buildHermesConfigYAML(profile runtimeprofile.Profile, projected []piProject
 			fmt.Fprintf(&b, "    base_url: %s\n", yamlScalar(entry.Endpoint.BaseURL))
 			fmt.Fprintf(&b, "    api_mode: %s\n", yamlScalar(hermesAPIMode(entry.Protocol)))
 			fmt.Fprintf(&b, "    key_env: %s\n", yamlScalar(entry.Provider.APIKeyEnv))
+		}
+	}
+	if (limits.MaxOutputTokens >= 1 || limits.ContextWindow >= 1) && modelID != "" && providerName != "custom" {
+		b.WriteString("model_overrides:\n")
+		fmt.Fprintf(&b, "  %s:\n", yamlScalar(providerName))
+		b.WriteString("    models:\n")
+		fmt.Fprintf(&b, "      %s:\n", yamlScalar(modelID))
+		if limits.MaxOutputTokens >= 1 {
+			fmt.Fprintf(&b, "        max_output_tokens: %d\n", limits.MaxOutputTokens)
+		}
+		if limits.ContextWindow >= 1 {
+			fmt.Fprintf(&b, "        context_window: %d\n", limits.ContextWindow)
 		}
 	}
 	b.WriteString("terminal:\n")
