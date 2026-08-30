@@ -270,6 +270,7 @@ func TestAssistedConclusionPendingRecoveryRetryDispatchesInitialTurnIdempotently
 	retryURL := "/api/projects/" + seed.projectID + "/tasks/" + seed.task.ID + "/blackboard-conclusion/retry"
 	for attempt := 0; attempt < 2; attempt++ {
 		request := httptest.NewRequest(http.MethodPost, retryURL, bytes.NewBufferString(`{}`))
+		authorizeOperatorTestRequest(restarted, request)
 		request.Header.Set("Idempotency-Key", "pending-recovery-retry")
 		response := httptest.NewRecorder()
 		restarted.ServeHTTP(response, request)

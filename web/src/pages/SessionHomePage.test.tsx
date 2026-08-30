@@ -72,6 +72,41 @@ function renderPage(initialEntries = ["/sessions"], view: "open" | "archived" = 
 }
 
 describe("SessionHomePage", () => {
+  it("launches a Non-Project Session with Disabled Blackboard Mode", async () => {
+    const fetchMock = mockApi({
+      ...sessionLaunchRoutes,
+      "/api/sessions?lifecycle=archived": { sessions: [] },
+      "/api/sessions": { sessions: [] },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByRole("option", { name: "MiMo" });
+    await user.type(screen.getByLabelText("Initial input"), "Inspect the standalone target");
+    const mode = screen.getByLabelText("Blackboard Mode");
+    expect(screen.getByRole("option", { name: "Disabled" })).toBeEnabled();
+    await user.selectOptions(mode, "disabled");
+    expect(screen.getByText(/does not receive Blackboard state or Blackboard access/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /create session/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            input: "Inspect the standalone target",
+            runtime_profile_id: "resolved-profile",
+            runner: "sandbox",
+            reasoning_effort: "high",
+            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "disabled" },
+          }),
+        }),
+      );
+    });
+  });
+
   it("reuses the Task launch selection and preflight flow", async () => {
     const fetchMock = mockApi({
       ...sessionLaunchRoutes,
@@ -92,7 +127,7 @@ describe("SessionHomePage", () => {
 
     await user.type(screen.getByLabelText("Initial input"), "Inspect the standalone target");
     await user.selectOptions(screen.getByLabelText("Reasoning effort"), "xhigh");
-    await user.selectOptions(screen.getByLabelText("Blackboard conclusions"), "assisted");
+    await user.selectOptions(screen.getByLabelText("Blackboard Mode"), "assisted");
     await user.click(screen.getByRole("button", { name: /create session/i }));
 
     await waitFor(() => {
@@ -246,7 +281,7 @@ describe("SessionHomePage", () => {
 
     await screen.findByRole("option", { name: "MiMo" });
     await user.type(await screen.findByRole("textbox", { name: /initial input/i }), "Inspect the standalone target");
-    await user.selectOptions(screen.getByRole("combobox", { name: /blackboard conclusions/i }), "assisted");
+    await user.selectOptions(screen.getByRole("combobox", { name: /blackboard mode/i }), "assisted");
     await user.click(screen.getByRole("button", { name: /create session/i }));
 
     await waitFor(() => {

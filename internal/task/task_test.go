@@ -290,6 +290,60 @@ func TestCreateDefaultsAndPersistsBlackboardConclusionMode(t *testing.T) {
 	}
 }
 
+func TestCreatePersistsDisabledBlackboardMode(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID,
+		Type:      task.TypePentest, Goal: "inspect without Blackboard", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeDisabled},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled ||
+		created.BlackboardConclusion.Mode != task.BlackboardConclusionModeDisabled {
+		t.Fatalf("disabled Task = %#v", created)
+	}
+
+	reloaded, err := svc.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled ||
+		reloaded.BlackboardConclusion.Mode != task.BlackboardConclusionModeDisabled {
+		t.Fatalf("reloaded disabled Task = %#v", reloaded)
+	}
+}
+
+func TestGetNormalizesMissingStoredBlackboardModeToInteractive(t *testing.T) {
+	db := newStore(t)
+	projects := project.NewService(db)
+	svc := task.NewService(db, projects)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, err := svc.Create(task.CreateRequest{
+		ProjectID: proj.ID, Type: task.TypePentest, Goal: "legacy Task", Runner: task.RunnerSandbox,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE tasks SET run_controls_json='{}' WHERE id=?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded, err := svc.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeInteractive ||
+		reloaded.BlackboardConclusion.Mode != task.BlackboardConclusionModeInteractive {
+		t.Fatalf("normalized legacy Task = %#v", reloaded)
+	}
+}
+
 func TestCreateRejectsInvalidBlackboardConclusionMode(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)

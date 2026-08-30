@@ -950,7 +950,114 @@ func migrations() []migration {
 		newMigration(63, "accepted_steering_send_turn_mode", migration63SQL, migration63Up),
 		newMigration(64, "accepted_steering_operator_message", migration64SQL, migration64Up),
 		newMigration(65, "accepted_steering_client_selection_identity", migration65SQL, migration65Up),
+		newMigration(66, "disabled_session_blackboard_mode", migration66SQL, migration66Up),
+		newMigration(67, "operator_disabled_output_origins", migration67SQL, migration67Up),
+		newMigration(68, "operator_evidence_request_sources", migration68SQL, migration68Up),
 	}
+}
+
+const migration68SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_operator_evidence_requests (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+	idempotency_key TEXT NOT NULL,
+	request_hash TEXT NOT NULL,
+	actor_id TEXT NOT NULL,
+	source_continuation_id TEXT NOT NULL REFERENCES task_continuations(id) ON DELETE RESTRICT,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, source_task_id, idempotency_key),
+	CHECK (idempotency_key <> ''),
+	CHECK (request_hash <> ''),
+	CHECK (actor_id <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_operator_evidence_request_continuation
+	ON blackboard_v2_operator_evidence_requests (source_continuation_id);
+`
+
+func migration68Up(tx *sql.Tx) error { return execStatements(tx, migration68SQL) }
+
+const migration67SQL = `
+CREATE TABLE IF NOT EXISTS blackboard_v2_operator_attempt_origins (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	actor_id TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, key),
+	CHECK (actor_id <> '')
+);
+CREATE TABLE IF NOT EXISTS blackboard_v2_operator_evidence_origins (
+	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+	key TEXT NOT NULL,
+	version INTEGER NOT NULL CHECK (version >= 1),
+	actor_id TEXT NOT NULL,
+	source_task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE RESTRICT,
+	source_continuation_id TEXT NOT NULL REFERENCES task_continuations(id) ON DELETE RESTRICT,
+	source_path TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	PRIMARY KEY (project_id, key, version),
+	CHECK (actor_id <> ''),
+	CHECK (source_path <> '')
+);
+CREATE INDEX IF NOT EXISTS idx_blackboard_v2_operator_evidence_source_task
+	ON blackboard_v2_operator_evidence_origins (source_task_id);
+`
+
+func migration67Up(tx *sql.Tx) error { return execStatements(tx, migration67SQL) }
+
+const migration66SQL = `
+-- Relax the existing Session Blackboard Mode compatibility column so it also
+-- accepts disabled. The column layout and all dependent Session tables stay
+-- unchanged.
+CHECK (blackboard_conclusion_mode IN ('interactive', 'assisted', 'disabled'));
+`
+
+func migration66Up(tx *sql.Tx) error {
+	const oldConstraint = "CHECK (blackboard_conclusion_mode IN ('interactive', 'assisted'))"
+	const newConstraint = "CHECK (blackboard_conclusion_mode IN ('interactive', 'assisted', 'disabled'))"
+
+	var schemaSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_schema WHERE type='table' AND name='sessions'`).Scan(&schemaSQL); err != nil {
+		return fmt.Errorf("read sessions schema: %w", err)
+	}
+	if strings.Contains(schemaSQL, newConstraint) {
+		return nil
+	}
+	if !strings.Contains(schemaSQL, oldConstraint) {
+		return fmt.Errorf("sessions Blackboard Mode constraint has an unexpected shape")
+	}
+	var schemaVersion int
+	if err := tx.QueryRow(`PRAGMA schema_version`).Scan(&schemaVersion); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if _, err := tx.Exec(`PRAGMA writable_schema=ON`); err != nil {
+		return fmt.Errorf("enable writable schema: %w", err)
+	}
+	writable := true
+	defer func() {
+		if writable {
+			_, _ = tx.Exec(`PRAGMA writable_schema=OFF`)
+		}
+	}()
+	updatedSQL := strings.Replace(schemaSQL, oldConstraint, newConstraint, 1)
+	result, err := tx.Exec(`UPDATE sqlite_schema SET sql=? WHERE type='table' AND name='sessions' AND sql=?`, updatedSQL, schemaSQL)
+	if err != nil {
+		return fmt.Errorf("extend sessions Blackboard Mode constraint: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("inspect sessions schema update: %w", err)
+	}
+	if rows != 1 {
+		return fmt.Errorf("extend sessions Blackboard Mode constraint: updated %d rows", rows)
+	}
+	if _, err := tx.Exec(`PRAGMA writable_schema=OFF`); err != nil {
+		return fmt.Errorf("disable writable schema: %w", err)
+	}
+	writable = false
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA schema_version=%d`, schemaVersion+1)); err != nil {
+		return fmt.Errorf("advance schema version: %w", err)
+	}
+	return nil
 }
 
 // migration65SQL preserves the exact client-controlled Runtime Turn Selection

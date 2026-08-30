@@ -102,6 +102,10 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 	if input.RunControls.Extras == nil && input.Extras != nil {
 		input.RunControls.Extras = input.Extras
 	}
+	if reasonTask && input.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+		writeError(response, http.StatusBadRequest, "Reason Task Blackboard Mode cannot be disabled")
+		return
+	}
 	if reasonTask {
 		input.Goal = reasontask.LaunchGoal
 	} else if input.Type != task.TypePentest && input.Type != task.TypeCTFChallenge {
@@ -196,7 +200,12 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 		return
 	}
 
-	plan, err := server.buildTaskLaunchPlan(created, launchGoal, launchModelOverride, "", launchReasoningEffort)
+	initialLaunch := resolveOwnerBlackboardRuntimeLaunch(
+		launchGoal, created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled,
+	)
+	plan, err := server.buildTaskLaunchPlanForBlackboardProjection(
+		created, initialLaunch.goal, launchModelOverride, "", launchReasoningEffort, initialLaunch.projection,
+	)
 	if err != nil {
 		writeTaskAdapterError(response, err)
 		return
@@ -217,7 +226,7 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 
 	server.recordLoopbackRewriteEvent(created)
 
-	if err := server.launchTaskInBackground(created, plan, launchGoal); err != nil {
+	if err := server.launchTaskInBackground(created, plan, initialLaunch.goal); err != nil {
 		writeTaskLaunchError(response, err)
 		return
 	}
@@ -248,6 +257,7 @@ type taskLaunchPlan struct {
 	GlobalModelProviderSnapshot  *runner.GlobalModelProviderSnapshot
 	SkillBundles                 []skill.Bundle
 	LaunchGoal                   string
+	BlackboardProjection         runner.BlackboardProjection
 	BlackboardV2                 bool
 	ValidatedLayout              *runner.Layout
 	BlackboardV2SteeringEventIDs []string
@@ -260,7 +270,7 @@ type continuationLaunchBinding struct {
 }
 
 func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchPlan, goal string) error {
-	if !plan.BlackboardV2 {
+	if plan.BlackboardProjection != runner.BlackboardProjectionOmitted && !plan.BlackboardV2 {
 		return fmt.Errorf("Blackboard v2 launch projection is required")
 	}
 	// Replacement launches must not start while a prior Runtime is still owned
@@ -269,7 +279,7 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		return err
 	}
 	server.logTaskLaunchStage(created, "prepare_continuation")
-	continuation, boundPlan, err := server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
+	continuation, boundPlan, err := server.prepareTaskContinuationLaunch(created, plan, goal)
 	if err != nil {
 		return err
 	}
@@ -359,6 +369,22 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		}
 	}()
 	return nil
+}
+
+func (server *Server) prepareTaskContinuationLaunch(created task.Task, plan taskLaunchPlan, goal string) (task.TaskContinuation, taskLaunchPlan, error) {
+	if plan.BlackboardProjection != runner.BlackboardProjectionOmitted {
+		return server.prepareBlackboardV2ContinuationLaunch(created, plan, goal)
+	}
+	_, continuation, err := server.tasks.CreateContinuationLaunchWithoutBlackboard(context.Background(), task.ContinuationLaunchRequest{
+		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
+		RuntimeProvider: string(plan.ResolvedProfile.Provider), Runner: created.Runner,
+		RuntimeConfig: plan.CapturedRuntimeConfig, SteeringEventIDs: plan.BlackboardV2SteeringEventIDs,
+		NativeSessionID: plan.NativeResumeSessionID, NativeSessionPath: plan.NativeResumeSessionPath,
+	})
+	if err != nil {
+		return task.TaskContinuation{}, taskLaunchPlan{}, err
+	}
+	return continuation, plan, nil
 }
 
 func (server *Server) failProviderSessionLaunch(taskID, continuationID string, cause error) {
@@ -622,15 +648,28 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 }
 
 func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string) (taskLaunchPlan, error) {
+	launch := resolveOwnerBlackboardRuntimeLaunch(
+		goal, created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled,
+	)
+	return server.buildTaskLaunchPlanForBlackboardProjection(
+		created, launch.goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, launch.projection,
+	)
+}
+
+func (server *Server) buildTaskLaunchPlanForBlackboardProjection(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string, blackboardProjection runner.BlackboardProjection) (taskLaunchPlan, error) {
 	server.logTaskLaunchStage(created, "build_plan")
 	profile, err := server.resolveTaskRuntimeProfile(created)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
+	if blackboardProjection == runner.BlackboardProjectionOmitted {
+		seed := &taskLaunchPlan{ResolvedProfile: profile, BlackboardProjection: blackboardProjection}
+		return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, seed)
+	}
 	if server.blackboardV2Continuity != nil && runner.BlackboardV2SupportsProvider(profile.Provider) {
 		return server.prepareBlackboardV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, profile)
 	}
-	seed := &taskLaunchPlan{ResolvedProfile: profile}
+	seed := &taskLaunchPlan{ResolvedProfile: profile, BlackboardProjection: runner.BlackboardProjectionRequired}
 	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, seed)
 }
 
@@ -690,6 +729,7 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 		GlobalModelProviderSnapshot: globalSnapshot,
 		SkillBundles:                append([]skill.Bundle(nil), skillBundles...),
 		LaunchGoal:                  goal,
+		BlackboardProjection:        runner.BlackboardProjectionRequired,
 		BlackboardV2:                true,
 		ValidatedLayout:             &layout,
 	}, nil
@@ -713,6 +753,10 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		launchReasoningEffort = captured.LaunchReasoningEffort
 	}
 	v2 := binding != nil && binding.V2Header != nil
+	blackboardProjection := runner.BlackboardProjectionRequired
+	if captured != nil {
+		blackboardProjection = captured.BlackboardProjection
+	}
 	runtimeConfig := map[string]any{
 		"runtime_profile_id": created.RuntimeProfileID,
 		"runner":             created.Runner,
@@ -764,7 +808,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		if captured != nil {
 			capturedRuntimeConfig = captured.CapturedRuntimeConfig
 		}
-		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, LaunchReasoningEffort: launchReasoningEffort, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal}, nil
+		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, LaunchReasoningEffort: launchReasoningEffort, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal, BlackboardProjection: blackboardProjection}, nil
 	}
 	// Do not re-enter SQLite from BindGrant: that callback runs under
 	// CreateContinuation's open transaction. Load skills only on the
@@ -828,6 +872,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		LaunchModelOverride:         launchModelOverride,
 		SkillBundles:                skillBundles,
 		CapabilityCache:             server.capabilityCache,
+		BlackboardProjection:        blackboardProjection,
 	}
 	var projection runner.ConfigProjection
 	if v2 {
@@ -908,6 +953,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot:               projection.ModelSnapshot,
 		SkillBundles:                skillBundles,
+		BlackboardProjection:        blackboardProjection,
 	})
 	if err != nil {
 		return taskLaunchPlan{}, err
@@ -1064,6 +1110,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		GlobalModelProviderSnapshot: globalSnapshot,
 		SkillBundles:                append([]skill.Bundle(nil), skillBundles...),
 		LaunchGoal:                  launchGoal,
+		BlackboardProjection:        blackboardProjection,
 		BlackboardV2:                v2,
 		ValidatedLayout:             &layout,
 		Facts:                       launchFacts,
@@ -1867,9 +1914,11 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 				return
 			}
 		}
-		if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
-			writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
-			return
+		if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+			if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
+				writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
+				return
+			}
 		}
 		// Durable Task may still be running when harness/session already gone
 		// (finish abort, orphan cleanup). Always settle stopped after cleanup.
@@ -1890,9 +1939,11 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeError(response, http.StatusConflict, "provider session did not close")
 		return
 	}
-	if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
-		writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
-		return
+	if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+		if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
+			writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
+			return
+		}
 	}
 	if err := server.settleTaskStopped(taskID); err != nil {
 		writeTaskError(response, err)
@@ -1976,6 +2027,7 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
+	blackboardDisabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
 	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
 		if err := server.acquireTaskControlAfterAssistedSettlement(request.Context(), found, false, false); err != nil {
 			if errors.Is(err, errSemanticConclusionActionRequired) {
@@ -2052,8 +2104,9 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		}
 	}
 
-	// 4) Sole owner: mark Continuation completed (triggers recon), verify
-	// durable marker, then Task completed. Fail-closed — no silent fallbacks.
+	// 4) Sole owner: mark Continuation completed. Blackboard-enabled owners
+	// trigger reconciliation and verify its durable marker. Disabled owners have
+	// no Blackboard reconciliation obligation. Then mark the Task completed.
 	// After runtime is already closed, any failure here must settle Task to a
 	// recoverable terminal (failed) so it does not remain durable running.
 	cont, contErr := server.tasks.LatestContinuation(taskID)
@@ -2065,13 +2118,13 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		server.finishFailClosed(response, taskID, "continuation_missing", "no Continuation for Task", http.StatusConflict)
 		return
 	}
-	// Complete Continuation and/or retry terminal reconciliation when the
-	// durable marker is not yet completed (fail-closed, no silent skip).
-	if cont.Status != task.StatusCompleted || cont.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+	// Complete the Continuation. For Blackboard-enabled owners, the same
+	// idempotent call retries an incomplete terminal reconciliation marker.
+	if cont.Status != task.StatusCompleted || (!blackboardDisabled && cont.BlackboardReconciliationStatus != task.ReconciliationCompleted) {
 		if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusCompleted); err != nil {
 			// Classify from durable re-read, never string-matching.
 			refreshed, refErr := server.tasks.Continuation(cont.ID)
-			if refErr == nil && refreshed.Status == task.StatusCompleted && refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+			if !blackboardDisabled && refErr == nil && refreshed.Status == task.StatusCompleted && refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
 				server.finishFailClosed(response, taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus), http.StatusConflict)
 				return
 			}
@@ -2092,12 +2145,13 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		server.finishFailClosed(response, taskID, "continuation_status", "status="+string(refreshed.Status), http.StatusConflict)
 		return
 	}
-	if refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+	if !blackboardDisabled && refreshed.BlackboardReconciliationStatus != task.ReconciliationCompleted {
 		server.finishFailClosed(response, taskID, "continuation_reconciliation", "marker="+string(refreshed.BlackboardReconciliationStatus), http.StatusConflict)
 		return
 	}
 
-	// 5) Only after durable recon marker is completed may the Task be completed.
+	// 5) Blackboard-enabled owners require a completed reconciliation marker.
+	// Disabled owners retain the ordinary lifecycle gate only.
 	if _, err := server.tasks.UpdateStatus(taskID, task.StatusCompleted); err != nil {
 		server.finishFailClosed(response, taskID, "task_complete", err.Error(), http.StatusInternalServerError)
 		return
@@ -2623,7 +2677,9 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
 	var steeringEventIDs []string
-	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && server.isBlackboardV2Task(found) {
+	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+		resumedMessage, steeringEventIDs, err = server.taskResumeContextWithoutBlackboard(found)
+	} else if server.canonicalStore == store.CanonicalStoreBlackboardV2 && server.isBlackboardV2Task(found) {
 		resumedMessage, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
 		if err != nil {
 			return task.Task{}, "", taskLaunchPlan{}, err
@@ -2676,7 +2732,9 @@ func (server *Server) prepareFreshResumeContinuation(found task.Task) (task.Task
 
 	resumeGoal := ""
 	var steeringEventIDs []string
-	if server.canonicalStore == store.CanonicalStoreBlackboardV2 && runner.BlackboardV2SupportsProvider(effectiveProfile.Provider) {
+	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+		resumeGoal, steeringEventIDs, err = server.taskResumeContextWithoutBlackboard(found)
+	} else if server.canonicalStore == store.CanonicalStoreBlackboardV2 && runner.BlackboardV2SupportsProvider(effectiveProfile.Provider) {
 		resumeGoal, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
 	} else {
 		resumeGoal, err = server.buildResumeGoal(found)
@@ -2704,6 +2762,10 @@ func (server *Server) resumeTurnSelectionOverrides(found task.Task) (modelOverri
 }
 
 func (server *Server) buildResumeGoal(found task.Task) (string, error) {
+	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+		goal, _, err := server.taskResumeContextWithoutBlackboard(found)
+		return goal, err
+	}
 	events, err := server.tasks.Events(found.ID)
 	if err != nil {
 		return "", err
@@ -2720,6 +2782,23 @@ func (server *Server) buildResumeGoal(found task.Task) (string, error) {
 	return adapters.BuildBlackboardV2ResumePrompt(adapters.BlackboardV2ResumeRequest{
 		TaskGoal: found.Goal, Steering: unconsumedHarnessSteering(events),
 	}), nil
+}
+
+func (server *Server) taskResumeContextWithoutBlackboard(found task.Task) (string, []string, error) {
+	steering, err := server.tasks.UnconsumedHarnessSteering(context.Background(), found.ID)
+	if err != nil {
+		return "", nil, err
+	}
+	directives := make([]string, len(steering))
+	eventIDs := make([]string, len(steering))
+	for index, directive := range steering {
+		directives[index] = directive.Directive
+		eventIDs[index] = directive.EventID
+	}
+	return adapters.BuildBlackboardV2ResumePrompt(adapters.BlackboardV2ResumeRequest{
+		TaskGoal: found.Goal,
+		Steering: directives,
+	}), eventIDs, nil
 }
 
 func (server *Server) isCodexTask(found task.Task) bool {
@@ -3427,7 +3506,17 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 	if err != nil {
 		return fmt.Errorf("load old continuation: %w", err)
 	}
-	next, err := server.tasks.CreateReplacementContinuation(old)
+	found, err := server.tasks.Get(old.TaskID)
+	if err != nil {
+		return fmt.Errorf("load Task for replacement continuation: %w", err)
+	}
+	disabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
+	var next task.TaskContinuation
+	if disabled {
+		next, err = server.tasks.CreateReplacementContinuationWithoutBlackboard(old)
+	} else {
+		next, err = server.tasks.CreateReplacementContinuation(old)
+	}
 	if err != nil {
 		return fmt.Errorf("create replacement continuation: %w", err)
 	}
@@ -3452,7 +3541,7 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 	// token is immutable, so this rebind keeps the still-running agent's
 	// Blackboard writes alive on the replacement instead of resolving to the
 	// completed old Continuation (closed_continuation).
-	if server.blackboardV2Continuity != nil {
+	if !disabled && server.blackboardV2Continuity != nil {
 		if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), old.ID, next.ID); err != nil {
 			_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
 			return fmt.Errorf("rebind Blackboard continuation grant: %w", err)
@@ -3463,7 +3552,9 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 	// retry delivers its control turn against the live replacement session
 	// instead of looping on the pre-steer (now dead) session. Historical
 	// dispatch identity is never rewritten (ADR 0021).
-	server.recoverConclusionObligationsForReplacedContinuation(old.TaskID, old.ID, next.ID, session.SessionID())
+	if !disabled {
+		server.recoverConclusionObligationsForReplacedContinuation(old.TaskID, old.ID, next.ID, session.SessionID())
+	}
 	if _, err := server.tasks.UpdateContinuationStatus(old.ID, task.StatusCompleted); err != nil {
 		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
 		return fmt.Errorf("settle old continuation: %w", err)
@@ -3493,7 +3584,13 @@ func (server *Server) createWritableContinuationForLiveSession(found task.Task, 
 	if previous == nil {
 		return nil, errNoContinuationToContinue
 	}
-	next, err := server.tasks.CreateReplacementContinuation(*previous)
+	disabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
+	var next task.TaskContinuation
+	if disabled {
+		next, err = server.tasks.CreateReplacementContinuationWithoutBlackboard(*previous)
+	} else {
+		next, err = server.tasks.CreateReplacementContinuation(*previous)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create writable continuation: %w", err)
 	}
@@ -3513,18 +3610,22 @@ func (server *Server) createWritableContinuationForLiveSession(found task.Task, 
 	// immutable, so this rebind keeps Blackboard writes alive on the
 	// replacement instead of resolving to the terminal Continuation
 	// (closed_continuation).
-	if server.blackboardV2Continuity == nil {
-		return fail(fmt.Errorf("Blackboard continuation rebind is unavailable"))
-	}
-	if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), previous.ID, next.ID); err != nil {
-		return fail(fmt.Errorf("rebind Blackboard continuation grant: %w", err))
+	if !disabled {
+		if server.blackboardV2Continuity == nil {
+			return fail(fmt.Errorf("Blackboard continuation rebind is unavailable"))
+		}
+		if err := server.blackboardV2Continuity.RebindContinuationForNativeSteer(context.Background(), previous.ID, next.ID); err != nil {
+			return fail(fmt.Errorf("rebind Blackboard continuation grant: %w", err))
+		}
 	}
 	// Recover any in-flight assisted-conclusion obligation with a NEW Conclusion
 	// Dispatch bound to the replacement Continuation + live session so a later
 	// retry delivers its control turn against the live replacement session
 	// instead of looping on the pre-steer (now dead) session. Historical
 	// dispatch identity is never rewritten (ADR 0021).
-	server.recoverConclusionObligationsForReplacedContinuation(found.ID, previous.ID, next.ID, session.SessionID())
+	if !disabled {
+		server.recoverConclusionObligationsForReplacedContinuation(found.ID, previous.ID, next.ID, session.SessionID())
+	}
 	if _, err := server.tasks.UpdateContinuationStatus(next.ID, task.StatusRunning); err != nil {
 		return fail(fmt.Errorf("start writable continuation: %w", err))
 	}

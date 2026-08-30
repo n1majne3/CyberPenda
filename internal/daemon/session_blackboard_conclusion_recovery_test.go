@@ -127,8 +127,17 @@ func TestRetrySessionConclusionBindsProvenLiveReplacementRuntime(t *testing.T) {
 	if _, err := server.sessions.UpdateContinuationStatus(replacement.ID, session.RuntimeStatusRunning); err != nil {
 		t.Fatal(err)
 	}
+	unauthorizedRequest := httptest.NewRequest(http.MethodPost,
+		"/api/sessions/"+found.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	unauthorizedRequest.Header.Set("Idempotency-Key", "host-runtime-session-retry")
+	unauthorizedResponse := httptest.NewRecorder()
+	server.ServeHTTP(unauthorizedResponse, unauthorizedRequest)
+	if unauthorizedResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("tokenless Session retry status=%d body=%s, want unauthorized", unauthorizedResponse.Code, unauthorizedResponse.Body.String())
+	}
 	missingRuntimeRequest := httptest.NewRequest(http.MethodPost,
 		"/api/sessions/"+found.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	authorizeOperatorTestRequest(server, missingRuntimeRequest)
 	missingRuntimeRequest.Header.Set("Idempotency-Key", "session-runtime-rebind")
 	missingRuntimeResponse := httptest.NewRecorder()
 	server.ServeHTTP(missingRuntimeResponse, missingRuntimeRequest)
@@ -146,6 +155,7 @@ func TestRetrySessionConclusionBindsProvenLiveReplacementRuntime(t *testing.T) {
 	}
 	unprovenRequest := httptest.NewRequest(http.MethodPost,
 		"/api/sessions/"+found.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	authorizeOperatorTestRequest(server, unprovenRequest)
 	unprovenRequest.Header.Set("Idempotency-Key", "session-runtime-rebind")
 	unprovenResponse := httptest.NewRecorder()
 	server.ServeHTTP(unprovenResponse, unprovenRequest)
@@ -164,6 +174,7 @@ func TestRetrySessionConclusionBindsProvenLiveReplacementRuntime(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodPost,
 		"/api/sessions/"+found.ID+"/blackboard-conclusion/retry", bytes.NewBufferString(`{}`))
+	authorizeOperatorTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "session-runtime-rebind")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)

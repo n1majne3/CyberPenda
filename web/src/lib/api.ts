@@ -506,7 +506,7 @@ export interface RuntimePluginCapabilities {
   assisted_conclusion?: boolean;
 }
 
-export type BlackboardConclusionMode = "interactive" | "assisted";
+export type BlackboardConclusionMode = "interactive" | "assisted" | "disabled";
 export type BlackboardConclusionState = "clean" | "pending" | "concluding" | "action_required";
 
 export interface BlackboardConclusionView {

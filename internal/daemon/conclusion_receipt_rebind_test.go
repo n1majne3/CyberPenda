@@ -173,6 +173,7 @@ func TestRetryDispatchFailedConclusionRequiresMatchingLiveRuntime(t *testing.T) 
 				request := httptest.NewRequest(http.MethodPost,
 					"/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry",
 					bytes.NewBufferString(`{}`))
+				authorizeOperatorTestRequest(server, request)
 				request.Header.Set("Idempotency-Key", "retry-without-runtime-proof")
 				response := httptest.NewRecorder()
 				server.ServeHTTP(response, request)
@@ -237,6 +238,7 @@ func TestRetryDispatchFailedConclusionWithoutBlackboardAuthorityFailsClosed(t *t
 	request := httptest.NewRequest(http.MethodPost,
 		"/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry",
 		bytes.NewBufferString(`{}`))
+	authorizeOperatorTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "retry-without-blackboard-authority")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -306,6 +308,7 @@ func TestRetryDispatchFailedConclusionBindsProvenLiveReplacementRuntime(t *testi
 	request := httptest.NewRequest(http.MethodPost,
 		"/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry",
 		bytes.NewBufferString(`{}`))
+	authorizeOperatorTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "retry-on-live-replacement")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -315,6 +318,7 @@ func TestRetryDispatchFailedConclusionBindsProvenLiveReplacementRuntime(t *testi
 	replay := httptest.NewRequest(http.MethodPost,
 		"/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry",
 		bytes.NewBufferString(`{}`))
+	authorizeOperatorTestRequest(server, replay)
 	replay.Header.Set("Idempotency-Key", "retry-on-live-replacement")
 	replayResponse := httptest.NewRecorder()
 	server.ServeHTTP(replayResponse, replay)
@@ -362,6 +366,7 @@ func TestRetryDispatchFailedConclusionBindsProvenLiveReplacementRuntime(t *testi
 	lostResponseReplay := httptest.NewRequest(http.MethodPost,
 		"/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry",
 		bytes.NewBufferString(`{}`))
+	authorizeOperatorTestRequest(server, lostResponseReplay)
 	lostResponseReplay.Header.Set("Idempotency-Key", "retry-on-live-replacement")
 	lostResponseReplayResponse := httptest.NewRecorder()
 	server.ServeHTTP(lostResponseReplayResponse, lostResponseReplay)
@@ -425,6 +430,7 @@ func TestRetryUndispatchedConclusionUsesInitialDirectiveOnProvenLiveReplacement(
 	request := httptest.NewRequest(http.MethodPost,
 		"/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/blackboard-conclusion/retry",
 		bytes.NewBufferString(`{}`))
+	authorizeOperatorTestRequest(server, request)
 	request.Header.Set("Idempotency-Key", "retry-undispatched-on-live-replacement")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)

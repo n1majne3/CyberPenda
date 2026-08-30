@@ -867,6 +867,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	if err := validateChangeBatchDTOShape(batch); err != nil {
 		return ChangeResult{}, err
 	}
+	operator, operatorRequest := operatorAuthorityFromContext(ctx)
 	requestHash, err := canonicalRequestHash(batch)
 	if err != nil {
 		return ChangeResult{}, err
@@ -1010,7 +1011,13 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 			return applyMerge(ctx, tx, projectID, revision, index, change, now)
 		},
 		after: func(ctx context.Context, tx *sql.Tx, index int, change Change, outcome semanticChangeOutcome) error {
-			if !outcome.Changed || continuationID == "" {
+			if !outcome.Changed {
+				return nil
+			}
+			if continuationID == "" {
+				if operatorRequest && change.Op == "create" && change.Type == "attempt" {
+					return bindOperatorAttemptOrigin(ctx, tx, projectID, outcome.Key, operator.actorID, now)
+				}
 				return nil
 			}
 			if change.Op == "create" && change.Type == "fact" {

@@ -32,6 +32,16 @@ type GlobalModelProviderSnapshot struct {
 	Providers []modelprovider.Provider
 }
 
+// BlackboardProjection selects whether launch projection includes the trusted
+// Project Interface and Blackboard-specific Runtime context. The zero value is
+// required so existing Interactive and Assisted launches keep their behavior.
+type BlackboardProjection uint8
+
+const (
+	BlackboardProjectionRequired BlackboardProjection = iota
+	BlackboardProjectionOmitted
+)
+
 // ProjectionRequest supplies task and daemon context for launch projection.
 type ProjectionRequest struct {
 	Owner         owner.Contract
@@ -54,6 +64,10 @@ type ProjectionRequest struct {
 	ModelSnapshot               *modelprovider.Snapshot
 	LaunchModelOverride         string
 	SkillBundles                []skill.Bundle
+	// BlackboardProjectionOmitted keeps ordinary Runtime configuration, Skills,
+	// external MCP servers, credentials, and Task Scope while withholding every
+	// trusted Blackboard interface and its launch context.
+	BlackboardProjection BlackboardProjection
 	// CredentialEnvNames lists the env var names credential bindings project
 	// under. Preview rendering uses it to show redacted placeholders from
 	// metadata only — no credential value ever enters preview text.
@@ -69,6 +83,12 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if err := validateProjectionOwner(req.Owner); err != nil {
 		return ConfigProjection{}, err
 	}
+	if req.BlackboardProjection == BlackboardProjectionOmitted {
+		if err := preflightOmittedBlackboardProjection(layout, profile); err != nil {
+			return ConfigProjection{}, err
+		}
+	}
+	profile = profileForBlackboardProjection(profile, req.BlackboardProjection)
 	if strings.TrimSpace(layout.ProviderHome) == "" {
 		return ConfigProjection{}, fmt.Errorf("provider home is required")
 	}
@@ -443,7 +463,7 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 		return ConfigProjection{}, err
 	}
 	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
-	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, profile.Provider, mcpURL)); err != nil {
+	if err := writeProjectionContextFiles(layout, req, profile.Provider, mcpURL); err != nil {
 		return ConfigProjection{}, err
 	}
 	if len(mcpServers) > 0 {
@@ -543,7 +563,7 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 		return ConfigProjection{}, err
 	}
 	mcpURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
-	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, profile.Provider, mcpURL)); err != nil {
+	if err := writeProjectionContextFiles(layout, req, profile.Provider, mcpURL); err != nil {
 		return ConfigProjection{}, err
 	}
 
@@ -657,7 +677,7 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	if err := os.MkdirAll(agentDir, 0o700); err != nil {
 		return ConfigProjection{}, fmt.Errorf("prepare pi agent dir: %w", err)
 	}
-	if err := writeTaskContextFiles(layout, taskContextFromProjection(req, profile.Provider, mcpURL)); err != nil {
+	if err := writeProjectionContextFiles(layout, req, profile.Provider, mcpURL); err != nil {
 		return ConfigProjection{}, err
 	}
 	if len(mcpServers) > 0 {
@@ -868,7 +888,7 @@ func resolveMaterializedCredentials(profile runtimeprofile.Profile, req Projecti
 		if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" && strings.TrimSpace(env[req.ModelSnapshot.APIKeyEnv]) == "" {
 			return nil, fmt.Errorf("model provider API key env %s is not configured", req.ModelSnapshot.APIKeyEnv)
 		}
-		return env, nil
+		return credentialsForBlackboardProjection(env, req.BlackboardProjection), nil
 	}
 	if req.Credentials != nil {
 		globalEnv, err := req.Credentials.ResolveGlobalEnv()
@@ -906,7 +926,55 @@ func resolveMaterializedCredentials(profile runtimeprofile.Profile, req Projecti
 	if len(env) == 0 {
 		return nil, nil
 	}
-	return env, nil
+	return credentialsForBlackboardProjection(env, req.BlackboardProjection), nil
+}
+
+func profileForBlackboardProjection(profile runtimeprofile.Profile, projection BlackboardProjection) runtimeprofile.Profile {
+	if projection != BlackboardProjectionOmitted {
+		return profile
+	}
+	filtered := profile
+	filtered.Fields.Env = credentialsForBlackboardProjection(profile.Fields.Env, projection)
+	filtered.Fields.APIKeys = credentialsForBlackboardProjection(profile.Fields.APIKeys, projection)
+	filtered.Fields.CredentialRefs = make([]string, 0, len(profile.Fields.CredentialRefs))
+	for _, ref := range profile.Fields.CredentialRefs {
+		if !isBlackboardAuthorityEnv(ref) {
+			filtered.Fields.CredentialRefs = append(filtered.Fields.CredentialRefs, ref)
+		}
+	}
+	filtered.Fields.MCPServers = make([]runtimeprofile.MCPServer, 0, len(profile.Fields.MCPServers))
+	for _, server := range profile.Fields.MCPServers {
+		if server.Mode == runtimeprofile.MCPServerTrusted {
+			continue
+		}
+		server.Env = credentialsForBlackboardProjection(server.Env, projection)
+		filtered.Fields.MCPServers = append(filtered.Fields.MCPServers, server)
+	}
+	return filtered
+}
+
+func credentialsForBlackboardProjection(credentials map[string]string, projection BlackboardProjection) map[string]string {
+	if projection != BlackboardProjectionOmitted || credentials == nil {
+		return credentials
+	}
+	filtered := make(map[string]string, len(credentials))
+	for key, value := range credentials {
+		if !isBlackboardAuthorityEnv(key) {
+			filtered[key] = value
+		}
+	}
+	return filtered
+}
+
+func isBlackboardAuthorityEnv(key string) bool {
+	switch strings.TrimSpace(key) {
+	case "PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_SESSION_ID", "PENTEST_CONTINUATION_ID",
+		"PENTEST_MCP_URL", "PENTEST_API_URL", "PENTEST_AUTH_TOKEN", "PENTEST_INTERFACE_TOKEN",
+		"PENTEST_DISABLE_TRUSTED_MCP":
+		return true
+	default:
+		return false
+	}
 }
 
 // MaterializeLaunchCredentials resolves every credential needed by one launch
@@ -1786,7 +1854,7 @@ func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profi
 		for key, value := range claudeEnv {
 			env[key] = value
 		}
-		return env, nil
+		return processEnvForBlackboardProjection(env, req.BlackboardProjection), nil
 	}
 
 	materialized, err := resolveMaterializedCredentials(profile, req)
@@ -1796,7 +1864,19 @@ func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profi
 	for key, value := range materialized {
 		env[key] = value
 	}
-	return env, nil
+	return processEnvForBlackboardProjection(env, req.BlackboardProjection), nil
+}
+
+func processEnvForBlackboardProjection(env map[string]string, projection BlackboardProjection) map[string]string {
+	if projection != BlackboardProjectionOmitted {
+		return env
+	}
+	for key := range env {
+		if isBlackboardAuthorityEnv(key) {
+			delete(env, key)
+		}
+	}
+	return env
 }
 
 func materializeModelProviderAPIKey(req ProjectionRequest) (string, bool) {

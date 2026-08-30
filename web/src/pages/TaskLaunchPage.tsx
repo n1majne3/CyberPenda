@@ -128,7 +128,12 @@ export function TaskLaunchPage() {
         ownerLabel="task"
       />
 
-      <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={effectiveGoal} />
+      <RuntimeLaunchControls
+        controller={launchControls}
+        ownerLabel="task"
+        initialInput={effectiveGoal}
+        allowDisabledBlackboardMode={!reasonTask}
+      />
 
       <Card as="section" className="border-border/70 bg-muted/10">
         <CardHeader>

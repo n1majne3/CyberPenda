@@ -63,7 +63,8 @@ type Config struct {
 	// AuthToken gates every mutating route when non-empty. A non-loopback bind
 	// refuses to start unless this is set, so a daemon exposed to the network
 	// cannot become an unauthenticated control plane. Loopback dev (make dev)
-	// leaves it empty, so no enforcement applies.
+	// leaves it empty, so ordinary routes stay open. Operator workflows that can
+	// mutate Blackboard still require the generated operator capability.
 	AuthToken string
 	// Logger receives request and task-lifecycle log lines. When nil the daemon
 	// uses the standard library default logger, so output appears under
@@ -130,6 +131,8 @@ type Server struct {
 	taskVolumeRoot          string
 	listenAddr              string
 	authToken               string
+	operatorToken           string
+	generatedOperatorToken  bool
 	tempSkillsRoot          string
 	controlMu               sync.Mutex
 	activeControls          map[string]bool
@@ -251,6 +254,19 @@ func NewServer(config Config) (*Server, error) {
 		}
 		return nil, fmt.Errorf("non-loopback bind %q requires an auth token; set -auth-token or PENTEST_AUTH_TOKEN", listenAddr)
 	}
+	operatorToken := authToken
+	generatedOperatorToken := false
+	if operatorToken == "" {
+		operatorToken, err = (projectinterface.RandomTokenSource{}).NewToken()
+		if err != nil {
+			_ = db.Close()
+			if tempSkillsRoot != "" {
+				_ = os.RemoveAll(tempSkillsRoot)
+			}
+			return nil, fmt.Errorf("generate loopback operator token: %w", err)
+		}
+		generatedOperatorToken = true
+	}
 	epoch, err := db.CanonicalStore()
 	if err != nil {
 		_ = db.Close()
@@ -296,6 +312,8 @@ func NewServer(config Config) (*Server, error) {
 		taskVolumeRoot:          taskVolumeRoot,
 		listenAddr:              listenAddr,
 		authToken:               authToken,
+		operatorToken:           operatorToken,
+		generatedOperatorToken:  generatedOperatorToken,
 		tempSkillsRoot:          tempSkillsRoot,
 		activeControls:          map[string]bool{},
 		providerControlCtx:      providerControlCtx,
@@ -517,6 +535,14 @@ func (server *Server) reconcileInterruptedTasks(lifecycleProtectedTaskIDs []stri
 			return
 		}
 		for _, continuation := range continuations {
+			owner, ownerErr := server.tasks.Get(continuation.TaskID)
+			if ownerErr != nil {
+				server.logger.Printf("task reconcile: failed to load Task %s for terminal Continuation %s: %v", continuation.TaskID, continuation.ID, ownerErr)
+				continue
+			}
+			if owner.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+				continue
+			}
 			if reconcileErr := server.blackboardV2.ReconcileTerminalContinuation(context.Background(), continuation.ID, "daemon_restart"); reconcileErr != nil {
 				server.logger.Printf("task reconcile: failed to reconcile Continuation %s: %v", continuation.ID, reconcileErr)
 			}
@@ -616,10 +642,12 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}
 	if server.authToken != "" && !server.publicPath(request) {
 		if !server.authorized(request) {
-			// Project-interface and Blackboard v2 HTTP handlers own their structured
-			// credential errors. Let those narrow routes classify a missing/invalid
-			// grant; every other API and MCP route remains behind the daemon middleware.
-			if !(server.blackboardV2 != nil && isBlackboardV2HTTPTransport(request)) {
+			// Blackboard v2 and Reason proposal-create handlers own their narrower
+			// Continuation capability checks. Let only those exact transports classify
+			// a missing or invalid grant; every other API remains behind this middleware.
+			handlerOwnsCapability := server.blackboardV2 != nil &&
+				(isBlackboardV2HTTPTransport(request) || isReasonTaskProposalCreateHTTPTransport(request))
+			if !handlerOwnsCapability {
 				writeError(response, http.StatusUnauthorized, "unauthorized")
 				return
 			}
@@ -634,6 +662,16 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 // ListenAddr is the bind address used to project Runtime MCP and API URLs.
 func (server *Server) ListenAddr() string {
 	return server.listenAddr
+}
+
+// GeneratedOperatorAccessURL returns the one startup URL that transfers a
+// generated loopback operator bearer capability to the browser. An explicitly
+// configured daemon token is never returned or logged by this seam.
+func (server *Server) GeneratedOperatorAccessURL() string {
+	if !server.generatedOperatorToken || server.operatorToken == "" {
+		return ""
+	}
+	return "http://" + server.listenAddr + "/?token=" + url.QueryEscape(server.operatorToken)
 }
 
 func (server *Server) Close() error {
@@ -706,6 +744,19 @@ func (server *Server) authorized(request *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// requireOperatorAuthority protects local operator workflows that can mutate
+// Blackboard outside the versioned Project Interface. The Actor header is
+// provenance only; it never authenticates the caller.
+func (server *Server) requireOperatorAuthority(response http.ResponseWriter, request *http.Request) bool {
+	token := projectinterface.BearerToken(request)
+	if token == "" || server.operatorToken == "" ||
+		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) != 1 {
+		writeError(response, http.StatusUnauthorized, "unauthorized")
+		return false
+	}
+	return true
 }
 
 // publicPath reports whether the request targets a route that stays reachable

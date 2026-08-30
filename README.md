@@ -59,6 +59,10 @@ make dev
 ```
 
 Open the Vite URL printed by the frontend (API and health proxy to `http://127.0.0.1:8787`).
+When `PENTEST_AUTH_TOKEN` is not configured, the backend prints a generated
+Blackboard operator access URL. Copy its `?token=...` query to the Vite URL.
+The UI stores the bearer capability in browser session storage and removes it
+from the visible URL.
 
 ### Build a self-contained daemon
 
@@ -78,7 +82,9 @@ make build      # builds UI into the local embed path, then pentestd.exe
 
 The React build under `internal/daemon/webfs/dist` is **not** committed. Docker and `make build` regenerate it. A tracked `dist/.gitkeep` only keeps `//go:embed` valid for bare Go tests.
 
-Default listen address: `http://127.0.0.1:8787`.
+Default listen address: `http://127.0.0.1:8787`. On loopback without a
+configured auth token, use the generated Blackboard operator access URL printed
+at startup. Tokenless Runtime requests do not receive operator authority.
 
 ### Docker Compose
 

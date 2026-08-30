@@ -778,6 +778,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     "active_turn_not_steerable", "target_turn_changed", "target_turn_completed",
   ].includes(controls?.native_steer_error_code ?? "");
   const focusMode = searchParams.get("focus") === "1";
+  const blackboardDisabled = runtimeOwnerBlackboardMode(owner) === "disabled";
 
   return (
     <RuntimeOwnerShell
@@ -922,7 +923,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         </section>
       )}
 
-      {owner.blackboardConclusion?.state === "action_required" && (
+      {!blackboardDisabled && owner.blackboardConclusion?.state === "action_required" && (
         <BlackboardConclusionRecovery
           errorCode={owner.blackboardConclusion.error_code}
           validationReason={owner.blackboardConclusion.validation_reason}
@@ -1552,7 +1553,19 @@ function RuntimeActivityBadge({ activity }: { activity?: RuntimeActivity }) {
 }
 
 function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
-  const mode = owner.blackboardConclusion?.mode ?? owner.blackboardConclusionMode ?? "interactive";
+  const mode = runtimeOwnerBlackboardMode(owner);
+  if (mode === "disabled") {
+    return (
+      <Badge
+        variant="outline"
+        data-testid="blackboard-conclusion-state"
+        title="Blackboard: Disabled"
+        className="min-w-0 shrink"
+      >
+        <span className="truncate whitespace-nowrap">Blackboard: Disabled</span>
+      </Badge>
+    );
+  }
   const state = owner.blackboardConclusion?.state ?? "clean";
   const sourceTurn = owner.blackboardConclusion?.source_turn_id;
   const appliedRevision = owner.blackboardConclusion?.applied_revision;
@@ -1571,6 +1584,10 @@ function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
       <span className="truncate whitespace-nowrap">{label}</span>
     </Badge>
   );
+}
+
+function runtimeOwnerBlackboardMode(owner: RuntimeOwnerView) {
+  return owner.blackboardConclusionMode ?? owner.blackboardConclusion?.mode ?? "interactive";
 }
 
 const blackboardConclusionErrorCopy: Record<string, string> = {

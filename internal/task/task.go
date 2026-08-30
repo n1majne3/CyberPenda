@@ -125,13 +125,14 @@ func (policy TaskPolicy) validate() error {
 	return nil
 }
 
-// BlackboardConclusionMode selects whether the operator alone prompts the
-// Runtime to persist conclusions or the Harness assists at work-Turn bounds.
+// BlackboardConclusionMode is the persisted compatibility representation of
+// the Runtime Owner's immutable Blackboard Mode.
 type BlackboardConclusionMode string
 
 const (
 	BlackboardConclusionModeInteractive BlackboardConclusionMode = "interactive"
 	BlackboardConclusionModeAssisted    BlackboardConclusionMode = "assisted"
+	BlackboardConclusionModeDisabled    BlackboardConclusionMode = "disabled"
 )
 
 func normalizeBlackboardConclusionMode(mode BlackboardConclusionMode) (BlackboardConclusionMode, error) {
@@ -140,6 +141,8 @@ func normalizeBlackboardConclusionMode(mode BlackboardConclusionMode) (Blackboar
 		return BlackboardConclusionModeInteractive, nil
 	case BlackboardConclusionModeAssisted:
 		return BlackboardConclusionModeAssisted, nil
+	case BlackboardConclusionModeDisabled:
+		return BlackboardConclusionModeDisabled, nil
 	default:
 		return "", ErrInvalidBlackboardConclusionMode
 	}
@@ -588,7 +591,7 @@ var ErrInvalidTaskType = errors.New("Task Type must be pentest or ctf_challenge"
 
 var ErrTaskTypeProjectKindMismatch = errors.New("Task Type must match the current Project Kind")
 
-var ErrInvalidBlackboardConclusionMode = errors.New("Blackboard conclusion mode must be interactive or assisted")
+var ErrInvalidBlackboardConclusionMode = errors.New("Blackboard Mode must be interactive, assisted, or disabled")
 
 var ErrInvalidTaskPolicy = errors.New("Task Policy limits must be zero or positive")
 
@@ -1378,13 +1381,18 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	if req.Runner != RunnerSandbox && req.Runner != RunnerHost {
 		return RuntimeConfigVersion{}, TaskContinuation{}, ErrUnsupportedRunner
 	}
-	var projectID string
-	if err := tx.QueryRowContext(ctx, `SELECT project_id FROM tasks WHERE id=?`, req.TaskID).Scan(&projectID); err != nil {
+	var projectID, runControlsJSON string
+	if err := tx.QueryRowContext(ctx, `SELECT project_id,run_controls_json FROM tasks WHERE id=?`, req.TaskID).Scan(&projectID, &runControlsJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return RuntimeConfigVersion{}, TaskContinuation{}, ErrNotFound
 		}
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("read launch task: %w", err)
 	}
+	var runControls RunControls
+	if err := json.Unmarshal([]byte(runControlsJSON), &runControls); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("decode launch task Run Controls: %w", err)
+	}
+	blackboardDisabled := runControls.BlackboardConclusionMode == BlackboardConclusionModeDisabled
 	if projectID != req.ProjectID {
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("launch task does not belong to project")
 	}
@@ -1396,7 +1404,7 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	if err == nil && !isTerminalStatus(Status(latestStatus)) {
 		return RuntimeConfigVersion{}, TaskContinuation{}, ErrActiveContinuation
 	}
-	if err == nil && (Status(latestStatus) == StatusFailed || Status(latestStatus) == StatusStopped || Status(latestStatus) == StatusInterrupted) && latestReconciliation != string(ReconciliationCompleted) {
+	if !blackboardDisabled && err == nil && (Status(latestStatus) == StatusFailed || Status(latestStatus) == StatusStopped || Status(latestStatus) == StatusInterrupted) && latestReconciliation != string(ReconciliationCompleted) {
 		return RuntimeConfigVersion{}, TaskContinuation{}, ErrContinuationReconciliationIncomplete
 	}
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -1450,6 +1458,34 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	}
 	if err := consumeHarnessSteeringTx(ctx, tx, req.TaskID, continuation.ID, req.SteeringEventIDs, now); err != nil {
 		return RuntimeConfigVersion{}, TaskContinuation{}, err
+	}
+	return config, continuation, nil
+}
+
+// CreateContinuationLaunchWithoutBlackboard stores the ordinary Task Runtime
+// configuration and Continuation identity without a Blackboard launch
+// transaction. Blackboard-enabled launches use CreateContinuationLaunchTx
+// through their continuity coordinator so the Snapshot pin and grant still
+// commit atomically.
+func (s *Service) CreateContinuationLaunchWithoutBlackboard(ctx context.Context, req ContinuationLaunchRequest) (RuntimeConfigVersion, TaskContinuation, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("begin Task Continuation launch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	config, continuation, err := s.CreateContinuationLaunchTx(ctx, tx, req)
+	if err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE task_continuations SET blackboard_reconciliation_status=? WHERE id=?`,
+		string(ReconciliationCompleted), continuation.ID,
+	); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("settle omitted Blackboard reconciliation: %w", err)
+	}
+	continuation.BlackboardReconciliationStatus = ReconciliationCompleted
+	if err := tx.Commit(); err != nil {
+		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("commit Task Continuation launch: %w", err)
 	}
 	return config, continuation, nil
 }
@@ -1519,7 +1555,14 @@ func (s *Service) CreateContinuation(taskID, runtimeProfileID, runtimeProvider s
 // Task session while retaining the prior runtime configuration pin and any
 // discovered provider/container metadata.
 func (s *Service) CreateReplacementContinuation(previous TaskContinuation) (TaskContinuation, error) {
-	next, err := s.createContinuation(previous.TaskID, previous.RuntimeProfileID, previous.RuntimeProvider, previous.Runner, previous.RuntimeConfigVersionID)
+	return s.createReplacementContinuation(previous, ReconciliationPending)
+}
+
+func (s *Service) createReplacementContinuation(previous TaskContinuation, reconciliationStatus ReconciliationStatus) (TaskContinuation, error) {
+	next, err := s.createContinuationWithReconciliationStatus(
+		previous.TaskID, previous.RuntimeProfileID, previous.RuntimeProvider, previous.Runner,
+		previous.RuntimeConfigVersionID, reconciliationStatus,
+	)
 	if err != nil {
 		return TaskContinuation{}, err
 	}
@@ -1532,7 +1575,20 @@ func (s *Service) CreateReplacementContinuation(previous TaskContinuation) (Task
 	return next, nil
 }
 
+// CreateReplacementContinuationWithoutBlackboard creates the ordinary Runtime
+// turn boundary for a Disabled owner and records that no Blackboard
+// reconciliation is required for that boundary.
+func (s *Service) CreateReplacementContinuationWithoutBlackboard(previous TaskContinuation) (TaskContinuation, error) {
+	return s.createReplacementContinuation(previous, ReconciliationCompleted)
+}
+
 func (s *Service) createContinuation(taskID, runtimeProfileID, runtimeProvider string, runner Runner, runtimeConfigVersionID string) (TaskContinuation, error) {
+	return s.createContinuationWithReconciliationStatus(
+		taskID, runtimeProfileID, runtimeProvider, runner, runtimeConfigVersionID, ReconciliationPending,
+	)
+}
+
+func (s *Service) createContinuationWithReconciliationStatus(taskID, runtimeProfileID, runtimeProvider string, runner Runner, runtimeConfigVersionID string, reconciliationStatus ReconciliationStatus) (TaskContinuation, error) {
 	if _, err := s.Get(taskID); err != nil {
 		return TaskContinuation{}, err
 	}
@@ -1545,7 +1601,7 @@ func (s *Service) createContinuation(taskID, runtimeProfileID, runtimeProvider s
 		RuntimeProvider:                runtimeProvider,
 		Runner:                         runner,
 		Status:                         StatusPending,
-		BlackboardReconciliationStatus: ReconciliationPending,
+		BlackboardReconciliationStatus: reconciliationStatus,
 		StartedAt:                      now,
 		UpdatedAt:                      now,
 	}
@@ -1841,8 +1897,14 @@ func (s *Service) notifyTerminalContinuation(found TaskContinuation, reason stri
 		}
 	}
 	if s.reconciler != nil {
-		if err := s.reconciler.ReconcileTerminalContinuation(context.Background(), found.ID, reason); err != nil {
-			return found, fmt.Errorf("reconcile terminal Continuation: %w", err)
+		owner, err := s.Get(found.TaskID)
+		if err != nil {
+			return found, fmt.Errorf("load terminal Continuation Task: %w", err)
+		}
+		if owner.RunControls.BlackboardConclusionMode != BlackboardConclusionModeDisabled {
+			if err := s.reconciler.ReconcileTerminalContinuation(context.Background(), found.ID, reason); err != nil {
+				return found, fmt.Errorf("reconcile terminal Continuation: %w", err)
+			}
 		}
 	}
 	return found, nil
