@@ -49,7 +49,7 @@ The product mode for work that has no **Project** and therefore no Project Scope
 _Avoid_: unrestricted Project, temporary Task, separate chat product
 
 **Session**:
-A durable Non-Project owner of one persistent Runtime conversation, owner-local events, attachments, workdir, and self-contained Blackboard.
+A durable Non-Project owner of one persistent Runtime conversation, owner-local events, attachments, and workdir, with a self-contained Blackboard unless its **Blackboard Mode** is disabled.
 _Avoid_: Project, Task, disposable chat, UI-only conversation
 
 **Runtime Owner Workspace**:
@@ -604,9 +604,13 @@ _Avoid_: bypass, debug-only path
 The project-local memory that stores durable semantic records and relationships for one **Project**, including **Entities**, **Exploration Objectives**, **Attempts**, **Project Facts**, **Findings**, **Solutions**, and **Evidence Artifacts**.
 _Avoid_: chat history, notes database
 
-**Blackboard Conclusion Mode**:
-A **Run Controls** choice of `interactive` or `assisted`. Interactive mode leaves conclusion coordination to the operator and Runtime. Assisted mode allows the Harness to detect bounded semantic debt after a completed **Work Runtime Turn**, dispatch a **Conclude Runtime Turn**, validate its closed Attempt result, and apply that result through trusted Blackboard authority.
-_Avoid_: autonomous Task completion, transcript parsing mode, Blackboard write permission
+**Blackboard Mode**:
+A **Run Controls** choice of `interactive`, `assisted`, or `disabled`. Interactive mode leaves conclusion coordination to the operator and Runtime. Assisted mode allows the Harness to detect and settle bounded semantic debt. Disabled mode fully disconnects the Runtime Owner from Blackboard context and authority and leaves trace state to the Runtime's own files.
+_Avoid_: Blackboard Conclusion Mode, autonomous Task completion, transcript parsing mode, Blackboard write permission
+
+**Agent-Managed Trace**:
+Optional files that a Runtime chooses and maintains in its ordinary workdir when **Blackboard Mode** is disabled. CyberPenda may remind the Runtime that file tracing is available, but it does not define, parse, or migrate a trace file.
+_Avoid_: file-backed Blackboard, fixed state file, Working Blackboard Snapshot, cross-Runtime handoff
 
 **Pending Blackboard Conclusion**:
 A durable semantic reconciliation obligation created when a completed **Work Runtime Turn** has uncovered semantic debt. It may own multiple immutable **Conclusion Dispatches** and remains Runtime Owner Timeline state, not a conversation message, semantic Blackboard record, or authority to perform **Task Finish**.
@@ -1105,6 +1109,20 @@ _Avoid_: transcript, export, source of truth
 - A **Profile Config Import** updates a **Runtime Profile** only when the edited config can be parsed into structured fields.
 - A **Project** has zero or more **Tasks**.
 - A **Task** starts from one **Task Goal** plus **Run Controls**.
+- Project **Task** and Non-Project **Session** Run Controls support the same `interactive`, `assisted`, and `disabled` **Blackboard Mode** values.
+- A **Reason Task** is the exception: it requires the complete **Runtime Blackboard Snapshot** and cannot use `disabled` Blackboard Mode; its existing Blackboard-enabled launch behavior remains unchanged.
+- New Tasks and Sessions default to `interactive` Blackboard Mode; a missing stored value also resolves to `interactive`, and existing explicit values remain unchanged.
+- A Runtime Owner captures one immutable Blackboard Mode at creation, and every later Resume and Runtime Continuation inherits it.
+- A Runtime Owner in `disabled` Blackboard Mode receives no Blackboard context or authority and creates no Blackboard conclusion or reconciliation obligations.
+- A disabled Runtime receives a concise reminder to use a state file at its initial launch and at each replacement Runtime launch, but not on ordinary Runtime Turns; the reminder does not explain file lifecycle or handoff limits.
+- A disabled Runtime receives no built-in **Project Interface**; its Task Goal, Scope Snapshot, and Task Policy Snapshot remain launch context, and it asks the operator in conversation for Scope Expansion or file-retention actions.
+- A disabled Runtime receives no Blackboard grant or credential. Blackboard APIs add no mode-specific rejection; an ungranted Runtime request fails normal authorization, while an operator-authorized request remains valid.
+- Disabled Blackboard does not remove the **Task Goal**, **Scope Snapshot**, **Runner**, **Task Policy Snapshot**, Transcript, or ordinary Runtime Owner attachments.
+- Disabled Blackboard cannot create **Entities**, **Exploration Objectives**, **Attempts**, **Project Facts**, **Findings**, **Solutions**, **Evidence Artifacts**, or **Blackboard Relationships**.
+- The Runtime Owner Workspace labels disabled Blackboard explicitly, hides Blackboard Snapshot, conclusion, reconciliation, and mutation surfaces, and retains the project-level Blackboard on the Project Dashboard.
+- The operator may explicitly retain a disabled Runtime's file or attachment as an **Evidence Artifact** or submit it for **Reconciliation** without exposing the resulting Blackboard state to that Runtime.
+- A **Report** does not infer conclusions from a disabled Runtime's Transcript or workdir files; only Blackboard state created through explicit operator retention or Reconciliation becomes Report input.
+- **Finish Readiness** for a Runtime Owner in disabled Blackboard Mode ignores Blackboard conclusion, Current Work, Finish Intent, and reconciliation blockers while retaining non-Blackboard lifecycle and policy checks.
 - A **Reason Task** is operator-triggered and returns a proposal for approval; it does not directly create, retire, or resolve Blackboard records.
 - A **Task** may pursue one primary **Exploration Objective** while producing multiple **Project Facts**, **Findings**, or **Evidence Artifacts**.
 - A **Task** resolves to one **Runtime Profile** through **Launch Profile Resolution** and chooses one **Runner**.
@@ -1374,6 +1392,17 @@ _Avoid_: transcript, export, source of truth
 
 ## Flagged Ambiguities
 
+- Disabled Blackboard is not Interactive Blackboard or read-only Blackboard; resolved: it fully disconnects the Runtime Owner from Blackboard context, authority, conclusion handling, and reconciliation while the Runtime may keep an **Agent-Managed Trace**.
+- **Agent-Managed Trace** is not a file-backed Blackboard protocol; resolved: startup may remind the Runtime to use files, but CyberPenda defines no filename, format, parser, or cross-Runtime migration.
+- An **Agent-Managed Trace** reminder is not repeated conversation context or a lifecycle warning; resolved: issue a short state-file reminder at initial and replacement Runtime launch, not on ordinary Runtime Turns, without explaining handoff limits.
+- Disabled Blackboard is not a reduced Project Interface; resolved: no built-in Project Interface is injected, while Task Goal, Scope Snapshot, Task Policy, Transcript, and ordinary attachments remain available through their normal owner boundaries.
+- Disabled Blackboard is not a new API authorization layer; resolved: the Runtime receives no Blackboard grant or credential, ordinary authorization rejects its ungranted calls, and operator-authorized Blackboard actions remain valid without a `blackboard_disabled` error.
+- A disabled Blackboard state is not `clean` or `empty`; resolved: label it `Disabled`, hide inapplicable Blackboard controls in the Runtime Owner Workspace, and retain the Project Dashboard's project-level Blackboard.
+- Disabled Runtime output is not permanently barred from Project Knowledge; resolved: the operator may explicitly retain a file as Evidence or start Reconciliation outside the Runtime without feeding Blackboard state back to it.
+- Disabled Runtime output is not an automatic Report source; resolved: Reports remain Blackboard-based, and Transcript or workdir content enters that source only through explicit operator retention or Reconciliation.
+- Disabled Blackboard is not the new default or a Task-only option; resolved: `interactive` remains the default, and both Project Tasks and Non-Project Sessions may explicitly select `disabled`.
+- **Blackboard Mode** is not a per-Continuation toggle; resolved: the Runtime Owner captures it at creation and every Resume or Continuation inherits it.
+- Disabled Task Finish is not blocked by state the Runtime is forbidden to settle; resolved: **Finish Readiness** skips Blackboard-specific blockers and retains ordinary lifecycle and policy checks.
 - A **Pending Blackboard Conclusion** is not one mutable delivery receipt; resolved: it is the stable semantic obligation, while each **Conclusion Dispatch** keeps immutable Runtime Continuation and source-session identity.
 - **Blackboard Finish Intent** is not an immediate close inside a busy **Work Runtime Turn**; resolved: it closes the Blackboard write protocol only at Turn settlement and later source work invalidates it.
 - **Accepted Steering** is not durable message storage alone; resolved: the Runtime Harness owns eventual settlement as `applied`, `failed`, or `action_required`, including after daemon restart.
