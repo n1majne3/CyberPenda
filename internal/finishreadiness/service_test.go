@@ -99,9 +99,24 @@ func TestReadinessReportsOpenWorkflowAndMissingEvidence(t *testing.T) {
 }
 
 func TestDisabledReadinessRetainsChallengeWorkflowBlockers(t *testing.T) {
-	db, projects, tasks, proj, created, _ := fixtureWithBlackboardMode(t, task.BlackboardConclusionModeDisabled)
-	workflow := challengeworkflow.NewService(db, projects, tasks, map[string]challengeworkflow.PlatformAdapter{"arena": adapter{}}, noOpRecorder{})
-	if _, err := workflow.Claim(context.Background(), challengeworkflow.ClaimRequest{ProjectID: proj.ID, TaskID: created.ID, Platform: "arena", OperationID: "disabled-claim", ChallengeID: "3121"}); err != nil {
+	db, _, tasks, proj, created, _ := fixtureWithBlackboardMode(t, task.BlackboardConclusionModeDisabled)
+	// Disabled rejects new Challenge Workflow writes. Seed durable legacy state
+	// directly so this test only specifies how Finish treats existing blockers.
+	if _, err := db.Exec(`INSERT INTO challenge_attempts (
+		project_id,task_id,platform,external_attempt_id,challenge_id,attempt_key,objective_key,
+		status,last_progress_at,created_at,updated_at
+	) VALUES (?,?,?,?,?,?,?,'open',?,?,?)`,
+		proj.ID, created.ID, "arena", "42", "3121", "attempt:arena:42", "objective:arena:42",
+		"2026-08-30T00:00:00Z", "2026-08-30T00:00:00Z", "2026-08-30T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO challenge_operations (
+		task_id,operation_id,project_id,platform,kind,request_hash,request_json,state,
+		external_attempt_id,response_json,created_at,updated_at
+	) VALUES (?,?,?,?,?,?,?,'completed',?,?,?,?)`,
+		created.ID, "disabled-legacy-claim", proj.ID, "arena", "claim",
+		"0000000000000000000000000000000000000000000000000000000000000000", "{}", "42", "{}",
+		"2026-08-30T00:00:00Z", "2026-08-30T00:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
 
