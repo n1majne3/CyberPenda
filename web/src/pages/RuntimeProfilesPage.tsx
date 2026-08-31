@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { CheckCircle2, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, Plus, Trash2 } from "lucide-react";
 import { apiGet, apiPost, apiPatch, apiDelete, mergedConfigPreview, projectedConfig, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
 import { codexMultiAgentTOMLLines, enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
@@ -16,7 +16,6 @@ import {
   selectableModelProviders,
   showLegacyModelFields,
 } from "@/pages/runtimeProfileForm";
-import { isLaunchResolvedProfile, isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { cn } from "@/lib/utils";
 import { Button, Input, Label, Badge, Chip, Textarea, Select, Card, CardTitle } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -152,11 +151,6 @@ function ProfileListButton({
     >
       <div className="flex items-center gap-2">
         <span className="truncate text-sm font-medium">{profile.name}</span>
-        {isManualRuntimeProfile(profile) && (
-          <Chip variant="signal" className="h-4 flex-none text-[9px]">
-            preset
-          </Chip>
-        )}
       </div>
       {modelHint && (
         <div className="mt-0.5 truncate text-xs text-muted-foreground">{modelHint}</div>
@@ -181,14 +175,8 @@ export function RuntimeProfilesPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [form, setForm] = useState<ProfileForm>(emptyForm);
   const [draft, setDraft] = useState<ProfileForm | null>(null);
-  const [launchResolvedOpen, setLaunchResolvedOpen] = useState<Record<string, boolean>>({});
 
   const selected = profiles.find((p) => p.id === selectedId) ?? null;
-  const manualProfileCount = useMemo(
-    () => profiles.filter((profile) => isManualRuntimeProfile(profile)).length,
-    [profiles],
-  );
-  const launchResolvedCount = profiles.length - manualProfileCount;
   const fallbackPlugins = useMemo(() => fallbackRuntimePlugins(), []);
   const effectivePlugins = plugins.length > 0 ? plugins : fallbackPlugins;
   const providerIds = useMemo(() => {
@@ -309,22 +297,6 @@ export function RuntimeProfilesPage() {
       await load();
     } catch (e) {
       setError((e as Error).message);
-    }
-  }
-
-  async function promoteSelected() {
-    if (!selected || saving) return;
-    setSaving(true);
-    setError(null);
-    setSavedNotice(false);
-    try {
-      await apiPost<RuntimeProfile>(`/api/runtime-profiles/${selected.id}/promote`, {});
-      await load();
-      showSavedNotice();
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -470,8 +442,7 @@ export function RuntimeProfilesPage() {
         }
       />
       <div className="mb-3 shrink-0 rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-        Presets are intentional advanced configurations for MCP, skills, and extensions.
-        Launch-resolved profiles are created automatically when a task launch matches runtime, model provider, and model override; they stay grouped separately until you promote one to a preset.
+        Runtime Profiles are user-created advanced configurations for MCP, Skills, extensions, and Runtime settings. Direct launches do not create Profiles.
       </div>
 
       {error && <SettingsAlert className="mb-3 shrink-0">{error}</SettingsAlert>}
@@ -483,7 +454,7 @@ export function RuntimeProfilesPage() {
               <div>
                 <p className="text-sm font-medium">Profiles</p>
                 <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  Select a preset or launch-resolved profile
+                  Select a user-created Runtime Profile
                 </p>
               </div>
               <div className="shrink-0 text-right tabular-nums">
@@ -497,16 +468,14 @@ export function RuntimeProfilesPage() {
             <div className="space-y-3">
               {providerIds.map((provider) => {
                 const items = grouped.get(provider) ?? [];
-                const presetItems = items.filter((profile) => isManualRuntimeProfile(profile));
-                const launchResolvedItems = items.filter((profile) => isLaunchResolvedProfile(profile));
-                if (presetItems.length === 0 && launchResolvedItems.length === 0) return null;
+                if (items.length === 0) return null;
                 return (
                   <div key={provider}>
                     <div className="px-2 pt-1 pb-1.5">
                       <SectionLabel>{pluginLabel(effectivePlugins, provider)}</SectionLabel>
                     </div>
                     <div className="space-y-0.5">
-                      {presetItems.map((p) => (
+                      {items.map((p) => (
                         <ProfileListButton
                           key={p.id}
                           profile={p}
@@ -518,53 +487,12 @@ export function RuntimeProfilesPage() {
                           }}
                         />
                       ))}
-                      {launchResolvedItems.length > 0 && (
-                        <div>
-                          <button
-                            type="button"
-                            aria-expanded={Boolean(launchResolvedOpen[provider])}
-                            className="flex w-full items-center gap-1 rounded-md px-2 pb-1 pt-2 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                            onClick={() =>
-                              setLaunchResolvedOpen((open) => ({ ...open, [provider]: !open[provider] }))
-                            }
-                          >
-                            <ChevronRight
-                              className={cn(
-                                "h-3 w-3 transition-transform",
-                                launchResolvedOpen[provider] && "rotate-90",
-                              )}
-                            />
-                            Launch-resolved ({launchResolvedItems.length})
-                          </button>
-                          {launchResolvedOpen[provider] && (
-                            <div className="mt-0.5 space-y-0.5">
-                              {launchResolvedItems.map((p) => (
-                                <ProfileListButton
-                                  key={p.id}
-                                  profile={p}
-                                  modelProviders={modelProviders}
-                                  selected={selectedId === p.id && !creating}
-                                  onSelect={() => {
-                                    setCreating(false);
-                                    setSelectedId(p.id);
-                                  }}
-                                />
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
                     </div>
                   </div>
                 );
               })}
               {profiles.length === 0 && (
                 <p className="px-1 text-sm text-muted-foreground">No profiles yet. Add one to get started.</p>
-              )}
-              {launchResolvedCount > 0 && !Object.values(launchResolvedOpen).some(Boolean) && (
-                <p className="px-1 text-[11px] text-muted-foreground">
-                  {launchResolvedCount} launch-resolved profile{launchResolvedCount === 1 ? "" : "s"} hidden. Expand a runtime group to review or promote.
-                </p>
               )}
             </div>
           </SettingsScrollPanel>
@@ -616,23 +544,10 @@ export function RuntimeProfilesPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <h2 className="text-base font-semibold">{selected.name}</h2>
                     <Chip variant="neutral">{pluginLabel(effectivePlugins, selected.provider)}</Chip>
-                    <Chip variant="signal">
-                      {isLaunchResolvedProfile(selected) ? "launch-resolved" : "preset"}
-                    </Chip>
                   </div>
                   <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{selected.id}</p>
-                  {isLaunchResolvedProfile(selected) && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Created by launch resolution. Skill opt-outs and MCP edits apply to future launches that resolve to this profile.
-                    </p>
-                  )}
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  {isLaunchResolvedProfile(selected) && (
-                    <Button size="sm" variant="outline" disabled={saving} onClick={() => void promoteSelected()}>
-                      Promote to preset
-                    </Button>
-                  )}
                   <Button
                     size="sm"
                     variant="outline"

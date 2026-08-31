@@ -165,7 +165,6 @@ export interface ReasonTaskProposal {
 }
 
 export interface ProjectDefaults {
-  runtime_profile?: string;
   runner?: string;
   task_policy?: string;
 }
@@ -245,6 +244,7 @@ export interface Session {
   blackboard_conclusion?: BlackboardConclusionView;
   runtime_controls?: SessionRuntimeControls;
   runtime_activity?: RuntimeActivity;
+  runtime_configuration?: RuntimeConfigurationSummary;
   active_continuation?: SessionContinuation;
   latest_continuation?: SessionContinuation;
   created_at: string;
@@ -267,7 +267,7 @@ export interface SessionContinuation {
   id: string;
   session_id: string;
   number: number;
-  runtime_profile_id: string;
+  runtime_profile_id?: string;
   runtime_provider: string;
   runner: string;
   status: string;
@@ -314,6 +314,7 @@ export interface SessionRuntimeControls {
 
 export interface SessionLaunchOptions {
   runtime_profile_id?: string;
+  runtime_plugin_id?: string;
   provider?: string;
   runtime_provider?: string;
   model_provider_id?: string;
@@ -416,7 +417,6 @@ export interface RuntimeProfile {
   id: string;
   name: string;
   provider: string;
-  kind?: "manual" | "launch_resolve";
   fields: {
     binary_path?: string;
     model?: string;
@@ -506,7 +506,7 @@ export interface RuntimePluginCapabilities {
   assisted_conclusion?: boolean;
 }
 
-export type BlackboardConclusionMode = "interactive" | "assisted";
+export type BlackboardConclusionMode = "interactive" | "assisted" | "disabled";
 export type BlackboardConclusionState = "clean" | "pending" | "concluding" | "action_required";
 
 export interface BlackboardConclusionView {
@@ -638,7 +638,8 @@ export interface Task {
   goal: string;
   status: string;
   runner: string;
-  runtime_profile_id: string;
+  runtime_profile_id?: string;
+	runtime_configuration?: RuntimeConfigurationSummary;
 	run_controls: {
 		host_activated?: boolean;
 		sandbox_network?: string;
@@ -719,7 +720,7 @@ export interface TaskContinuation {
   id: string;
   task_id: string;
   number: number;
-  runtime_profile_id: string;
+  runtime_profile_id?: string;
   runtime_provider: string;
   runner: string;
   status: string;
@@ -729,6 +730,17 @@ export interface TaskContinuation {
   started_at: string;
   updated_at: string;
   ended_at?: string;
+}
+
+export interface RuntimeConfigurationSummary {
+  runtime_profile_id?: string;
+  runtime_profile_name?: string;
+  runtime_plugin_id: string;
+  runner: string;
+  model_provider_id: string;
+  model_provider_name?: string;
+  model: string;
+  requested_reasoning_effort?: string;
 }
 
 export interface TaskEvent {

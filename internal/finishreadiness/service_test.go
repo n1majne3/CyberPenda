@@ -45,6 +45,10 @@ func (noOpRecorder) RecordFinalize(context.Context, challengeworkflow.RecordFina
 }
 
 func fixture(t *testing.T) (*store.DB, *project.Service, *task.Service, project.Project, task.Task, string) {
+	return fixtureWithBlackboardMode(t, task.BlackboardConclusionModeInteractive)
+}
+
+func fixtureWithBlackboardMode(t *testing.T, mode task.BlackboardConclusionMode) (*store.DB, *project.Service, *task.Service, project.Project, task.Task, string) {
 	t.Helper()
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "db.sqlite"))
@@ -58,7 +62,15 @@ func fixture(t *testing.T) (*store.DB, *project.Service, *task.Service, project.
 		t.Fatal(err)
 	}
 	tasks := task.NewService(db, projects)
-	created, err := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypeCTFChallenge, Goal: "solve", Runner: task.RunnerSandbox})
+	created, err := tasks.Create(task.CreateRequest{
+		ProjectID: proj.ID,
+		Type:      task.TypeCTFChallenge,
+		Goal:      "solve",
+		Runner:    task.RunnerSandbox,
+		RunControls: task.RunControls{
+			BlackboardConclusionMode: mode,
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,6 +92,40 @@ func TestReadinessReportsOpenWorkflowAndMissingEvidence(t *testing.T) {
 	}
 	if readiness.ReadyToFinish {
 		t.Fatalf("expected blockers, got %#v", readiness)
+	}
+	if !hasCode(readiness, finishreadiness.BlockerOpenChallengeAttempts) || !hasCode(readiness, finishreadiness.BlockerMissingChallengeEvidence) {
+		t.Fatalf("blockers = %#v", readiness.Blockers)
+	}
+}
+
+func TestDisabledReadinessRetainsChallengeWorkflowBlockers(t *testing.T) {
+	db, _, tasks, proj, created, _ := fixtureWithBlackboardMode(t, task.BlackboardConclusionModeDisabled)
+	// Disabled rejects new Challenge Workflow writes. Seed durable legacy state
+	// directly so this test only specifies how Finish treats existing blockers.
+	if _, err := db.Exec(`INSERT INTO challenge_attempts (
+		project_id,task_id,platform,external_attempt_id,challenge_id,attempt_key,objective_key,
+		status,last_progress_at,created_at,updated_at
+	) VALUES (?,?,?,?,?,?,?,'open',?,?,?)`,
+		proj.ID, created.ID, "arena", "42", "3121", "attempt:arena:42", "objective:arena:42",
+		"2026-08-30T00:00:00Z", "2026-08-30T00:00:00Z", "2026-08-30T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO challenge_operations (
+		task_id,operation_id,project_id,platform,kind,request_hash,request_json,state,
+		external_attempt_id,response_json,created_at,updated_at
+	) VALUES (?,?,?,?,?,?,?,'completed',?,?,?,?)`,
+		created.ID, "disabled-legacy-claim", proj.ID, "arena", "claim",
+		"0000000000000000000000000000000000000000000000000000000000000000", "{}", "42", "{}",
+		"2026-08-30T00:00:00Z", "2026-08-30T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+
+	readiness, err := finishreadiness.NewService(db, tasks).Evaluate(context.Background(), proj.ID, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readiness.ReadyToFinish {
+		t.Fatalf("expected challenge workflow blockers, got %#v", readiness)
 	}
 	if !hasCode(readiness, finishreadiness.BlockerOpenChallengeAttempts) || !hasCode(readiness, finishreadiness.BlockerMissingChallengeEvidence) {
 		t.Fatalf("blockers = %#v", readiness.Blockers)

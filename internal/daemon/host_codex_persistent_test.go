@@ -115,7 +115,8 @@ func newHostCodexPersistentFixture(t *testing.T, factory ProviderSessionFactory)
 
 		Type: task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
-		RunControls: task.RunControls{HostActivated: true},
+		RunControls:   task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +297,8 @@ func TestHostCodexProviderChangeQueuesMessageAndCreatesConfigVersion(t *testing.
 	if queued.RuntimeConfigVersion == nil {
 		t.Fatal("provider change must create Runtime Config Version for host Codex")
 	}
-	if queued.RuntimeConfigVersion.Config["model_provider_id"] != alternate.ID {
+	turn, _ := queued.RuntimeConfigVersion.Config["runtime_turn_selection"].(map[string]any)
+	if turn["model_provider_id"] != alternate.ID {
 		t.Fatalf("config = %#v", queued.RuntimeConfigVersion.Config)
 	}
 	// First launch used primary provider; no second factory open from queue alone.
@@ -335,7 +337,8 @@ func TestHostCodexMissingNativeMetadataFallsBackToFreshContinuation(t *testing.T
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
-		RunControls: task.RunControls{HostActivated: true},
+		RunControls:   task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatal(err)

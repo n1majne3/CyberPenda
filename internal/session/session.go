@@ -22,6 +22,7 @@ import (
 	"unicode/utf8"
 
 	"pentest/internal/owner"
+	"pentest/internal/runtimeconfig"
 	"pentest/internal/store"
 )
 
@@ -131,7 +132,7 @@ type RuntimeControls struct {
 }
 
 // RunControls are the owner-local launch controls that remain stable across
-// Session Runtime Continuations. Sessions expose the same conclusion mode
+// Session Runtime Continuations. Sessions expose the same Blackboard Mode
 // vocabulary as Tasks without acquiring a Project identity or Project scope.
 type RunControls struct {
 	BlackboardConclusionMode BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
@@ -144,13 +145,14 @@ type RunControls struct {
 	SandboxVPNTun bool `json:"sandbox_vpn_tun,omitempty"`
 }
 
-// BlackboardConclusionMode selects whether the operator alone prompts the
-// Runtime to persist conclusions or the Harness assists at work-Turn bounds.
+// BlackboardConclusionMode is the persisted compatibility representation of
+// the Runtime Owner's immutable Blackboard Mode.
 type BlackboardConclusionMode string
 
 const (
 	BlackboardConclusionModeInteractive BlackboardConclusionMode = "interactive"
 	BlackboardConclusionModeAssisted    BlackboardConclusionMode = "assisted"
+	BlackboardConclusionModeDisabled    BlackboardConclusionMode = "disabled"
 )
 
 // BlackboardConclusionState is the compact owner-local semantic-debt view.
@@ -282,7 +284,7 @@ type RuntimeConfigVersion struct {
 	ID               string         `json:"id"`
 	SessionID        string         `json:"session_id"`
 	Version          int            `json:"version"`
-	RuntimeProfileID string         `json:"runtime_profile_id"`
+	RuntimeProfileID string         `json:"runtime_profile_id,omitempty"`
 	Config           map[string]any `json:"config"`
 	CreatedAt        time.Time      `json:"created_at"`
 }
@@ -292,7 +294,7 @@ type Continuation struct {
 	ID                string        `json:"id"`
 	SessionID         string        `json:"session_id"`
 	Number            int           `json:"number"`
-	RuntimeProfileID  string        `json:"runtime_profile_id"`
+	RuntimeProfileID  string        `json:"runtime_profile_id,omitempty"`
 	RuntimeProvider   string        `json:"runtime_provider"`
 	Runner            Runner        `json:"runner"`
 	Status            RuntimeStatus `json:"status"`
@@ -321,19 +323,20 @@ type CreateContinuationRequest struct {
 // the JSON representation because it is a server-local path, not operator
 // state or a Project artifact reference.
 type Session struct {
-	ID                   string               `json:"id"`
-	Title                string               `json:"title"`
-	Lifecycle            Lifecycle            `json:"lifecycle"`
-	Workdir              string               `json:"-"`
-	RunControls          RunControls          `json:"run_controls"`
-	BlackboardConclusion BlackboardConclusion `json:"blackboard_conclusion"`
-	RuntimeActivity      RuntimeActivity      `json:"runtime_activity"`
-	RuntimeControls      RuntimeControls      `json:"runtime_controls"`
-	ActiveContinuation   *Continuation        `json:"active_continuation,omitempty"`
-	LatestContinuation   *Continuation        `json:"latest_continuation,omitempty"`
-	CreatedAt            time.Time            `json:"created_at"`
-	UpdatedAt            time.Time            `json:"updated_at"`
-	LastActivityAt       time.Time            `json:"last_activity_at"`
+	ID                   string                 `json:"id"`
+	Title                string                 `json:"title"`
+	Lifecycle            Lifecycle              `json:"lifecycle"`
+	Workdir              string                 `json:"-"`
+	RunControls          RunControls            `json:"run_controls"`
+	BlackboardConclusion BlackboardConclusion   `json:"blackboard_conclusion"`
+	RuntimeActivity      RuntimeActivity        `json:"runtime_activity"`
+	RuntimeControls      RuntimeControls        `json:"runtime_controls"`
+	RuntimeConfiguration *runtimeconfig.Summary `json:"runtime_configuration,omitempty"`
+	ActiveContinuation   *Continuation          `json:"active_continuation,omitempty"`
+	LatestContinuation   *Continuation          `json:"latest_continuation,omitempty"`
+	CreatedAt            time.Time              `json:"created_at"`
+	UpdatedAt            time.Time              `json:"updated_at"`
+	LastActivityAt       time.Time              `json:"last_activity_at"`
 }
 
 // OwnerContract returns the explicit Session capability contract consumed by
@@ -387,6 +390,7 @@ type CreateRequest struct {
 	Input                    string
 	Attachments              []Attachment
 	BlackboardConclusionMode BlackboardConclusionMode
+	InitialRuntime           *CreateContinuationRequest
 }
 
 var (
@@ -408,7 +412,7 @@ var (
 	ErrContinuationNotFound            = errors.New("session continuation not found")
 	ErrContinuationStatusConflict      = errors.New("session continuation status conflicts with its terminal state")
 	ErrMissingRuntimeProfile           = errors.New("session runtime profile is required")
-	ErrInvalidBlackboardConclusionMode = errors.New("invalid Session Blackboard conclusion mode")
+	ErrInvalidBlackboardConclusionMode = errors.New("Session Blackboard Mode must be interactive, assisted, or disabled")
 )
 
 // Service implements Session persistence and lifecycle rules against SQLite.
@@ -532,6 +536,14 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
+	if req.InitialRuntime != nil {
+		if req.InitialRuntime.Runner != RunnerSandbox && req.InitialRuntime.Runner != RunnerHost {
+			return Session{}, ErrInvalidRunner
+		}
+		if strings.TrimSpace(req.InitialRuntime.RuntimeProvider) == "" {
+			return Session{}, ErrMissingRuntimeProfile
+		}
+	}
 
 	if err := s.ensureWorkdirRoot(); err != nil {
 		return Session{}, fmt.Errorf("prepare Session data root: %w", err)
@@ -576,18 +588,43 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 		formatTime(created.CreatedAt), formatTime(created.UpdatedAt), formatTime(created.LastActivityAt)); err != nil {
 		return Session{}, fmt.Errorf("store Session: %w", err)
 	}
-	if _, err := appendEventTx(tx, created.ID, EventKindConversation, EventPayload{
+	var initialContinuation *Continuation
+	if runtimeReq := req.InitialRuntime; runtimeReq != nil {
+		encoded, err := json.Marshal(runtimeReq.RuntimeConfig)
+		if err != nil {
+			return Session{}, fmt.Errorf("encode initial Session Runtime config: %w", err)
+		}
+		configID := "session-config-" + strings.TrimPrefix(newIDMust(), "session-")
+		if _, err := tx.Exec(`INSERT INTO session_runtime_config_versions (id,session_id,version,runtime_profile_id,config_json,created_at) VALUES (?,?,?,?,?,?)`, configID, created.ID, 1, runtimeReq.RuntimeProfileID, string(encoded), formatTime(now)); err != nil {
+			return Session{}, fmt.Errorf("store initial Session Runtime config: %w", err)
+		}
+		continuation := Continuation{
+			ID: "session-continuation-" + strings.TrimPrefix(newIDMust(), "session-"), SessionID: created.ID,
+			Number: 1, RuntimeProfileID: runtimeReq.RuntimeProfileID, RuntimeProvider: runtimeReq.RuntimeProvider,
+			Runner: runtimeReq.Runner, Status: RuntimeStatusPending, RuntimeConfigID: configID,
+			StartedAt: now, UpdatedAt: now,
+		}
+		if _, err := tx.Exec(`INSERT INTO session_continuations (id,session_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,runtime_config_version_id,started_at,updated_at,ended_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, continuation.ID, created.ID, continuation.Number, continuation.RuntimeProfileID, continuation.RuntimeProvider, string(continuation.Runner), string(continuation.Status), "", "", "", continuation.RuntimeConfigID, formatTime(now), formatTime(now), ""); err != nil {
+			return Session{}, fmt.Errorf("store initial Session continuation: %w", err)
+		}
+		initialContinuation = &continuation
+	}
+	continuationID := ""
+	if initialContinuation != nil {
+		continuationID = initialContinuation.ID
+	}
+	if _, err := appendEventTx(tx, created.ID, EventKindConversation, payloadWithContinuation(EventPayload{
 		"role": "user", "text": req.Input,
-	}, now); err != nil {
+	}, continuationID), now); err != nil {
 		return Session{}, fmt.Errorf("store initial Session Event: %w", err)
 	}
 	for _, attachment := range attachments {
-		if _, err := appendEventTx(tx, created.ID, EventKindAttachment, EventPayload{
+		if _, err := appendEventTx(tx, created.ID, EventKindAttachment, payloadWithContinuation(EventPayload{
 			"filename":      attachment.Filename,
 			"relative_path": attachment.Filename,
 			"size":          attachment.Size,
 			"sha256":        attachment.SHA256,
-		}, now); err != nil {
+		}, continuationID), now); err != nil {
 			return Session{}, fmt.Errorf("store Session attachment Event: %w", err)
 		}
 	}
@@ -595,6 +632,8 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 		return Session{}, fmt.Errorf("commit Session create: %w", err)
 	}
 	cleanupWorkdir = false
+	created.ActiveContinuation = initialContinuation
+	created.LatestContinuation = initialContinuation
 	return created, nil
 }
 
@@ -1347,9 +1386,6 @@ func (s *Service) RecordRuntimeConfigTx(tx *sql.Tx, sessionID, runtimeProfileID 
 	if tx == nil {
 		return RuntimeConfigVersion{}, errors.New("Session Runtime config transaction is required")
 	}
-	if strings.TrimSpace(runtimeProfileID) == "" {
-		return RuntimeConfigVersion{}, ErrMissingRuntimeProfile
-	}
 	var count int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM sessions WHERE id=?`, sessionID).Scan(&count); err != nil {
 		return RuntimeConfigVersion{}, fmt.Errorf("validate Session Runtime config owner: %w", err)
@@ -1398,7 +1434,7 @@ func (s *Service) createContinuation(sessionID string, req CreateContinuationReq
 	if req.Runner != RunnerSandbox && req.Runner != RunnerHost {
 		return Continuation{}, ErrInvalidRunner
 	}
-	if strings.TrimSpace(req.RuntimeProfileID) == "" || strings.TrimSpace(req.RuntimeProvider) == "" {
+	if strings.TrimSpace(req.RuntimeProvider) == "" {
 		return Continuation{}, ErrMissingRuntimeProfile
 	}
 	var copied []copiedAttachment
@@ -1925,6 +1961,8 @@ func normalizeBlackboardConclusionMode(value BlackboardConclusionMode) (Blackboa
 		return BlackboardConclusionModeInteractive, nil
 	case BlackboardConclusionModeAssisted:
 		return BlackboardConclusionModeAssisted, nil
+	case BlackboardConclusionModeDisabled:
+		return BlackboardConclusionModeDisabled, nil
 	default:
 		return "", ErrInvalidBlackboardConclusionMode
 	}
@@ -1942,10 +1980,13 @@ func scanSession(row scanner) (Session, error) {
 		return Session{}, err
 	}
 	found.Lifecycle = Lifecycle(lifecycle)
-	found.RunControls.BlackboardConclusionMode = BlackboardConclusionMode(mode)
+	normalizedMode, err := normalizeBlackboardConclusionMode(BlackboardConclusionMode(mode))
+	if err != nil {
+		return Session{}, err
+	}
+	found.RunControls.BlackboardConclusionMode = normalizedMode
 	found.BlackboardConclusion.Mode = found.RunControls.BlackboardConclusionMode
 	found.BlackboardConclusion.State = BlackboardConclusionStateClean
-	var err error
 	if found.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
 		return Session{}, fmt.Errorf("parse Session created_at: %w", err)
 	}

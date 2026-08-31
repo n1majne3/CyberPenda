@@ -35,13 +35,12 @@ export function TaskLaunchPage() {
     setLaunching(true);
     launchControls.setError(null);
     try {
-      const profileId = await launchControls.resolveRuntimeProfileId();
-      const checked = await launchControls.runPreflight(`/api/projects/${projectId}/preflight`, profileId);
+      const checked = await launchControls.runPreflight(`/api/projects/${projectId}/preflight`);
       if (!checked.pass) {
         launchControls.setError("preflight failed");
         return;
       }
-      const launch = launchControls.launchPayload(profileId);
+      const launch = launchControls.launchPayload();
       const payload = {
         type: reasonTask ? projectKind : taskType,
         goal: effectiveGoal,
@@ -83,7 +82,7 @@ export function TaskLaunchPage() {
   const summaryProvider = launchControls.compatibleProviders.find((provider) => provider.id === launchControls.form.modelProviderId);
   const modelDisplay = [summaryProvider?.name, launchControls.form.modelOverride || "Default model"].filter(Boolean).join(" · ") || "—";
   const runnerDisplay = launchControls.form.runner === "host" ? "Host" : launchControls.containerCLI === "podman" ? "Podman" : "Docker";
-  const blackboardDisplay = launchControls.blackboardConclusionMode === "assisted" ? "Assisted" : "Interactive";
+  const blackboardDisplay = launchControls.blackboardConclusionMode === "assisted" ? "Assisted" : launchControls.blackboardConclusionMode === "disabled" ? "Disabled" : "Interactive";
 
   return (
     <ProjectPageShell
@@ -138,7 +137,7 @@ export function TaskLaunchPage() {
           </div>
         </section>
 
-        <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={effectiveGoal} />
+        <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={effectiveGoal} allowDisabledBlackboardMode={!reasonTask} />
 
         <Card as="section" className="border-border/70 bg-muted/10">
           <CardHeader>
@@ -156,7 +155,7 @@ export function TaskLaunchPage() {
         </Card>
       </div>
 
-      <aside className="lg:sticky lg:top-6 h-fit">
+<aside className="lg:sticky lg:top-6 h-fit">
         <div className="rounded-lg border border-border bg-card shadow-sm">
           <div className="border-b border-border px-4 py-3"><span className="text-sm font-medium">Launch 摘要</span></div>
           <dl className="space-y-2.5 px-4 py-3.5 text-xs">

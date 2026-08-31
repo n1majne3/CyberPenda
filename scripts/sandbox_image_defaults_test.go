@@ -1,6 +1,7 @@
 package scripts_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -69,6 +70,9 @@ func TestRetiredSandboxImageDefaultsAreAbsent(t *testing.T) {
 			}
 		}
 		contents, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			t.Errorf("read %s: %v", rel, err)
 			continue

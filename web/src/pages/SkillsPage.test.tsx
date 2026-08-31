@@ -132,6 +132,64 @@ describe("SkillsPage", () => {
     );
   });
 
+  it("disables and enables all current skills for the selected Runtime Profile", async () => {
+    const fetchMock = mockApi({
+      "/api/runtime-profiles": {
+        profiles: [
+          {
+            id: "profile-1",
+            name: "Codex Default",
+            provider: "codex",
+            fields: {},
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills?runtime_profile_id=profile-1": {
+        skills: [
+          {
+            id: "recon-helper",
+            name: "Recon Helper",
+            enabled: true,
+            created_at: "",
+            updated_at: "",
+          },
+          {
+            id: "report-helper",
+            name: "Report Helper",
+            enabled: false,
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills/profiles/profile-1/opt-out": {},
+    });
+
+    renderPage();
+
+    await screen.findByText("Recon Helper");
+    await userEvent.click(screen.getByRole("button", { name: "Disable all skills" }));
+
+    expect(
+      screen.getByRole("alertdialog", { name: "Disable all skills for Codex Default?" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/future imported Skills remain default-on/i)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Disable all" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/skills/profiles/profile-1/opt-out",
+      expect.objectContaining({ method: "PUT" }),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Enable all skills" }));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/skills/profiles/profile-1/opt-out",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
   it("filters the skill library by search and status", async () => {
     mockApi({
       "/api/runtime-profiles": {
@@ -185,7 +243,7 @@ describe("SkillsPage", () => {
     expect(screen.queryByText("Auth Bypass")).not.toBeInTheDocument();
   });
 
-  it("explains launch-resolved profile scope for skill opt-outs", async () => {
+  it("explains user-created Runtime Profile scope for Skill Opt-Outs", async () => {
     mockApi({
       "/api/runtime-profiles": {
         profiles: [
@@ -193,7 +251,6 @@ describe("SkillsPage", () => {
             id: "auto-1",
             name: "Codex · MiMo",
             provider: "codex",
-            kind: "launch_resolve",
             fields: { model_provider_id: "mimo" },
             created_at: "",
             updated_at: "",
@@ -206,9 +263,9 @@ describe("SkillsPage", () => {
     renderPage();
 
     expect(
-      await screen.findByText(/created by launch resolution/i),
+      await screen.findByText(/Skill opt-outs apply to this Runtime Profile/i),
     ).toBeInTheDocument();
-    expect(screen.getByText(/future launches that resolve/i)).toBeInTheDocument();
+    expect(screen.getByText(/new Task or Session/i)).toBeInTheDocument();
   });
 
   it("strips source prefixes from built-in skill names, ids, and descriptions", async () => {

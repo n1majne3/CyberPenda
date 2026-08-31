@@ -196,6 +196,23 @@ func (server *Server) handleDeleteSkillProfileOptOut(response http.ResponseWrite
 	server.handleSkillProfileOptOut(response, request, false)
 }
 
+func (server *Server) handlePutAllSkillProfileOptOuts(response http.ResponseWriter, request *http.Request) {
+	server.handleAllSkillProfileOptOuts(response, request, true)
+}
+
+func (server *Server) handleDeleteAllSkillProfileOptOuts(response http.ResponseWriter, request *http.Request) {
+	server.handleAllSkillProfileOptOuts(response, request, false)
+}
+
+func (server *Server) handleAllSkillProfileOptOuts(response http.ResponseWriter, request *http.Request, optedOut bool) {
+	profileID := strings.TrimSpace(request.PathValue("profile_id"))
+	if err := server.skills.SetAllOptOut(profileID, optedOut); err != nil {
+		writeSkillError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
 func (server *Server) handleSkillProfileOptOut(response http.ResponseWriter, request *http.Request, optedOut bool) {
 	skillID := strings.TrimSpace(request.PathValue("skill_id"))
 	profileID := strings.TrimSpace(request.PathValue("profile_id"))

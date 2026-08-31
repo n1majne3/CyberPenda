@@ -15,6 +15,7 @@ import (
 	"pentest/internal/blackboardv2input"
 	"pentest/internal/projectinterface"
 	"pentest/internal/report"
+	"pentest/internal/task"
 )
 
 const blackboardV2HTTPInputLimit = 4 << 20
@@ -38,6 +39,7 @@ func (server *Server) registerBlackboardV2Routes() {
 	server.mux.HandleFunc("GET /api/v2/projects/{id}/blackboard/records/{key}", server.handleBlackboardV2Read)
 	server.mux.HandleFunc("GET /api/v2/projects/{id}/blackboard/records/{key}/history", server.handleBlackboardV2History)
 	server.mux.HandleFunc("POST /api/v2/projects/{id}/blackboard/evidence:retain", server.handleBlackboardV2EvidenceRetain)
+	server.mux.HandleFunc("POST /api/v2/projects/{id}/tasks/{task_id}/blackboard/evidence:retain", server.handleDisabledTaskOutputEvidenceRetain)
 	// net/http patterns cannot suffix a wildcard with ":checkpoint". Capture the
 	// final segment and validate/remove that exact suffix in the handler.
 	server.mux.HandleFunc("POST /api/v2/projects/{id}/blackboard/attempts/{attempt_action}", server.handleBlackboardV2Checkpoint)
@@ -67,11 +69,8 @@ func (server *Server) authenticateBlackboardV2(request *http.Request, requireCon
 		return blackboardV2Principal{}, blackboardV2HTTPError("invalid_schema", "project id is required", "path.project_id")
 	}
 	token := projectinterface.BearerToken(request)
-	operatorRequest := token == "" && server.authToken == ""
-	if token != "" && server.authToken != "" &&
-		subtle.ConstantTimeCompare([]byte(token), []byte(server.authToken)) == 1 {
-		operatorRequest = true
-	}
+	operatorRequest := token != "" &&
+		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) == 1
 	if operatorRequest {
 		if requireContinuation {
 			return blackboardV2Principal{}, blackboardV2HTTPError("authority_denied", "this Blackboard capability requires a trusted Continuation", "authority")
@@ -127,7 +126,7 @@ func (server *Server) handleBlackboardV2Change(response http.ResponseWriter, req
 			return nil, contractErr
 		}
 		if principal.operator {
-			return server.blackboardV2.Apply(ctx, principal.projectID, batch)
+			return server.blackboardV2.ApplyForOperator(ctx, principal.projectID, principal.actorID, batch)
 		}
 		return server.blackboardV2.ApplyForContinuation(ctx, principal.projectID, principal.continuationID, batch)
 	})
@@ -230,6 +229,71 @@ func (server *Server) handleBlackboardV2EvidenceRetain(response http.ResponseWri
 			return nil, contractErr
 		}
 		return server.blackboardV2.RetainEvidenceForContinuation(ctx, principal.projectID, principal.continuationID, req)
+	})
+}
+
+// handleDisabledTaskOutputEvidenceRetain is an operator-only promotion seam.
+// It selects one Disabled Task Workdir file without granting or synchronizing
+// Blackboard state to that Task's Runtime.
+func (server *Server) handleDisabledTaskOutputEvidenceRetain(response http.ResponseWriter, request *http.Request) {
+	principal, authErr := server.authenticateBlackboardV2(request, false)
+	if authErr != nil {
+		writeBlackboardV2Error(response, authErr, nil)
+		return
+	}
+	if !principal.operator {
+		writeBlackboardV2Error(response, blackboardV2HTTPError("authority_denied", "authenticated operator authority is required", "authorization"), nil)
+		return
+	}
+	selectedTaskID := strings.TrimSpace(request.PathValue("task_id"))
+	found, err := server.tasks.Get(selectedTaskID)
+	if errors.Is(err, task.ErrNotFound) {
+		writeBlackboardV2Error(response, blackboardV2HTTPError("not_found", "Task was not found in this Project", "path.task_id"), nil)
+		return
+	}
+	if err != nil {
+		writeBlackboardV2Error(response, asBlackboardV2Error(err), nil)
+		return
+	}
+	if found.ProjectID != principal.projectID {
+		writeBlackboardV2Error(response, blackboardV2HTTPError("not_found", "Task was not found in this Project", "path.task_id"), nil)
+		return
+	}
+	if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+		writeBlackboardV2Error(response, blackboardV2HTTPError("semantic_validation", "selected output retention requires a Disabled Task", "path.task_id"), nil)
+		return
+	}
+	continuation, err := server.tasks.LatestContinuation(found.ID)
+	if err != nil {
+		writeBlackboardV2Error(response, asBlackboardV2Error(err), nil)
+		return
+	}
+	if continuation == nil {
+		writeBlackboardV2Error(response, blackboardV2HTTPError("not_found", "Disabled Task has no source Continuation", "path.task_id"), nil)
+		return
+	}
+	idempotencyKey, keyErr := requireBlackboardV2IdempotencyKey(request)
+	if keyErr != nil {
+		writeBlackboardV2Error(response, keyErr, nil)
+		return
+	}
+	contractRaw, decodeErr := prepareBlackboardV2HTTPContractJSON(request, map[string]string{"idempotency_key": idempotencyKey})
+	if decodeErr != nil {
+		writeBlackboardV2Error(response, decodeErr, nil)
+		return
+	}
+	var retain blackboardv2.RetainEvidenceRequest
+	server.serveBlackboardV2(response, request, principal, false, false, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
+		if contractErr := blackboardv2input.DecodeContractInput("retainEvidenceRequest", false, contractRaw, &retain); contractErr != nil {
+			return nil, contractErr
+		}
+		result, retainErr := server.blackboardV2.RetainTaskEvidenceForOperator(
+			ctx, principal.projectID, found.ID, continuation.ID, principal.actorID, retain,
+		)
+		if retainErr != nil && server.logger != nil {
+			server.logger.Printf("operator Disabled output retention failed project=%s task=%s: %v", principal.projectID, found.ID, retainErr)
+		}
+		return result, retainErr
 	})
 }
 

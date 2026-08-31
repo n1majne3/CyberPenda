@@ -110,7 +110,8 @@ func newHostClaudePersistentFixture(t *testing.T, factory ProviderSessionFactory
 
 		Type: task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
-		RunControls: task.RunControls{HostActivated: true},
+		RunControls:   task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -285,7 +286,8 @@ func TestHostClaudeProviderChangeQueuesMessageAndCreatesConfigVersion(t *testing
 	if queued.RuntimeConfigVersion == nil {
 		t.Fatal("provider change must create Runtime Config Version for host Claude")
 	}
-	if queued.RuntimeConfigVersion.Config["model_provider_id"] != alternate.ID {
+	turn, _ := queued.RuntimeConfigVersion.Config["runtime_turn_selection"].(map[string]any)
+	if turn["model_provider_id"] != alternate.ID {
 		t.Fatalf("config = %#v", queued.RuntimeConfigVersion.Config)
 	}
 	if factory.openCount() != 1 {
@@ -321,7 +323,8 @@ func TestHostClaudeMissingNativeMetadataFallsBackToFreshContinuation(t *testing.
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
-		RunControls: task.RunControls{HostActivated: true},
+		RunControls:   task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatal(err)

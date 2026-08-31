@@ -72,6 +72,44 @@ function renderPage(initialEntries = ["/sessions"], view: "open" | "archived" = 
 }
 
 describe("SessionHomePage", () => {
+  it("launches a Non-Project Session with Disabled Blackboard Mode", async () => {
+    const fetchMock = mockApi({
+      ...sessionLaunchRoutes,
+      "/api/sessions?lifecycle=archived": { sessions: [] },
+      "/api/sessions": { sessions: [] },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await screen.findByRole("option", { name: "MiMo" });
+    await user.type(screen.getByLabelText("Initial input"), "Inspect the standalone target");
+    await user.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
+    const mode = screen.getByLabelText("Blackboard conclusions");
+    expect(screen.getByRole("option", { name: "Disabled" })).toBeEnabled();
+    await user.selectOptions(mode, "disabled");
+    expect(screen.getByText(/does not receive Blackboard state or Blackboard access/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /create session/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            input: "Inspect the standalone target",
+            runtime_plugin_id: "codex",
+            model_provider_id: "mimo",
+            model: "mimo-v2.5-pro",
+            reasoning_effort: "high",
+            runner: "sandbox",
+            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "disabled" },
+          }),
+        }),
+      );
+    });
+  });
+
   it("reuses the Task launch selection and preflight flow", async () => {
     const fetchMock = mockApi({
       ...sessionLaunchRoutes,
@@ -91,7 +129,7 @@ describe("SessionHomePage", () => {
     expect(screen.queryByLabelText("Runtime profile")).not.toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Initial input"), "Inspect the standalone target");
-    await user.click(screen.getByRole("button", { name: "xhigh" }));
+await user.click(screen.getByRole("button", { name: "xhigh" }));
     await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
     await user.selectOptions(screen.getByLabelText("Blackboard conclusions"), "assisted");
     await user.click(screen.getByRole("button", { name: /create session/i }));
@@ -107,9 +145,11 @@ describe("SessionHomePage", () => {
           method: "POST",
           body: JSON.stringify({
             input: "Inspect the standalone target",
-            runtime_profile_id: "resolved-profile",
-            runner: "sandbox",
+            runtime_plugin_id: "codex",
+            model_provider_id: "mimo",
+            model: "mimo-v2.5-pro",
             reasoning_effort: "xhigh",
+            runner: "sandbox",
             run_controls: { container_cli: "docker", blackboard_conclusion_mode: "assisted" },
           }),
         }),
@@ -204,9 +244,11 @@ describe("SessionHomePage", () => {
           method: "POST",
           body: JSON.stringify({
             input: "Check the exposed service",
-            runtime_profile_id: "resolved-profile",
-            runner: "sandbox",
+            runtime_plugin_id: "codex",
+            model_provider_id: "mimo",
+            model: "mimo-v2.5-pro",
             reasoning_effort: "high",
+            runner: "sandbox",
             run_controls: { container_cli: "docker", blackboard_conclusion_mode: "interactive" },
           }),
         }),
@@ -247,7 +289,7 @@ describe("SessionHomePage", () => {
 
     await screen.findByRole("option", { name: "MiMo" });
     await user.type(await screen.findByRole("textbox", { name: /initial input/i }), "Inspect the standalone target");
-    await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
+await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
     await user.selectOptions(screen.getByRole("combobox", { name: /blackboard conclusions/i }), "assisted");
     await user.click(screen.getByRole("button", { name: /create session/i }));
 
@@ -258,9 +300,11 @@ describe("SessionHomePage", () => {
           method: "POST",
           body: JSON.stringify({
             input: "Inspect the standalone target",
-            runtime_profile_id: "resolved-profile",
-            runner: "sandbox",
+            runtime_plugin_id: "codex",
+            model_provider_id: "mimo",
+            model: "mimo-v2.5-pro",
             reasoning_effort: "high",
+            runner: "sandbox",
             run_controls: { container_cli: "docker", blackboard_conclusion_mode: "assisted" },
           }),
         }),

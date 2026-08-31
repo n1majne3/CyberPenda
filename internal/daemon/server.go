@@ -29,6 +29,7 @@ import (
 	"pentest/internal/reasontask"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeconfig"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
@@ -63,7 +64,8 @@ type Config struct {
 	// AuthToken gates every mutating route when non-empty. A non-loopback bind
 	// refuses to start unless this is set, so a daemon exposed to the network
 	// cannot become an unauthenticated control plane. Loopback dev (make dev)
-	// leaves it empty, so no enforcement applies.
+	// leaves it empty, so ordinary routes stay open. Operator workflows that can
+	// mutate Blackboard still require the generated operator capability.
 	AuthToken string
 	// Logger receives request and task-lifecycle log lines. When nil the daemon
 	// uses the standard library default logger, so output appears under
@@ -130,6 +132,8 @@ type Server struct {
 	taskVolumeRoot          string
 	listenAddr              string
 	authToken               string
+	operatorToken           string
+	generatedOperatorToken  bool
 	tempSkillsRoot          string
 	controlMu               sync.Mutex
 	activeControls          map[string]bool
@@ -251,6 +255,19 @@ func NewServer(config Config) (*Server, error) {
 		}
 		return nil, fmt.Errorf("non-loopback bind %q requires an auth token; set -auth-token or PENTEST_AUTH_TOKEN", listenAddr)
 	}
+	operatorToken := authToken
+	generatedOperatorToken := false
+	if operatorToken == "" {
+		operatorToken, err = (projectinterface.RandomTokenSource{}).NewToken()
+		if err != nil {
+			_ = db.Close()
+			if tempSkillsRoot != "" {
+				_ = os.RemoveAll(tempSkillsRoot)
+			}
+			return nil, fmt.Errorf("generate loopback operator token: %w", err)
+		}
+		generatedOperatorToken = true
+	}
 	epoch, err := db.CanonicalStore()
 	if err != nil {
 		_ = db.Close()
@@ -296,6 +313,8 @@ func NewServer(config Config) (*Server, error) {
 		taskVolumeRoot:          taskVolumeRoot,
 		listenAddr:              listenAddr,
 		authToken:               authToken,
+		operatorToken:           operatorToken,
+		generatedOperatorToken:  generatedOperatorToken,
 		tempSkillsRoot:          tempSkillsRoot,
 		activeControls:          map[string]bool{},
 		providerControlCtx:      providerControlCtx,
@@ -517,6 +536,14 @@ func (server *Server) reconcileInterruptedTasks(lifecycleProtectedTaskIDs []stri
 			return
 		}
 		for _, continuation := range continuations {
+			owner, ownerErr := server.tasks.Get(continuation.TaskID)
+			if ownerErr != nil {
+				server.logger.Printf("task reconcile: failed to load Task %s for terminal Continuation %s: %v", continuation.TaskID, continuation.ID, ownerErr)
+				continue
+			}
+			if owner.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+				continue
+			}
 			if reconcileErr := server.blackboardV2.ReconcileTerminalContinuation(context.Background(), continuation.ID, "daemon_restart"); reconcileErr != nil {
 				server.logger.Printf("task reconcile: failed to reconcile Continuation %s: %v", continuation.ID, reconcileErr)
 			}
@@ -616,10 +643,12 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}
 	if server.authToken != "" && !server.publicPath(request) {
 		if !server.authorized(request) {
-			// Project-interface and Blackboard v2 HTTP handlers own their structured
-			// credential errors. Let those narrow routes classify a missing/invalid
-			// grant; every other API and MCP route remains behind the daemon middleware.
-			if !(server.blackboardV2 != nil && isBlackboardV2HTTPTransport(request)) {
+			// Blackboard v2 and Reason proposal-create handlers own their narrower
+			// Continuation capability checks. Let only those exact transports classify
+			// a missing or invalid grant; every other API remains behind this middleware.
+			handlerOwnsCapability := server.blackboardV2 != nil &&
+				(isBlackboardV2HTTPTransport(request) || isReasonTaskProposalCreateHTTPTransport(request))
+			if !handlerOwnsCapability {
 				writeError(response, http.StatusUnauthorized, "unauthorized")
 				return
 			}
@@ -634,6 +663,16 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 // ListenAddr is the bind address used to project Runtime MCP and API URLs.
 func (server *Server) ListenAddr() string {
 	return server.listenAddr
+}
+
+// GeneratedOperatorAccessURL returns the one startup URL that transfers a
+// generated loopback operator bearer capability to the browser. An explicitly
+// configured daemon token is never returned or logged by this seam.
+func (server *Server) GeneratedOperatorAccessURL() string {
+	if !server.generatedOperatorToken || server.operatorToken == "" {
+		return ""
+	}
+	return "http://" + server.listenAddr + "/?token=" + url.QueryEscape(server.operatorToken)
 }
 
 func (server *Server) Close() error {
@@ -706,6 +745,19 @@ func (server *Server) authorized(request *http.Request) bool {
 		}
 	}
 	return false
+}
+
+// requireOperatorAuthority protects local operator workflows that can mutate
+// Blackboard outside the versioned Project Interface. The Actor header is
+// provenance only; it never authenticates the caller.
+func (server *Server) requireOperatorAuthority(response http.ResponseWriter, request *http.Request) bool {
+	token := projectinterface.BearerToken(request)
+	if token == "" || server.operatorToken == "" ||
+		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) != 1 {
+		writeError(response, http.StatusUnauthorized, "unauthorized")
+		return false
+	}
+	return true
 }
 
 // publicPath reports whether the request targets a route that stays reachable
@@ -862,6 +914,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/sessions/{id}/transcript", server.handleSessionTranscript)
 	server.mux.HandleFunc("GET /api/sessions/{id}/transcript/entries/{entry_id}", server.handleSessionTranscriptEntry)
 	server.mux.HandleFunc("POST /api/sessions/{id}/messages", server.handleSessionMessage)
+	server.mux.HandleFunc("POST /api/sessions/{id}/runtime-profile", server.handleSaveSessionRuntimeProfile)
 	server.mux.HandleFunc("POST /api/sessions/{id}/resume", server.handleSessionMessage)
 	server.mux.HandleFunc("POST /api/sessions/{id}/steer", server.handleSessionSteer)
 	server.mux.HandleFunc("POST /api/sessions/{id}/steer/queue", server.handleSessionQueueSteer)
@@ -873,11 +926,9 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/sessions/{id}/restore", server.handleRestoreSession)
 	server.mux.HandleFunc("DELETE /api/sessions/{id}", server.handleDeleteSession)
 	server.mux.HandleFunc("POST /api/runtime-profiles", server.handleCreateRuntimeProfile)
-	server.mux.HandleFunc("POST /api/runtime-profiles/resolve-launch", server.handleResolveLaunchRuntimeProfile)
 	server.mux.HandleFunc("GET /api/runtime-profiles", server.handleListRuntimeProfiles)
 	server.mux.HandleFunc("GET /api/runtime-profiles/{id}", server.handleGetRuntimeProfile)
 	server.mux.HandleFunc("PATCH /api/runtime-profiles/{id}", server.handleUpdateRuntimeProfile)
-	server.mux.HandleFunc("POST /api/runtime-profiles/{id}/promote", server.handlePromoteRuntimeProfile)
 	server.mux.HandleFunc("DELETE /api/runtime-profiles/{id}", server.handleDeleteRuntimeProfile)
 	server.mux.HandleFunc("GET /api/runtime-profiles/{id}/model-provider-migration-preview", server.handlePreviewModelProviderMigration)
 	server.mux.HandleFunc("POST /api/runtime-profiles/{id}/model-provider-migration", server.handleApplyModelProviderMigration)
@@ -903,6 +954,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/skills/{skill_id}", server.handleGetSkill)
 	server.mux.HandleFunc("PUT /api/skills/{skill_id}", server.handlePutSkill)
 	server.mux.HandleFunc("DELETE /api/skills/{skill_id}", server.handleDeleteSkill)
+	server.mux.HandleFunc("PUT /api/skills/profiles/{profile_id}/opt-out", server.handlePutAllSkillProfileOptOuts)
+	server.mux.HandleFunc("DELETE /api/skills/profiles/{profile_id}/opt-out", server.handleDeleteAllSkillProfileOptOuts)
 	server.mux.HandleFunc("PUT /api/skills/{skill_id}/profiles/{profile_id}/opt-out", server.handlePutSkillProfileOptOut)
 	server.mux.HandleFunc("DELETE /api/skills/{skill_id}/profiles/{profile_id}/opt-out", server.handleDeleteSkillProfileOptOut)
 	server.mux.HandleFunc("PUT /api/credential-bindings", server.handleUpsertGlobalCredentialBinding)
@@ -913,6 +966,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("PUT /api/projects/{id}/credential-bindings", server.handleUpsertProjectCredentialBinding)
 	server.mux.HandleFunc("GET /api/projects/{id}/credential-bindings", server.handleListProjectCredentialBindings)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks", server.handleCreateTask)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/runtime-profile", server.handleSaveTaskRuntimeProfile)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks", server.handleListTasks)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}", server.handleGetTask)
 	server.mux.HandleFunc("DELETE /api/projects/{id}/tasks/{task_id}", server.handleDeleteTask)
@@ -1490,26 +1544,6 @@ func (server *Server) handleProjectedConfig(response http.ResponseWriter, reques
 	})
 }
 
-func (server *Server) handlePromoteRuntimeProfile(response http.ResponseWriter, request *http.Request) {
-	id := request.PathValue("id")
-	if id == "" {
-		writeError(response, http.StatusNotFound, "runtime profile not found")
-		return
-	}
-
-	promoted, err := server.profiles.PromoteToPreset(id)
-	if errors.Is(err, runtimeprofile.ErrNotFound) {
-		writeError(response, http.StatusNotFound, err.Error())
-		return
-	}
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "promote runtime profile")
-		return
-	}
-
-	writeJSON(response, http.StatusOK, runtimeprofile.SanitizeProfile(promoted))
-}
-
 func (server *Server) handleDeleteRuntimeProfile(response http.ResponseWriter, request *http.Request) {
 	id := request.PathValue("id")
 	if id == "" {
@@ -1642,6 +1676,9 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 
 	var input struct {
 		RuntimeProfileID        string           `json:"runtime_profile_id"`
+		RuntimePluginID         string           `json:"runtime_plugin_id,omitempty"`
+		ModelProviderID         string           `json:"model_provider_id,omitempty"`
+		Model                   string           `json:"model,omitempty"`
 		ModelOverride           string           `json:"model_override,omitempty"`
 		ReasoningEffort         string           `json:"reasoning_effort,omitempty"`
 		Runner                  string           `json:"runner"`
@@ -1668,9 +1705,26 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
+	model := strings.TrimSpace(input.Model)
+	if model == "" {
+		model = strings.TrimSpace(input.ModelOverride)
+	}
+	resolvedConfiguration, err := server.resolveLaunchConfiguration(runtimeconfig.LaunchSelection{
+		RuntimeProfileID: input.RuntimeProfileID, RuntimePluginID: input.RuntimePluginID,
+		ModelProviderID: input.ModelProviderID, Model: model,
+		ReasoningEffort: input.ReasoningEffort, Runner: string(defaulted.runner),
+	}, projectID)
+	var resolvedProfile *runtimeprofile.Profile
+	if err == nil {
+		resolvedProfile = &resolvedConfiguration.Profile
+	} else if strings.TrimSpace(defaulted.runtimeProfileID) == "" {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
 	result := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID:        defaulted.runtimeProfileID,
-		LaunchModelOverride:     strings.TrimSpace(input.ModelOverride),
+		Profile:                 resolvedProfile,
+		LaunchModelOverride:     model,
 		ProjectID:               projectID,
 		CredentialRefsToResolve: input.CredentialRefsToResolve,
 		Runner:                  string(defaulted.runner),

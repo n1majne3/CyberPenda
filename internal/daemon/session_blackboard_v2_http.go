@@ -29,10 +29,8 @@ func (server *Server) authenticateSessionBlackboardV2(request *http.Request) (st
 		return "", blackboardV2HTTPError("invalid_schema", "session id is required", "path.session_id")
 	}
 	token := projectinterface.BearerToken(request)
-	operator := token == "" && server.authToken == ""
-	if token != "" && server.authToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(server.authToken)) == 1 {
-		operator = true
-	}
+	operator := token != "" &&
+		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) == 1
 	if !operator {
 		return "", blackboardV2HTTPError("authority_denied", "Session Blackboard requires the trusted operator authority", "authorization")
 	}

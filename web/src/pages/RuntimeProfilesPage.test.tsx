@@ -148,7 +148,6 @@ describe("RuntimeProfilesPage", () => {
                     id: "profile-1",
                     name: "Codex Layout",
                     provider: "codex",
-                    kind: "manual",
                     fields: { model: "gpt-5" },
                     created_at: "",
                     updated_at: "2026-06-25T00:00:00Z",
@@ -434,7 +433,7 @@ describe("RuntimeProfilesPage", () => {
     expect(document.querySelector(".save-check-pop")).not.toBeNull();
   });
 
-  it("groups launch-resolved profiles separately from presets", async () => {
+  it("shows every returned user-created Runtime Profile without kind grouping", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -448,7 +447,6 @@ describe("RuntimeProfilesPage", () => {
                     id: "preset-1",
                     name: "Codex MCP",
                     provider: "codex",
-                    kind: "manual",
                     fields: { model_provider_id: "mimo" },
                     created_at: "",
                     updated_at: "2026-06-25T00:00:00Z",
@@ -457,7 +455,6 @@ describe("RuntimeProfilesPage", () => {
                     id: "auto-1",
                     name: "Codex · MiMo",
                     provider: "codex",
-                    kind: "launch_resolve",
                     fields: { model_provider_id: "mimo" },
                     created_at: "",
                     updated_at: "2026-06-25T00:00:00Z",
@@ -496,61 +493,33 @@ describe("RuntimeProfilesPage", () => {
     renderPage();
 
     expect(await screen.findByText("Codex MCP")).toBeInTheDocument();
-    // Direction A: presets are marked with a chip on each row instead of a
-    // "Presets" group subheading.
-    const list = screen.getByTestId("runtime-profiles-settings-list");
-    expect(within(list).getByText("preset")).toBeInTheDocument();
-    expect(screen.getByText(/Launch-resolved \(1\)/)).toBeInTheDocument();
-    expect(screen.queryByText("Codex · MiMo")).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: /Launch-resolved \(1\)/ }));
-    expect(await screen.findByText("Codex · MiMo")).toBeInTheDocument();
+expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
+    expect(screen.queryByText(/Launch-resolved/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Presets")).not.toBeInTheDocument();
   });
 
-  it("promotes a launch-resolved profile to a preset", async () => {
-    let promoted = false;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-        const url = typeof input === "string" ? input : input.toString();
-        const method = init?.method ?? "GET";
-        if (url.includes("/api/runtime-profiles/auto-1/promote") && method === "POST") {
-          promoted = true;
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                id: "auto-1",
-                name: "Codex · MiMo",
-                provider: "codex",
-                kind: "manual",
-                fields: { model_provider_id: "mimo" },
-                created_at: "",
-                updated_at: "2026-06-25T00:00:01Z",
-              }),
-              { status: 200, headers: { "Content-Type": "application/json" } },
-            ),
-          );
-        }
-        if (url.includes("/api/runtime-profiles")) {
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                profiles: [
-                  {
-                    id: "auto-1",
-                    name: "Codex · MiMo",
-                    provider: "codex",
-                    kind: promoted ? "manual" : "launch_resolve",
-                    fields: { model_provider_id: "mimo" },
-                    created_at: "",
-                    updated_at: "2026-06-25T00:00:00Z",
-                  },
-                ],
-              }),
-              { status: 200, headers: { "Content-Type": "application/json" } },
-            ),
-          );
-        }
+  it("does not expose the removed promote operation", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/runtime-profiles")) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              profiles: [
+                {
+                  id: "auto-1",
+                  name: "Codex · MiMo",
+                  provider: "codex",
+                  fields: { model_provider_id: "mimo" },
+                  created_at: "",
+                  updated_at: "2026-06-25T00:00:00Z",
+                },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        );
+      }
         if (url.includes("/api/runtime-plugins")) {
           return Promise.resolve(
             new Response(JSON.stringify({ plugins: [] }), {
@@ -573,16 +542,18 @@ describe("RuntimeProfilesPage", () => {
             headers: { "Content-Type": "application/json" },
           }),
         );
-      }),
-    );
+      });
+    vi.stubGlobal("fetch", fetchMock);
 
     renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: /Launch-resolved \(1\)/ }));
     await userEvent.click((await screen.findAllByRole("button", { name: /Codex · MiMo/i }))[0]);
-    await userEvent.click(await screen.findByRole("button", { name: "Promote to preset" }));
-
-    await waitFor(() => expect(promoted).toBe(true));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Promote to preset" })).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Promote to preset" })).not.toBeInTheDocument();
+    // The removed promote endpoint must never be called.
+    expect(
+      fetchMock.mock.calls.some(([input, init]) =>
+        String(input).includes("/promote") && (init?.method ?? "GET") === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("keeps long Codex generated config preview from widening the page", async () => {

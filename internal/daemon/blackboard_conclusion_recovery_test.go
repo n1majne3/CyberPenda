@@ -270,6 +270,7 @@ func TestAssistedConclusionPendingRecoveryRetryDispatchesInitialTurnIdempotently
 	retryURL := "/api/projects/" + seed.projectID + "/tasks/" + seed.task.ID + "/blackboard-conclusion/retry"
 	for attempt := 0; attempt < 2; attempt++ {
 		request := httptest.NewRequest(http.MethodPost, retryURL, bytes.NewBufferString(`{}`))
+		authorizeOperatorTestRequest(restarted, request)
 		request.Header.Set("Idempotency-Key", "pending-recovery-retry")
 		response := httptest.NewRecorder()
 		restarted.ServeHTTP(response, request)
@@ -473,7 +474,7 @@ func seedConclusionRecoveryReceipt(t *testing.T, root string) conclusionRecovery
 	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: projectRecord.ID, TaskID: created.ID, RuntimeProfileID: profile.ID,
 		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
-		RuntimeConfig: map[string]any{"provider": "codex"},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -55,20 +55,25 @@ func (service *Service) Evaluate(ctx context.Context, projectID, taskID string) 
 	if found.ProjectID != projectID {
 		return Readiness{}, task.ErrNotFound
 	}
+	blackboardDisabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
 	readiness := Readiness{Blockers: []Blocker{}}
 	queries := []struct {
 		code, message, link, query string
 		args                       []any
+		blackboardOnly             bool
 	}{
-		{BlockerPendingConclusions, "Blackboard conclusions are not settled.", "blackboard", `SELECT COUNT(*) FROM pending_blackboard_conclusions WHERE task_id=? AND state NOT IN ('clean','applied','action_required')`, []any{taskID}},
-		{BlockerConclusionActionRequired, "A Blackboard conclusion needs operator action.", "blackboard", `SELECT COUNT(*) FROM pending_blackboard_conclusions WHERE task_id=? AND state='action_required'`, []any{taskID}},
-		{BlockerOpenAttempts, "Task-owned Blackboard Attempts are still open.", "blackboard", `SELECT COUNT(*) FROM blackboard_v2_attempt_origins origins JOIN task_continuations continuations ON continuations.id=origins.continuation_id JOIN blackboard_v2_records records ON records.project_id=origins.project_id AND records.key=origins.key WHERE continuations.task_id=? AND records.type='attempt' AND json_extract(records.record_json,'$.status')='open'`, []any{taskID}},
-		{BlockerOpenChallengeAttempts, "Challenge Attempts are not finalized.", "challenge-workflow", `SELECT COUNT(*) FROM challenge_attempts WHERE task_id=? AND status<>'finalized'`, []any{taskID}},
-		{BlockerOpenChallengeObjectives, "Challenge Objectives are still open.", "blackboard", `SELECT COUNT(*) FROM challenge_attempts attempts JOIN blackboard_v2_records records ON records.project_id=attempts.project_id AND records.key=attempts.objective_key WHERE attempts.task_id=? AND records.type='objective' AND json_extract(records.record_json,'$.status')='open'`, []any{taskID}},
-		{BlockerPendingChallengeOperations, "Challenge Platform operations need recovery.", "challenge-workflow", `SELECT COUNT(*) FROM challenge_operations WHERE task_id=? AND state<>'completed'`, []any{taskID}},
-		{BlockerMissingChallengeEvidence, "A Challenge Platform response has no retained Evidence.", "evidence", `SELECT COUNT(*) FROM challenge_operations operations WHERE operations.task_id=? AND operations.kind IN ('claim','submit','abandon') AND operations.state='completed' AND (operations.evidence_key='' OR NOT EXISTS (SELECT 1 FROM blackboard_v2_records records WHERE records.project_id=operations.project_id AND records.key=operations.evidence_key AND records.type='evidence'))`, []any{taskID}},
+		{BlockerPendingConclusions, "Blackboard conclusions are not settled.", "blackboard", `SELECT COUNT(*) FROM pending_blackboard_conclusions WHERE task_id=? AND state NOT IN ('clean','applied','action_required')`, []any{taskID}, true},
+		{BlockerConclusionActionRequired, "A Blackboard conclusion needs operator action.", "blackboard", `SELECT COUNT(*) FROM pending_blackboard_conclusions WHERE task_id=? AND state='action_required'`, []any{taskID}, true},
+		{BlockerOpenAttempts, "Task-owned Blackboard Attempts are still open.", "blackboard", `SELECT COUNT(*) FROM blackboard_v2_attempt_origins origins JOIN task_continuations continuations ON continuations.id=origins.continuation_id JOIN blackboard_v2_records records ON records.project_id=origins.project_id AND records.key=origins.key WHERE continuations.task_id=? AND records.type='attempt' AND json_extract(records.record_json,'$.status')='open'`, []any{taskID}, true},
+		{BlockerOpenChallengeAttempts, "Challenge Attempts are not finalized.", "challenge-workflow", `SELECT COUNT(*) FROM challenge_attempts WHERE task_id=? AND status<>'finalized'`, []any{taskID}, false},
+		{BlockerOpenChallengeObjectives, "Challenge Objectives are still open.", "blackboard", `SELECT COUNT(*) FROM challenge_attempts attempts JOIN blackboard_v2_records records ON records.project_id=attempts.project_id AND records.key=attempts.objective_key WHERE attempts.task_id=? AND records.type='objective' AND json_extract(records.record_json,'$.status')='open'`, []any{taskID}, false},
+		{BlockerPendingChallengeOperations, "Challenge Platform operations need recovery.", "challenge-workflow", `SELECT COUNT(*) FROM challenge_operations WHERE task_id=? AND state<>'completed'`, []any{taskID}, false},
+		{BlockerMissingChallengeEvidence, "A Challenge Platform response has no retained Evidence.", "evidence", `SELECT COUNT(*) FROM challenge_operations operations WHERE operations.task_id=? AND operations.kind IN ('claim','submit','abandon') AND operations.state='completed' AND (operations.evidence_key='' OR NOT EXISTS (SELECT 1 FROM blackboard_v2_records records WHERE records.project_id=operations.project_id AND records.key=operations.evidence_key AND records.type='evidence'))`, []any{taskID}, false},
 	}
 	for _, item := range queries {
+		if blackboardDisabled && item.blackboardOnly {
+			continue
+		}
 		var count int
 		if err := service.db.QueryRowContext(ctx, item.query, item.args...).Scan(&count); err != nil {
 			return Readiness{}, fmt.Errorf("evaluate Finish Readiness %s: %w", item.code, err)
@@ -81,10 +86,10 @@ func (service *Service) Evaluate(ctx context.Context, projectID, taskID string) 
 	if err != nil {
 		return Readiness{}, err
 	}
-	if continuation != nil && continuation.EndedAt != nil && continuation.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+	if !blackboardDisabled && continuation != nil && continuation.EndedAt != nil && continuation.BlackboardReconciliationStatus != task.ReconciliationCompleted {
 		readiness.Blockers = append(readiness.Blockers, Blocker{Code: BlockerReconciliation, Count: 1, Message: "The latest terminal Continuation is not reconciled.", Links: []string{readinessLink("continuation", projectID, taskID)}})
 	}
-	if continuation != nil {
+	if !blackboardDisabled && continuation != nil {
 		var invalidated int
 		err := service.db.QueryRowContext(ctx, `SELECT invalidated FROM blackboard_v2_finish_intents WHERE continuation_id=?`, continuation.ID).Scan(&invalidated)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {

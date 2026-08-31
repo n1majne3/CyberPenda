@@ -213,6 +213,7 @@ func newFinishTaskFixtureAt(t *testing.T, root string, factory ProviderSessionFa
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)

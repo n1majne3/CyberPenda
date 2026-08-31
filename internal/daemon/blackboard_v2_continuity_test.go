@@ -40,6 +40,7 @@ func TestCodexV2ContinuationLaunchAndRestartConformanceKeepsSnapshotRereadable(t
 	}
 	createdTask, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect example.test", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		_ = server.Close()
@@ -150,6 +151,7 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 	}
 	createdTask, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect resume.test", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
@@ -358,6 +360,7 @@ func TestBlackboardV2ResumeProjectionFailureLeavesNoContinuationPinOrSteeringCon
 	}
 	createdTask, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "continue projection safely", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		_ = server.Close()
@@ -488,6 +491,7 @@ func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringC
 	}
 	createdTask, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "map the Task Goal before continuing", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
@@ -616,6 +620,7 @@ func TestBlackboardV2DaemonOwnsUnexpectedAttemptReconciliationAcrossRestart(t *t
 	}
 	createdTask, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "exercise daemon reconciliation", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		_ = server.Close()
@@ -719,6 +724,7 @@ func TestCodexV2LaunchExcludesIdentityMetadataAndOperatorCredentialSurface(t *te
 	}
 	createdTask, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectA.ID, Type: task.TypePentest, Goal: "inspect a.example", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
@@ -805,6 +811,7 @@ cat .pentest/blackboard.json
 		ProjectID: createdProject.ID,
 		Type:      task.TypePentest, Goal: "exercise long Codex continuation", RuntimeProfileID: profile.ID,
 		Runner: task.RunnerHost, RunControls: task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)

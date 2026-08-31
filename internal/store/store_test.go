@@ -46,6 +46,68 @@ func TestOpenRunsMigrationsIdempotently(t *testing.T) {
 	}
 }
 
+func TestMigration66AllowsDisabledSessionModeWithoutLosingSessionState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pentest.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := "2026-08-29T00:00:00Z"
+	if _, err := db.Exec(`INSERT INTO sessions
+		(id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at)
+		VALUES ('session-v65','Existing Session','open','/tmp/session-v65','interactive',?,?,?)`, stamp, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO session_events (id,session_id,seq,kind,payload_json,created_at)
+		VALUES ('event-v65','session-v65',1,'conversation','{"role":"user","text":"keep me"}',?)`, stamp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA writable_schema=ON`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE sqlite_schema
+		SET sql=replace(sql,
+			'blackboard_conclusion_mode IN (''interactive'', ''assisted'', ''disabled'')',
+			'blackboard_conclusion_mode IN (''interactive'', ''assisted'')')
+		WHERE type='table' AND name='sessions'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA writable_schema=OFF`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE version=66`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("upgrade v65 Store: %v", err)
+	}
+	defer reopened.Close()
+	var migrationCount int
+	if err := reopened.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version=66`).Scan(&migrationCount); err != nil || migrationCount != 1 {
+		t.Fatalf("migration 66 count = %d, err=%v", migrationCount, err)
+	}
+	var title, payload string
+	if err := reopened.QueryRow(`SELECT title FROM sessions WHERE id='session-v65'`).Scan(&title); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.QueryRow(`SELECT payload_json FROM session_events WHERE id='event-v65'`).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if title != "Existing Session" || !strings.Contains(payload, "keep me") {
+		t.Fatalf("preserved Session state = title %q payload %q", title, payload)
+	}
+	if _, err := reopened.Exec(`INSERT INTO sessions
+		(id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at)
+		VALUES ('session-disabled','Disabled Session','open','/tmp/session-disabled','disabled',?,?,?)`, stamp, stamp, stamp); err != nil {
+		t.Fatalf("persist disabled Session mode: %v", err)
+	}
+}
+
 func TestMigrations37And38PreservePendingAssistedConclusionReceipts(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pentest.db")
 	db, err := store.Open(path)
@@ -816,6 +878,9 @@ func TestOpenDefaultsCanonicalStoreToBlackboardV2(t *testing.T) {
 		"blackboard_v2_relationship_history",
 		"blackboard_v2_idempotency_receipts",
 		"blackboard_v2_attempt_origins",
+		"blackboard_v2_operator_attempt_origins",
+		"blackboard_v2_operator_evidence_origins",
+		"blackboard_v2_operator_evidence_requests",
 		"blackboard_v2_evidence_requests",
 		"blackboard_v2_evidence_payloads",
 		"blackboard_v2_key_redirects",
@@ -1509,9 +1574,11 @@ func TestMigration58AddsChallengeOperationRecoverySettlement(t *testing.T) {
 		);
 		CREATE INDEX idx_challenge_operations_recovery
 			ON challenge_operations (state, updated_at);
-		INSERT INTO projects (id, name, description, scope_json, defaults_json, created_at, updated_at)
-			VALUES ('proj-challenge','Challenge','','{}','{}','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z');
-		INSERT INTO tasks (
+			INSERT INTO projects (id, name, description, scope_json, defaults_json, created_at, updated_at)
+				VALUES ('proj-challenge','Challenge','','{}','{}','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z');
+			INSERT INTO runtime_profiles (id,name,provider,fields_json,created_at,updated_at)
+				VALUES ('profile-1','Legacy Fake','fake','{"model":"fake","default_runner":"sandbox"}','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z');
+			INSERT INTO tasks (
 			id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at,task_type
 		) VALUES (
 			'task-challenge','proj-challenge','solve','pending','sandbox','profile-1','{}','{}','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z','ctf_challenge'

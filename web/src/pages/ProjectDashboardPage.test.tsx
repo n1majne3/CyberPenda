@@ -143,6 +143,10 @@ describe("ProjectDashboardPage", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "Acme External" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /launch task/i })).toHaveClass("rounded-md", "bg-primary");
     expect(screen.getByRole("link", { name: /open report/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Blackboard" })).toHaveAttribute(
+      "href",
+      "/projects/project-1/blackboard",
+    );
 
     // Pill-style project nav with count badges, rendered in page markup.
     const nav = screen.getByRole("navigation", { name: /project sections/i });

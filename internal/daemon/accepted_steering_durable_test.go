@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/modelprovider"
 	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/runtime"
@@ -143,7 +144,7 @@ func newBlockingSteerFixture(t *testing.T) (*Server, string, task.Task, *blockin
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +228,7 @@ func TestAcceptedSteeringIsOwnerIsolated(t *testing.T) {
 	}
 	profile := createTestRuntimeProfile(t, server)
 	newTask := func(goal string) task.Task {
-		created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: goal, RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+		created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: goal, RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -653,7 +654,7 @@ func TestAcceptedSteeringTaskFinishSettlesQueuedWithTruthfulOutcome(t *testing.T
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "finish steer", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "finish steer", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -718,7 +719,7 @@ func newBlockingSteerFixtureAt(t *testing.T, root string) (*Server, string, task
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -759,8 +760,17 @@ func newSessionSteerFixture(t *testing.T) (*Server, string, *runtime.FakeProvide
 		t.Fatalf("NewServer: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
+	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "Session Provider", BaseURL: "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-session"}, DefaultModel: "gpt-session"},
+	})
+	if err != nil {
+		t.Fatalf("create Model Provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
 	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		DefaultRunner: "host", Model: "gpt-session",
+		DefaultRunner: "host", ModelProviderID: provider.ID, ModelOverride: "gpt-session",
 	})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -795,15 +805,17 @@ func TestAcceptedSteeringWithoutAttachmentsAdvancesSessionActivityAtomically(t *
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
-	profile := createTestRuntimeProfile(t, server)
-	created, err := server.sessions.Create(session.CreateRequest{Input: "Session activity"})
+	created, err := server.sessions.Create(session.CreateRequest{
+		Input: "Session activity",
+		InitialRuntime: &session.CreateContinuationRequest{
+			RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: session.RunnerHost,
+			RuntimeConfig: testSessionRuntimeSnapshot(t, server, runtimeprofile.ProviderCodex, session.RunnerHost),
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	continuation, err := server.sessions.CreateContinuation(created.ID, profile.ID, string(runtimeprofile.ProviderCodex), session.RunnerHost)
-	if err != nil {
-		t.Fatal(err)
-	}
+	continuation := *created.LatestContinuation
 	active := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
 		SessionID: "session-activity-provider", ActiveTurnID: "turn-session-activity",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
@@ -979,15 +991,17 @@ func TestHermesAcceptedSteeringStaysAppliedAndBusyWhileReplacementPromptRuns(t *
 	}
 	t.Cleanup(func() { _ = server.Close() })
 	server.steeringDispatchTimeout = 500 * time.Millisecond
-	profile := createTestRuntimeProfile(t, server)
-	created, err := server.sessions.Create(session.CreateRequest{Input: "Hermes long-running replacement"})
+	created, err := server.sessions.Create(session.CreateRequest{
+		Input: "Hermes long-running replacement",
+		InitialRuntime: &session.CreateContinuationRequest{
+			RuntimeProvider: string(runtimeprofile.ProviderHermes), Runner: session.RunnerHost,
+			RuntimeConfig: testSessionRuntimeSnapshot(t, server, runtimeprofile.ProviderHermes, session.RunnerHost),
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	continuation, err := server.sessions.CreateContinuation(created.ID, profile.ID, string(runtimeprofile.ProviderHermes), session.RunnerHost)
-	if err != nil {
-		t.Fatal(err)
-	}
+	continuation := *created.LatestContinuation
 	releaseRuntime := make(chan struct{})
 	var releaseRuntimeOnce sync.Once
 	t.Cleanup(func() { releaseRuntimeOnce.Do(func() { close(releaseRuntime) }) })
@@ -1201,7 +1215,6 @@ func TestAcceptedSteeringSessionPreFenceRestartResumesDispatchAfterMessage(t *te
 	}
 	message := httptest.NewRequest(http.MethodPost, "/api/sessions/"+sessionID+"/messages", bytes.NewBufferString(`{
 		"message":"Resume the Session runtime.",
-		"runtime_profile_id":"`+latest.RuntimeProfileID+`",
 		"runner":"host",
 		"host_activated":true
 	}`))
@@ -1257,8 +1270,17 @@ func newSessionSteerFixtureAt(t *testing.T, root string) (*Server, string, *runt
 		t.Fatalf("NewServer: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
+	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "Session Provider", BaseURL: "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-session"}, DefaultModel: "gpt-session"},
+	})
+	if err != nil {
+		t.Fatalf("create Model Provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
 	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		DefaultRunner: "host", Model: "gpt-session",
+		DefaultRunner: "host", ModelProviderID: provider.ID, ModelOverride: "gpt-session",
 	})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -1285,6 +1307,30 @@ func newSessionSteerFixtureAt(t *testing.T, root string) (*Server, string, *runt
 	}
 	t.Fatalf("Session %s never bound an active provider session", created.ID)
 	return nil, "", nil
+}
+
+func testSessionRuntimeSnapshot(t *testing.T, server *Server, plugin runtimeprofile.Provider, run session.Runner) map[string]any {
+	t.Helper()
+	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: string(plugin) + " steering provider", BaseURL: "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog:   modelprovider.Catalog{Manual: []string{"test-model"}, DefaultModel: "test-model"},
+	})
+	if err != nil {
+		t.Fatalf("create steering Model Provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	return map[string]any{
+		"snapshot_version": 1, "runtime_plugin_id": string(plugin), "runner": string(run),
+		"model_provider_snapshot": map[string]any{
+			"model_provider_id": provider.ID, "model_provider_name": provider.Name,
+			"base_url": provider.BaseURL, "protocol": string(modelprovider.ProtocolOpenAIResponses),
+			"model": "test-model", "api_key_env": provider.APIKeyEnv,
+		},
+		"runtime_turn_selection": map[string]any{"model_provider_id": provider.ID, "model": "test-model"},
+		"settings":               map[string]any{"model_provider_id": provider.ID, "model_override": "test-model"},
+		"enabled_skill_ids":      []string{}, "config_projection": map[string]any{},
+	}
 }
 
 // TestAcceptedSteeringSessionPostFenceRestartBecomesActionRequiredWithoutReplay
@@ -1392,7 +1438,7 @@ func TestAcceptedSteeringTaskDeletionSettlesQueuedWithTruthfulOutcome(t *testing
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "delete steer", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: project.ID, Type: task.TypePentest, Goal: "delete steer", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)})
 	if err != nil {
 		t.Fatal(err)
 	}

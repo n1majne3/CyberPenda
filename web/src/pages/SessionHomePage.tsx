@@ -72,13 +72,12 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
     setCreating(true);
     launchControls.setError(null);
     try {
-      const profileId = await launchControls.resolveRuntimeProfileId();
-      const checked = await launchControls.runPreflight("/api/sessions/preflight", profileId);
+      const checked = await launchControls.runPreflight("/api/sessions/preflight");
       if (!checked.pass) {
         launchControls.setError("preflight failed");
         return;
       }
-      const created = await createSession(draft, attachments, launchControls.launchPayload(profileId));
+      const created = await createSession(draft, attachments, launchControls.launchPayload());
       setDraft("");
       setAttachments([]);
       navigate(`/sessions/${encodeURIComponent(created.id)}`);

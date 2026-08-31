@@ -2946,11 +2946,21 @@ func newEvidenceV2Fixture(t *testing.T, name string) evidenceV2Fixture {
 		t.Fatalf("create Project: %v", err)
 	}
 	tasks := task.NewService(db, projects)
-	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: name, Runner: task.RunnerSandbox})
+	runtimeSnapshot := map[string]any{
+		"snapshot_version": 1, "runtime_plugin_id": "codex", "runner": "sandbox",
+		"model_provider_snapshot": map[string]any{"model_provider_id": "fixture-provider", "model": "fixture-model"},
+		"runtime_turn_selection":  map[string]any{"model_provider_id": "fixture-provider", "model": "fixture-model"},
+		"settings":                map[string]any{}, "enabled_skill_ids": []string{},
+		"config_projection": map[string]any{"primitive": "codex_home"},
+	}
+	createdTask, err := tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: name, Runner: task.RunnerSandbox, RuntimeConfig: runtimeSnapshot})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
 	}
-	continuation, err := tasks.CreateContinuation(createdTask.ID, "profile-evidence", "codex", task.RunnerSandbox)
+	_, continuation, err := tasks.CreateContinuationLaunchWithoutBlackboard(context.Background(), task.ContinuationLaunchRequest{
+		ProjectID: createdProject.ID, TaskID: createdTask.ID, RuntimeProfileID: "profile-evidence",
+		RuntimeProvider: "codex", Runner: task.RunnerSandbox, RuntimeConfig: runtimeSnapshot,
+	})
 	if err != nil {
 		t.Fatalf("create Continuation: %v", err)
 	}

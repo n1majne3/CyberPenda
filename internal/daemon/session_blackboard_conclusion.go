@@ -467,6 +467,9 @@ func (server *Server) reconcileValidatedSessionBlackboardConclusionApply(ctx con
 }
 
 func (server *Server) handleRetrySessionBlackboardConclusion(response http.ResponseWriter, request *http.Request) {
+	if !server.requireOperatorAuthority(response, request) {
+		return
+	}
 	sessionID := request.PathValue("id")
 	if _, err := server.sessions.Get(sessionID); err != nil {
 		writeSessionError(response, err)

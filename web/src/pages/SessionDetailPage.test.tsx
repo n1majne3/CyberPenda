@@ -108,6 +108,42 @@ describe("SessionDetailPage", () => {
     expect(screen.getByRole("button", { name: "Timeline" })).toHaveAttribute("aria-pressed", "false");
   });
 
+  it("shows Disabled mode and hides Session Blackboard surfaces", async () => {
+    mockApi({
+      "/api/sessions/session-disabled/transcript": { session_id: "session-disabled", entries: [] },
+      "/api/sessions/session-disabled/timeline": { session_id: "session-disabled", items: [] },
+      "/api/sessions/session-disabled": {
+        id: "session-disabled",
+        title: "Inspect without Blackboard",
+        lifecycle: "open",
+        run_controls: { blackboard_conclusion_mode: "disabled" },
+        blackboard_conclusion: {
+          mode: "disabled",
+          state: "action_required",
+          error_code: "semantic_conclusion_repair_exhausted",
+          retry_available: true,
+        },
+        created_at: "2026-08-01T01:00:00Z",
+        updated_at: "2026-08-01T01:00:00Z",
+        last_activity_at: "2026-08-01T01:00:00Z",
+      },
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/sessions/session-disabled"]}>
+        <Routes>
+          <Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent("Blackboard: Disabled");
+    expect(screen.queryByRole("alert", { name: "Blackboard conclusion requires attention" })).not.toBeInTheDocument();
+    expect(screen.getByText(/non-project mode/i)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Session message" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Attach files to Session message")).toBeInTheDocument();
+  });
+
   it("renders owner-local Events without Project Scope semantics", async () => {
     mockApi({
       "/api/sessions/session-1/transcript": {

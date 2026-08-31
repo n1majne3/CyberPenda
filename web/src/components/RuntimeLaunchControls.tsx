@@ -18,16 +18,13 @@ import { cn } from "@/lib/utils";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "@/pages/runtimeProfileForm";
 import {
   canLaunch,
-  findLaunchProfileForSelection,
   formFromPreset,
   initialLaunchState,
-  launchModelOverridePayload,
-  launchReasoningEffortPayload,
+  launchSelectionPayload,
   launchRuntimes,
   modelsForProvider,
   presetMatchesRuntime,
   presetsForRuntime,
-  resolveLaunchPayload,
   simpleLaunchFormForRuntime,
   type LaunchForm,
 } from "@/pages/taskLaunchForm";
@@ -92,7 +89,6 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
           plugins: loadedPlugins,
           modelProviders: loadedProviders,
           profiles: loadedProfiles,
-          defaultRuntimeProfileId: project?.defaults.runtime_profile,
           projectRunner: runner,
         });
         setPlugins(loadedPlugins);
@@ -123,11 +119,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
   }, [projectId]);
 
   const presetMode = presetId.trim() !== "";
-  const matchingLaunchProfile = useMemo(
-    () => findLaunchProfileForSelection(profiles, form),
-    [profiles, form],
-  );
-  const skillsProfileId = launchProfileIdForSkillsPreview(presetId, matchingLaunchProfile?.id ?? "");
+  const skillsProfileId = launchProfileIdForSkillsPreview(presetId, "");
   const enabledSkillsPreview = useMemo(
     () => (skillsPreview ? enabledLaunchSkills(skillsPreview) : []),
     [skillsPreview],
@@ -165,12 +157,10 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
         setSkillsPreviewLoading(true);
         setSkillsPreviewError(null);
         try {
-          if (!skillsProfileId) {
-            if (!cancelled) setSkillsPreview([]);
-            return;
-          }
           const data = await apiGet<{ skills: Skill[] }>(
-            `/api/skills?runtime_profile_id=${encodeURIComponent(skillsProfileId)}`,
+            skillsProfileId
+              ? `/api/skills?runtime_profile_id=${encodeURIComponent(skillsProfileId)}`
+              : "/api/skills",
           );
           if (!cancelled) setSkillsPreview(data.skills ?? []);
         } catch (cause) {
@@ -226,28 +216,18 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
     clearPreflight();
   }
 
-  function launchPayload(profileId: string) {
+  function launchPayload() {
+    const selection = launchSelectionPayload(presetId, form);
     return {
-      runtime_profile_id: profileId,
+      ...selection,
       runner: form.runner,
       ...(form.runner === "host" ? { host_activated: hostActivated } : {}),
-      ...launchModelOverridePayload(presetId, form),
-      ...launchReasoningEffortPayload(form),
       run_controls: launchRunControls(hostActivated, form.runner, containerCLI, sandboxNetwork, sandboxVPNTun, blackboardConclusionMode),
     };
   }
 
-  async function resolveRuntimeProfileId() {
-    if (presetId.trim()) return presetId.trim();
-    const resolved = await apiPost<{ profile_id: string }>(
-      "/api/runtime-profiles/resolve-launch",
-      resolveLaunchPayload(form),
-    );
-    return resolved.profile_id;
-  }
-
-  async function runPreflight(endpoint: string, profileId: string) {
-    const checked = await apiPost<PreflightResult>(endpoint, launchPayload(profileId));
+  async function runPreflight(endpoint: string) {
+    const checked = await apiPost<PreflightResult>(endpoint, launchPayload());
     setPreflight(checked);
     return checked;
   }
@@ -297,7 +277,6 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
     updateModelProvider,
     updatePreset,
     launchPayload,
-    resolveRuntimeProfileId,
     runPreflight,
     launchReady,
   };
@@ -309,10 +288,12 @@ export function RuntimeLaunchControls({
   controller,
   ownerLabel,
   initialInput,
+  allowDisabledBlackboardMode = true,
 }: {
   controller: RuntimeLaunchController;
   ownerLabel: "task" | "session";
   initialInput: string;
+  allowDisabledBlackboardMode?: boolean;
 }) {
   const {
     form,
@@ -349,6 +330,12 @@ export function RuntimeLaunchControls({
     updateModelProvider,
     updatePreset,
   } = controller;
+  useEffect(() => {
+    if (!allowDisabledBlackboardMode && blackboardConclusionMode === "disabled") {
+      setBlackboardConclusionMode("interactive");
+      setPreflight(null);
+    }
+  }, [allowDisabledBlackboardMode, blackboardConclusionMode, setBlackboardConclusionMode, setPreflight]);
   const hostRunner = form.runner === "host";
   const hostBlocked = hostRunner && !hostActivated;
   const assistedConclusionUnsupported = blackboardConclusionMode === "assisted" && !assistedConclusionSupported;
@@ -438,7 +425,7 @@ export function RuntimeLaunchControls({
         </div>
       </section>
 
-      <div>
+<div>
         <SectionLabel className="mb-2 px-0.5">高级配置</SectionLabel>
         <div className="space-y-2">
           <ConfigAccordion icon={Container} title="Runner 与网络" summary={runnerSummary}>
@@ -520,18 +507,21 @@ export function RuntimeLaunchControls({
             )}
           </ConfigAccordion>
 
-          <ConfigAccordion icon={GitBranch} title="Blackboard conclusions" summary={blackboardConclusionMode === "assisted" ? "Assisted" : "Interactive"}>
+          <ConfigAccordion icon={GitBranch} title="Blackboard conclusions" summary={blackboardConclusionMode === "assisted" ? "Assisted" : blackboardConclusionMode === "disabled" ? "Disabled" : "Interactive"}>
             <Label htmlFor="launch-blackboard-conclusions">Blackboard conclusions</Label>
             <Select id="launch-blackboard-conclusions" name="blackboard_conclusion_mode" value={blackboardConclusionMode} onChange={(event) => { setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode); setPreflight(null); }}>
               <option value="interactive">Interactive</option>
               <option value="assisted" disabled={!assistedConclusionSupported}>Assisted</option>
+              {allowDisabledBlackboardMode && <option value="disabled">Disabled</option>}
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
-              {blackboardConclusionMode === "assisted"
-                ? "After tool-producing work, the Harness runs a bounded Conclude Turn and applies its validated Attempt result to the Blackboard."
-                : assistedConclusionSupported
-                  ? "The operator decides when Runtime work is written to the Blackboard."
-                  : `${assistedConclusionUnavailableReason} Interactive launch remains available.`}
+              {blackboardConclusionMode === "disabled"
+                ? "The Runtime does not receive Blackboard state or Blackboard access. All non-Blackboard launch context remains available."
+                : blackboardConclusionMode === "assisted"
+                  ? "After tool-producing work, the Harness runs a bounded Conclude Turn and applies its validated Attempt result to the Blackboard."
+                  : assistedConclusionSupported
+                    ? "The operator decides when Runtime work is written to the Blackboard."
+                    : `${assistedConclusionUnavailableReason} ${allowDisabledBlackboardMode ? "Interactive and Disabled launch remain available." : "Interactive launch remains available."}`}
             </p>
           </ConfigAccordion>
 
@@ -539,17 +529,17 @@ export function RuntimeLaunchControls({
             <ConfigAccordion
               icon={Bookmark}
               title="Use saved preset"
-              summary={presetMode ? (controller.profiles.find((profile) => profile.id === presetId)?.name ?? presetId) : "Auto-resolve"}
+              summary={presetMode ? (controller.profiles.find((profile) => profile.id === presetId)?.name ?? presetId) : "Direct configuration"}
               open={presetOpen}
               onOpenChange={setPresetOpen}
             >
               <div className="space-y-2">
                 <Label htmlFor="launch-preset">Runtime profile preset</Label>
                 <Select id="launch-preset" name="runtime_profile_preset" value={presetId} onChange={(event) => updatePreset(event.target.value)}>
-                  <option value="">Auto-resolve minimal profile</option>
+                  <option value="">Direct configuration</option>
                   {runtimePresets.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
                 </Select>
-                <p className="text-xs text-muted-foreground">Presets carry MCP, skills, and extension configuration. Runtime and model provider lock while a preset is selected.</p>
+                <p className="text-xs text-muted-foreground">A Runtime Profile copies its full advanced configuration into this new {ownerLabel}. Later Profile edits do not change it.</p>
               </div>
             </ConfigAccordion>
           )}
@@ -561,7 +551,6 @@ export function RuntimeLaunchControls({
           )}
         </div>
       </div>
-
       {hostRunner && (
         <Card className="border-warning bg-warning/10 p-3 space-y-2">
           <div className="flex items-center gap-2 text-warning"><AlertTriangle className="h-4 w-4" /><span className="text-sm font-medium">HOST runner — runs on your machine</span></div>
@@ -679,6 +668,7 @@ const SANDBOX_PREFLIGHT_CHECKS = new Set([
 ]);
 
 const PREFLIGHT_CHECK_LABELS: Record<string, string> = {
+  runtime_configuration: "Runtime configuration",
   runtime_profile: "Runtime profile",
   custom_args: "Custom args",
   skills: "Skills",

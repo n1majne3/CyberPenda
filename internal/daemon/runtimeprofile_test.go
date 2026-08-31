@@ -64,7 +64,7 @@ func TestCreateRuntimeProfilePersistsCodexProvider(t *testing.T) {
 	}
 }
 
-func TestCreateRuntimeProfileDefaultsToManualKind(t *testing.T) {
+func TestCreateRuntimeProfileOmitsRemovedKind(t *testing.T) {
 	server := newDaemon(t)
 
 	body := []byte(`{
@@ -81,75 +81,30 @@ func TestCreateRuntimeProfileDefaultsToManualKind(t *testing.T) {
 		t.Fatalf("expected create status 201, got %d with body %s", createResp.Code, createResp.Body.String())
 	}
 
-	var created struct {
-		Kind string `json:"kind"`
-	}
+	var created map[string]any
 	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
-	if created.Kind != "manual" {
-		t.Fatalf("expected manual kind, got %q", created.Kind)
+	if _, exists := created["kind"]; exists {
+		t.Fatalf("created Runtime Profile still exposes removed kind: %#v", created)
 	}
 }
 
-func TestPromoteRuntimeProfileMarksLaunchResolvedAsManual(t *testing.T) {
+func TestRemovedRuntimeProfileResolveAndPromoteRoutesAreNotCallable(t *testing.T) {
 	server := newDaemon(t)
-
-	createProvider := httptest.NewRequest(http.MethodPost, "/api/model-providers", bytes.NewReader([]byte(`{
-		"name":"MiMo",
-		"base_url":"https://api.example.test/v1",
-		"protocols":["openai_responses"],
-		"catalog":{"manual":["mimo"],"default_model":"mimo"}
-	}`)))
-	createProvider.Header.Set("Content-Type", "application/json")
-	providerResp := httptest.NewRecorder()
-	server.ServeHTTP(providerResp, createProvider)
-	if providerResp.Code != http.StatusCreated {
-		t.Fatalf("create provider status %d body %s", providerResp.Code, providerResp.Body.String())
-	}
-	var provider struct {
-		ID string `json:"id"`
-	}
-	if err := json.NewDecoder(providerResp.Body).Decode(&provider); err != nil {
-		t.Fatalf("decode provider: %v", err)
-	}
-
-	resolveBody := []byte(`{"provider":"codex","model_provider_id":"` + provider.ID + `"}`)
-	resolveReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/resolve-launch", bytes.NewReader(resolveBody))
+	resolveReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/resolve-launch", bytes.NewReader([]byte(`{}`)))
 	resolveReq.Header.Set("Content-Type", "application/json")
 	resolveResp := httptest.NewRecorder()
 	server.ServeHTTP(resolveResp, resolveReq)
-	if resolveResp.Code != http.StatusOK {
-		t.Fatalf("resolve status %d body %s", resolveResp.Code, resolveResp.Body.String())
-	}
-	var resolved struct {
-		ProfileID string `json:"profile_id"`
-		Profile   struct {
-			Kind string `json:"kind"`
-		} `json:"profile"`
-	}
-	if err := json.NewDecoder(resolveResp.Body).Decode(&resolved); err != nil {
-		t.Fatalf("decode resolve: %v", err)
-	}
-	if resolved.Profile.Kind != "launch_resolve" {
-		t.Fatalf("expected launch_resolve, got %q", resolved.Profile.Kind)
+	if resolveResp.Code != http.StatusNotFound {
+		t.Fatalf("removed resolve route status = %d, want 404", resolveResp.Code)
 	}
 
-	promoteReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/"+resolved.ProfileID+"/promote", nil)
+	promoteReq := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles/profile-1/promote", nil)
 	promoteResp := httptest.NewRecorder()
 	server.ServeHTTP(promoteResp, promoteReq)
-	if promoteResp.Code != http.StatusOK {
-		t.Fatalf("promote status %d body %s", promoteResp.Code, promoteResp.Body.String())
-	}
-	var promoted struct {
-		ID   string `json:"id"`
-		Kind string `json:"kind"`
-	}
-	if err := json.NewDecoder(promoteResp.Body).Decode(&promoted); err != nil {
-		t.Fatalf("decode promote: %v", err)
-	}
-	if promoted.ID != resolved.ProfileID || promoted.Kind != "manual" {
-		t.Fatalf("unexpected promoted profile: %#v", promoted)
+	if promoteResp.Code != http.StatusNotFound {
+		t.Fatalf("removed promote route status = %d, want 404", promoteResp.Code)
 	}
 }
 

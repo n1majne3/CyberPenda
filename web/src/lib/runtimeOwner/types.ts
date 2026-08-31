@@ -4,6 +4,7 @@ import type {
   FinishReadiness,
   RuntimeActivity,
   RuntimeControls,
+  RuntimeConfigurationSummary,
   Session,
   TaskTimelineItem,
   TaskTranscriptEntry,
@@ -32,6 +33,7 @@ export type RuntimeOwnerView = {
   lifecycle?: Session["lifecycle"];
   runner: string;
   runtimeProfileID: string;
+  runtimeConfiguration?: RuntimeConfigurationSummary;
   blackboardConclusionMode?: BlackboardConclusionMode;
   blackboardConclusion?: BlackboardConclusionView;
   runtimeControls?: RuntimeControls;

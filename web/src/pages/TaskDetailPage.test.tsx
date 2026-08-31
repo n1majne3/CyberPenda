@@ -269,6 +269,27 @@ describe("TaskDetailPage", () => {
     expect(badge).toHaveAttribute("title", expect.stringContaining("turn-7"));
   });
 
+  it("shows Disabled mode and hides Task Blackboard surfaces", async () => {
+    stubTaskDetailApi({
+      status: "running",
+      run_controls: { blackboard_conclusion_mode: "disabled" },
+      blackboard_conclusion: {
+        mode: "disabled",
+        state: "action_required",
+        error_code: "semantic_conclusion_repair_exhausted",
+        retry_available: true,
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent("Blackboard: Disabled");
+    expect(screen.queryByRole("alert", { name: "Blackboard conclusion requires attention" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Conversation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Timeline" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Task message" })).toBeInTheDocument();
+  });
+
   it("shows every Finish Readiness blocker and its related surface on Task Detail", async () => {
 	stubTaskDetailApi({}, undefined, undefined, undefined, {
 	  "/api/projects/project-1/tasks/task-1/finish-readiness": {

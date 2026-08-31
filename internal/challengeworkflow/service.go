@@ -36,6 +36,7 @@ var (
 	ErrOperationActionRequired = errors.New("Challenge operation needs operator action")
 	ErrProjectKind             = errors.New("Challenge Workflow requires a CTF Challenge Project")
 	ErrTaskType                = errors.New("Challenge Workflow requires a CTF Challenge Task")
+	ErrBlackboardDisabled      = errors.New("Challenge Workflow cannot write Blackboard for a Disabled Task")
 	ErrAttemptNotOpen          = errors.New("Challenge Attempt is not open")
 	ErrRecorderNotReady        = errors.New("Challenge Workflow Recorder is not configured")
 )
@@ -560,6 +561,9 @@ func (service *Service) prepare(projectID, taskID, platform, operationID string)
 	}
 	if taskValue.Type != task.TypeCTFChallenge {
 		return task.Task{}, nil, ErrTaskType
+	}
+	if taskValue.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+		return task.Task{}, nil, ErrBlackboardDisabled
 	}
 	adapter := service.platforms[platform]
 	if adapter == nil {

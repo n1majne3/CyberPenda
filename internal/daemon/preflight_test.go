@@ -197,12 +197,12 @@ func TestPreflightFailsWhenRuntimeProfileMissing(t *testing.T) {
 	if result.Pass {
 		t.Fatal("expected preflight to fail (pass=false) when profile is missing")
 	}
-	if !checkNamed(result.Checks, "runtime_profile", "fail") {
-		t.Fatalf("expected runtime_profile check to fail, got %#v", result.Checks)
+	if !checkNamed(result.Checks, "runtime_configuration", "fail") {
+		t.Fatalf("expected runtime_configuration check to fail, got %#v", result.Checks)
 	}
 }
 
-func TestPreflightUsesProjectDefaultsWhenLaunchOmitsRuntimeControls(t *testing.T) {
+func TestPreflightDoesNotResolveRemovedProjectRuntimeProfileDefault(t *testing.T) {
 	server := newDaemon(t)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	projectID := createProject(t, server, `{
@@ -216,25 +216,8 @@ func TestPreflightUsesProjectDefaultsWhenLaunchOmitsRuntimeControls(t *testing.T
 	resp := httptest.NewRecorder()
 	server.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected preflight status 200, got %d with body %s", resp.Code, resp.Body.String())
-	}
-	var result struct {
-		Pass   bool `json:"pass"`
-		Checks []struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
-			Detail string `json:"detail"`
-		} `json:"checks"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		t.Fatalf("decode preflight response: %v", err)
-	}
-	if !result.Pass {
-		t.Fatalf("expected preflight to pass using project defaults, got %#v", result.Checks)
-	}
-	if !checkNamed(result.Checks, "runtime_profile", "pass") {
-		t.Fatalf("expected runtime_profile check to pass, got %#v", result.Checks)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected preflight status 400 without a launch selection, got %d with body %s", resp.Code, resp.Body.String())
 	}
 }
 

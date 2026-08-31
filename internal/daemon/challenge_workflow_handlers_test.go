@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pentest/internal/challengeworkflow"
@@ -52,12 +54,50 @@ func TestChallengeWorkflowHTTPAndFinishReadiness(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(runtimeRoot, created.ID, "workdir"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	accessURL, err := url.Parse(server.GeneratedOperatorAccessURL())
+	if err != nil || accessURL.Query().Get("token") == "" {
+		t.Fatalf("generated operator access URL = %q, error=%v", server.GeneratedOperatorAccessURL(), err)
+	}
+	operatorToken := accessURL.Query().Get("token")
+	disabled, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: proj.ID, Type: task.TypeCTFChallenge, Goal: "keep Challenge output operator-only",
+		Runner: task.RunnerHost,
+		RunControls: task.RunControls{
+			HostActivated: true, BlackboardConclusionMode: task.BlackboardConclusionModeDisabled,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.tasks.CreateContinuation(disabled.ID, "profile", "codex", task.RunnerHost); err != nil {
+		t.Fatal(err)
+	}
+	disabledClaim := serveChallenge(
+		t, server, http.MethodPost,
+		"/api/projects/"+proj.ID+"/tasks/"+disabled.ID+"/challenges/claim",
+		operatorToken, `{"platform":"arena","operation_id":"disabled-claim","challenge_id":"3121"}`,
+	)
+	if disabledClaim.Code != http.StatusConflict || !strings.Contains(disabledClaim.Body.String(), "Disabled") {
+		t.Fatalf("Disabled Challenge claim = %d %s, want conflict", disabledClaim.Code, disabledClaim.Body.String())
+	}
+	disabledSnapshot := serveChallenge(
+		t, server, http.MethodGet, "/api/v2/projects/"+proj.ID+"/blackboard/snapshot", operatorToken, "",
+	)
+	if disabledSnapshot.Code != http.StatusOK || strings.Contains(disabledSnapshot.Body.String(), "attempt-42") {
+		t.Fatalf("Disabled Challenge action changed public Blackboard: %d %s", disabledSnapshot.Code, disabledSnapshot.Body.String())
+	}
 
-	claim := serveChallenge(t, server, http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/challenges/claim", `{"platform":"arena","operation_id":"claim-1","challenge_id":"3121"}`)
+	claimPath := "/api/projects/" + proj.ID + "/tasks/" + created.ID + "/challenges/claim"
+	denied := serveChallenge(t, server, http.MethodPost, claimPath, "", `{"platform":"arena","operation_id":"tokenless-claim","challenge_id":"3121"}`)
+	if denied.Code != http.StatusUnauthorized {
+		t.Fatalf("tokenless Challenge claim = %d %s", denied.Code, denied.Body.String())
+	}
+
+	claim := serveChallenge(t, server, http.MethodPost, claimPath, operatorToken, `{"platform":"arena","operation_id":"claim-1","challenge_id":"3121"}`)
 	if claim.Code != http.StatusOK {
 		t.Fatalf("claim = %d %s", claim.Code, claim.Body.String())
 	}
-	readiness := serveChallenge(t, server, http.MethodGet, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/finish-readiness", "")
+	readiness := serveChallenge(t, server, http.MethodGet, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/finish-readiness", operatorToken, "")
 	var blocked struct {
 		Ready bool `json:"ready_to_finish"`
 	}
@@ -67,7 +107,7 @@ func TestChallengeWorkflowHTTPAndFinishReadiness(t *testing.T) {
 	if blocked.Ready {
 		t.Fatal("open Challenge Attempt must block Finish")
 	}
-	finishBlocked := serveChallenge(t, server, http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/finish", `{}`)
+	finishBlocked := serveChallenge(t, server, http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/finish", operatorToken, `{}`)
 	if finishBlocked.Code != http.StatusConflict {
 		t.Fatalf("Finish with blockers = %d %s", finishBlocked.Code, finishBlocked.Body.String())
 	}
@@ -85,15 +125,15 @@ func TestChallengeWorkflowHTTPAndFinishReadiness(t *testing.T) {
 		t.Fatal("Finish conflict did not return Finish Readiness blockers")
 	}
 
-	submit := serveChallenge(t, server, http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/challenges/submit", `{"platform":"arena","operation_id":"submit-1","external_attempt_id":"attempt-42","candidate":"FLAG{ok}"}`)
+	submit := serveChallenge(t, server, http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/challenges/submit", operatorToken, `{"platform":"arena","operation_id":"submit-1","external_attempt_id":"attempt-42","candidate":"FLAG{ok}"}`)
 	if submit.Code != http.StatusOK {
 		t.Fatalf("submit = %d %s", submit.Code, submit.Body.String())
 	}
-	finalize := serveChallenge(t, server, http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/challenges/finalize", `{"platform":"arena","operation_id":"finalize-1","external_attempt_id":"attempt-42"}`)
+	finalize := serveChallenge(t, server, http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/challenges/finalize", operatorToken, `{"platform":"arena","operation_id":"finalize-1","external_attempt_id":"attempt-42"}`)
 	if finalize.Code != http.StatusOK {
 		t.Fatalf("finalize = %d %s", finalize.Code, finalize.Body.String())
 	}
-	readiness = serveChallenge(t, server, http.MethodGet, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/finish-readiness", "")
+	readiness = serveChallenge(t, server, http.MethodGet, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/finish-readiness", operatorToken, "")
 	var ready struct {
 		Ready    bool  `json:"ready_to_finish"`
 		Blockers []any `json:"blockers"`
@@ -106,11 +146,14 @@ func TestChallengeWorkflowHTTPAndFinishReadiness(t *testing.T) {
 	}
 }
 
-func serveChallenge(t *testing.T, server *Server, method, path, body string) *httptest.ResponseRecorder {
+func serveChallenge(t *testing.T, server *Server, method, path, token, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	request := httptest.NewRequest(method, path, bytes.NewBufferString(body))
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
 	}
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)

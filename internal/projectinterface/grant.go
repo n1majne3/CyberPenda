@@ -505,9 +505,6 @@ func validateIssueRequest(req IssueGrantRequest) error {
 	if req.RuntimeConfigVersionID == "" {
 		missing = append(missing, "runtime_config_version_id")
 	}
-	if req.RuntimeProfileID == "" {
-		missing = append(missing, "runtime_profile_id")
-	}
 	if req.RuntimePluginID == "" {
 		missing = append(missing, "runtime_plugin_id")
 	}
@@ -530,9 +527,6 @@ func validateSessionIssueRequest(req IssueSessionGrantRequest) error {
 	}
 	if req.RuntimeConfigVersionID == "" {
 		missing = append(missing, "runtime_config_version_id")
-	}
-	if req.RuntimeProfileID == "" {
-		missing = append(missing, "runtime_profile_id")
 	}
 	if req.RuntimePluginID == "" {
 		missing = append(missing, "runtime_plugin_id")

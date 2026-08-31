@@ -218,6 +218,9 @@ func waitForBlackboardConclusionEligibility(ctx context.Context, eligibleAt *tim
 }
 
 func (server *Server) handleRetryBlackboardConclusion(response http.ResponseWriter, request *http.Request) {
+	if !server.requireOperatorAuthority(response, request) {
+		return
+	}
 	projectID := request.PathValue("id")
 	taskID := request.PathValue("task_id")
 	if !server.requireProject(response, projectID) {

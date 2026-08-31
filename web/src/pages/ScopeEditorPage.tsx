@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { AlertTriangle, Plus, Save } from "lucide-react";
-import { apiGet, apiPatch, apiPost, type Project, type RuntimeProfile, type Scope, type ScopeExpansion } from "@/lib/api";
-import { isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
+import { apiGet, apiPatch, apiPost, type Project, type Scope, type ScopeExpansion } from "@/lib/api";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Button, Card, CardTitle, CardHeader, Input, Label, Textarea, Badge, Select } from "@/components/ui";
 import { ErrorState, LoadingState } from "@/components/shared";
@@ -59,8 +58,6 @@ export function ScopeEditorPage() {
   const navigate = useNavigate();
   const [project, setProject] = useState<Project | null>(null);
   const [draft, setDraft] = useState<ScopeDraft | null>(null);
-  const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
-  const [defaultProfile, setDefaultProfile] = useState("");
   const [defaultRunner, setDefaultRunner] = useState("sandbox");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -77,15 +74,12 @@ export function ScopeEditorPage() {
     if (!projectId) return;
     (async () => {
       try {
-        const [p, profileData, expansionData] = await Promise.all([
+        const [p, expansionData] = await Promise.all([
           apiGet<Project>(`/api/projects/${projectId}`),
-          apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
           apiGet<{ expansions?: ScopeExpansion[] }>(`/api/projects/${projectId}/scope-expansions`),
         ]);
         setProject(p);
         setDraft(toDraft(p.scope));
-        setProfiles(profileData.profiles ?? []);
-        setDefaultProfile(p.defaults.runtime_profile ?? "");
         setDefaultRunner(p.defaults.runner || "sandbox");
         setExpansions(expansionData.expansions ?? []);
         setError(null);
@@ -102,7 +96,6 @@ export function ScopeEditorPage() {
       await apiPatch(`/api/projects/${projectId}`, {
         scope: fromDraft(draft),
         defaults: {
-          runtime_profile: defaultProfile || undefined,
           runner: defaultRunner || undefined,
         },
       });
@@ -205,22 +198,6 @@ export function ScopeEditorPage() {
           <CardTitle>Project defaults</CardTitle>
         </CardHeader>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <Label htmlFor="scope-default-profile">Default runtime profile</Label>
-            <Select
-              id="scope-default-profile"
-              name="default_runtime_profile"
-              value={defaultProfile}
-              onChange={(e) => setDefaultProfile(e.target.value)}
-            >
-              <option value="">(none)</option>
-              {profiles.filter(isManualRuntimeProfile).map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.provider})
-                </option>
-              ))}
-            </Select>
-          </div>
           <div>
             <Label htmlFor="scope-default-runner">Default runner</Label>
             <Select
