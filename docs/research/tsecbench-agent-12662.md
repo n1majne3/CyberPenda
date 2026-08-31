@@ -204,7 +204,7 @@ Agent 8487 使用了 11 次提示。其中 9 次提示后的得分可以在时�
 2. **模型工作没有拆成足够多的短 step。** Agent 8487 的会话数只有第一名的 14.1%，但 token 使用量接近一半。它缺少第一名那种大量短 worker、快速失败和证据接力。
 3. **首轮预算过长。** 当前中题和难题预算是 25/40 分钟。第一名无得分首轮的中位时长约为 10.22 分钟。长预算会让错误方向占用大部分 6 小时时限。
 4. **活跃槽位目标偏低。** 当前 Skill 通常只用两个槽位。第一名有 73.30% 的时间占满三个槽位。虽然本次未完整计算 Agent 8487 的槽位占用时间，但 56/53 的启动/关闭事件和未覆盖全部题目已经显示轮换不足。
-5. **没有明确要求大规模多 Agent 执行。** Hosted Image 已[安装两个 Pi subagent 包](../../docker/tsecbench-hosted/Dockerfile#L93-L100)，并[启用这两个包](../../docker/tsecbench-hosted/Dockerfile#L143-L146)。但是 Hosted Task Goal 只要求完成平台循环。[Hosted Task Goal](../../internal/hostedcontroller/controller.go#L25-L29) Hosted Skill 也没有定义 Challenge Lead、step worker、并发数和收束协议。
+5. **没有把搜索状态外化成分派合同。** Hosted Image 已[安装两个 Pi subagent 包](../../docker/tsecbench-hosted/Dockerfile#L93-L100)，并[启用这两个包](../../docker/tsecbench-hosted/Dockerfile#L143-L146)。但是 Hosted Task Goal 只要求完成平台循环。[Hosted Task Goal](../../internal/hostedcontroller/controller.go#L25-L29) Hosted Skill 没有定义 FGS 图、Decide/Execute 分派、并发数和一条事实收束协议。
 
 ### 中置信度
 
@@ -216,7 +216,7 @@ Agent 8487 使用了 11 次提示。其中 9 次提示后的得分可以在时�
 
 ### P0：下一次正式跑分前完成
 
-1. **在 Runtime 内建立明确的多 Agent 调度器。** Hosted Controller 继续只负责启动和观察。Runtime 负责调度。建议结构是一个 Lead、三个 Challenge Lead 和多个短 step worker。每个 step worker只做一个可验证步骤，并必须输出一条增量事实或一个明确的失败结论。这保持现有领域边界：[Hosted ADR 第 5-7 行](../adr/0026-package-tsecbench-as-an-isolated-hosted-image.md#L5-L7)。
+1. **把平台全局调度和单题搜索都下沉到模型外框架，而不是再加角色型 Lead。** Hosted Controller 继续只负责启动和观察。不要复制“一个 Lead、三个 Challenge Lead”这种角色分工。作者明确反对按任务角色拆 Agent。应复制的是：外层负责 `list/start/close` 和槽位；每个 Challenge 一张只追加的 FGS 图；同一运行器按图状态触发 Decide 或 Execute；每个 Execute 只做一个 step，并以一条事实收束。这保持现有领域边界：[Hosted ADR 第 5-7 行](../adr/0026-package-tsecbench-as-an-isolated-hosted-image.md#L5-L7)；作者说明见下文「作者一手说明」。
 2. **稳定使用三个活跃 Challenge。** 在还有大量未启动 Challenge 时，目标是三个槽位持续有工作。只在平台错误或最后阶段保留空槽。目标槽位指标是：三槽占用时间不低于 70%，平均活跃数不低于 2.5。
 3. **把首次侦察预算改为 10-12 分钟。** 不再按 medium 25、hard 40 做首轮。若 10-12 分钟内没有 flag、明确漏洞或高置信度下一步，则记录证据，关闭该 Challenge，并进入重试队列。第二轮只接续明确的剩余步骤。
 4. **按综合分增量调度。** 使用：`成功概率 × 剩余原始分 × 能力域权重 ÷ 能力域原始满分 ÷ 预期分钟`。先保证 B、C、D 类高贡献 Challenge 的覆盖。不要只按 difficulty 或原始 `total_score` 排序。
@@ -232,7 +232,7 @@ P0 可以先通过 `CYBERPENDA_TASK_GOAL_APPENDIX` 投影，无需修改 Hosted 
 2. **加入可恢复后台作业控制。** 可以加入 `tmux`，也可以提供更小的专用 job client。每个 job 必须有 Challenge code、命令、PID、开始时间、日志路径和停止动作。不要只使用无状态的 `cmd &`。
 3. **增加精简的 Benchmark Run State。** 它只保存调度数据：Challenge code、槽位、attempt、已用时间、已验证入口、后台 job、flag 索引和下一步。Blackboard 继续保存语义结论。平台 `list` 继续是容器与完成状态的恢复源。该设计符合当前 Skill 的平台/Blackboard 双源边界。[Hosted Skill 第 31 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md#L31)
 4. **减少每个 step 的上下文。** 子 Agent 只接收一个 Challenge 的状态、当前 step、必要证据和稳定工具约定。不要向每个短 step 重复注入完整 63 题状态。保持稳定前缀，以提高模型缓存命中率。
-5. **按能力域提供短 Playbook。** Web Playbook 负责源代码和服务指纹。Binary Playbook 负责 `file/checksec/strings/radare2/gdb`。Cloud Playbook 负责 AWS/Azure 权限链。多阶段渗透 Playbook 负责凭据、跳板、转发和长后台任务。Playbook 只定义流程，不包含题目答案。
+5. **不要用能力域 Playbook 或大量 Security Skill 锁死搜索路径。** 作者一手说明是：内置提示词很短、不和安全任务耦合；0 Skill、0 RAG、0 MCP。按能力域写 Playbook 会把模型上限锁死。若需要领域提示，应作为可注入的可选 Hint，而不是默认 Skill。
 
 ### P2：建立可比较的验收门槛
 
@@ -254,9 +254,9 @@ P0 可以先通过 `CYBERPENDA_TASK_GOAL_APPENDIX` 投影，无需修改 Hosted 
 
 1. 运行开始后立即获取完整列表并计算综合分价值。
 2. 同时启动三个高价值且方法不同的 Challenge。
-3. 给每个 Challenge Lead 一个独立工作目录。
-4. Challenge Lead 把工作拆成 1-10 分钟的 step。
-5. step worker 必须提交一条增量事实或失败事实。
+3. 每个已启动 Challenge 使用独立工作目录和一张 FGS 图。
+4. Decide 只维护该图的 Step 和 Sub Goal。Execute 只做一个指定 step。
+5. Execute 必须提交一条增量事实，然后结束。
 6. 长扫描、爆破和监听使用后台 job。Agent 不等待空转。
 7. 10-12 分钟没有可复用进展时，关闭并换题。
 8. 先在约 2 小时内覆盖全部 63 个 Challenge。
@@ -377,9 +377,70 @@ CyberPenda 当前实现与第一名相反：
 
 ### 仍然无法证明的内容
 
-1. 不能证明外层 orchestrator 是一次性获取全部 63 题，还是按需刷新平台列表。
+1. 不能证明外层 orchestrator 是一次性获取全部 63 题，还是按需刷新平台列表。作者文章没有说明 TSecBench 三槽 `list/start/close` 的实现。
 2. 不能证明其 Challenge 排序公式或优先级字段。
 3. 不能证明全部 worker 并发上限。公开会话的最大时间区间重叠是 19，但它不是直接配置值。
 4. 不能证明 `orchestrator.py` 如何实现重试、超时、锁和崩溃恢复。
-5. 不能证明 planner 与 worker 是否使用不同模型配置；公开记录只显示同一个模型名称。
-6. 不能证明这些机制是 TSecBench 官方框架能力，还是 `Cairn_Y` 镜像内的自研框架。
+5. 不能证明 Decide 与 Execute 是否使用不同模型配置；公开记录只显示同一个模型名称。
+6. 作者文章已说明这些机制属于 `Cairn_Y` 自研 Harness，不是 TSecBench 官方框架。公开代码仍是旧版 [Cairn](https://github.com/oritera/Cairn)。`Cairn_Y` 源码未开源。
+
+## 作者一手说明
+
+作者账号是「淚笑的赛博日记-起零衍迹实验室」。Agent 12662 的标签是 `Cairn_Y`。以下内容来自两篇公众号原文，不是从会话反推。
+
+### 2026-08-29：Cairn_Y 如何登顶
+
+[《AI 自动化渗透架构 Cairn 满分登顶 TsecBench Cybench —— 众人向左，我偏向右》](https://mp.weixin.qq.com/s/ZzKF_0MOb0cak9izhHqCUQ) 发布于 2026-08-29 20:06。作者声明文章手写，没有使用 AI 辅助。
+
+作者给出的公开成绩是：
+
+- Cybench：100/100，有效耗时 4:12:26，token 约 2.89 亿。
+- Tsecbench v1：97.14/100，有效耗时 5:13:36，token 约 4.93 亿。六维分是 100 / 100 / 100 / 85.71 / 100 / 100。
+- XBOW Validation Benchmarks：88.34/100。
+
+这些截图与官方榜单 API 的 97.14 和 492,880,524 token 一致。
+
+核心主张：
+
+1. `Cairn_Y` 基于开源 [Cairn](https://github.com/oritera/Cairn) 改进。它没有针对靶场赛题定向优化提示词，没有内嵌答案，也没有跨轮记忆。改进只在 Harness。
+2. 作者反对“跨题学习、幻觉门控、数百工具、多类专业 Subagent、数十 Security Skill”。`Cairn_Y` 的方向与这些方案无关。
+3. 搜索状态外化为一张只追加的 **FGS 图**（Fact-Goal-Step Graph）。Fact 是已确认世界状态。Goal 是终止条件，可有动态 Sub Goal。Step 是从已有事实产生新事实的因果动作。
+4. 运行只有两类活动，不是固定角色的 SubAgent。同一运行器注入不同提示词和工具：
+   - **Decide**：只有图操作工具。任务开始或图变化时触发。串行执行。添加、废弃或调整 Step，也可增删 Sub Goal。每次从干净上下文启动，不携带记忆。
+   - **Execute**：可读取 FGS 图，并使用 `read`、`bash`、`edit`、`write` 和 `submit_fact`。它改变世界状态，并提交一条事实。
+5. 两类活动都没有独立跨会话记忆。FGS 图是共同的外化记忆。
+6. **Finding** 是搜索过程产物。CTF 的产物等于 Goal（flag）。渗透测试和代码审计的产物是过程中发现的漏洞。
+7. Agent Loop 不再使用 Claude Code 或 Codex。当前只用 PI 的 Agent Loop，原因是 PI 更简陋、更容易完全控制。作者计划后续自写 Agent Loop。
+8. 技术栈从 Python 切到 Node，因为 Claude Code、Codex 和 PI 都是 Node 生态。后续更倾向 Go 或 Rust。
+9. 内置提示词很短，不和安全任务耦合。系统仍是通用任务求解引擎。
+10. 成本：半年前 TCH 全解约 7000 元。当前 `Cairn_Y` 最低不到 50 元。作者还在研究本地模型。
+11. 作者结论：多数看起来很强的 Agent 架构没有用，甚至会起反效果。真正厉害的是模型，不是外层臃肿架构，也不是冗余 Skill。
+
+这与公开会话一致：planner 会话对应 Decide，worker 会话对应 Execute，system prompt 不写渗透流程。它还关闭先前无法证明的第 6 项：机制属于 `Cairn_Y` 镜像内的自研框架。
+
+这篇文章没有说明如何获取 63 题列表，也没有说明三槽启动顺序。平台级 Challenge 调度仍只能从运行事件推断。
+
+### 2026-04-26：原版 Cairn 的黑板和任务循环
+
+[《无径之径：Cairn AI 从渗透测试到通用问题的求解》](https://mp.weixin.qq.com/s/2rEqFLvkxvYWM3gW170C2w) 发布于 2026-04-26 16:38。它是第二届 TCH 线下答辩 PPT。线上唯一 AK，总成绩全国第三。
+
+“无径之径”的含义是：系统不预设固定路径、流程和角色分工。路径从黑板上涌现。
+
+原版黑板元素是 Fact、Intent、Hint。图从 origin 向 goal 生长。Worker 只看到当前图和三种任务指令之一：
+
+| 任务 | 作用 |
+| --- | --- |
+| Bootstrap | 开始时直接尝试完成 Goal |
+| Reason | 读全图，判断是否完成，并写下下一步 Intent |
+| Explore | 认领一条 Intent，执行后写下一条 Fact |
+
+协调方式是 stigmergy：Agent 不直接通信，只通过共享板读写。作者把传统角色分工称为“人类局限的投影”。开源 README 给出同一结构：Cairn Server 只维护图一致性；Dispatcher 负责调度、容器和协议写入；Worker 只接收 prompt 并返回结构化输出。[Cairn README](https://github.com/oritera/Cairn)
+
+`Cairn_Y` 把 Intent 改名为 Step，把 Reason 改名为 Decide，把 Explore 改名为 Execute。公开 TSecBench 会话使用 Fact-Goal-Step，而不是 Fact-Intent。因此，12662 跑的是 `Cairn_Y`，不是 2026-04 的开源 Cairn 原样。
+
+### 对先前推断的修正
+
+1. 先前建议“Lead + Challenge Lead + step worker”是角色型多 Agent。作者明确反对这种结构。应改为图驱动的 Decide/Execute。
+2. 先前建议按能力域写 Playbook。作者认为通识 Skill 会锁死上限。P1 不应再把 Playbook 当默认路径。
+3. 先前不能证明框架归属。作者已声明这是 `Cairn_Y` Harness，不是平台官方编排器。
+4. Hosted Image 已安装 PI。这与作者“只用 PI 的 Agent Loop”一致。但当前 CyberPenda 仍把全局 `list/start` 和长会话解题压在一个 Runtime 上，缺少 FGS 图和 Decide/Execute 分派。
