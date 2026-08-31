@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dashboard · Direction A · CyberPenda mockup</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      colors: {
+        border: "hsl(var(--border))", input: "hsl(var(--input))", ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))", foreground: "hsl(var(--foreground))",
+        primary: { DEFAULT: "hsl(var(--primary))", foreground: "hsl(var(--primary-foreground))" },
+        secondary: { DEFAULT: "hsl(var(--secondary))", foreground: "hsl(var(--secondary-foreground))" },
+        muted: { DEFAULT: "hsl(var(--muted))", foreground: "hsl(var(--muted-foreground))" },
+        accent: { DEFAULT: "hsl(var(--accent))", foreground: "hsl(var(--accent-foreground))" },
+        card: { DEFAULT: "hsl(var(--card))", foreground: "hsl(var(--card-foreground))" },
+        destructive: { DEFAULT: "hsl(var(--destructive))", foreground: "hsl(var(--destructive-foreground))" },
+        success: "hsl(var(--success))", info: "hsl(var(--info))", warning: "hsl(var(--warning))", signal: "hsl(var(--signal))",
+      },
+      borderRadius: { sm: "0.125rem", md: "0.25rem", lg: "var(--radius)", xl: "0.5rem" },
+      fontFamily: { sans: ["Geist", "sans-serif"], mono: ["Geist Mono", "monospace"] },
+      boxShadow: { sm: "var(--shadow-card)", md: "var(--shadow-md)", lg: "var(--shadow-lg)" },
+    } },
+  };
+</script>
+<link rel="stylesheet" href="../shared/mockup.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>window.MOCKUP = { active: null };</script>
+<script src="../shared/mockup.js"></script>
+</head>
+<body>
+<div class="flex h-screen overflow-hidden">
+  <div id="sidebar-slot"></div>
+
+  <main class="flex min-w-0 flex-1 flex-col">
+    <!-- ===== header ===== -->
+    <header class="flex-none border-b border-border px-8 pt-5 pb-0">
+      <a href="#" class="flex items-center gap-1 text-[12px] text-muted-foreground hover:text-foreground"><i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>All projects</a>
+      <div class="mt-2 flex items-start justify-between gap-4">
+        <div>
+          <div class="section-label">Engagement</div>
+          <div class="mt-0.5 flex items-center gap-3">
+            <h1 class="text-[24px] font-semibold tracking-tight">ASEAN</h1>
+            <span class="chip chip-signal" data-note="Project Kind 从普通文本行提升为标题级 badge，与标题同排 — 它是决定 Finding/Solution 语义的关键分类"><span class="dot"></span>CTF Challenge Project</span>
+          </div>
+        </div>
+        <button class="flex h-9 flex-none items-center gap-2 rounded-lg bg-primary px-4 text-[13px] font-medium text-primary-foreground hover:opacity-90">
+          <i data-lucide="rocket" class="w-4 h-4"></i>Launch task
+        </button>
+      </div>
+      <nav class="mt-4 flex gap-1 text-[13px]" data-note="Tab 从等宽灰字改为 pill 式分段控件：当前页有底色、带数量徽标，导航目标更明确">
+        <a href="#" class="rounded-md bg-secondary px-3 py-1.5 font-medium">Overview</a>
+        <a href="#" class="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-muted">Tasks <span class="ml-1 rounded-sm bg-muted px-1 text-[10px]">14</span></a>
+        <a href="#" class="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-muted">Blackboard</a>
+        <a href="#" class="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-muted">Solution</a>
+        <a href="#" class="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-muted">Evidence <span class="ml-1 rounded-sm bg-muted px-1 text-[10px]">2</span></a>
+        <a href="#" class="rounded-md px-3 py-1.5 text-muted-foreground hover:bg-muted">Scope</a>
+      </nav>
+    </header>
+
+    <div class="flex-1 overflow-y-auto px-8 py-6">
+      <div class="mx-auto max-w-[1080px] space-y-5">
+
+        <!-- ===== attention ===== -->
+        <section class="rounded-xl border border-warning/30 bg-warning/[0.06] shadow-sm" data-note="'Scope needs attention' 从一个小 badge 升级为引导式检查清单：进度条 + 具体缺什么 + 内联 CTA，告诉用户下一步做什么">
+          <div class="flex items-center justify-between border-b border-warning/20 px-4 py-3">
+            <div class="flex items-center gap-2 text-[13px] font-medium">
+              <i data-lucide="alert-triangle" class="w-4 h-4 text-warning"></i>Scope readiness
+            </div>
+            <span class="text-[11px] font-medium text-[hsl(28_90%_32%)]">0 / 1 项完成</span>
+          </div>
+          <div class="px-4 py-3.5">
+            <div class="h-1.5 w-full overflow-hidden rounded-full bg-warning/15">
+              <div class="h-full w-[4%] rounded-full bg-warning"></div>
+            </div>
+            <ul class="mt-3 space-y-2 text-[13px]">
+              <li class="flex items-center gap-2.5">
+                <i data-lucide="circle" class="w-4 h-4 flex-none text-muted-foreground"></i>
+                <span>添加至少一个 in-scope 资产（domain / IP / CIDR / URL），否则 task 结果不可依赖</span>
+                <button class="ml-auto flex h-7 flex-none items-center gap-1 rounded-md border border-border bg-card px-2.5 text-[12px] font-medium hover:bg-muted"><i data-lucide="plus" class="w-3.5 h-3.5"></i>添加资产</button>
+              </li>
+              <li class="flex items-center gap-2.5 text-muted-foreground">
+                <i data-lucide="circle" class="w-4 h-4 flex-none"></i>
+                <span>可选：填写 Scope notes 说明授权边界</span>
+              </li>
+            </ul>
+          </div>
+        </section>
+
+        <!-- ===== stats ===== -->
+        <section class="grid grid-cols-4 gap-3" data-note="统计卡从'裸数字'改为'数字 + 状态细分 + 可点击'：Tasks 显示 2 个运行中，Findings 为 0 时弱化并引导，点击卡片跳转对应 Tab">
+          <a href="#" class="group rounded-xl border border-border bg-card p-4 shadow-sm hover:border-ring">
+            <div class="flex items-center justify-between text-[12px] text-muted-foreground">
+              <span class="flex items-center gap-1.5"><i data-lucide="list-checks" class="w-3.5 h-3.5"></i>Tasks</span>
+              <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 opacity-0 group-hover:opacity-60"></i>
+            </div>
+            <div class="mt-2 flex items-baseline gap-2">
+              <span class="text-[28px] font-semibold tracking-tight">14</span>
+              <span class="chip chip-success" style="height:18px;font-size:10px"><span class="dot dot-live"></span>2 运行中</span>
+            </div>
+            <div class="mt-1 text-[11px] text-muted-foreground">最近：InvoiceLink Gateway · 12 分钟前</div>
+          </a>
+          <a href="#" class="group rounded-xl border border-border bg-card p-4 shadow-sm hover:border-ring">
+            <div class="flex items-center justify-between text-[12px] text-muted-foreground">
+              <span class="flex items-center gap-1.5"><i data-lucide="file-text" class="w-3.5 h-3.5"></i>Facts</span>
+              <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 opacity-0 group-hover:opacity-60"></i>
+            </div>
+            <div class="mt-2 flex items-baseline gap-2">
+              <span class="text-[28px] font-semibold tracking-tight">10</span>
+              <span class="text-[11px] text-muted-foreground">8 confirmed · 2 tentative</span>
+            </div>
+            <div class="mt-1 text-[11px] text-muted-foreground">本周 +4</div>
+          </a>
+          <a href="#" class="group rounded-xl border border-dashed border-border bg-card/50 p-4 hover:border-ring" data-note="零值状态不再与有值状态同权重：虚线边框 + 引导文案，把'空'变成可操作的下一步">
+            <div class="flex items-center justify-between text-[12px] text-muted-foreground">
+              <span class="flex items-center gap-1.5"><i data-lucide="flask-conical" class="w-3.5 h-3.5"></i>Findings</span>
+            </div>
+            <div class="mt-2 text-[28px] font-semibold tracking-tight text-muted-foreground/60">0</div>
+            <div class="mt-1 text-[11px] text-muted-foreground">尚无 Finding — 从 Task 结论中产生</div>
+          </a>
+          <a href="#" class="group rounded-xl border border-border bg-card p-4 shadow-sm hover:border-ring">
+            <div class="flex items-center justify-between text-[12px] text-muted-foreground">
+              <span class="flex items-center gap-1.5"><i data-lucide="archive" class="w-3.5 h-3.5"></i>Evidence</span>
+              <i data-lucide="arrow-up-right" class="w-3.5 h-3.5 opacity-0 group-hover:opacity-60"></i>
+            </div>
+            <div class="mt-2 flex items-baseline gap-2">
+              <span class="text-[28px] font-semibold tracking-tight">2</span>
+              <span class="text-[11px] text-muted-foreground">1.4 MB</span>
+            </div>
+            <div class="mt-1 text-[11px] text-muted-foreground">最近：vpn-handshake.pcap · 昨天</div>
+          </a>
+        </section>
+
+        <div class="grid grid-cols-5 gap-5">
+          <!-- ===== recent activity ===== -->
+          <section class="col-span-3 rounded-xl border border-border bg-card shadow-sm" data-note="新增 Recent activity：最近 task 运行 + 状态点 + 相对时间，让 Dashboard 回答'项目最近在发生什么'，而不是只有累计数字">
+            <div class="flex items-center justify-between border-b border-border px-4 py-3">
+              <span class="text-[13px] font-medium">Recent activity</span>
+              <a href="#" class="text-[12px] text-muted-foreground hover:text-foreground">查看全部</a>
+            </div>
+            <ul class="divide-y divide-border text-[13px]">
+              <li class="flex items-center gap-3 px-4 py-2.5">
+                <span class="dot dot-live flex-none" style="background:hsl(var(--success));width:7px;height:7px;border-radius:99px"></span>
+                <span class="min-w-0 flex-1 truncate">InvoiceLink Gateway 题目分值：500 — 正在枚举 API 端点</span>
+                <span class="flex-none text-[11px] text-muted-foreground">12 分钟前</span>
+              </li>
+              <li class="flex items-center gap-3 px-4 py-2.5">
+                <span class="flex-none" style="background:hsl(var(--info));width:7px;height:7px;border-radius:99px"></span>
+                <span class="min-w-0 flex-1 truncate">finance_tool 题目分值：350 — 空闲，等待输入</span>
+                <span class="flex-none text-[11px] text-muted-foreground">1 小时前</span>
+              </li>
+              <li class="flex items-center gap-3 px-4 py-2.5">
+                <span class="flex-none" style="background:hsl(0 0% 70%);width:7px;height:7px;border-radius:99px"></span>
+                <span class="min-w-0 flex-1 truncate">Hidden_Margin 题目分值：175 — 已停止，产生 3 条 Facts</span>
+                <span class="flex-none text-[11px] text-muted-foreground">昨天</span>
+              </li>
+              <li class="flex items-center gap-3 px-4 py-2.5">
+                <span class="flex-none" style="background:hsl(0 0% 70%);width:7px;height:7px;border-radius:99px"></span>
+                <span class="min-w-0 flex-1 truncate">release_chain 题目分值：500 — 已停止</span>
+                <span class="flex-none text-[11px] text-muted-foreground">2 天前</span>
+              </li>
+            </ul>
+          </section>
+
+          <!-- ===== current work ===== -->
+          <section class="col-span-2 rounded-xl border border-border bg-card shadow-sm" data-note="新增 Current work 摘要：打开的 Exploration Objectives / Attempts 数量与入口，把 Blackboard 的'进行中工作'提到首屏">
+            <div class="border-b border-border px-4 py-3"><span class="text-[13px] font-medium">Current work</span></div>
+            <div class="space-y-3 px-4 py-3.5 text-[13px]">
+              <div class="flex items-center justify-between">
+                <span class="flex items-center gap-2"><i data-lucide="compass" class="w-4 h-4 text-muted-foreground"></i>Exploration objectives</span>
+                <span class="font-semibold">3 开放</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="flex items-center gap-2"><i data-lucide="flask-conical" class="w-4 h-4 text-muted-foreground"></i>Attempts</span>
+                <span class="font-semibold">1 进行中</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="flex items-center gap-2"><i data-lucide="check-circle-2" class="w-4 h-4 text-muted-foreground"></i>Solutions</span>
+                <span class="font-semibold">0 verified</span>
+              </div>
+              <a href="#" class="mt-1 flex h-8 items-center justify-center gap-1.5 rounded-md border border-border text-[12px] font-medium hover:bg-muted"><i data-lucide="layout-grid" class="w-3.5 h-3.5"></i>打开 Blackboard</a>
+            </div>
+          </section>
+        </div>
+
+        <!-- ===== footer row ===== -->
+        <div class="flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3 text-[12px] text-muted-foreground shadow-sm">
+          <span>Project kind 控制 Finding、Solution 与报告语义。<a href="#" class="font-medium text-foreground underline underline-offset-2">Change project kind</a></span>
+          <button class="flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-[12px] font-medium text-foreground hover:bg-muted"><i data-lucide="file-bar-chart" class="w-3.5 h-3.5"></i>Open report</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

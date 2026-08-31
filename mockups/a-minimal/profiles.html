@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Runtime Profiles · Direction A · CyberPenda mockup</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      colors: {
+        border: "hsl(var(--border))", input: "hsl(var(--input))", ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))", foreground: "hsl(var(--foreground))",
+        primary: { DEFAULT: "hsl(var(--primary))", foreground: "hsl(var(--primary-foreground))" },
+        secondary: { DEFAULT: "hsl(var(--secondary))", foreground: "hsl(var(--secondary-foreground))" },
+        muted: { DEFAULT: "hsl(var(--muted))", foreground: "hsl(var(--muted-foreground))" },
+        accent: { DEFAULT: "hsl(var(--accent))", foreground: "hsl(var(--accent-foreground))" },
+        card: { DEFAULT: "hsl(var(--card))", foreground: "hsl(var(--card-foreground))" },
+        destructive: { DEFAULT: "hsl(var(--destructive))", foreground: "hsl(var(--destructive-foreground))" },
+        success: "hsl(var(--success))", info: "hsl(var(--info))", warning: "hsl(var(--warning))", signal: "hsl(var(--signal))",
+      },
+      borderRadius: { sm: "0.125rem", md: "0.25rem", lg: "var(--radius)", xl: "0.5rem" },
+      fontFamily: { sans: ["Geist", "sans-serif"], mono: ["Geist Mono", "monospace"] },
+      boxShadow: { sm: "var(--shadow-card)", md: "var(--shadow-md)", lg: "var(--shadow-lg)" },
+    } },
+  };
+</script>
+<link rel="stylesheet" href="../shared/mockup.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>window.MOCKUP = { active: "profiles" };</script>
+<script src="../shared/mockup.js"></script>
+</head>
+<body>
+<div class="flex h-screen overflow-hidden">
+  <div id="sidebar-slot"></div>
+
+  <main class="flex min-w-0 flex-1 flex-col">
+    <header class="flex-none border-b border-border px-8 py-5">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="section-label">Configuration</div>
+          <h1 class="mt-1 text-[20px] font-semibold tracking-tight">Runtime profiles</h1>
+        </div>
+        <button class="flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-[13px] font-medium text-primary-foreground hover:opacity-90">
+          <i data-lucide="plus" class="w-4 h-4"></i>New profile
+        </button>
+      </div>
+    </header>
+
+    <div class="flex-1 overflow-hidden">
+      <div class="flex h-full">
+
+        <!-- ===== left: profile list ===== -->
+        <aside class="w-[320px] flex-none border-r border-border bg-card flex flex-col" data-note="Profile 列表从平铺改为分组：Preset（用户主动保存）与 Launch-resolved（自动解析）分离，避免 94 条记录混在一起">
+          <div class="flex-none border-b border-border px-4 py-3">
+            <div class="flex items-center justify-between">
+              <span class="text-[13px] font-medium">Profiles</span>
+              <span class="text-[11px] text-muted-foreground">94 total</span>
+            </div>
+            <div class="mt-2 flex items-center gap-2 rounded-md border border-input bg-background px-2 h-8">
+              <i data-lucide="search" class="w-3.5 h-3.5 text-muted-foreground"></i>
+              <input placeholder="Search name, provider, model…" class="w-full bg-transparent text-[12px] outline-none placeholder:text-muted-foreground" />
+            </div>
+          </div>
+          <div class="flex-1 overflow-y-auto px-2 py-2">
+            <div class="px-2 pt-1 pb-1.5"><span class="section-label">Claude Code</span></div>
+            <div class="space-y-0.5">
+              <a href="#" class="block rounded-md px-2 py-2 hover:bg-muted/50">
+                <div class="flex items-center gap-2">
+                  <span class="text-[13px] font-medium">CyberGym · HUB · deepseek-v4-pro…</span>
+                  <span class="chip chip-signal" style="height:16px;font-size:9px">preset</span>
+                </div>
+                <div class="mt-0.5 text-[11px] text-muted-foreground">deepseek-v4-pro via HUB</div>
+              </a>
+              <div class="px-2 pt-2 pb-1">
+                <button class="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+                  <i data-lucide="chevron-right" class="w-3 h-3"></i>Launch-resolved (57)
+                </button>
+              </div>
+            </div>
+
+            <div class="px-2 pt-3 pb-1.5"><span class="section-label">Codex</span></div>
+            <div class="px-2 pb-1">
+              <button class="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+                <i data-lucide="chevron-right" class="w-3 h-3"></i>Launch-resolved (12)
+              </button>
+            </div>
+
+            <div class="px-2 pt-3 pb-1.5"><span class="section-label">Hermes</span></div>
+            <div class="px-2 pb-1">
+              <button class="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+                <i data-lucide="chevron-right" class="w-3 h-3"></i>Launch-resolved (8)
+              </button>
+            </div>
+
+            <div class="px-2 pt-3 pb-1.5"><span class="section-label">Pi</span></div>
+            <div class="space-y-0.5">
+              <a href="#" class="block rounded-md border border-primary/20 bg-primary/[0.03] px-2 py-2" data-note="当前选中的 profile 用左边框 + 底色高亮，替代现在几乎不可见的选中态">
+                <div class="flex items-center gap-2">
+                  <span class="text-[13px] font-medium">Smoke Pi</span>
+                  <span class="chip chip-neutral" style="height:16px;font-size:9px">preset</span>
+                </div>
+                <div class="mt-0.5 text-[11px] text-muted-foreground">gpt-5… · host runner</div>
+              </a>
+              <a href="#" class="block rounded-md px-2 py-2 hover:bg-muted/50">
+                <div class="text-[13px]">白山智算</div>
+                <div class="mt-0.5 text-[11px] text-muted-foreground">x-preview-f-free via HUB</div>
+              </a>
+              <a href="#" class="block rounded-md px-2 py-2 hover:bg-muted/50">
+                <div class="text-[13px]">ox-pi</div>
+                <div class="mt-0.5 text-[11px] text-muted-foreground">x-preview-f-free via HUB</div>
+              </a>
+              <div class="px-2 pt-2 pb-1">
+                <button class="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground">
+                  <i data-lucide="chevron-right" class="w-3 h-3"></i>Launch-resolved (13)
+                </button>
+              </div>
+            </div>
+          </div>
+        </aside>
+
+        <!-- ===== right: edit form ===== -->
+        <section class="flex-1 min-w-0 overflow-y-auto">
+          <div class="px-6 py-5">
+            <div class="flex items-center justify-between" data-note="编辑区头部：名称 + 类型 badge + 保存/删除按钮固定在顶部，不再滚到底部找保存">
+              <div>
+                <div class="flex items-center gap-2">
+                  <h2 class="text-[16px] font-semibold">Smoke Pi</h2>
+                  <span class="chip chip-neutral">Pi</span>
+                  <span class="chip chip-signal">preset</span>
+                </div>
+                <p class="mt-0.5 font-mono text-[11px] text-muted-foreground">059c37155cdbfba10d5fc0899e4a1ab</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <button class="flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-[12px] font-medium hover:bg-muted"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                <button class="flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-[12px] font-medium text-primary-foreground hover:opacity-90"><i data-lucide="check" class="w-3.5 h-3.5"></i>Save</button>
+              </div>
+            </div>
+
+            <div class="mt-5 space-y-5">
+              <!-- 合并：基本 + 模型 + 运行 -->
+              <section class="rounded-xl border border-border bg-card shadow-sm" data-note="表单从 6 个独立卡片合并为 2 个：基本+模型+运行 一张、环境+凭据+高级 一张，减少圆角矩形嵌套">
+                <div class="border-b border-border px-4 py-3"><span class="text-[13px] font-medium">基本与模型</span></div>
+                <div class="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
+                  <div class="field">
+                    <label>Name</label>
+                    <input class="control mt-1.5" value="Smoke Pi" />
+                  </div>
+                  <div class="field">
+                    <label>Provider</label>
+                    <button class="control mt-1.5"><span>Pi</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+                  </div>
+                  <div class="field">
+                    <label>Model provider</label>
+                    <button class="control mt-1.5"><span class="text-muted-foreground">Legacy / none</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+                  </div>
+                  <div class="field">
+                    <label>Model protocol</label>
+                    <button class="control mt-1.5"><span>Auto</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+                  </div>
+                  <div class="field">
+                    <label>Model override</label>
+                    <button class="control mt-1.5"><span class="text-muted-foreground">Use provider default</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+                  </div>
+                  <div class="field">
+                    <label>Reasoning effort</label>
+                    <div class="mt-1.5 flex rounded-lg border border-input p-0.5" data-note="Reasoning effort 从下拉改为分段控件，与 Launch 页一致：5 个值全部可见、一键切换">
+                      <button class="flex-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:text-foreground">low</button>
+                      <button class="flex-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:text-foreground">medium</button>
+                      <button class="flex-1 rounded-md bg-primary px-2 py-1 text-[12px] font-medium text-primary-foreground">high</button>
+                      <button class="flex-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:text-foreground">xhigh</button>
+                      <button class="flex-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:text-foreground">max</button>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label>Binary path</label>
+                    <input class="control mt-1.5 font-mono" value="pi" />
+                  </div>
+                  <div class="field">
+                    <label>Default runner</label>
+                    <button class="control mt-1.5"><span>host</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+                  </div>
+                  <div class="field col-span-2">
+                    <label>Endpoint</label>
+                    <input class="control mt-1.5 font-mono" value="https://api.example.test/v1…" />
+                  </div>
+                </div>
+                <div class="border-t border-border px-4 py-3">
+                  <div class="flex flex-wrap gap-1.5" data-note="能力标签从纯文本改为可点击 chip：点击切换启用状态，当前启用的用主色高亮">
+                    <span class="chip chip-neutral">pi</span>
+                    <span class="chip chip-neutral">pi_agent</span>
+                    <span class="chip chip-neutral">pi_json_session</span>
+                    <span class="chip chip-primary" style="background:hsl(var(--primary));color:hsl(var(--primary-foreground))">sandbox</span>
+                    <span class="chip chip-primary" style="background:hsl(var(--primary));color:hsl(var(--primary-foreground))">host</span>
+                    <span class="chip chip-neutral">mcp</span>
+                  </div>
+                </div>
+              </section>
+
+              <!-- 合并：环境 + API key + MCP + Sandbox -->
+              <section class="rounded-xl border border-border bg-card shadow-sm">
+                <div class="border-b border-border px-4 py-3"><span class="text-[13px] font-medium">环境与高级</span></div>
+                <div class="space-y-4 p-4">
+                  <div class="field">
+                    <label>环境变量</label>
+                    <textarea rows="3" class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-[12px] outline-none focus:border-ring">PENTEST_PI_NPM_VERSION=0.78.0
+PI_API=openai-completions
+PI_PROVIDER_ID=xiaomi-token-plan-cn</textarea>
+                    <p class="hint mt-1">KEY=VALUE 每行一个，或 JSON 对象。</p>
+                  </div>
+                  <div class="grid grid-cols-2 gap-4">
+                    <div class="field">
+                      <label>API key env</label>
+                      <input class="control mt-1.5 font-mono" value="ANTHROPIC_API_KEY" />
+                    </div>
+                    <div class="field">
+                      <label>API key</label>
+                      <div class="relative mt-1.5">
+                        <input type="password" class="control pr-16" value="sk-…" />
+                        <span class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 text-[11px] text-success"><i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>configured</span>
+                      </div>
+                      <p class="hint mt-1">仅存储在此 profile。留空保持现有 key。</p>
+                    </div>
+                  </div>
+                  <div class="field">
+                    <label>MCP servers JSON</label>
+                    <textarea rows="2" class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-[12px] outline-none focus:border-ring">[{"name":"project","mode":"trusted","url":"http://127.0.0.1:8787/mcp"}]</textarea>
+                  </div>
+                  <div class="field">
+                    <label>Sandbox image</label>
+                    <input class="control mt-1.5 font-mono" value="ghcr.io/n1majne3/cyberpenda-sandbox:latest…" />
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

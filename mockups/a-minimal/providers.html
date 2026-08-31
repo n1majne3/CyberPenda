@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Model Providers · Direction A · CyberPenda mockup</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      colors: {
+        border: "hsl(var(--border))", input: "hsl(var(--input))", ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))", foreground: "hsl(var(--foreground))",
+        primary: { DEFAULT: "hsl(var(--primary))", foreground: "hsl(var(--primary-foreground))" },
+        secondary: { DEFAULT: "hsl(var(--secondary))", foreground: "hsl(var(--secondary-foreground))" },
+        muted: { DEFAULT: "hsl(var(--muted))", foreground: "hsl(var(--muted-foreground))" },
+        accent: { DEFAULT: "hsl(var(--accent))", foreground: "hsl(var(--accent-foreground))" },
+        card: { DEFAULT: "hsl(var(--card))", foreground: "hsl(var(--card-foreground))" },
+        destructive: { DEFAULT: "hsl(var(--destructive))", foreground: "hsl(var(--destructive-foreground))" },
+        success: "hsl(var(--success))", info: "hsl(var(--info))", warning: "hsl(var(--warning))", signal: "hsl(var(--signal))",
+      },
+      borderRadius: { sm: "0.125rem", md: "0.25rem", lg: "var(--radius)", xl: "0.5rem" },
+      fontFamily: { sans: ["Geist", "sans-serif"], mono: ["Geist Mono", "monospace"] },
+      boxShadow: { sm: "var(--shadow-card)", md: "var(--shadow-md)", lg: "var(--shadow-lg)" },
+    } },
+  };
+</script>
+<link rel="stylesheet" href="../shared/mockup.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>window.MOCKUP = { active: "providers" };</script>
+<script src="../shared/mockup.js"></script>
+</head>
+<body>
+<div class="flex h-screen overflow-hidden">
+  <div id="sidebar-slot"></div>
+
+  <main class="flex min-w-0 flex-1 flex-col">
+    <header class="flex-none border-b border-border px-8 py-5">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="section-label">Configuration</div>
+          <h1 class="mt-1 text-[20px] font-semibold tracking-tight">Model providers</h1>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="flex h-9 items-center gap-2 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-muted"><i data-lucide="refresh-cw" class="w-4 h-4"></i>Refresh</button>
+          <button class="flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-[13px] font-medium text-primary-foreground hover:opacity-90"><i data-lucide="plus" class="w-4 h-4"></i>New provider</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="flex-1 overflow-hidden">
+      <div class="flex h-full">
+
+        <!-- ===== left: provider list ===== -->
+        <aside class="w-[300px] flex-none border-r border-border bg-card flex flex-col" data-note="Provider 列表增加状态指示：key 已配置（绿点）/ 未配置（灰点），协议支持用 chip 展示，不再只显示名称和 URL">
+          <div class="flex-none border-b border-border px-4 py-3">
+            <div class="flex items-center justify-between">
+              <span class="text-[13px] font-medium">Providers</span>
+              <span class="text-[11px] text-muted-foreground">7 total</span>
+            </div>
+            <div class="mt-2 flex items-center gap-2 rounded-md border border-input bg-background px-2 h-8">
+              <i data-lucide="search" class="w-3.5 h-3.5 text-muted-foreground"></i>
+              <input placeholder="Search name, URL, key…" class="w-full bg-transparent text-[12px] outline-none placeholder:text-muted-foreground" />
+            </div>
+            <div class="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <i data-lucide="key-round" class="w-3 h-3"></i>7 with API key binding
+            </div>
+          </div>
+          <div class="flex-1 overflow-y-auto px-2 py-2 space-y-0.5">
+            <a href="#" class="block rounded-md border border-primary/20 bg-primary/[0.03] px-3 py-2.5">
+              <div class="flex items-center gap-2">
+                <span class="dot" style="background:hsl(var(--success));width:6px;height:6px;border-radius:99px"></span>
+                <span class="text-[13px] font-medium">GLM</span>
+                <span class="chip chip-success" style="height:16px;font-size:9px">key set</span>
+              </div>
+              <div class="mt-1 font-mono text-[11px] text-muted-foreground truncate">https://open.bigmodel.cn/a…</div>
+              <div class="mt-1.5 flex gap-1">
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">anthropic</span>
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">chat</span>
+              </div>
+            </a>
+            <a href="#" class="block rounded-md px-3 py-2.5 hover:bg-muted/50">
+              <div class="flex items-center gap-2">
+                <span class="dot" style="background:hsl(var(--success));width:6px;height:6px;border-radius:99px"></span>
+                <span class="text-[13px]">deepseek</span>
+                <span class="chip chip-success" style="height:16px;font-size:9px">key set</span>
+              </div>
+              <div class="mt-1 font-mono text-[11px] text-muted-foreground truncate">https://api.deepseek.com/a…</div>
+              <div class="mt-1.5 flex gap-1">
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">anthropic</span>
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">chat</span>
+              </div>
+            </a>
+            <a href="#" class="block rounded-md px-3 py-2.5 hover:bg-muted/50">
+              <div class="flex items-center gap-2">
+                <span class="dot" style="background:hsl(var(--success));width:6px;height:6px;border-radius:99px"></span>
+                <span class="text-[13px]">deepseek1</span>
+                <span class="chip chip-success" style="height:16px;font-size:9px">key set</span>
+              </div>
+              <div class="mt-1 font-mono text-[11px] text-muted-foreground truncate">https://api.deepseek.com</div>
+              <div class="mt-1.5 flex gap-1">
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">chat</span>
+              </div>
+            </a>
+            <a href="#" class="block rounded-md px-3 py-2.5 hover:bg-muted/50">
+              <div class="flex items-center gap-2">
+                <span class="dot" style="background:hsl(var(--success));width:6px;height:6px;border-radius:99px"></span>
+                <span class="text-[13px]">muyuan msg</span>
+                <span class="chip chip-success" style="height:16px;font-size:9px">key set</span>
+              </div>
+              <div class="mt-1 font-mono text-[11px] text-muted-foreground truncate">https://muyuan.ve</div>
+              <div class="mt-1.5 flex gap-1">
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">responses</span>
+              </div>
+            </a>
+            <a href="#" class="block rounded-md px-3 py-2.5 hover:bg-muted/50">
+              <div class="flex items-center gap-2">
+                <span class="dot" style="background:hsl(var(--success));width:6px;height:6px;border-radius:99px"></span>
+                <span class="text-[13px]">MimiMax</span>
+                <span class="chip chip-success" style="height:16px;font-size:9px">key set</span>
+              </div>
+              <div class="mt-1 font-mono text-[11px] text-muted-foreground truncate">https://api.minimaxi.com/a…</div>
+              <div class="mt-1.5 flex gap-1">
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">anthropic</span>
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">responses</span>
+              </div>
+            </a>
+            <a href="#" class="block rounded-md px-3 py-2.5 hover:bg-muted/50">
+              <div class="flex items-center gap-2">
+                <span class="dot" style="background:hsl(var(--success));width:6px;height:6px;border-radius:99px"></span>
+                <span class="text-[13px]">HUB</span>
+                <span class="chip chip-success" style="height:16px;font-size:9px">key set</span>
+              </div>
+              <div class="mt-1 font-mono text-[11px] text-muted-foreground truncate">https://hub-5qglx_119932_x…</div>
+              <div class="mt-1.5 flex gap-1">
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">chat</span>
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">responses</span>
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">+1</span>
+              </div>
+            </a>
+            <a href="#" class="block rounded-md px-3 py-2.5 hover:bg-muted/50">
+              <div class="flex items-center gap-2">
+                <span class="dot" style="background:hsl(var(--success));width:6px;height:6px;border-radius:99px"></span>
+                <span class="text-[13px]">local</span>
+                <span class="chip chip-success" style="height:16px;font-size:9px">key set</span>
+              </div>
+              <div class="mt-1 font-mono text-[11px] text-muted-foreground truncate">http://host.docker.interna…</div>
+              <div class="mt-1.5 flex gap-1">
+                <span class="chip chip-neutral" style="height:16px;font-size:9px">anthropic</span>
+              </div>
+            </a>
+          </div>
+        </aside>
+
+        <!-- ===== right: edit form ===== -->
+        <section class="flex-1 min-w-0 overflow-y-auto">
+          <div class="px-6 py-5">
+            <div class="flex items-center justify-between" data-note="Provider 编辑头部：名称 + 用途说明 + 生成的 API key 环境变量名 + 默认模型 badge，关键信息一屏可见">
+              <div>
+                <h2 class="text-[16px] font-semibold">GLM</h2>
+                <p class="mt-0.5 text-[12px] text-muted-foreground">更新端点、目录与凭据绑定。</p>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="chip chip-neutral font-mono">GLM_API_KEY</span>
+                <span class="chip chip-signal">default · glm-5.2</span>
+                <span class="chip chip-success">key set</span>
+              </div>
+            </div>
+
+            <div class="mt-5 space-y-5">
+              <!-- 合并：Identity + API key + Protocols -->
+              <section class="rounded-xl border border-border bg-card shadow-sm" data-note="表单从 5 个独立卡片合并为 2 个：连接配置（Identity+API key+协议）一张、Catalog 一张，减少圆角矩形嵌套">
+                <div class="border-b border-border px-4 py-3"><span class="text-[13px] font-medium">连接与协议</span></div>
+                <div class="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
+                  <div class="field">
+                    <label>Name</label>
+                    <input class="control mt-1.5" value="GLM" />
+                  </div>
+                  <div class="field">
+                    <label>Base URL</label>
+                    <input class="control mt-1.5 font-mono" value="https://open.bigmodel.cn/api/anthropic" />
+                    <p class="hint mt-1">共享 base，用于快速设置派生协议端点。</p>
+                  </div>
+                  <div class="field col-span-2">
+                    <label>API key</label>
+                    <p class="mt-0.5 text-[12px] text-muted-foreground">存储为 <span class="font-mono">GLM_API_KEY</span> 的本地凭据，密钥不再显示。</p>
+                    <div class="relative mt-1.5">
+                      <input type="password" class="control pr-20" value="••••••••" />
+                      <span class="absolute right-2 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground">Current API key: [configured]</span>
+                    </div>
+                  </div>
+                </div>
+                <div class="border-t border-border px-4 py-3" data-note="协议支持从纯文本列表改为 checkbox 行：勾选启用，下方直接编辑对应端点 URL，关系一目了然">
+                  <span class="text-[12px] font-medium text-muted-foreground">Protocols & endpoints</span>
+                  <div class="mt-2 space-y-2">
+                    <label class="flex items-center gap-3 cursor-pointer">
+                      <input type="checkbox" checked class="flex-none" />
+                      <span class="w-[160px] flex-none text-[13px]">OpenAI Chat Completions</span>
+                      <input class="control font-mono text-[12px]" value="https://open.bigmodel.cn/api/coding/paas/v4" />
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                      <input type="checkbox" class="flex-none" />
+                      <span class="w-[160px] flex-none text-[13px]">OpenAI Responses</span>
+                      <input class="control font-mono text-[12px]" value="" placeholder="未配置" disabled />
+                    </label>
+                    <label class="flex items-center gap-3 cursor-pointer">
+                      <input type="checkbox" checked class="flex-none" />
+                      <span class="w-[160px] flex-none text-[13px]">Anthropic Messages</span>
+                      <input class="control font-mono text-[12px]" value="https://open.bigmodel.cn/api/anthropic" />
+                    </label>
+                  </div>
+                </div>
+              </section>
+
+              <!-- catalog -->
+              <section class="rounded-xl border border-border bg-card shadow-sm" data-note="Catalog 区域增加操作按钮组：保存 / 刷新模型 / 刷新能力缓存 / 删除，从底部平铺改为顶部工具栏，操作目标明确">
+                <div class="border-b border-border px-4 py-3 flex items-center justify-between">
+                  <span class="text-[13px] font-medium">Catalog</span>
+                  <div class="flex items-center gap-1.5">
+                    <button class="flex h-7 items-center gap-1 rounded-md border border-border px-2 text-[11px] font-medium hover:bg-muted"><i data-lucide="refresh-cw" class="w-3 h-3"></i>Refresh models</button>
+                    <button class="flex h-7 items-center gap-1 rounded-md border border-border px-2 text-[11px] font-medium hover:bg-muted"><i data-lucide="zap" class="w-3 h-3"></i>Refresh capability cache</button>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-4 p-4">
+                  <div class="field">
+                    <label>Manual models</label>
+                    <textarea rows="3" class="mt-1.5 w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-[12px] outline-none focus:border-ring">glm-5.3</textarea>
+                    <p class="hint mt-1">每行一个模型 ID。空 window/max 字段跟随 models.dev 缓存。</p>
+                  </div>
+                  <div class="field">
+                    <label>Default model</label>
+                    <button class="control mt-1.5"><span class="font-mono">glm-5.2</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+                    <div class="mt-2 space-y-1.5">
+                      <div class="flex items-center justify-between rounded-md border border-border px-2.5 py-1.5 text-[12px]">
+                        <span class="font-mono">glm-5.2</span>
+                        <span class="text-muted-foreground">1000000 / 131072</span>
+                      </div>
+                      <div class="flex items-center justify-between rounded-md border border-border px-2.5 py-1.5 text-[12px]">
+                        <span class="font-mono">glm-5.3</span>
+                        <span class="text-muted-foreground">—</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- actions -->
+              <div class="flex items-center justify-between" data-note="底部操作栏：保存（主操作）与删除（危险操作）分离，删除用红色但弱化，避免误触">
+                <button class="flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-[13px] font-medium text-primary-foreground hover:opacity-90"><i data-lucide="check" class="w-4 h-4"></i>Save provider</button>
+                <button class="flex h-9 items-center gap-2 rounded-lg border border-destructive/30 px-3 text-[13px] font-medium text-destructive hover:bg-destructive/5"><i data-lucide="trash-2" class="w-4 h-4"></i>Delete</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

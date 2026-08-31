@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Workspace · Direction A · CyberPenda mockup</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      colors: {
+        border: "hsl(var(--border))", input: "hsl(var(--input))", ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))", foreground: "hsl(var(--foreground))",
+        primary: { DEFAULT: "hsl(var(--primary))", foreground: "hsl(var(--primary-foreground))" },
+        secondary: { DEFAULT: "hsl(var(--secondary))", foreground: "hsl(var(--secondary-foreground))" },
+        muted: { DEFAULT: "hsl(var(--muted))", foreground: "hsl(var(--muted-foreground))" },
+        accent: { DEFAULT: "hsl(var(--accent))", foreground: "hsl(var(--accent-foreground))" },
+        card: { DEFAULT: "hsl(var(--card))", foreground: "hsl(var(--card-foreground))" },
+        destructive: { DEFAULT: "hsl(var(--destructive))", foreground: "hsl(var(--destructive-foreground))" },
+        success: "hsl(var(--success))", info: "hsl(var(--info))", warning: "hsl(var(--warning))", signal: "hsl(var(--signal))",
+      },
+      borderRadius: { sm: "0.125rem", md: "0.25rem", lg: "var(--radius)", xl: "0.5rem" },
+      fontFamily: { sans: ["Geist", "sans-serif"], mono: ["Geist Mono", "monospace"] },
+      boxShadow: { sm: "var(--shadow-card)", md: "var(--shadow-md)", lg: "var(--shadow-lg)" },
+    } },
+  };
+</script>
+<link rel="stylesheet" href="../shared/mockup.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>window.MOCKUP = { active: null };</script>
+<script src="../shared/mockup.js"></script>
+</head>
+<body>
+<div class="flex h-screen overflow-hidden">
+  <div id="sidebar-slot"></div>
+
+  <main class="flex min-w-0 flex-1 flex-col">
+    <!-- ===== Header ===== -->
+    <header class="flex-none border-b border-border px-6 pt-4 pb-0">
+      <div class="flex items-start justify-between gap-4">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2.5 flex-wrap" data-note="状态区改为语义化 chip 系统：生命周期（Stopped=中性灰）与 Runtime 活性（offline=红）分离，一眼区分'任务状态'和'运行时状态'">
+            <h1 class="text-[16px] font-semibold tracking-tight truncate">第一步什么都不要做：先连接附件的 VPN</h1>
+            <span class="chip chip-neutral"><span class="dot"></span>Stopped</span>
+            <span class="chip chip-danger"><span class="dot"></span>Runtime offline</span>
+            <span class="chip chip-signal" title="Blackboard conclusion mode"><span class="dot"></span>Blackboard · interactive</span>
+          </div>
+          <div class="mt-1.5 flex items-center gap-1.5 text-[12px] text-muted-foreground" data-note="技术元数据（continuation / runtime / runner）降级为单行弱化文本，不再与状态 chip 抢视觉；hover 显示完整值">
+            <span class="font-mono">continuation #1</span>
+            <span class="opacity-40">·</span><span>runtime <span class="font-mono">codex</span></span>
+            <span class="opacity-40">·</span><span>runner <span class="font-mono">docker</span></span>
+            <span class="opacity-40">·</span><span>2 天前更新</span>
+          </div>
+        </div>
+        <div class="flex flex-none items-center gap-1.5">
+          <button class="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground" title="重命名"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+          <button class="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground" title="删除"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+          <button class="flex h-8 w-8 items-center justify-center rounded-md border border-border text-muted-foreground hover:text-foreground" title="全屏"><i data-lucide="maximize-2" class="w-3.5 h-3.5"></i></button>
+        </div>
+      </div>
+
+      <div class="mt-3 flex items-center gap-2 rounded-md border border-info/25 bg-info/5 px-3 py-2 text-[12px] text-info" data-note="Non-Project Mode 提示从灰色长句改为 info 语义横幅：图标 + 一句话 + '了解更多'，不再像正文">
+        <i data-lucide="info" class="w-3.5 h-3.5 flex-none"></i>
+        <span>Non-Project Mode — 无 Project Scope 约束，Runtime 执行不受 Scope 限制。</span>
+        <a href="#" class="underline underline-offset-2 font-medium">了解更多</a>
+      </div>
+
+      <nav class="mt-3 flex gap-4 text-[13px]">
+        <a href="#" class="border-b-2 border-primary pb-2 font-medium">Conversation</a>
+        <a href="#" class="pb-2 text-muted-foreground hover:text-foreground">Timeline</a>
+      </nav>
+    </header>
+
+    <!-- ===== Conversation stream ===== -->
+    <div class="flex-1 overflow-y-auto px-6 py-5">
+      <div class="mx-auto max-w-[860px] space-y-6">
+
+        <!-- Turn 1 · user -->
+        <section class="turn" data-note="Timeline 按 Turn 分组：左侧轨线 + 圆形标记把'用户输入 → Runtime 工作 → 结论'串成一个视觉单元，替代现在平铺的条目流">
+          <span class="turn-marker"><i data-lucide="user" class="w-3 h-3"></i></span>
+          <div class="flex items-baseline gap-2">
+            <span class="text-[12px] font-semibold">你</span>
+            <span class="text-[11px] text-muted-foreground" title="2026-08-26 14:22:41">2 天前</span>
+          </div>
+          <div class="mt-1.5 rounded-lg border border-border bg-card p-3.5 text-[13px] leading-relaxed shadow-sm">
+            第一步什么都不要做：先连接附件的 VPN。
+            <div class="mt-2 flex items-center gap-2 rounded-md border border-border bg-muted/50 px-2.5 py-1.5 text-[12px]">
+              <i data-lucide="paperclip" class="w-3.5 h-3.5 text-muted-foreground"></i>
+              <span class="font-mono">tsecvpn.ovpn</span>
+              <span class="text-muted-foreground">· 4.2 KB</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- Turn 1 · runtime -->
+        <section class="turn">
+          <span class="turn-marker" style="border-color: hsl(var(--signal) / 0.4); color: hsl(var(--signal))"><i data-lucide="bot" class="w-3 h-3"></i></span>
+          <div class="flex items-baseline gap-2">
+            <span class="text-[12px] font-semibold text-signal">Codex</span>
+            <span class="text-[11px] text-muted-foreground" title="2026-08-26 14:22:41 – 22:23">2 天前 · 持续 41 秒</span>
+            <span class="chip chip-neutral" style="height:18px;font-size:10px">Turn 1</span>
+          </div>
+
+          <!-- reasoning -->
+          <button class="mt-2 flex items-center gap-1.5 text-[12px] italic text-muted-foreground hover:text-foreground" data-note="Reasoning 条目默认折叠为一行斜体摘要，点击展开；不再与正式消息混排">
+            <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+            Reasoning · 先检查 tun 接口与 OpenVPN 日志，再决定是否需要重连…
+          </button>
+
+          <!-- tool calls -->
+          <div class="mt-2 space-y-1.5" data-note="Tool call 压缩为单行：状态图标 + 工具名 + 单行命令 + 耗时；Result 默认折叠进工具行（点击展开），消除现在 tool/result 成对占两行、时间戳重复的问题">
+            <div class="tool-row">
+              <i data-lucide="check-circle-2" class="w-3.5 h-3.5 flex-none text-success"></i>
+              <span class="font-mono text-muted-foreground flex-none">command_execution</span>
+              <span class="font-mono truncate flex-1">curl -sS --connect-timeout 5 --max-time 10 -w '\nHTTP_STAT…' http://10.0.100.58</span>
+              <span class="flex-none text-[11px] text-muted-foreground">1.2s</span>
+              <i data-lucide="chevron-right" class="w-3.5 h-3.5 flex-none text-muted-foreground"></i>
+            </div>
+            <div class="tool-row">
+              <i data-lucide="x-circle" class="w-3.5 h-3.5 flex-none text-destructive"></i>
+              <span class="font-mono text-muted-foreground flex-none">command_execution</span>
+              <span class="font-mono truncate flex-1">sleep 5; tail -n 80 /tmp/tsecvpn.log</span>
+              <span class="flex-none rounded-sm bg-destructive/10 px-1 text-[10px] text-destructive">exit 52</span>
+              <span class="flex-none text-[11px] text-muted-foreground">5.4s</span>
+              <i data-lucide="chevron-down" class="w-3.5 h-3.5 flex-none text-muted-foreground"></i>
+            </div>
+            <!-- expanded result -->
+            <div class="ml-5 rounded-md border border-border bg-muted/40 p-3 font-mono text-[11.5px] leading-relaxed text-muted-foreground">
+              <div>Note: cipher 'AES-128-CBC' in --data-ciphers is not supported by ovpn…</div>
+              <div>curl: (52) Empty reply from server</div>
+              <div>--- OpenVPN state ---</div>
+              <div class="mt-1 text-foreground">HTTP_STATUS:000</div>
+            </div>
+            <div class="tool-row">
+              <i data-lucide="check-circle-2" class="w-3.5 h-3.5 flex-none text-success"></i>
+              <span class="font-mono text-muted-foreground flex-none">command_execution</span>
+              <span class="font-mono truncate flex-1">printf '%s\n' '--- OpenVPN state ---'; if [ -f /tmp/tsecvpn.pid ]…</span>
+              <span class="flex-none text-[11px] text-muted-foreground">0.3s</span>
+              <i data-lucide="chevron-right" class="w-3.5 h-3.5 flex-none text-muted-foreground"></i>
+            </div>
+          </div>
+
+          <!-- assistant message -->
+          <div class="mt-3 border-l-2 border-signal/40 pl-4 text-[13px] leading-relaxed" data-note="Assistant 结论消息去掉卡片包裹：左侧 signal 色竖线 + 缩进区分于工具流，保留 markdown 排版；代码块保留底色和复制按钮">
+            <p class="font-medium">VPN 检测未通过，请检查靶场 VPN 网络配置</p>
+            <ul class="mt-2 list-disc pl-5 space-y-1 text-foreground/90">
+              <li>OpenVPN 已加载附件配置并保持运行，但日志未出现连接成功标志，且尚未创建 <code class="rounded bg-muted px-1 font-mono text-[12px]">tun</code> 接口。</li>
+              <li>强制健康检查失败：</li>
+            </ul>
+            <div class="relative mt-2 rounded-md bg-primary/[0.03] border border-border p-3 font-mono text-[12px]">
+              <button class="absolute right-2 top-2 text-muted-foreground hover:text-foreground" title="复制"><i data-lucide="copy" class="w-3.5 h-3.5"></i></button>
+              <div>GET http://10.0.100.58</div>
+              <div>curl: (52) Empty reply from server</div>
+              <div>HTTP_STATUS:000</div>
+            </div>
+            <p class="mt-2">按规则已立即中断；未调用任何跑分 API、未启动题目容器。请确认靶场 VPN 已成功连接后重新启动我。</p>
+          </div>
+        </section>
+
+        <!-- system divider -->
+        <div class="flex items-center gap-3 py-1" data-note="系统事件（continuation stopped 等）降级为居中分割线样式，不再伪装成一条消息">
+          <span class="h-px flex-1 bg-border"></span>
+          <span class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+            <i data-lucide="octagon-pause" class="w-3 h-3"></i> Continuation #1 stopped · #16
+          </span>
+          <span class="h-px flex-1 bg-border"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== Composer ===== -->
+    <footer class="flex-none border-t border-border bg-card px-6 py-3">
+      <div class="mx-auto max-w-[860px]">
+        <div class="mb-2.5 flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-[hsl(28_90%_32%)]" data-note="替换含义不明的 'unavailable' 角标：明确说明 Runtime 离线、发送消息将恢复 Session 并启动新 Runtime — 状态 → 后果 → 动作">
+          <i data-lucide="plug-zap" class="w-3.5 h-3.5 flex-none"></i>
+          <span>Runtime 当前离线。发送消息将恢复此 Session 并启动新的 Runtime。</span>
+        </div>
+        <div class="rounded-xl border border-input bg-card shadow-sm focus-within:border-ring" data-note="输入区与模型控制条合并为一个聚焦容器：输入框无边框，聚焦时整个容器高亮，减少视觉碎片">
+          <textarea rows="2" placeholder="Focus on admin.example.com next…" class="w-full resize-none rounded-t-xl bg-transparent px-3.5 pt-3 text-[13px] outline-none placeholder:text-muted-foreground"></textarea>
+          <div class="flex items-center gap-1.5 px-2.5 pb-2.5">
+            <button class="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-muted"><i data-lucide="paperclip" class="w-3.5 h-3.5"></i>Attach</button>
+            <span class="mx-1 h-4 w-px bg-border"></span>
+            <button class="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] hover:bg-muted" data-note="Provider / Model / Reasoning effort 三个选择器统一为紧凑的 chip 按钮，当前值加粗；点击展开原生下拉，与现有行为一致">HUB <i data-lucide="chevrons-up-down" class="w-3 h-3 text-muted-foreground"></i></button>
+            <button class="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] font-medium hover:bg-muted">MiniMax-M3 <i data-lucide="chevrons-up-down" class="w-3 h-3 text-muted-foreground"></i></button>
+            <button class="flex h-7 items-center gap-1 rounded-md px-2 text-[12px] hover:bg-muted">high <i data-lucide="chevrons-up-down" class="w-3 h-3 text-muted-foreground"></i></button>
+            <span class="flex-1"></span>
+            <span class="mr-1 text-[11px] text-muted-foreground">Enter 发送 · Shift+Enter 换行</span>
+            <button class="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-90" title="发送"><i data-lucide="arrow-up" class="w-4 h-4"></i></button>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </main>
+</div>
+</body>
+</html>
