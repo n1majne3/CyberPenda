@@ -17,6 +17,7 @@ import (
 
 	"pentest/internal/owner"
 	"pentest/internal/project"
+	"pentest/internal/runtimeconfig"
 	"pentest/internal/store"
 )
 
@@ -414,7 +415,7 @@ type RuntimeConfigVersion struct {
 	ID               string         `json:"id"`
 	TaskID           string         `json:"task_id"`
 	Version          int            `json:"version"`
-	RuntimeProfileID string         `json:"runtime_profile_id"`
+	RuntimeProfileID string         `json:"runtime_profile_id,omitempty"`
 	Config           map[string]any `json:"config"`
 	CreatedAt        time.Time      `json:"created_at"`
 }
@@ -426,7 +427,7 @@ type TaskContinuation struct {
 	ID                                 string               `json:"id"`
 	TaskID                             string               `json:"task_id"`
 	Number                             int                  `json:"number"`
-	RuntimeProfileID                   string               `json:"runtime_profile_id"`
+	RuntimeProfileID                   string               `json:"runtime_profile_id,omitempty"`
 	RuntimeProvider                    string               `json:"runtime_provider"`
 	Runner                             Runner               `json:"runner"`
 	Status                             Status               `json:"status"`
@@ -526,16 +527,17 @@ type RuntimeActivity struct {
 
 // Task is a single user-goal-driven run within a project.
 type Task struct {
-	ID               string          `json:"id"`
-	ProjectID        string          `json:"project_id"`
-	Type             Type            `json:"type"`
-	Goal             string          `json:"goal"`
-	Status           Status          `json:"status"`
-	Runner           Runner          `json:"runner"`
-	RuntimeProfileID string          `json:"runtime_profile_id"`
-	RunControls      RunControls     `json:"run_controls"`
-	ScopeSnapshot    ScopeSnapshot   `json:"scope_snapshot"`
-	RuntimeControls  RuntimeControls `json:"runtime_controls"`
+	ID                   string                 `json:"id"`
+	ProjectID            string                 `json:"project_id"`
+	Type                 Type                   `json:"type"`
+	Goal                 string                 `json:"goal"`
+	Status               Status                 `json:"status"`
+	Runner               Runner                 `json:"runner"`
+	RuntimeProfileID     string                 `json:"runtime_profile_id,omitempty"`
+	RunControls          RunControls            `json:"run_controls"`
+	ScopeSnapshot        ScopeSnapshot          `json:"scope_snapshot"`
+	RuntimeControls      RuntimeControls        `json:"runtime_controls"`
+	RuntimeConfiguration *runtimeconfig.Summary `json:"runtime_configuration,omitempty"`
 	// RuntimeActivity is current process/session health, not Task status.
 	RuntimeActivity      RuntimeActivity      `json:"runtime_activity"`
 	BlackboardConclusion BlackboardConclusion `json:"blackboard_conclusion"`
@@ -560,6 +562,9 @@ type CreateRequest struct {
 	RuntimeProfileID string
 	Runner           Runner
 	RunControls      RunControls
+	// RuntimeConfig is the initial immutable Runtime Configuration Snapshot.
+	// When present, Task and version 1 are committed in one transaction.
+	RuntimeConfig map[string]any
 }
 
 // ErrNotFound is returned when no task matches the requested id.
@@ -745,7 +750,19 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 		return Task{}, fmt.Errorf("encode scope snapshot: %w", err)
 	}
 
-	_, err = s.db.Exec(
+	var runtimeConfigJSON []byte
+	if req.RuntimeConfig != nil {
+		runtimeConfigJSON, err = json.Marshal(req.RuntimeConfig)
+		if err != nil {
+			return Task{}, fmt.Errorf("encode initial Runtime configuration: %w", err)
+		}
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Task{}, fmt.Errorf("begin Task creation: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	_, err = tx.Exec(
 		`INSERT INTO tasks (id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		created.ID, created.ProjectID, string(created.Type), created.Goal, string(created.Status), string(created.Runner),
@@ -754,6 +771,17 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	)
 	if err != nil {
 		return Task{}, fmt.Errorf("store task: %w", err)
+	}
+	if req.RuntimeConfig != nil {
+		if _, err := tx.Exec(
+			`INSERT INTO task_runtime_config_versions (id,task_id,version,runtime_profile_id,config_json,created_at) VALUES (?,?,?,?,?,?)`,
+			newID(), created.ID, 1, created.RuntimeProfileID, string(runtimeConfigJSON), created.CreatedAt.Format(time.RFC3339Nano),
+		); err != nil {
+			return Task{}, fmt.Errorf("store initial Task Runtime configuration: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Task{}, fmt.Errorf("commit Task creation: %w", err)
 	}
 	return created, nil
 }

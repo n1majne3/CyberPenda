@@ -111,7 +111,8 @@ func newHostPiPersistentFixture(t *testing.T, factory ProviderSessionFactory) (*
 
 		Type: task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
-		RunControls: task.RunControls{HostActivated: true},
+		RunControls:   task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatal(err)

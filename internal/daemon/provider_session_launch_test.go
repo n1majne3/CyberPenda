@@ -332,6 +332,7 @@ func newProviderSessionLaunchFixture(t *testing.T, factory ProviderSessionFactor
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect example.com", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		server.Close()

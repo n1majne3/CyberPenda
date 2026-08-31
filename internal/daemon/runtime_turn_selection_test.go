@@ -73,6 +73,7 @@ func TestCodexNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testin
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -258,6 +259,7 @@ func TestCodexNativeSteerAlwaysSendsCompleteResolvedSelection(t *testing.T) {
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -359,6 +361,7 @@ func TestCodexNativeSteerRejectsProviderChangeWithoutRecordingConversation(t *te
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -445,6 +448,7 @@ func TestCodexNativeSteerUnsupportedEffortFailsTurnWithoutDowngrade(t *testing.T
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -541,18 +545,18 @@ func TestCurrentTurnSelectionUsesCapturedSnapshotNotEmptyProfileFields(t *testin
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, map[string]any{
-		"runtime_profile_id": profile.ID,
-		"model_provider_snapshot": map[string]any{
-			"model_provider_id": "snap-provider",
-			"model":             "snap-model",
-		},
-		"requested_reasoning_effort": "medium",
-	}); err != nil {
+	captured := testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)
+	captured["model_provider_snapshot"].(map[string]any)["model_provider_id"] = "snap-provider"
+	captured["model_provider_snapshot"].(map[string]any)["model"] = "snap-model"
+	captured["runtime_turn_selection"] = map[string]any{
+		"model_provider_id": "snap-provider", "model": "snap-model", "requested_reasoning_effort": "medium",
+	}
+	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, captured); err != nil {
 		t.Fatal(err)
 	}
 
@@ -626,8 +630,17 @@ func TestQueueSteerModelOnlySelectionCreatesConfigVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "Queue Model Provider", BaseURL: "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-old", "gpt-new"}, DefaultModel: "gpt-old"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		Model: "gpt-old", ReasoningEffort: "high", BinaryPath: binary,
+		ModelProviderID: provider.ID, ModelOverride: "gpt-old", ReasoningEffort: "high", BinaryPath: binary,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -635,7 +648,8 @@ func TestQueueSteerModelOnlySelectionCreatesConfigVersion(t *testing.T) {
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
-		RunControls: task.RunControls{HostActivated: true},
+		RunControls:   task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -664,7 +678,8 @@ func TestQueueSteerModelOnlySelectionCreatesConfigVersion(t *testing.T) {
 	if queued.RuntimeConfigVersion == nil {
 		t.Fatal("model-only selection must create Runtime Config Version")
 	}
-	if queued.RuntimeConfigVersion.Config["model"] != "gpt-new" && queued.RuntimeConfigVersion.Config["model_override"] != "gpt-new" {
+	turn, _ := queued.RuntimeConfigVersion.Config["runtime_turn_selection"].(map[string]any)
+	if turn["model"] != "gpt-new" {
 		t.Fatalf("config model = %#v", queued.RuntimeConfigVersion.Config)
 	}
 	versionsAfter, err := server.tasks.RuntimeConfigVersions(created.ID)
@@ -711,6 +726,8 @@ func TestQueueSteerProviderChangeCreatesConfigVersionAndKeepsMessage(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv(primary.APIKeyEnv, "sk-primary")
+	t.Setenv(alternate.APIKeyEnv, "sk-alternate")
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		ModelProviderID: primary.ID, ModelOverride: "m1", ReasoningEffort: "high",
 		BinaryPath: binary,
@@ -721,7 +738,8 @@ func TestQueueSteerProviderChangeCreatesConfigVersionAndKeepsMessage(t *testing.
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
-		RunControls: task.RunControls{HostActivated: true},
+		RunControls:   task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -766,13 +784,14 @@ func TestQueueSteerProviderChangeCreatesConfigVersionAndKeepsMessage(t *testing.
 	if queued.RuntimeConfigVersion == nil {
 		t.Fatal("provider change must create Runtime Config Version")
 	}
-	if queued.RuntimeConfigVersion.Config["model_provider_id"] != alternate.ID {
+	turn, _ := queued.RuntimeConfigVersion.Config["runtime_turn_selection"].(map[string]any)
+	if turn["model_provider_id"] != alternate.ID {
 		t.Fatalf("config model_provider_id = %#v", queued.RuntimeConfigVersion.Config)
 	}
-	if queued.RuntimeConfigVersion.Config["model"] != "m2" && queued.RuntimeConfigVersion.Config["model_override"] != "m2" {
+	if turn["model"] != "m2" {
 		t.Fatalf("config model fields = %#v", queued.RuntimeConfigVersion.Config)
 	}
-	if got := queued.RuntimeConfigVersion.Config["requested_reasoning_effort"]; got != "max" {
+	if got := turn["requested_reasoning_effort"]; got != "max" {
 		t.Fatalf("config requested_reasoning_effort = %#v, want max", got)
 	}
 	versionsAfter, err := server.tasks.RuntimeConfigVersions(created.ID)
@@ -834,6 +853,7 @@ func TestClaudeNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testi
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -988,6 +1008,7 @@ func TestClaudeNativeSteerAlwaysSendsCompleteResolvedSelection(t *testing.T) {
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1089,6 +1110,7 @@ func TestClaudeNativeSteerProviderChangeRequiresRestartAndDoesNotTouchLiveSessio
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1175,6 +1197,7 @@ func TestClaudeNativeSteerUnsupportedEffortFailsTurnWithoutDowngrade(t *testing.
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1312,6 +1335,7 @@ func TestPiNativeSteerAcceptsCrossProviderWithoutRestart(t *testing.T) {
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1327,16 +1351,9 @@ func TestPiNativeSteerAcceptsCrossProviderWithoutRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Capture the projected multi-provider set the way Config Projection does.
-	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, map[string]any{
-		"model_provider_id":            primary.ID,
-		"model":                        "m1",
-		"requested_reasoning_effort":   "high",
-		"projected_model_provider_ids": []string{primary.ID, alternate.ID},
-		"model_provider_snapshot": map[string]any{
-			"model_provider_id": primary.ID,
-			"model":             "m1",
-		},
-	}); err != nil {
+	projected := testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)
+	projected["config_projection"] = map[string]any{"projected_model_provider_ids": []string{primary.ID, alternate.ID}}
+	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, projected); err != nil {
 		t.Fatal(err)
 	}
 	if err := server.BindProviderSession(created.ID, session); err != nil {
@@ -1457,6 +1474,7 @@ func TestPiNativeSteerRejectsProviderOutsideProjectedSet(t *testing.T) {
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1471,10 +1489,9 @@ func TestPiNativeSteerRejectsProviderOutsideProjectedSet(t *testing.T) {
 	if _, err := server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, map[string]any{
-		"model_provider_id":            primary.ID,
-		"projected_model_provider_ids": []string{primary.ID},
-	}); err != nil {
+	projected := testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)
+	projected["config_projection"] = map[string]any{"projected_model_provider_ids": []string{primary.ID}}
+	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, projected); err != nil {
 		t.Fatal(err)
 	}
 	if err := server.BindProviderSession(created.ID, session); err != nil {
@@ -1546,6 +1563,7 @@ func TestPiNativeSteerFailsClosedWithoutProjectedSet(t *testing.T) {
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1561,10 +1579,8 @@ func TestPiNativeSteerFailsClosedWithoutProjectedSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Legacy runtime config: no projected_model_provider_ids field.
-	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, map[string]any{
-		"model_provider_id": primary.ID,
-		"model":             "m1",
-	}); err != nil {
+	legacyProjection := testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)
+	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, legacyProjection); err != nil {
 		t.Fatal(err)
 	}
 	if err := server.BindProviderSession(created.ID, session); err != nil {
@@ -1640,6 +1656,7 @@ func TestPiV2LaunchDoesNotDeadlockListingGlobalProviders(t *testing.T) {
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1730,7 +1747,8 @@ func TestResumeReasoningEffortOnlyUpdatesTurnSelection(t *testing.T) {
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
-		RunControls: task.RunControls{HostActivated: true},
+		RunControls:   task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1844,7 +1862,8 @@ func TestResumeFullSelectionKeepsXHighOverOlderConversation(t *testing.T) {
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
-		RunControls: task.RunControls{HostActivated: true},
+		RunControls:   task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -953,7 +954,553 @@ func migrations() []migration {
 		newMigration(66, "disabled_session_blackboard_mode", migration66SQL, migration66Up),
 		newMigration(67, "operator_disabled_output_origins", migration67SQL, migration67Up),
 		newMigration(68, "operator_evidence_request_sources", migration68SQL, migration68Up),
+		newMigration(69, "owner_local_runtime_configuration_snapshots", migration69SQL, migration69Up),
 	}
+}
+
+const migration69SQL = `runtime configuration snapshot v1; remove automatic Runtime Profiles and runtime_profiles.kind`
+
+type migration69Profile struct {
+	id       string
+	name     string
+	provider string
+	kind     string
+	fields   map[string]any
+}
+
+func migration69Up(tx *sql.Tx) error {
+	profiles, err := migration69Profiles(tx)
+	if err != nil {
+		return err
+	}
+	for _, table := range []struct {
+		name       string
+		owner      string
+		ownerTable string
+	}{
+		{name: "task_runtime_config_versions", owner: "task_id", ownerTable: "tasks"},
+		{name: "session_runtime_config_versions", owner: "session_id", ownerTable: "sessions"},
+	} {
+		if err := migration69ConfigVersions(tx, table.name, table.owner, table.ownerTable, profiles); err != nil {
+			return err
+		}
+	}
+	if err := migration69BackfillMissingTaskVersions(tx, profiles); err != nil {
+		return err
+	}
+	if err := migration69BackfillMissingSessionVersions(tx, profiles); err != nil {
+		return err
+	}
+	if err := migration69RemoveProjectProfileDefaults(tx); err != nil {
+		return err
+	}
+	for _, table := range []string{
+		"tasks",
+		"task_continuations",
+		"session_continuations",
+		"blackboard_continuation_grants",
+		"session_continuation_interface_grants",
+		"blackboard_graph_provenance",
+	} {
+		if err := migration69ClearAutomaticReferences(tx, table); err != nil {
+			return err
+		}
+	}
+	if err := migration69ValidateContinuations(tx, "task_continuations", "task_runtime_config_versions"); err != nil {
+		return err
+	}
+	if err := migration69ValidateContinuations(tx, "session_continuations", "session_runtime_config_versions"); err != nil {
+		return err
+	}
+	if err := migration69ValidateSnapshots(tx, "Task", "task_runtime_config_versions"); err != nil {
+		return err
+	}
+	if err := migration69ValidateSnapshots(tx, "Session", "session_runtime_config_versions"); err != nil {
+		return err
+	}
+	hasKind, err := storeTableHasColumn(tx, "runtime_profiles", "kind")
+	if err != nil {
+		return err
+	}
+	if hasKind {
+		if _, err := tx.Exec(`DELETE FROM skill_profile_opt_outs WHERE profile_id IN (SELECT id FROM runtime_profiles WHERE kind='launch_resolve')`); err != nil {
+			return fmt.Errorf("delete automatic Runtime Profile Skill Opt-Outs: %w", err)
+		}
+		if _, err := tx.Exec(`DELETE FROM runtime_profiles WHERE kind='launch_resolve'`); err != nil {
+			return fmt.Errorf("delete automatic Runtime Profiles: %w", err)
+		}
+	}
+	if err := dropColumnIfPresent(tx, "runtime_profiles", "kind"); err != nil {
+		return fmt.Errorf("drop runtime_profiles.kind: %w", err)
+	}
+	return nil
+}
+
+func migration69Profiles(tx *sql.Tx) (map[string]migration69Profile, error) {
+	hasKind, err := storeTableHasColumn(tx, "runtime_profiles", "kind")
+	if err != nil {
+		return nil, fmt.Errorf("inspect Runtime Profile kind for migration 69: %w", err)
+	}
+	query := `SELECT id,name,provider,'manual',fields_json FROM runtime_profiles`
+	if hasKind {
+		query = `SELECT id,name,provider,kind,fields_json FROM runtime_profiles`
+	}
+	rows, err := tx.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("read Runtime Profiles for migration 69: %w", err)
+	}
+	defer rows.Close()
+	profiles := map[string]migration69Profile{}
+	for rows.Next() {
+		var profile migration69Profile
+		var fieldsJSON string
+		if err := rows.Scan(&profile.id, &profile.name, &profile.provider, &profile.kind, &fieldsJSON); err != nil {
+			return nil, fmt.Errorf("scan Runtime Profile for migration 69: %w", err)
+		}
+		if err := json.Unmarshal([]byte(fieldsJSON), &profile.fields); err != nil {
+			return nil, fmt.Errorf("decode Runtime Profile %s for migration 69: %w", profile.id, err)
+		}
+		if migration69HasInlineSecret(profile.fields) {
+			return nil, fmt.Errorf("Runtime Profile %s contains a legacy inline secret that cannot be represented as a Credential Reference", profile.id)
+		}
+		profiles[profile.id] = profile
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate Runtime Profiles for migration 69: %w", err)
+	}
+	return profiles, nil
+}
+
+func migration69ConfigVersions(tx *sql.Tx, table, ownerColumn, ownerTable string, profiles map[string]migration69Profile) error {
+	present, err := migration69TableExists(tx, table)
+	if err != nil || !present {
+		return err
+	}
+	query := fmt.Sprintf(`SELECT c.id,c.runtime_profile_id,c.config_json FROM %s c`, table)
+	rows, err := tx.Query(query)
+	if err != nil {
+		return fmt.Errorf("read %s for migration 69: %w", table, err)
+	}
+	type rowValue struct{ id, profileID, configJSON string }
+	var values []rowValue
+	for rows.Next() {
+		var value rowValue
+		if err := rows.Scan(&value.id, &value.profileID, &value.configJSON); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan %s for migration 69: %w", table, err)
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, value := range values {
+		var actual map[string]any
+		if err := json.Unmarshal([]byte(value.configJSON), &actual); err != nil {
+			return fmt.Errorf("decode %s %s: %w", table, value.id, err)
+		}
+		if version, ok := actual["snapshot_version"].(float64); ok && int(version) == 1 {
+			continue
+		}
+		if migration69HasInlineSecret(actual) {
+			return fmt.Errorf("Runtime configuration %s contains a legacy inline secret that cannot be represented as a Credential Reference", value.id)
+		}
+		if _, captured := actual["enabled_skill_ids"]; !captured {
+			enabled, err := migration69EnabledSkills(tx, value.profileID)
+			if err != nil {
+				return fmt.Errorf("capture enabled Skills for Runtime configuration %s: %w", value.id, err)
+			}
+			actual["enabled_skill_ids"] = enabled
+		}
+		profile := profiles[value.profileID]
+		snapshot := migration69Snapshot(profile, actual)
+		encoded, err := json.Marshal(snapshot)
+		if err != nil {
+			return fmt.Errorf("encode Runtime configuration Snapshot %s: %w", value.id, err)
+		}
+		provenance := ""
+		if profile.kind == "manual" {
+			provenance = profile.id
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`UPDATE %s SET runtime_profile_id=?,config_json=? WHERE id=?`, table), provenance, string(encoded), value.id); err != nil {
+			return fmt.Errorf("store Runtime configuration Snapshot %s: %w", value.id, err)
+		}
+	}
+	_ = ownerColumn
+	_ = ownerTable
+	return nil
+}
+
+func migration69EnabledSkills(tx *sql.Tx, profileID string) ([]string, error) {
+	rows, err := tx.Query(`SELECT s.id FROM skills s WHERE NOT EXISTS (SELECT 1 FROM skill_profile_opt_outs o WHERE o.profile_id=? AND o.skill_id=s.id) ORDER BY s.id`, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result = append(result, id)
+	}
+	return result, rows.Err()
+}
+
+func migration69Snapshot(profile migration69Profile, actual map[string]any) map[string]any {
+	settings := migration69CloneMap(profile.fields)
+	for key, value := range actual {
+		if key == "snapshot_version" || key == "runtime_profile" || key == "model_provider_snapshot" || key == "runtime_turn_selection" || key == "enabled_skill_ids" || key == "config_projection" || key == "projected_model_provider_ids" {
+			continue
+		}
+		settings[key] = value
+	}
+	delete(settings, "api_keys")
+	generated, _ := actual["generated_config"].(map[string]any)
+	providerSnapshot, _ := actual["model_provider_snapshot"].(map[string]any)
+	if providerSnapshot == nil && generated != nil {
+		providerSnapshot, _ = generated["model_provider_snapshot"].(map[string]any)
+	}
+	pluginID := migration69String(actual, "runtime_plugin_id", "provider")
+	if pluginID == "" {
+		pluginID = migration69String(generated, "runtime_plugin_id", "provider")
+	}
+	if pluginID == "" {
+		pluginID = profile.provider
+	}
+	modelProviderID := migration69String(actual, "model_provider_id")
+	if modelProviderID == "" {
+		modelProviderID = migration69String(providerSnapshot, "model_provider_id")
+	}
+	if modelProviderID == "" {
+		modelProviderID = migration69String(profile.fields, "model_provider_id")
+	}
+	model := migration69String(actual, "model", "model_override")
+	if model == "" {
+		model = migration69String(providerSnapshot, "model")
+	}
+	if model == "" {
+		model = migration69String(generated, "model", "model_override")
+	}
+	if model == "" {
+		model = migration69String(profile.fields, "model", "model_override")
+	}
+	if pluginID == "fake" {
+		if modelProviderID == "" {
+			modelProviderID = "none"
+		}
+		if model == "" {
+			model = "fake"
+		}
+	}
+	effort := migration69String(actual, "requested_reasoning_effort", "reasoning_effort")
+	if effort == "" {
+		effort = migration69String(profile.fields, "reasoning_effort")
+	}
+	runner := migration69String(actual, "runner")
+	if runner == "" {
+		runner = migration69String(profile.fields, "default_runner")
+	}
+	if providerSnapshot == nil {
+		providerSnapshot = map[string]any{"model_provider_id": modelProviderID, "model": model}
+	}
+	snapshot := map[string]any{
+		"snapshot_version":        1,
+		"runtime_plugin_id":       pluginID,
+		"runner":                  runner,
+		"model_provider_snapshot": providerSnapshot,
+		"runtime_turn_selection": map[string]any{
+			"model_provider_id":          modelProviderID,
+			"model":                      model,
+			"requested_reasoning_effort": effort,
+		},
+		"settings":          settings,
+		"enabled_skill_ids": migration69StringSlice(actual["enabled_skill_ids"]),
+	}
+	projection, ok := actual["config_projection"].(map[string]any)
+	if !ok {
+		projection = migration69ConfigProjection(pluginID)
+	}
+	if projected, present := actual["projected_model_provider_ids"]; present {
+		projection["projected_model_provider_ids"] = projected
+	}
+	snapshot["config_projection"] = projection
+	if profile.kind == "manual" {
+		snapshot["runtime_profile"] = map[string]any{"id": profile.id, "name": profile.name}
+	}
+	return snapshot
+}
+
+func migration69ConfigProjection(pluginID string) map[string]any {
+	switch pluginID {
+	case "codex":
+		return map[string]any{"primitive": "codex_home", "config_path": "runtime-home/codex/config.toml"}
+	case "claude_code":
+		return map[string]any{"primitive": "claude_settings", "config_path": "runtime-home/claude/settings.json", "mcp_config_path": "workdir/.mcp.json"}
+	case "pi":
+		return map[string]any{"primitive": "pi_agent", "config_path": "runtime-home/pi/agent/models.json", "mcp_config_path": "runtime-home/pi/agent/mcp.json"}
+	case "hermes":
+		return map[string]any{"primitive": "hermes_home", "config_path": "runtime-home/hermes/config.yaml"}
+	default:
+		return map[string]any{"primitive": "none"}
+	}
+}
+
+func migration69BackfillMissingTaskVersions(tx *sql.Tx, profiles map[string]migration69Profile) error {
+	present, err := migration69TableExists(tx, "tasks")
+	if err != nil || !present {
+		return err
+	}
+	rows, err := tx.Query(`SELECT t.id,t.runtime_profile_id,t.runner,t.created_at FROM tasks t WHERE NOT EXISTS (SELECT 1 FROM task_runtime_config_versions c WHERE c.task_id=t.id)`)
+	if err != nil {
+		return fmt.Errorf("read Tasks missing Runtime configuration: %w", err)
+	}
+	type missing struct{ id, profileID, runner, createdAt string }
+	var all []missing
+	for rows.Next() {
+		var item missing
+		if err := rows.Scan(&item.id, &item.profileID, &item.runner, &item.createdAt); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		all = append(all, item)
+	}
+	_ = rows.Close()
+	for _, item := range all {
+		profile := profiles[item.profileID]
+		enabled, err := migration69EnabledSkills(tx, item.profileID)
+		if err != nil {
+			return err
+		}
+		snapshot := migration69Snapshot(profile, map[string]any{"runner": item.runner, "enabled_skill_ids": enabled})
+		encoded, _ := json.Marshal(snapshot)
+		provenance := ""
+		if profile.kind == "manual" {
+			provenance = profile.id
+		}
+		if _, err := tx.Exec(`INSERT INTO task_runtime_config_versions(id,task_id,version,runtime_profile_id,config_json,created_at) VALUES(?,?,?,?,?,?)`, "task-config-m69-"+item.id, item.id, 1, provenance, string(encoded), item.createdAt); err != nil {
+			return fmt.Errorf("backfill Task Runtime configuration %s: %w", item.id, err)
+		}
+	}
+	return nil
+}
+
+func migration69BackfillMissingSessionVersions(tx *sql.Tx, profiles map[string]migration69Profile) error {
+	present, err := migration69TableExists(tx, "sessions")
+	if err != nil || !present {
+		return err
+	}
+	rows, err := tx.Query(`SELECT s.id,s.created_at,COALESCE((SELECT c.runtime_profile_id FROM session_continuations c WHERE c.session_id=s.id ORDER BY c.number LIMIT 1),''),COALESCE((SELECT c.runner FROM session_continuations c WHERE c.session_id=s.id ORDER BY c.number LIMIT 1),'') FROM sessions s WHERE NOT EXISTS (SELECT 1 FROM session_runtime_config_versions v WHERE v.session_id=s.id)`)
+	if err != nil {
+		return fmt.Errorf("read Sessions missing Runtime configuration: %w", err)
+	}
+	type missing struct{ id, createdAt, profileID, runner string }
+	var all []missing
+	for rows.Next() {
+		var item missing
+		if err := rows.Scan(&item.id, &item.createdAt, &item.profileID, &item.runner); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		all = append(all, item)
+	}
+	_ = rows.Close()
+	for _, item := range all {
+		profile := profiles[item.profileID]
+		if profile.id == "" {
+			return fmt.Errorf("Session %s has no legacy Runtime Profile and cannot be backfilled with a Runtime configuration Snapshot", item.id)
+		}
+		enabled, err := migration69EnabledSkills(tx, item.profileID)
+		if err != nil {
+			return err
+		}
+		snapshot := migration69Snapshot(profile, map[string]any{"runner": item.runner, "enabled_skill_ids": enabled})
+		encoded, _ := json.Marshal(snapshot)
+		provenance := ""
+		if profile.kind == "manual" {
+			provenance = profile.id
+		}
+		if _, err := tx.Exec(`INSERT INTO session_runtime_config_versions(id,session_id,version,runtime_profile_id,config_json,created_at) VALUES(?,?,?,?,?,?)`, "session-config-m69-"+item.id, item.id, 1, provenance, string(encoded), item.createdAt); err != nil {
+			return fmt.Errorf("backfill Session Runtime configuration %s: %w", item.id, err)
+		}
+	}
+	return nil
+}
+
+func migration69RemoveProjectProfileDefaults(tx *sql.Tx) error {
+	rows, err := tx.Query(`SELECT id,defaults_json FROM projects`)
+	if err != nil {
+		return fmt.Errorf("read Project Defaults for migration 69: %w", err)
+	}
+	type projectDefault struct{ id, raw string }
+	var projects []projectDefault
+	for rows.Next() {
+		var project projectDefault
+		if err := rows.Scan(&project.id, &project.raw); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		projects = append(projects, project)
+	}
+	_ = rows.Close()
+	for _, project := range projects {
+		var defaults map[string]any
+		if err := json.Unmarshal([]byte(project.raw), &defaults); err != nil {
+			return fmt.Errorf("decode Project Defaults %s: %w", project.id, err)
+		}
+		delete(defaults, "runtime_profile")
+		delete(defaults, "runtime_profile_id")
+		encoded, _ := json.Marshal(defaults)
+		if _, err := tx.Exec(`UPDATE projects SET defaults_json=? WHERE id=?`, string(encoded), project.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func migration69ClearAutomaticReferences(tx *sql.Tx, table string) error {
+	present, err := migration69TableExists(tx, table)
+	if err != nil || !present {
+		return err
+	}
+	hasColumn, err := storeTableHasColumn(tx, table, "runtime_profile_id")
+	if err != nil || !hasColumn {
+		return err
+	}
+	hasKind, err := storeTableHasColumn(tx, "runtime_profiles", "kind")
+	if err != nil || !hasKind {
+		return err
+	}
+	_, err = tx.Exec(fmt.Sprintf(`UPDATE %s SET runtime_profile_id='' WHERE runtime_profile_id IN (SELECT id FROM runtime_profiles WHERE kind='launch_resolve')`, table))
+	if err != nil {
+		return fmt.Errorf("clear automatic Runtime Profile references in %s: %w", table, err)
+	}
+	return nil
+}
+
+func migration69ValidateContinuations(tx *sql.Tx, continuationTable, configTable string) error {
+	present, err := migration69TableExists(tx, continuationTable)
+	if err != nil || !present {
+		return err
+	}
+	var invalid int
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s c LEFT JOIN %s v ON v.id=c.runtime_config_version_id WHERE v.id IS NULL
+		OR json_extract(v.config_json,'$.snapshot_version') <> 1
+		OR trim(COALESCE(json_extract(v.config_json,'$.runtime_plugin_id'),'')) = ''
+		OR trim(COALESCE(json_extract(v.config_json,'$.runtime_turn_selection.model_provider_id'),'')) = ''
+		OR trim(COALESCE(json_extract(v.config_json,'$.runtime_turn_selection.model'),'')) = ''
+		OR json_type(v.config_json,'$.settings') <> 'object'
+		OR json_type(v.config_json,'$.enabled_skill_ids') <> 'array'
+		OR json_type(v.config_json,'$.config_projection') <> 'object'`, continuationTable, configTable)
+	if err := tx.QueryRow(query).Scan(&invalid); err != nil {
+		return fmt.Errorf("validate %s Runtime configuration Snapshots: %w", continuationTable, err)
+	}
+	if invalid != 0 {
+		return fmt.Errorf("%s has %d Continuations without a readable Runtime configuration Snapshot", continuationTable, invalid)
+	}
+	return nil
+}
+
+func migration69ValidateSnapshots(tx *sql.Tx, ownerName, configTable string) error {
+	present, err := migration69TableExists(tx, configTable)
+	if err != nil || !present {
+		return err
+	}
+	rows, err := tx.Query(fmt.Sprintf(`SELECT id,config_json FROM %s`, configTable))
+	if err != nil {
+		return fmt.Errorf("validate %s Runtime configuration Snapshots: %w", ownerName, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, raw string
+		if err := rows.Scan(&id, &raw); err != nil {
+			return err
+		}
+		var snapshot struct {
+			SnapshotVersion  int            `json:"snapshot_version"`
+			RuntimePluginID  string         `json:"runtime_plugin_id"`
+			ModelProvider    map[string]any `json:"model_provider_snapshot"`
+			TurnSelection    map[string]any `json:"runtime_turn_selection"`
+			Settings         map[string]any `json:"settings"`
+			EnabledSkillIDs  []string       `json:"enabled_skill_ids"`
+			ConfigProjection map[string]any `json:"config_projection"`
+		}
+		if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+			return fmt.Errorf("%s Runtime configuration Snapshot %s is unreadable: %w", ownerName, id, err)
+		}
+		if snapshot.SnapshotVersion != 1 || strings.TrimSpace(snapshot.RuntimePluginID) == "" ||
+			strings.TrimSpace(migration69String(snapshot.TurnSelection, "model_provider_id")) == "" ||
+			strings.TrimSpace(migration69String(snapshot.TurnSelection, "model")) == "" ||
+			snapshot.Settings == nil || snapshot.EnabledSkillIDs == nil || snapshot.ConfigProjection == nil {
+			return fmt.Errorf("%s Runtime configuration Snapshot %s cannot be read for Resume and replacement Continuation: %s", ownerName, id, raw)
+		}
+		for _, skillID := range snapshot.EnabledSkillIDs {
+			var exists int
+			if err := tx.QueryRow(`SELECT COUNT(*) FROM skills WHERE id=?`, skillID).Scan(&exists); err != nil {
+				return err
+			}
+			if exists == 0 {
+				return fmt.Errorf("%s Runtime configuration Snapshot %s captured Skill %s, but that Skill is unavailable", ownerName, id, skillID)
+			}
+		}
+	}
+	return rows.Err()
+}
+
+func migration69HasInlineSecret(config map[string]any) bool {
+	value, ok := config["api_keys"]
+	if !ok || value == nil {
+		return false
+	}
+	keys, ok := value.(map[string]any)
+	return !ok || len(keys) != 0
+}
+
+func migration69CloneMap(input map[string]any) map[string]any {
+	cloned := map[string]any{}
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func migration69String(input map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value, ok := input[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func migration69StringSlice(value any) []string {
+	if stringsValue, ok := value.([]string); ok {
+		return append(make([]string, 0, len(stringsValue)), stringsValue...)
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return []string{}
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+			out = append(out, strings.TrimSpace(text))
+		}
+	}
+	return out
+}
+
+func migration69TableExists(tx *sql.Tx, table string) (bool, error) {
+	var count int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM sqlite_schema WHERE type='table' AND name=?`, table).Scan(&count); err != nil {
+		return false, err
+	}
+	return count == 1, nil
 }
 
 const migration68SQL = `

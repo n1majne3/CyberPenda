@@ -44,6 +44,7 @@ func TestBuildTaskLaunchPlanPiSandboxKeepsBarePiWhenFactoryPresent(t *testing.T)
 		ProjectID: createdProject.ID,
 		Type:      task.TypePentest, Goal: "probe example.test",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -117,6 +118,7 @@ func TestBuildTaskLaunchPlanPiSandboxWrapsWithoutFactory(t *testing.T) {
 		ProjectID: createdProject.ID,
 		Type:      task.TypePentest, Goal: "probe example.test",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)

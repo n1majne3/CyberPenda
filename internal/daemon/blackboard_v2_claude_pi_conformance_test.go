@@ -120,6 +120,7 @@ func TestClaudeAndPiV2LaunchHeaderChecklistAndExactSharedSnapshotBytes(t *testin
 			}
 			createdTask, err := server.tasks.Create(task.CreateRequest{
 				ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect shared.example", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+				RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 			})
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
@@ -250,6 +251,7 @@ func TestClaudeAndPiV2ResumeUsesFreshPinAndSharedSnapshotBytes(t *testing.T) {
 			}
 			createdTask, err := server.tasks.Create(task.CreateRequest{
 				ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect resume.example", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+				RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 			})
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
@@ -389,6 +391,7 @@ cat .pentest/blackboard.json
 				ProjectID: createdProject.ID,
 				Type:      task.TypePentest, Goal: "exercise long " + tc.name + " continuation", RuntimeProfileID: profile.ID,
 				Runner: task.RunnerHost, RunControls: task.RunControls{HostActivated: true},
+				RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 			})
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
@@ -494,6 +497,7 @@ func TestClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServe
 		}
 		createdTask, err := server.tasks.Create(task.CreateRequest{
 			ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "use trusted tools", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+			RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 		})
 		if err != nil {
 			t.Fatalf("create Task: %v", err)
@@ -557,6 +561,7 @@ func TestClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServe
 		}
 		createdTask, err := server.tasks.Create(task.CreateRequest{
 			ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "use trusted tools", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+			RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 		})
 		if err != nil {
 			t.Fatalf("create Task: %v", err)

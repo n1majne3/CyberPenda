@@ -370,7 +370,11 @@ func newRecoveryOwnershipFixture(t *testing.T, factory ProviderSessionFactory) (
 	if err != nil {
 		t.Fatal(err)
 	}
-	found, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "recover", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	found, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "recover",
+		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

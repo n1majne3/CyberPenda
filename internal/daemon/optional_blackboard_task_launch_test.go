@@ -54,7 +54,8 @@ func newOptionalBlackboardTaskFixture(t *testing.T) optionalBlackboardTaskFixtur
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect example.test",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
-		RunControls: task.RunControls{Policy: policy},
+		RunControls:   task.RunControls{Policy: policy},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 	})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
@@ -94,10 +95,17 @@ func TestTaskLaunchPlanCanOmitBlackboardProjection(t *testing.T) {
 			t.Fatalf("Task launch environment retained %s=%q", forbidden, value)
 		}
 	}
-	if plan.CapturedRuntimeConfig["runtime_profile_id"] != fixture.profile.ID || plan.CapturedRuntimeConfig["runner"] != task.RunnerHost {
+	provenance, _ := plan.CapturedRuntimeConfig["runtime_profile"].(map[string]any)
+	if provenance["id"] != fixture.profile.ID || plan.CapturedRuntimeConfig["runner"] != string(task.RunnerHost) {
 		t.Fatalf("ordinary Runtime configuration is incomplete: %#v", plan.CapturedRuntimeConfig)
 	}
-	captured, err := json.Marshal(plan.CapturedRuntimeConfig)
+	projected := make(map[string]any, len(plan.CapturedRuntimeConfig))
+	for key, value := range plan.CapturedRuntimeConfig {
+		if key != "settings" {
+			projected[key] = value
+		}
+	}
+	captured, err := json.Marshal(projected)
 	if err != nil {
 		t.Fatalf("encode captured Runtime configuration: %v", err)
 	}

@@ -21,8 +21,8 @@ An explicit operator-confirmed change of one Project Kind after a preview proves
 _Avoid_: automatic project repair, fact-to-solution migration, task mode switch
 
 **Project Defaults**:
-Project-level choices for default runner, optional **Default Runtime Profile Preset**, and task policy that do not copy global **Runtime Profiles**.
-_Avoid_: project-local runtime profile, copied profile, launch selection store
+Project-level choices for default runner and task policy. They never select, copy, or imply a **Runtime Profile**.
+_Avoid_: project-local runtime profile, copied profile, default profile, launch selection store
 
 **Task Policy**:
 Structured operator-defined limits that the **Runtime Harness** enforces for one Task, such as maximum challenge Attempts, wrong submissions, wall time, consecutive failures, Rating drawdown, or no-progress duration.
@@ -37,7 +37,7 @@ The primary project view that surfaces scope status, task runs, blackboard growt
 _Avoid_: chat home, task-only queue
 
 **Task**:
-A user-goal-driven project run executed by one **Runtime Profile** through one **Runner**.
+A user-goal-driven project run executed from one **Runtime Configuration Snapshot** through one **Runner**.
 _Avoid_: chat message, report section, shell command, plan step
 
 **Task Type**:
@@ -77,11 +77,11 @@ The creation or continuation of a **Task** from **Run Controls**, resolved runti
 _Avoid_: runtime projection, task adapter build, launch plumbing
 
 **Run Controls**:
-The structured task launch settings that choose **Launch Selection** or an optional **Runtime Profile Preset**, runner, mode, scope preview, and artifact behavior.
+The structured task launch settings that choose **Launch Selection** or an optional **Runtime Profile**, runner, mode, scope preview, and artifact behavior.
 _Avoid_: hidden prompt flags, runtime internals
 
 **Runtime Launch Controls**:
-The shared launch UI and controller used by both Project **Task Launch** and Non-Project **Session** creation for **Launch Selection**, optional **Runtime Profile Preset**, runner, model override, reasoning effort, skills preview, and **Preflight**. Owner-specific input labels, endpoints, and Project Scope behavior are adapters around this shared surface.
+The shared launch UI and controller used by both Project **Task Launch** and Non-Project **Session** creation for **Launch Selection**, an optional **Runtime Profile**, runner, model override, reasoning effort, skills preview, and **Preflight**. Owner-specific input labels, endpoints, and Project Scope behavior are adapters around this shared surface.
 _Avoid_: Session launch form, duplicated launch picker, runtime profile-only Session creation
 
 **Launch Selection**:
@@ -96,13 +96,13 @@ _Avoid_: profile edit, model provider edit, catalog refresh
 A task-only **Reasoning Effort** choice applied at launch that may differ from the selected **Runtime Profile** default without editing that profile.
 _Avoid_: profile edit, runtime flag, model override
 
-**Launch Profile Resolution**:
-The daemon step that turns **Run Controls** into the **Runtime Profile** used for a **Task**, either by reusing an explicitly selected **Runtime Profile Preset** or by finding or creating a minimal matching **Runtime Profile** from a **Launch Selection**.
-_Avoid_: live profile mutation, project-local profile fork
+**Launch Configuration Resolution**:
+The **Preflight** step that turns **Run Controls** into a **Runtime Configuration Snapshot**, either directly from **Launch Selection** or from a **Runtime Profile** selected for that launch.
+_Avoid_: launch profile resolution, global profile matching, profile creation
 
-**Default Runtime Profile Preset**:
-An optional **Project Defaults** reference to a global **Runtime Profile Preset** that preselects advanced launch configuration for new **Tasks** in that **Project**.
-_Avoid_: copied profile, project-local profile, required launch picker
+**Runtime Configuration Snapshot**:
+The immutable Runtime Owner-local settings captured for one launch or **Runtime Continuation**. It records the resolved Runtime Plugin, Model Provider, model, Reasoning Effort, Runner, and applicable Runtime configuration without storing secret values.
+_Avoid_: runtime profile, mutable launch selection, global configuration record
 
 **Task Event**:
 A structured timeline entry for a **Task**, including runtime output, status changes, startup checks, and task-local workflow markers.
@@ -193,23 +193,23 @@ Provider-native arguments required for a **Runtime** to operate without interact
 _Avoid_: permission grant, Scope authorization, **Host Runner Activation**, **Project Interface** authority, runner policy
 
 **Runtime Profile**:
-A global user-editable configuration that chooses how a **Runtime** should run for a task without storing secret values.
-_Avoid_: account, credential bundle, secret store
+A global user-created reusable advanced configuration for a **Runtime**, including MCP, Skill opt-outs, Extensions, binary paths, custom configuration, or Runner defaults without storing secret values.
+_Avoid_: account, credential bundle, secret store, automatic profile, runtime profile preset
 
 **Runtime Custom Arguments**:
 Advanced **Runtime Profile** command arguments for provider-native options that have no structured CyberPenda field.
 _Avoid_: Model Provider override, model override, reasoning-effort override, structured-field duplicate
 
-**Runtime Profile Preset**:
-A **Runtime Profile** saved for reuse because it carries advanced launch configuration such as **MCP Configuration**, **Runtime Extension Enablement**, binary paths, or runner defaults beyond a minimal **Launch Selection**.
-_Avoid_: model provider, launch picker default, project-local copy
-
 **Launch-Resolved Runtime Profile**:
-A minimal global **Runtime Profile** created or reused by **Launch Profile Resolution** when no **Runtime Profile Preset** is selected. It is marked `launch_resolve` in storage, grouped separately from user-authored presets, and may be promoted to a **Runtime Profile Preset** after the user adds MCP, skills, or extension configuration.
-_Avoid_: preset, project-local profile, launch-time copy
+A legacy global **Runtime Profile** that an older **Launch Configuration Resolution** path created from **Launch Selection**. New launches never create, reuse, or implicitly promote one.
+_Avoid_: runtime profile preset, runtime configuration snapshot, current launch output
+
+**Launch-Resolved Runtime Profile Migration**:
+The one-time conversion that copies every complete non-secret legacy Profile setting into each referencing Runtime Owner's self-contained **Runtime Configuration Snapshots** before removing all **Launch-Resolved Runtime Profiles**.
+_Avoid_: profile cleanup, blind deletion, hidden tombstone
 
 **Model Provider**:
-A global reusable non-secret configuration for a model service that a **Runtime Profile** can use when a **Runtime** needs model access.
+A global reusable non-secret configuration for a model service that a **Launch Selection** or **Runtime Profile** can use when a **Runtime** needs model access.
 _Avoid_: runtime profile, runtime plugin, model only, credential value
 
 **Launch-Ready Model Provider**:
@@ -461,7 +461,7 @@ A **Runtime Profile** choice that allows a compatible **Runtime Extension** from
 _Avoid_: library membership, automatic global mount, project-wide default
 
 **Default Skill Enablement**:
-The default-on policy that enables newly uploaded or imported **Skills** for all current and future **Runtime Profiles** unless a profile opts out.
+The default-on policy that enables newly uploaded or imported **Skills** for direct launches and all current and future **Runtime Profiles**, unless a selected Profile opts out.
 _Avoid_: runtime-specific plugin default, live task mutation, project-local default
 
 **Skill Opt-Out**:
@@ -480,12 +480,16 @@ _Avoid_: executable installer, credential file, remote marketplace listing
 The task-local materialization of enabled **Runtime Extensions** into the selected **Runtime**'s home, config, skill, plugin, or MCP-compatible directories.
 _Avoid_: host runtime mutation, global plugin install, profile edit side effect
 
-**Preset Selector**:
-An advanced task-launch control for choosing an optional **Runtime Profile Preset** filtered to the selected **Runtime Plugin** family.
-_Avoid_: primary launch picker, model provider switch, raw config editor
+**Launch Profile Selector**:
+An advanced task-launch control for explicitly choosing an optional **Runtime Profile** filtered to the selected **Runtime Plugin** family.
+_Avoid_: primary launch picker, default profile, model provider switch, raw config editor
+
+**Save as Runtime Profile**:
+An explicit operator-confirmed action that creates a named **Runtime Profile** from a direct **Runtime Configuration Snapshot** for later advanced editing and reuse.
+_Avoid_: automatic promotion, generated profile, launch side effect
 
 **Profile Selector**:
-The settings-page control for choosing which **Runtime Profile** or **Runtime Profile Preset** to edit.
+The settings-page control for choosing which **Runtime Profile** to edit.
 _Avoid_: task launch default, launch selection picker
 
 **Protocol Pin Selector**:
@@ -521,7 +525,7 @@ An advanced action that parses an edited runtime config back into structured **R
 _Avoid_: raw config save, opaque override, host config edit
 
 **Task Runtime Configuration**:
-The task-specific copy of runtime settings captured from a **Runtime Profile** for launching a **Task**, including any **Launch Model Override** applied at launch.
+The **Runtime Configuration Snapshot** owned by a **Task**, captured directly from **Launch Selection** or from a **Runtime Profile** selected for that launch.
 _Avoid_: live profile reference, mutable profile, embedded secret
 
 **Task Runtime Configuration Version**:
@@ -577,11 +581,11 @@ A project override that explicitly prevents a **Credential Reference** from usin
 _Avoid_: missing binding, broken secret
 
 **Config Projection**:
-The task-local preparation of runtime configuration from a **Runtime Profile**, **Model Provider**, and **Credential References**.
+The Runtime Owner-local preparation of runtime configuration from a **Runtime Configuration Snapshot**, **Model Provider**, and **Credential References**.
 _Avoid_: host config edit, config sync
 
 **Preflight**:
-A recorded startup check phase that determines whether a **Task** can launch its **Runtime**.
+A read-only startup check phase that resolves a non-persistent configuration preview and determines whether a **Task** or **Session** can launch its **Runtime**.
 _Avoid_: runtime execution, pentest work
 
 **Runtime Extension Requirement**:
@@ -921,7 +925,7 @@ _Avoid_: transcript, export, source of truth
 - **Task Launch** requires an explicit **Task Type** that matches the current **Project Kind** and stores it as an immutable snapshot.
 - **Scope Expansion** is part of **Scope** but retains a distinct internal **Trusted Origin** from human-approved scope.
 - An **Out-of-Scope Fact** does not change **Scope** and does not authorize testing.
-- A **Project** may define **Project Defaults** for new **Tasks**, including an optional **Default Runtime Profile Preset** and default **Runner**.
+- A **Project** may define **Project Defaults** for new **Tasks**, including a default **Runner** and Task Policy.
 - **Task Launch** captures one immutable **Task Policy Snapshot**.
 - The **Challenge Workflow** enforces Task Policy before each governed external operation, independently of prompt compliance.
 - The **Hosted Challenge Client** is process-isolated from the **Hosted Controller**, daemon, and Runtime session; one client command failure affects only that command.
@@ -931,8 +935,8 @@ _Avoid_: transcript, export, source of truth
 - The **Hosted Challenge Client** never combines submit, close, and start in one operation.
 - The **Hosted Challenge Client** rejects a normal close unless current TSecBench state proves the Benchmark Challenge complete; explicit abandonment requires a non-empty reason.
 - The Runtime, not the **Hosted Challenge Client**, selects, schedules, solves, hints, submits, or abandons Benchmark Challenges.
-- A **Project Defaults** reference to a **Default Runtime Profile Preset** preselects that preset on the task launch page but does not copy the **Runtime Profile**.
-- When no **Default Runtime Profile Preset** is configured, task launch starts from **Launch Selection** and uses **Launch Profile Resolution** to find or create a minimal **Runtime Profile**.
+- **Project Defaults** never preselect a **Runtime Profile**; each launch must select a Profile explicitly or use **Launch Selection** directly.
+- **Launch Configuration Resolution** creates a Runtime Owner-local **Runtime Configuration Snapshot** and never finds, creates, or reuses a global **Runtime Profile** unless that launch explicitly selects one.
 - A **Project Dashboard** is the primary UI entry point for a **Project**.
 - **Runtime Profiles** are global and reusable across **Projects**.
 - A **Runtime Profile** selects one **Runtime Plugin** by plugin identifier.
@@ -1063,6 +1067,7 @@ _Avoid_: transcript, export, source of truth
 - **Default Skill Enablement** applies to **Skills** but not **Runtime-Specific Extensions**.
 - A **Runtime Profile** may opt out of a **Skill** enabled by **Default Skill Enablement**.
 - A **Skill Opt-Out** is tied to **Skill ID** and survives ordinary imports or edits that update the same **Skill**.
+- The **Skills Page** bulk enablement actions apply to the selected **Runtime Profile** and the current **Skill** library: Disable all atomically creates a **Skill Opt-Out** for every current Skill, while Enable all atomically removes every Skill Opt-Out for that profile. Neither action changes started **Tasks**, and later imports still follow **Default Skill Enablement**.
 - **Skill Deletion** ends the enablement lifecycle for that **Skill ID**; re-importing the same **Skill ID** follows **Default Skill Enablement** instead of restoring old opt-outs.
 - The **Skills Page** may change **Runtime Extension Enablement**, but the enablement state still belongs to the affected **Runtime Profile**.
 - A **Runtime Profile** may reference a manually entered **Runtime Extension** identifier, but task launch still requires the daemon **Runtime Extension Registry** to resolve it.
@@ -1070,6 +1075,7 @@ _Avoid_: transcript, export, source of truth
 - **Preflight** previews enabled **Skills** but resolves credentials only from **Runtime Profiles**, **Model Providers**, and launch requests.
 - **Preflight** includes a **Model Preflight Preview** when model access is used.
 - A started **Task** keeps the **Runtime Extensions** already materialized into its task-local runtime boundary.
+- A Runtime Owner Resume uses its latest **Runtime Configuration Snapshot**, including the captured Skills and advanced configuration; later global defaults or Runtime Profile edits do not change that Snapshot.
 - **Runtime Extension Projection** happens during **Config Projection** and must not mutate host runtime plugin directories.
 - A **Credential Reference** resolves first through **Credential Bindings**, then through **Global Credential Bindings**.
 - A **Global Environment Variable** injects into every **Runtime** during **Config Projection** without a **Runtime Profile** **Credential Reference**.
@@ -1082,22 +1088,26 @@ _Avoid_: transcript, export, source of truth
 - **Credential Binding Mode** defaults to using **Global Credential Bindings** unless the user explicitly chooses a project override.
 - A **Disabled Credential Binding** blocks fallback to **Global Credential Bindings**.
 - A **Runtime Profile** may define a default **Runner** for new **Tasks**.
-- A **Profile Selector** chooses which **Runtime Profile** or **Runtime Profile Preset** to edit on the settings page.
-- A **Preset Selector** is an advanced task-launch control and is not the primary launch path.
-- A **Preset Selector** lists only **Runtime Profile Presets** compatible with the selected **Runtime Plugin** family.
-- Selecting a **Runtime Profile Preset** locks the **Launch Selection** runtime and **Model Provider** to that preset's values.
-- A **Launch Model Override** may still be chosen at launch when a **Runtime Profile Preset** is selected.
-- A selected **Runtime Profile Preset** keeps its **Runtime Profile** identity for the **Task** even when a **Launch Model Override** is used.
+- A **Profile Selector** chooses which **Runtime Profile** to edit on the settings page.
+- A **Launch Profile Selector** is an advanced task-launch control and is not the primary launch path.
+- A **Launch Profile Selector** lists only **Runtime Profiles** compatible with the selected **Runtime Plugin** family.
+- A **Launch Profile Selector** defaults to no Profile and labels that state as direct configuration.
+- Selecting a **Runtime Profile** locks the **Launch Selection** runtime and **Model Provider** to that Profile's values.
+- A **Launch Model Override** may still be chosen at launch when a **Runtime Profile** is selected.
+- A selected **Runtime Profile** keeps its identity for the **Task** even when a **Launch Model Override** is used.
 - A **Launch Model Override** affects only the launching **Task** and its captured **Task Runtime Configuration**; it does not edit the selected **Runtime Profile**.
-- A **Launch Reasoning Effort Override** may be chosen with or without a **Runtime Profile Preset** and affects only the launching **Task**.
+- A **Launch Reasoning Effort Override** may be chosen with or without a **Runtime Profile** and affects only the launching **Task**.
 - **Requested Reasoning Effort** resolves in this order: the current **Runtime Turn Selection**, **Launch Reasoning Effort Override** for the initial turn, the **Runtime Profile** default, then CyberPenda's `high` default.
 - **Requested Reasoning Effort** belongs to its **Runtime Turn** and does not edit the selected **Runtime Profile**.
-- Changing the selected **Runtime Plugin** family during launch clears an incompatible **Runtime Profile Preset** selection.
-- **Launch Profile Resolution** reuses an explicitly selected **Runtime Profile Preset** when one is chosen.
-- **Launch Profile Resolution** otherwise finds or creates a minimal **Runtime Profile** that matches the **Launch Selection** runtime, **Model Provider**, and model choice.
-- A minimal **Runtime Profile** created by **Launch Profile Resolution** is stored as a **Launch-Resolved Runtime Profile** (`launch_resolve`) and may later gain MCP, skills, or extension configuration without breaking reuse for the same **Launch Selection**.
-- A **Launch-Resolved Runtime Profile** may be promoted to a **Runtime Profile Preset** (`manual`) without changing its identity or launch-matching behavior.
-- **Skill Opt-Out** changes on a **Launch-Resolved Runtime Profile** apply to future launches that resolve to the same **Launch Selection**.
+- Changing the selected **Runtime Plugin** family during launch clears an incompatible **Runtime Profile** selection.
+- **Launch Configuration Resolution** applies a **Runtime Profile** only when the launch explicitly selects that Profile.
+- **Launch Configuration Resolution** otherwise builds the **Runtime Configuration Snapshot** directly from the selected **Runtime Plugin**, **Model Provider**, model, **Reasoning Effort**, **Runner**, Runtime Plugin standard configuration, and globally default-enabled **Skills**.
+- A direct **Launch Selection** does not receive **MCP Configuration**, **Custom Config File**, **Runtime Extension Enablement**, or **Skill Opt-Out** from any matching or default **Runtime Profile**.
+- A direct Runtime Owner is displayed by its **Runtime Plugin**, **Model Provider**, and model rather than a synthetic Profile name; an explicit Profile name is shown only when that Owner selected a **Runtime Profile** at creation.
+- **Save as Runtime Profile** requires a user-supplied name and explicit confirmation; CyberPenda never suggests, triggers, or completes it automatically.
+- Task, Reason Task, Session, Resume, Steering, and Runtime Turn model-selection paths never create or reuse a **Launch-Resolved Runtime Profile**.
+- **Launch-Resolved Runtime Profile Migration** preserves every referenced legacy setting, including Runtime Plugin, Model Provider, model, Reasoning Effort, Custom Arguments, Sandbox image, Runner, and other structured configuration.
+- **Launch-Resolved Runtime Profile Migration** removes every legacy Profile only after migrated history, Resume, and replacement Runtime Continuation behavior pass integrity checks; it does not retain hidden Profile tombstones.
 - A **Runtime Profile** uses structured fields as source of truth for **Generated Runtime Config**.
 - **Generated Runtime Config** previews the resolved non-secret **Model Runtime Projection**, including the runtime-specific model URL, protocol, model, generated API key environment variable name, and runtime-specific projection target.
 - A **Runtime Plugin** describes which structured fields a **Runtime Profile** exposes.
@@ -1125,14 +1135,14 @@ _Avoid_: transcript, export, source of truth
 - **Finish Readiness** for a Runtime Owner in disabled Blackboard Mode ignores Blackboard conclusion, Current Work, Finish Intent, and reconciliation blockers while retaining non-Blackboard lifecycle and policy checks.
 - A **Reason Task** is operator-triggered and returns a proposal for approval; it does not directly create, retire, or resolve Blackboard records.
 - A **Task** may pursue one primary **Exploration Objective** while producing multiple **Project Facts**, **Findings**, or **Evidence Artifacts**.
-- A **Task** resolves to one **Runtime Profile** through **Launch Profile Resolution** and chooses one **Runner**.
+- A **Task** receives one **Runtime Configuration Snapshot** through **Launch Configuration Resolution** and chooses one **Runner**.
 - A **Task** has one **Runtime Harness** that controls runtime lifecycle for that task.
 - A **Task** launches from its **Task Runtime Configuration**, not a live mutable **Runtime Profile**.
 - A **Task Runtime Configuration** captures the selected **Runtime Plugin** identifier.
 - A **Task Runtime Configuration** captures a **Model Provider Snapshot** when model access is used.
 - A **Model Provider Snapshot** includes `endpoint_base_url`, protocol, model, and non-secret **Model API Key Source** provenance.
 - A **Model Provider Snapshot** may expose `base_url` as a transition alias for `endpoint_base_url`, but new code uses `endpoint_base_url`.
-- A **Model Provider Snapshot** uses a **Launch Model Override** when one was supplied at launch; otherwise it uses the selected **Runtime Profile**'s **Model Override** or **Model Catalog** default.
+- A **Model Provider Snapshot** uses the model selected by **Launch Selection** or a **Launch Model Override** when supplied; a launch with an explicit **Runtime Profile** may otherwise use that Profile's **Model Override** or the **Model Catalog** default.
 - A **Model Provider Snapshot** does not include the full **Model Catalog** or any credential value.
 - A **Task Runtime Configuration** may include **Credential References** but not credential values.
 - Editing a **Runtime Profile** does not change existing **Task Runtime Configurations**.
@@ -1143,8 +1153,8 @@ _Avoid_: transcript, export, source of truth
 - Editing a **Model Provider** does not change existing **Task Runtime Configurations** or an active **Runtime Continuation**.
 - A **Model Provider** cannot be deleted while any **Runtime Profile** still references it, unless the operator explicitly confirms a deletion that clears the **Model Provider** reference and its pinned **Model Provider Protocol** from every referencing **Runtime Profile**.
 - Historical task views read captured **Task Runtime Configurations** and **Model Provider Snapshots**, not live **Runtime Profiles** or live **Model Providers**.
-- A runtime-profile switch inside a **Task** creates a new **Task Runtime Configuration Version** for the next **Runtime Continuation**.
-- A runtime-profile switch re-resolves the selected **Model Provider** and captures a new **Model Provider Snapshot** for the new **Task Runtime Configuration Version**.
+- A **Runtime Profile** may be selected only when its Task or Session is created and cannot be switched for that Runtime Owner.
+- A later **Model Provider** change belongs to **Runtime Turn Selection**, not Runtime Profile selection; when it requires new **Config Projection**, it creates a new Runtime Owner-local configuration version and captures a new **Model Provider Snapshot**.
 - A **Task** may contain internal steps, but those steps are not separate **Tasks**.
 - A **Task** has zero or more **Task Events**.
 - A terminal **Task** may undergo **Task Deletion**.
@@ -1192,13 +1202,15 @@ _Avoid_: transcript, export, source of truth
 - **Harness Steering** may request **Run Controls** changes, but those changes apply only at a **Runtime Continuation** boundary.
 - A **Task** has its own **Runtime Workdir**.
 - **Tasks** do not share **Runtime Workdirs** by default.
-- A **Runtime Continuation** after a runtime-profile switch does not inherit the prior runtime's **Runtime Workdir** by default.
-- A **Task** may override its **Runtime Profile**'s default **Runner**, and that override is recorded as a task event.
+- A replacement **Runtime Continuation** after a required **Config Projection** restart does not inherit the prior runtime's **Runtime Workdir** by default.
+- A **Task** may override a selected **Runtime Profile** or **Project Defaults** Runner through explicit **Run Controls**, and the actual Runner is recorded as a task event.
 - A **Task** uses **Config Projection** to prepare runtime configuration without mutating host runtime configuration.
 - Every **Runtime** operates non-interactively; the **Runtime Harness** applies **Runtime Non-Interactive Defaults** to every Codex, Claude Code, and Hermes launch and continuation, regardless of whether the selected **Runner** is a **Sandbox Runner** or **Host Runner**.
 - **Runtime Non-Interactive Defaults** control provider CLI interaction only; they do not expand **Scope**, replace **Host Runner Activation**, grant **Project Interface** authority, or bypass **Credential Reference** and **Preflight** checks.
-- A **Config Projection** failure belongs to the affected **Task** unless the **Runtime Profile** itself is explicitly invalid.
+- A **Config Projection** failure belongs to the affected Runtime Owner unless an explicitly selected **Runtime Profile** is itself invalid.
 - A **Task** passes **Preflight** before its **Runtime** starts.
+- **Preflight** does not create a **Runtime Profile**, **Runtime Configuration Snapshot**, Task, Session, or Continuation record.
+- After successful **Preflight**, the Runtime Owner or Continuation and its **Runtime Configuration Snapshot** are stored atomically.
 - A **Credential Reference** that cannot be resolved during **Preflight** prevents **Runtime** launch.
 - A missing **Model API Key Environment Variable** value prevents **Runtime** launch during **Preflight**.
 - A required **Model Provider Requirement** that cannot resolve a compatible **Model Provider Protocol** prevents **Runtime** launch during **Preflight**.
@@ -1388,7 +1400,7 @@ _Avoid_: transcript, export, source of truth
 > **Domain expert:** "Both can be involved: the reproducible issue is a Finding, and the reproduction context can be stored as Project Facts with Evidence Artifacts attached."
 
 > **Dev:** "Task launch no longer asks for a Runtime Profile. Where do MCP and skills come from?"
-> **Domain expert:** "Most launches only need Launch Selection: runtime, model provider, and model. The daemon resolves that to a minimal Runtime Profile automatically. If the user expands the advanced preset picker and chooses a saved Runtime Profile Preset, that preset's MCP and skill enablement apply. Runtime and model provider lock to the preset, but the user may still set a Launch Model Override for just that task."
+> **Domain expert:** "Most launches only need Launch Selection: runtime, model provider, and model. Preflight resolves that selection directly into a Runtime Owner-local Runtime Configuration Snapshot. If the user explicitly chooses a Runtime Profile, that Profile's MCP and Skill configuration apply. Runtime and model provider lock to the Profile at launch, but the user may still set a Launch Model Override for just that task."
 
 ## Flagged Ambiguities
 
@@ -1465,11 +1477,11 @@ _Avoid_: transcript, export, source of truth
 - **Runtime Profile** default **Runner** is not final task truth; resolved: the **Task** records the actual **Runner** used.
 - **Runtime Profile** edits are not retroactive task edits; resolved: existing tasks use captured **Task Runtime Configuration** unless explicitly refreshed with audit history.
 - **Runtime Profile** is not project-local; resolved: profiles are global, while each **Task** captures the runtime configuration it actually used.
-- **Runtime Profile** is not the primary task-launch picker; resolved: most launches use **Launch Selection**, while **Runtime Profile Presets** are optional advanced choices.
-- **Profile Selector** is not the default launch control; resolved: task launch uses **Launch Selection** plus an optional **Preset Selector**, and settings-page editing keeps **Profile Selector**.
-- **Launch Profile Resolution** is not a live profile edit; resolved: it selects or creates the **Runtime Profile** record used for the task without mutating preset fields for a one-off model change.
+- **Runtime Profile** is not the primary task-launch picker; resolved: most launches use **Launch Selection**, while an explicitly selected Runtime Profile is an optional advanced choice.
+- **Profile Selector** is not the default launch control; resolved: task launch uses **Launch Selection** plus an optional **Launch Profile Selector**, and settings-page editing keeps **Profile Selector**.
+- **Launch Configuration Resolution** is not global profile matching; resolved: it creates a Runtime Owner-local **Runtime Configuration Snapshot**, and only an explicitly selected **Runtime Profile** contributes Profile configuration.
 - A **Launch Model Override** is not a **Runtime Profile** edit; resolved: it changes only the launching task's captured model choice and snapshot.
-- **Default Runtime Profile Preset** is not a copied profile; resolved: project defaults may reference a global preset without creating project-local runtime configuration.
+- **Project Defaults** are not implicit Profile selection; resolved: each launch explicitly selects a **Runtime Profile** or uses direct **Launch Selection**.
 - **Model Provider** is not a **Runtime Profile**; resolved: model-service configuration is globally reusable across runtime profiles and does not store credential values.
 - **Model Provider ID** is not a display name; resolved: display names may change, while provider IDs stay stable to preserve generated environment variable names.
 - **Model Provider ID Generation** is not user-controlled ID entry; resolved: IDs are generated from display names at creation time and then locked.
@@ -1537,8 +1549,8 @@ _Avoid_: transcript, export, source of truth
 - **Model Provider Snapshot** `base_url` is not the canonical new snapshot field; resolved: `endpoint_base_url` names the selected endpoint base URL, with `base_url` only as a compatibility alias during transition.
 - **Model Runtime Projection** is not LLM proxying; resolved: the daemon derives and passes a runtime-specific URL, protocol, model, and credential into the runtime, and the runtime calls the model service directly.
 - **Model Provider Requirement** is not universal; resolved: runtime plugins declare whether model-provider resolution is required, optional, or unsupported.
-- Runtime-profile switching does not create a new **Task**; resolved: it creates a new **Runtime Continuation** with a new **Task Runtime Configuration Version**.
-- Runtime-profile switching does not reuse the prior **Model Provider Snapshot**; resolved: each new task runtime configuration version captures its own resolved model provider values.
+- Runtime Profile selection is not a Steering control; resolved: a **Runtime Profile** is fixed when the Runtime Owner is created, while **Runtime Turn Selection** may change Model Provider, model, or Reasoning Effort.
+- A Runtime Turn Model Provider change does not reuse the prior **Model Provider Snapshot** when new **Config Projection** is required; resolved: the new Runtime Owner-local configuration version captures its own resolved provider values.
 - **Model Provider** edits are not live task mutation; resolved: active continuations keep the **Model Provider Snapshot** captured at launch or continuation start.
 - **Model Provider** deletion is not silent profile breakage; resolved: deletion is blocked by default and names the referencing runtime profiles; an explicit operator-confirmed deletion clears the provider reference and its pinned protocol from every referencing runtime profile in the same action.
 - Historical task inspection does not require live profile or provider records; resolved: task history uses captured runtime configuration snapshots.
@@ -1608,7 +1620,7 @@ _Avoid_: transcript, export, source of truth
 - **Tentative Fact** is visible current context, not confirmed conclusion; resolved: current views may include it with confidence while reports mark it separately from confirmed findings.
 - Unconfirmed **Findings** are not confirmed report conclusions; resolved: reports may show them as needing validation outside the confirmed findings summary.
 - **Runtime Workdir** is not shared memory; resolved: cross-task knowledge flows through **Blackboard** and retained artifacts.
-- **Runtime Workdir** is not cross-runtime handoff state; resolved: runtime-profile switches pass context through the **Working Blackboard Snapshot**, open Attempt checkpoints, and retained artifacts.
+- **Runtime Workdir** is not cross-runtime handoff state; resolved: replacement Runtime Continuations pass context through the **Working Blackboard Snapshot**, open Attempt checkpoints, and retained artifacts.
 - **Runtime Workdir** is not automatic evidence capture; resolved: files become **Evidence Artifacts** only through explicit attach or retain actions.
 - CTF Challenge Project support is not backend-only or selected by an implicit Pentest default; resolved: Project creation requires an explicit Project Kind and the creation interface exposes both supported kinds.
 - Task classification is not hidden in the owning Project; resolved: Task Launch exposes an explicit **Task Type**, stores the immutable selection, rejects a mismatch with the current Project Kind, and keeps historical Task Type unchanged after Project Kind Conversion.

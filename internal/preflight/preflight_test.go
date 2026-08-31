@@ -71,8 +71,8 @@ func TestRunFailsWhenProfileMissing(t *testing.T) {
 	if result.Pass {
 		t.Fatal("expected preflight to fail when profile is missing")
 	}
-	if !checkFailed(result, "runtime_profile") {
-		t.Fatalf("expected runtime_profile check to fail, got %#v", result.Checks)
+	if !checkFailed(result, "runtime_configuration") {
+		t.Fatalf("expected runtime_configuration check to fail, got %#v", result.Checks)
 	}
 }
 
@@ -1277,8 +1277,8 @@ func insertLegacyProfile(t *testing.T, db *store.DB, name, provider, fieldsJSON 
 	t.Helper()
 	id := "legacy-" + name
 	_, err := db.Exec(
-		`INSERT INTO runtime_profiles (id, name, provider, kind, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		id, name, provider, "manual", fieldsJSON, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z",
+		`INSERT INTO runtime_profiles (id, name, provider, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		id, name, provider, fieldsJSON, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z",
 	)
 	if err != nil {
 		t.Fatalf("insert legacy profile: %v", err)

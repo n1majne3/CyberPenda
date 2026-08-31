@@ -16,16 +16,13 @@ import { Card, Label, Select } from "@/components/ui";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "@/pages/runtimeProfileForm";
 import {
   canLaunch,
-  findLaunchProfileForSelection,
   formFromPreset,
   initialLaunchState,
-  launchModelOverridePayload,
-  launchReasoningEffortPayload,
+  launchSelectionPayload,
   launchRuntimes,
   modelsForProvider,
   presetMatchesRuntime,
   presetsForRuntime,
-  resolveLaunchPayload,
   simpleLaunchFormForRuntime,
   type LaunchForm,
 } from "@/pages/taskLaunchForm";
@@ -90,7 +87,6 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
           plugins: loadedPlugins,
           modelProviders: loadedProviders,
           profiles: loadedProfiles,
-          defaultRuntimeProfileId: project?.defaults.runtime_profile,
           projectRunner: runner,
         });
         setPlugins(loadedPlugins);
@@ -121,11 +117,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
   }, [projectId]);
 
   const presetMode = presetId.trim() !== "";
-  const matchingLaunchProfile = useMemo(
-    () => findLaunchProfileForSelection(profiles, form),
-    [profiles, form],
-  );
-  const skillsProfileId = launchProfileIdForSkillsPreview(presetId, matchingLaunchProfile?.id ?? "");
+  const skillsProfileId = launchProfileIdForSkillsPreview(presetId, "");
   const enabledSkillsPreview = useMemo(
     () => (skillsPreview ? enabledLaunchSkills(skillsPreview) : []),
     [skillsPreview],
@@ -163,12 +155,10 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
         setSkillsPreviewLoading(true);
         setSkillsPreviewError(null);
         try {
-          if (!skillsProfileId) {
-            if (!cancelled) setSkillsPreview([]);
-            return;
-          }
           const data = await apiGet<{ skills: Skill[] }>(
-            `/api/skills?runtime_profile_id=${encodeURIComponent(skillsProfileId)}`,
+            skillsProfileId
+              ? `/api/skills?runtime_profile_id=${encodeURIComponent(skillsProfileId)}`
+              : "/api/skills",
           );
           if (!cancelled) setSkillsPreview(data.skills ?? []);
         } catch (cause) {
@@ -224,28 +214,18 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
     clearPreflight();
   }
 
-  function launchPayload(profileId: string) {
+  function launchPayload() {
+    const selection = launchSelectionPayload(presetId, form);
     return {
-      runtime_profile_id: profileId,
+      ...selection,
       runner: form.runner,
       ...(form.runner === "host" ? { host_activated: hostActivated } : {}),
-      ...launchModelOverridePayload(presetId, form),
-      ...launchReasoningEffortPayload(form),
       run_controls: launchRunControls(hostActivated, form.runner, containerCLI, sandboxNetwork, sandboxVPNTun, blackboardConclusionMode),
     };
   }
 
-  async function resolveRuntimeProfileId() {
-    if (presetId.trim()) return presetId.trim();
-    const resolved = await apiPost<{ profile_id: string }>(
-      "/api/runtime-profiles/resolve-launch",
-      resolveLaunchPayload(form),
-    );
-    return resolved.profile_id;
-  }
-
-  async function runPreflight(endpoint: string, profileId: string) {
-    const checked = await apiPost<PreflightResult>(endpoint, launchPayload(profileId));
+  async function runPreflight(endpoint: string) {
+    const checked = await apiPost<PreflightResult>(endpoint, launchPayload());
     setPreflight(checked);
     return checked;
   }
@@ -295,7 +275,6 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
     updateModelProvider,
     updatePreset,
     launchPayload,
-    resolveRuntimeProfileId,
     runPreflight,
     launchReady,
   };
@@ -474,7 +453,7 @@ export function RuntimeLaunchControls({
             name="model"
             value={form.modelOverride}
             onChange={(event) => { setForm((current) => ({ ...current, modelOverride: event.target.value })); setPreflight(null); }}
-            disabled={!presetMode && modelOptions.length === 0}
+            disabled={modelOptions.length === 0}
           >
             {modelOptions.length === 0 ? (
               <option value="">{form.modelOverride || "Default model"}</option>
@@ -515,16 +494,16 @@ export function RuntimeLaunchControls({
         <Card className="border-border/70 bg-muted/10 p-3">
           <button type="button" onClick={() => setPresetOpen((open) => !open)} aria-expanded={presetOpen} className="flex w-full items-center gap-2 rounded-md text-left text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
             <ChevronRight className={`size-4 shrink-0 transition-transform ${presetOpen ? "rotate-90" : ""}`} />
-            Use saved preset
+            Use Runtime Profile
           </button>
           {presetOpen && (
             <div className="mt-3 space-y-2">
-              <Label htmlFor="launch-preset">Runtime profile preset</Label>
+              <Label htmlFor="launch-preset">Runtime Profile</Label>
               <Select id="launch-preset" name="runtime_profile_preset" value={presetId} onChange={(event) => updatePreset(event.target.value)}>
-                <option value="">Auto-resolve minimal profile</option>
+                <option value="">Direct configuration</option>
                 {runtimePresets.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
               </Select>
-              <p className="text-xs text-muted-foreground">Presets carry MCP, skills, and extension configuration. Runtime and model provider lock while a preset is selected.</p>
+              <p className="text-xs text-muted-foreground">A Runtime Profile copies its full advanced configuration into this new {ownerLabel}. Later Profile edits do not change it.</p>
             </div>
           )}
         </Card>
@@ -610,6 +589,7 @@ const SANDBOX_PREFLIGHT_CHECKS = new Set([
 ]);
 
 const PREFLIGHT_CHECK_LABELS: Record<string, string> = {
+  runtime_configuration: "Runtime configuration",
   runtime_profile: "Runtime profile",
   custom_args: "Custom args",
   skills: "Skills",

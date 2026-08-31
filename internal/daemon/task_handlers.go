@@ -29,6 +29,7 @@ import (
 	"pentest/internal/reasontask"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeconfig"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
 	"pentest/internal/steering"
@@ -123,19 +124,30 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 	if reasonTask {
 		input.Type = task.Type(defaulted.project.Kind)
 	}
+	launchModel := strings.TrimSpace(input.Model)
+	if launchModel == "" {
+		launchModel = strings.TrimSpace(input.ModelOverride)
+	}
+	resolvedConfiguration, err := server.resolveLaunchConfiguration(runtimeconfig.LaunchSelection{
+		RuntimeProfileID: input.RuntimeProfileID,
+		RuntimePluginID:  input.RuntimePluginID,
+		ModelProviderID:  input.ModelProviderID,
+		Model:            launchModel,
+		ReasoningEffort:  input.ReasoningEffort,
+		Runner:           string(input.Runner),
+	}, projectID)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
 	if input.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
-		profile, profileErr := server.profiles.Get(input.RuntimeProfileID)
-		if profileErr != nil {
-			writeError(response, http.StatusBadRequest, "runtime profile not found")
-			return
-		}
-		if !server.supportsAssistedConclusion(profile.Provider) {
+		if !server.supportsAssistedConclusion(resolvedConfiguration.Profile.Provider) {
 			writeError(response, http.StatusBadRequest, errAssistedConclusionUnsupported.Error())
 			return
 		}
 	}
 
-	launchModelOverride := strings.TrimSpace(input.ModelOverride)
+	launchModelOverride := launchModel
 	launchReasoningEffort, err := normalizeLaunchReasoningEffort(input.ReasoningEffort)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err.Error())
@@ -143,6 +155,7 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 	}
 	preflightResult := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID:    input.RuntimeProfileID,
+		Profile:             &resolvedConfiguration.Profile,
 		LaunchModelOverride: launchModelOverride,
 		ProjectID:           projectID,
 		Runner:              string(input.Runner),
@@ -180,6 +193,7 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 		RuntimeProfileID: input.RuntimeProfileID,
 		Runner:           input.Runner,
 		RunControls:      input.RunControls,
+		RuntimeConfig:    runtimeSnapshotMap(resolvedConfiguration.Snapshot),
 	})
 	if err != nil {
 		writeTaskError(response, err)
@@ -278,6 +292,36 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 	if err := server.ensureRuntimeAbsentBeforeLaunch(created.ID); err != nil {
 		return err
 	}
+	// Every Continuation pins a clone of the latest owner-local Snapshot. Runner
+	// adapter diagnostics never replace the source-neutral configuration.
+	versions, err := server.tasks.RuntimeConfigVersions(created.ID)
+	if err != nil || len(versions) == 0 {
+		return errors.New("runtime configuration snapshot is missing")
+	}
+	latestSnapshot, err := decodeRuntimeSnapshot(versions[len(versions)-1].Config)
+	if err != nil {
+		return err
+	}
+	turn := runtimeconfig.RuntimeTurnSelection{
+		ModelProviderID: plan.ResolvedProfile.Fields.ModelProviderID,
+		Model:           firstNonBlank(plan.LaunchModelOverride, plan.ResolvedProfile.Fields.ModelOverride, plan.ResolvedProfile.Fields.Model),
+		ReasoningEffort: firstNonBlank(plan.LaunchReasoningEffort, plan.ResolvedProfile.Fields.ReasoningEffort),
+	}
+	providerSnapshot := latestSnapshot.ModelProvider
+	if plan.ModelSnapshot != nil {
+		providerSnapshot = *plan.ModelSnapshot
+	}
+	clonedSnapshot, err := runtimeconfig.CloneForTurn(latestSnapshot, turn, providerSnapshot)
+	if err != nil {
+		return err
+	}
+	if projected, ok := plan.CapturedRuntimeConfig["projected_model_provider_ids"]; ok {
+		if clonedSnapshot.ConfigProjection == nil {
+			clonedSnapshot.ConfigProjection = map[string]any{}
+		}
+		clonedSnapshot.ConfigProjection["projected_model_provider_ids"] = projected
+	}
+	plan.CapturedRuntimeConfig = runtimeSnapshotMap(clonedSnapshot)
 	server.logTaskLaunchStage(created, "prepare_continuation")
 	continuation, boundPlan, err := server.prepareTaskContinuationLaunch(created, plan, goal)
 	if err != nil {
@@ -439,7 +483,7 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 	}
 	provider := plan.ResolvedProfile.Provider
 	if provider == "" {
-		profile, err := server.profiles.Get(created.RuntimeProfileID)
+		profile, err := server.resolveTaskRuntimeProfile(created)
 		if err != nil {
 			return task.TaskContinuation{}, taskLaunchPlan{}, err
 		}
@@ -532,6 +576,12 @@ func mergeFixedAtLaunchRuntimeConfig(dest, source map[string]any) {
 	}
 	if ids, ok := source["projected_model_provider_ids"]; ok {
 		dest["projected_model_provider_ids"] = ids
+		projection, _ := dest["config_projection"].(map[string]any)
+		if projection == nil {
+			projection = map[string]any{}
+			dest["config_projection"] = projection
+		}
+		projection["projected_model_provider_ids"] = ids
 	}
 }
 
@@ -597,9 +647,6 @@ func (server *Server) applyTaskLaunchDefaults(projectID, requestedProfileID stri
 		runtimeProfileID: requestedProfileID,
 		runner:           requestedRunner,
 		project:          found,
-	}
-	if resolved.runtimeProfileID == "" {
-		resolved.runtimeProfileID = found.Defaults.RuntimeProfile
 	}
 	if resolved.runner == "" {
 		resolved.runner = task.Runner(found.Defaults.Runner)
@@ -678,7 +725,7 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
-	skillBundles, err := server.skills.EnabledSkillBundles(profile.ID)
+	skillBundles, err := server.taskSnapshotSkillBundles(created.ID)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
@@ -714,7 +761,7 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
-	capturedRuntimeConfig, err := capturedTaskRuntimeConfig(created, profile, runtimeprofile.GeneratedConfig(profile), blackboardV2ModelSnapshotPreview(modelSnapshot), launchModelOverride, launchReasoningEffort)
+	capturedRuntimeConfig, err := server.capturedTaskRuntimeConfig(created, profile, blackboardV2ModelSnapshotPreview(modelSnapshot), launchModelOverride, launchReasoningEffort)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
@@ -801,7 +848,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if profile.Provider == runtimeprofile.ProviderFake {
 		runtimeConfig["provider"] = string(runtimeprofile.ProviderFake)
 		runtimeConfig["generated_config"] = runtimeprofile.GeneratedConfig(profile)
-		capturedRuntimeConfig, err := capturedTaskRuntimeConfig(created, profile, runtimeConfig["generated_config"], nil, launchModelOverride, launchReasoningEffort)
+		capturedRuntimeConfig, err := server.capturedTaskRuntimeConfig(created, profile, nil, launchModelOverride, launchReasoningEffort)
 		if err != nil {
 			return taskLaunchPlan{}, err
 		}
@@ -815,7 +862,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	// first-pass path that has not already captured them.
 	if captured == nil || captured.GlobalModelProviderSnapshot == nil {
 		var err error
-		skillBundles, err = server.skills.EnabledSkillBundles(profile.ID)
+		skillBundles, err = server.taskSnapshotSkillBundles(created.ID)
 		if err != nil {
 			return taskLaunchPlan{}, err
 		}
@@ -1036,18 +1083,21 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if v2 {
 		runtimeConfig = map[string]any{}
 	}
-	capturedRuntimeConfig, err := capturedTaskRuntimeConfig(created, launchProfile, runtimeprofile.GeneratedConfig(launchProfile), projection.Config["model_provider_snapshot"], launchModelOverride, launchReasoningEffort)
-	if err != nil {
-		return taskLaunchPlan{}, err
-	}
+	var capturedRuntimeConfig map[string]any
 	if captured != nil && captured.CapturedRuntimeConfig != nil {
-		// Preserve the pre-TX captured baseline, then overlay fixed-at-launch
-		// fields from the actual Config Projection (projected provider set).
-		merged := make(map[string]any, len(captured.CapturedRuntimeConfig)+2)
+		// This branch runs while the Continuation transaction is open. Reuse the
+		// pre-TX Snapshot and never re-enter SQLite from the binding callback.
+		merged := make(map[string]any, len(captured.CapturedRuntimeConfig)+1)
 		for key, value := range captured.CapturedRuntimeConfig {
 			merged[key] = value
 		}
 		capturedRuntimeConfig = merged
+	} else {
+		var err error
+		capturedRuntimeConfig, err = server.capturedTaskRuntimeConfig(created, launchProfile, projection.Config["model_provider_snapshot"], launchModelOverride, launchReasoningEffort)
+		if err != nil {
+			return taskLaunchPlan{}, err
+		}
 	}
 	if capturedRuntimeConfig != nil {
 		// Pi multi-provider projection set is fixed for this runtime lifetime.
@@ -1155,40 +1205,41 @@ func codexV2ProjectionProfile(profile runtimeprofile.Profile) runtimeprofile.Pro
 	return projected
 }
 
-func capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile, generatedConfig any, modelSnapshot any, launchModelOverride string, launchReasoningEffort string) (map[string]any, error) {
-	captured := map[string]any{
-		"runtime_profile_id": created.RuntimeProfileID,
-		"runtime_plugin_id":  string(profile.Provider),
-		"runner":             created.Runner,
-		"generated_config":   generatedConfig,
+func (server *Server) capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile, modelSnapshot any, launchModelOverride string, launchReasoningEffort string) (map[string]any, error) {
+	versions, err := server.tasks.RuntimeConfigVersions(created.ID)
+	if err != nil || len(versions) == 0 {
+		return nil, errors.New("runtime configuration snapshot is missing")
 	}
-	// The imported Custom Config File is captured so continuations reproduce the
-	// same effective config even if the profile's Custom Config File changes.
-	// Empty is captured too: a launch with no overlay must not pick up a later
-	// profile edit.
-	captured["custom_config_file"] = profile.Fields.CustomConfigFile
-	if modelSnapshot != nil {
-		captured["model_provider_snapshot"] = modelSnapshot
-	}
-	if launchModelOverride != "" {
-		captured["launch_model_override"] = launchModelOverride
-	}
-	if launchReasoningEffort != "" {
-		captured["launch_reasoning_effort_override"] = launchReasoningEffort
-	}
-	// Always capture the resolved Requested Reasoning Effort for the initial
-	// turn so historical views show the explicit request without inferring
-	// Effective Reasoning Effort.
-	requested, err := runtimeprofile.ResolveRequestedReasoningEffort(
-		"",
-		launchReasoningEffort,
-		profile.Fields.ReasoningEffort,
-	)
+	prior, err := decodeRuntimeSnapshot(versions[len(versions)-1].Config)
 	if err != nil {
 		return nil, err
 	}
-	captured["requested_reasoning_effort"] = string(requested)
-	return captured, nil
+	provider := prior.ModelProvider
+	if modelSnapshot != nil {
+		encoded, marshalErr := json.Marshal(modelSnapshot)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
+		if err := json.Unmarshal(encoded, &provider); err != nil {
+			return nil, err
+		}
+	}
+	turn := runtimeconfig.RuntimeTurnSelection{
+		ModelProviderID: firstNonBlank(provider.ModelProviderID, profile.Fields.ModelProviderID, prior.TurnSelection.ModelProviderID),
+		Model:           firstNonBlank(launchModelOverride, provider.Model, profile.Fields.ModelOverride, profile.Fields.Model, prior.TurnSelection.Model),
+		ReasoningEffort: firstNonBlank(launchReasoningEffort, profile.Fields.ReasoningEffort, prior.TurnSelection.ReasoningEffort),
+	}
+	requested, err := runtimeprofile.ResolveRequestedReasoningEffort("", turn.ReasoningEffort, "")
+	if err != nil {
+		return nil, err
+	}
+	turn.ReasoningEffort = string(requested)
+	cloned, err := runtimeconfig.CloneForTurn(prior, turn, provider)
+	if err != nil {
+		return nil, err
+	}
+	cloned.Runner = string(created.Runner)
+	return runtimeSnapshotMap(cloned), nil
 }
 
 func normalizeLaunchReasoningEffort(value string) (string, error) {
@@ -1578,6 +1629,12 @@ func (server *Server) decorateTask(found task.Task) (task.Task, error) {
 		return task.Task{}, err
 	}
 	found.RuntimeControls = controls
+	if versions, versionErr := server.tasks.RuntimeConfigVersions(found.ID); versionErr == nil && len(versions) > 0 {
+		if snapshot, snapshotErr := decodeRuntimeSnapshot(versions[len(versions)-1].Config); snapshotErr == nil {
+			summary := runtimeconfig.Summarize(snapshot)
+			found.RuntimeConfiguration = &summary
+		}
+	}
 	found.ActiveContinuation = active
 	found.LatestContinuation = latest
 	return found, nil
@@ -1627,11 +1684,6 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		NativeSessionCaptured:   sessionCaptured,
 		SameRuntimeProviderOnly: true,
 		RuntimeProvider:         string(profile.Provider),
-	}
-	if strings.TrimSpace(profile.ID) == "" {
-		// Every Runtime Profile reference is gone: queue steering would record
-		// an empty profile, so the composer must not offer it.
-		controls.QueueSteerAvailable = false
 	}
 	if profile.Provider == runtimeprofile.ProviderPi {
 		// Expose the fixed projected set so Task Conversation UI can fail closed
@@ -1854,7 +1906,6 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
-
 	found, err := server.tasks.Get(taskID)
 	if err != nil {
 		writeTaskError(response, err)
@@ -2583,6 +2634,15 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
+	var input taskContinuationSelectionInput
+	if err := decodeOptionalJSON(request, &input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(input.RuntimeProfileID) != "" {
+		writeError(response, http.StatusBadRequest, "runtime_profile_locked")
+		return
+	}
 
 	found, err := server.tasks.Get(taskID)
 	if err != nil {
@@ -2605,11 +2665,6 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 			writeError(response, http.StatusConflict, "runtime harness is still active")
 			return
 		}
-	}
-	var input taskContinuationSelectionInput
-	if err := decodeOptionalJSON(request, &input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
-		return
 	}
 	if !server.acquireTaskControl(taskID) {
 		writeError(response, http.StatusConflict, "task control operation already active")
@@ -2802,12 +2857,12 @@ func (server *Server) taskResumeContextWithoutBlackboard(found task.Task) (strin
 }
 
 func (server *Server) isCodexTask(found task.Task) bool {
-	profile, err := server.profiles.Get(found.RuntimeProfileID)
+	profile, err := server.resolveTaskRuntimeProfile(found)
 	return err == nil && profile.Provider == runtimeprofile.ProviderCodex
 }
 
 func (server *Server) isBlackboardV2Task(found task.Task) bool {
-	profile, err := server.profiles.Get(found.RuntimeProfileID)
+	profile, err := server.resolveTaskRuntimeProfile(found)
 	return err == nil && runner.BlackboardV2SupportsProvider(profile.Provider)
 }
 
@@ -2907,6 +2962,10 @@ func (server *Server) handleQueueSteerTask(response http.ResponseWriter, request
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	if strings.TrimSpace(input.RuntimeProfileID) != "" {
+		writeError(response, http.StatusBadRequest, "runtime_profile_locked")
+		return
+	}
 	if strings.TrimSpace(input.Directive) == "" {
 		writeError(response, http.StatusBadRequest, "steering directive is required")
 		return
@@ -2984,6 +3043,10 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
+	if strings.TrimSpace(input.RuntimeProfileID) != "" {
+		writeError(response, http.StatusBadRequest, "runtime_profile_locked")
+		return
+	}
 	input.RequestID = strings.TrimSpace(input.RequestID)
 	if input.RequestID == "" {
 		input.RequestID = strings.TrimSpace(request.Header.Get("Idempotency-Key"))
@@ -3026,16 +3089,6 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	}
 
 	input.Directive = input.Message
-	if profile, profileErr := server.resolveTaskRuntimeProfile(found); profileErr != nil {
-		writeError(response, http.StatusInternalServerError, "load runtime profile")
-		return
-	} else if strings.TrimSpace(profile.ID) == "" {
-		// The Task's launch and Task Runtime Configuration Version profiles are
-		// both deleted: no future continuation could deliver this directive, so
-		// fail closed instead of recording a pending steering event.
-		writeError(response, http.StatusBadRequest, "runtime profile not found")
-		return
-	}
 
 	activeSteer := found.Status == task.StatusRunning || found.Status == task.StatusPaused
 	if !server.acquireTaskControl(taskID) {
@@ -3650,63 +3703,31 @@ func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, 
 	if !ok {
 		return task.RuntimeConfigVersion{}, false
 	}
-
-	config := input.Config
-	if config == nil {
-		config = map[string]any{}
+	versions, err := server.tasks.RuntimeConfigVersions(found.ID)
+	if err != nil || len(versions) == 0 {
+		writeError(response, http.StatusInternalServerError, "runtime configuration snapshot is missing")
+		return task.RuntimeConfigVersion{}, false
 	}
-	config["runtime_profile_id"] = requestedProfile.ID
-	config["runner"] = found.Runner
-	if steeringEventID != "" {
-		config["steering_event_id"] = steeringEventID
+	prior, err := decodeRuntimeSnapshot(versions[len(versions)-1].Config)
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, err.Error())
+		return task.RuntimeConfigVersion{}, false
 	}
-	if requestedProfile.Fields.ModelProviderID != "" {
-		config["model_provider_id"] = requestedProfile.Fields.ModelProviderID
+	turn := runtimeconfig.RuntimeTurnSelection{
+		ModelProviderID: requestedProfile.Fields.ModelProviderID,
+		Model:           firstNonBlank(input.selectedModel(), requestedProfile.Fields.ModelOverride, requestedProfile.Fields.Model),
+		ReasoningEffort: firstNonBlank(input.ReasoningEffort, requestedProfile.Fields.ReasoningEffort),
 	}
-	if model := input.selectedModel(); model != "" {
-		config["model"] = model
-		config["model_override"] = model
-	} else if requestedProfile.Fields.ModelOverride != "" {
-		config["model"] = requestedProfile.Fields.ModelOverride
-		config["model_override"] = requestedProfile.Fields.ModelOverride
-	}
-	// Capture the explicit turn/queue Requested Reasoning Effort so resume
-	// reuses the operator's selection without re-inferring Effective Effort.
-	requestedEffort, err := runtimeprofile.ResolveRequestedReasoningEffort(
-		input.ReasoningEffort,
-		configString(config, "launch_reasoning_effort_override"),
-		requestedProfile.Fields.ReasoningEffort,
-	)
+	cloned, err := server.cloneSnapshotForTurn(prior, found.ProjectID, turn)
 	if err != nil {
 		writeError(response, http.StatusBadRequest, err.Error())
 		return task.RuntimeConfigVersion{}, false
 	}
-	config["requested_reasoning_effort"] = string(requestedEffort)
-	if strings.TrimSpace(input.ReasoningEffort) != "" {
-		config["reasoning_effort"] = string(requestedEffort)
+	provenance := ""
+	if cloned.RuntimeProfile != nil {
+		provenance = cloned.RuntimeProfile.ID
 	}
-	// Carry the captured Custom Config File forward so a later turn
-	// selection on the same profile does not drop the overlay that launch
-	// pinned. An explicit switch to another profile captures that
-	// profile's overlay instead.
-	if _, present := config["custom_config_file"]; !present {
-		if requestedProfile.ID == found.RuntimeProfileID {
-			versions, versionErr := server.tasks.RuntimeConfigVersions(found.ID)
-			copied := false
-			if versionErr == nil && len(versions) > 0 {
-				if previous, ok := versions[len(versions)-1].Config["custom_config_file"].(string); ok {
-					config["custom_config_file"] = previous
-					copied = true
-				}
-			}
-			if !copied {
-				config["custom_config_file"] = requestedProfile.Fields.CustomConfigFile
-			}
-		} else {
-			config["custom_config_file"] = requestedProfile.Fields.CustomConfigFile
-		}
-	}
-	recorded, err := server.tasks.RecordRuntimeConfig(found.ID, requestedProfile.ID, config)
+	recorded, err := server.tasks.RecordRuntimeConfig(found.ID, provenance, runtimeSnapshotMap(cloned))
 	if err != nil {
 		writeTaskError(response, err)
 		return task.RuntimeConfigVersion{}, false
@@ -3790,8 +3811,11 @@ func (server *Server) projectedPiModelProviderIDs(found task.Task) []string {
 	if err != nil || len(versions) == 0 {
 		return nil
 	}
-	latest := versions[len(versions)-1].Config
-	return stringSliceFromConfig(latest["projected_model_provider_ids"])
+	snapshot, err := decodeRuntimeSnapshot(versions[len(versions)-1].Config)
+	if err != nil {
+		return nil
+	}
+	return stringSliceFromConfig(snapshot.ConfigProjection["projected_model_provider_ids"])
 }
 
 func stringSliceFromConfig(value any) []string {
@@ -3848,68 +3872,27 @@ func (server *Server) selectionFromCapturedRuntimeConfig(found task.Task) (runti
 }
 
 func (server *Server) selectionFromCapturedRuntimeConfigTimed(found task.Task) (runtime.ProviderSessionRequest, time.Time, error) {
-	profile, err := server.resolveTaskRuntimeProfile(found)
-	if err != nil {
-		return runtime.ProviderSessionRequest{}, time.Time{}, err
-	}
-	modelProviderID := strings.TrimSpace(profile.Fields.ModelProviderID)
-	model := strings.TrimSpace(profile.Fields.ModelOverride)
-	if model == "" {
-		model = strings.TrimSpace(profile.Fields.Model)
-	}
-	launchEffort := ""
-	var configAt time.Time
 	versions, err := server.tasks.RuntimeConfigVersions(found.ID)
 	if err != nil {
 		return runtime.ProviderSessionRequest{}, time.Time{}, err
 	}
-	if len(versions) > 0 {
-		latestVersion := versions[len(versions)-1]
-		configAt = latestVersion.CreatedAt
-		latest := latestVersion.Config
-		// Snapshot first (actual projected provider/model), then explicit
-		// captured overrides from launch or later continuation selection.
-		if snapshotProvider, snapshotModel := modelProviderSnapshotFields(latest["model_provider_snapshot"]); true {
-			if snapshotProvider != "" {
-				modelProviderID = snapshotProvider
-			}
-			if snapshotModel != "" {
-				model = snapshotModel
-			}
-		}
-		if value := configString(latest, "model_provider_id"); value != "" {
-			modelProviderID = value
-		}
-		if value := configString(latest, "launch_model_override"); value != "" {
-			model = value
-		}
-		if value := configString(latest, "model_override"); value != "" {
-			model = value
-		}
-		if value := configString(latest, "model"); value != "" {
-			model = value
-		}
-		if value := configString(latest, "launch_reasoning_effort_override"); value != "" {
-			launchEffort = value
-		}
-		if value := configString(latest, "requested_reasoning_effort"); value != "" {
-			launchEffort = value
-		}
+	if len(versions) == 0 {
+		return runtime.ProviderSessionRequest{}, time.Time{}, errors.New("runtime configuration snapshot is missing")
 	}
-	if model == "" && server.modelProviders != nil && modelProviderID != "" {
-		if provider, getErr := server.modelProviders.Get(modelProviderID); getErr == nil {
-			model = strings.TrimSpace(provider.Catalog.DefaultModel)
-		}
+	latestVersion := versions[len(versions)-1]
+	snapshot, err := decodeRuntimeSnapshot(latestVersion.Config)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, time.Time{}, err
 	}
-	requested, err := runtimeprofile.ResolveRequestedReasoningEffort("", launchEffort, profile.Fields.ReasoningEffort)
+	requested, err := runtimeprofile.ResolveRequestedReasoningEffort("", snapshot.TurnSelection.ReasoningEffort, "")
 	if err != nil {
 		return runtime.ProviderSessionRequest{}, time.Time{}, err
 	}
 	return runtime.ProviderSessionRequest{
-		ModelProviderID:          modelProviderID,
-		Model:                    model,
+		ModelProviderID:          snapshot.TurnSelection.ModelProviderID,
+		Model:                    snapshot.TurnSelection.Model,
 		RequestedReasoningEffort: string(requested),
-	}, configAt, nil
+	}, latestVersion.CreatedAt, nil
 }
 
 func modelProviderSnapshotFields(raw any) (providerID, model string) {
@@ -4022,12 +4005,6 @@ func (server *Server) resolveTaskContinuationRuntimeProfile(response http.Respon
 		writeError(response, http.StatusInternalServerError, "load runtime profile")
 		return runtimeprofile.Profile{}, false
 	}
-	if strings.TrimSpace(currentProfile.ID) == "" {
-		// The Task's launch and config Runtime Profiles are both deleted; no
-		// continuation can be steered onto a resolvable profile.
-		writeError(response, http.StatusBadRequest, "runtime profile not found")
-		return runtimeprofile.Profile{}, false
-	}
 	return server.resolveSelectedRuntimeProfile(response, currentProfile, input)
 }
 
@@ -4039,28 +4016,15 @@ func (server *Server) resolveSelectedRuntimeProfile(response http.ResponseWriter
 		return runtimeprofile.Profile{}, false
 	}
 	if runtimeProfileID != "" {
-		requestedProfile, err := server.profiles.Get(runtimeProfileID)
-		if err != nil {
-			if errors.Is(err, runtimeprofile.ErrNotFound) {
-				writeError(response, http.StatusBadRequest, "runtime profile not found")
-				return runtimeprofile.Profile{}, false
-			}
-			writeError(response, http.StatusInternalServerError, "load runtime profile")
-			return runtimeprofile.Profile{}, false
-		}
-		if requestedProfile.Provider != currentProfile.Provider {
-			writeError(response, http.StatusBadRequest, "steering runtime profile must keep the same runtime provider")
-			return runtimeprofile.Profile{}, false
-		}
-		return requestedProfile, true
+		writeError(response, http.StatusBadRequest, "runtime_profile_locked")
+		return runtimeprofile.Profile{}, false
 	}
 	if modelProviderID == "" {
 		return currentProfile, true
 	}
 
-	providerName := modelProviderID
 	if server.modelProviders != nil {
-		provider, err := server.modelProviders.Get(modelProviderID)
+		_, err := server.modelProviders.Get(modelProviderID)
 		if err != nil {
 			if errors.Is(err, modelprovider.ErrNotFound) {
 				writeError(response, http.StatusBadRequest, "model provider not found")
@@ -4069,7 +4033,6 @@ func (server *Server) resolveSelectedRuntimeProfile(response http.ResponseWriter
 			writeError(response, http.StatusInternalServerError, "load model provider")
 			return runtimeprofile.Profile{}, false
 		}
-		providerName = provider.Name
 	}
 
 	modelOverride := input.selectedModel()
@@ -4099,83 +4062,25 @@ func (server *Server) resolveSelectedRuntimeProfile(response http.ResponseWriter
 	fields.Model = ""
 	fields.Endpoint = ""
 	fields.APIKeys = nil
-	name := runtimeprofile.LaunchProfileName(runtimeprofile.LaunchSelection{
-		Provider:        currentProfile.Provider,
-		ModelProviderID: modelProviderID,
-		ModelOverride:   modelOverride,
-	}, providerName)
-	created, err := server.profiles.CreateLaunchResolved(name, currentProfile.Provider, fields)
-	if err != nil {
-		writeError(response, http.StatusBadRequest, err.Error())
-		return runtimeprofile.Profile{}, false
-	}
-	return created, true
+	currentProfile.ID = ""
+	currentProfile.Name = ""
+	currentProfile.Fields = fields
+	return currentProfile, true
 }
 
 func (server *Server) resolveTaskRuntimeProfile(found task.Task) (runtimeprofile.Profile, error) {
-	profileID := found.RuntimeProfileID
 	versions, err := server.tasks.RuntimeConfigVersions(found.ID)
 	if err != nil {
 		return runtimeprofile.Profile{}, err
 	}
-	var capturedOverlay string
-	var capturedOverlayPresent bool
-	if len(versions) > 0 {
-		latest := versions[len(versions)-1]
-		if strings.TrimSpace(latest.RuntimeProfileID) != "" {
-			profileID = latest.RuntimeProfileID
-		}
-		if overlay, ok := latest.Config["custom_config_file"].(string); ok {
-			capturedOverlay = overlay
-			capturedOverlayPresent = true
-		}
+	if len(versions) == 0 {
+		return runtimeprofile.Profile{}, errors.New("runtime configuration snapshot is missing")
 	}
-	profile, err := server.profiles.Get(profileID)
-	if err == nil {
-		if capturedOverlayPresent {
-			profile.Fields.CustomConfigFile = capturedOverlay
-		}
-		return profile, nil
-	}
-	// A Task's captured Task Runtime Configuration is self-contained, so a
-	// deleted Runtime Profile must not make the Task unreadable. Fall back to
-	// the Task's own launch Runtime Profile; when that is also gone, resolve
-	// to a zero profile so render paths degrade instead of failing the page.
-	fallback, fallbackErr := server.profileOrFallback(profileID, found.RuntimeProfileID)
-	if fallbackErr != nil {
-		return runtimeprofile.Profile{}, fallbackErr
-	}
-	if capturedOverlayPresent {
-		fallback.Fields.CustomConfigFile = capturedOverlay
-	}
-	return fallback, nil
-}
-
-// profileOrFallback resolves id, then fallbackID when id's Runtime Profile was
-// deleted, and finally a zero profile when both are gone. Control paths that
-// require a real profile reject the zero profile explicitly.
-func (server *Server) profileOrFallback(id, fallbackID string) (runtimeprofile.Profile, error) {
-	profile, err := server.profiles.Get(id)
-	if err == nil {
-		return profile, nil
-	}
-	if !errors.Is(err, runtimeprofile.ErrNotFound) {
-		return runtimeprofile.Profile{}, err
-	}
-	if id != fallbackID {
-		profile, fallbackErr := server.profiles.Get(fallbackID)
-		if fallbackErr == nil {
-			return profile, nil
-		}
-		if !errors.Is(fallbackErr, runtimeprofile.ErrNotFound) {
-			return runtimeprofile.Profile{}, fallbackErr
-		}
-	}
-	return runtimeprofile.Profile{}, nil
+	return runtimeProfileFromSnapshot(versions[len(versions)-1].Config)
 }
 
 func (server *Server) discoverNativeResumeSession(found task.Task) (runtime.NativeSessionMetadata, error) {
-	profile, err := server.profiles.Get(found.RuntimeProfileID)
+	profile, err := server.resolveTaskRuntimeProfile(found)
 	if err != nil {
 		return runtime.NativeSessionMetadata{}, err
 	}

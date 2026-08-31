@@ -54,6 +54,7 @@ func TestLegacyLaunchPlanNeverProjectsOperatorToken(t *testing.T) {
 			created, err := server.tasks.Create(task.CreateRequest{
 				ProjectID: proj.ID, Type: task.TypePentest, Goal: "inspect boundary",
 				RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
+				RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
 			})
 			if err != nil {
 				t.Fatal(err)

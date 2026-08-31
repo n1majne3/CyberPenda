@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/modelprovider"
 	"pentest/internal/project"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
@@ -100,7 +101,18 @@ func newCodexV2ResumeSecurityFixture(t *testing.T) codexV2ResumeSecurityFixture 
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	profile, err := server.profiles.Create("Codex security shim", runtimeprofile.ProviderCodex, runtimeprofile.Fields{BinaryPath: shim, Model: "gpt-test"})
+	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "Codex security provider", BaseURL: "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-test"}, DefaultModel: "gpt-test"},
+	})
+	if err != nil {
+		t.Fatalf("create Model Provider: %v", err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	profile, err := server.profiles.Create("Codex security shim", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		BinaryPath: shim, ModelProviderID: provider.ID, ModelOverride: "gpt-test",
+	})
 	if err != nil {
 		t.Fatalf("create Codex profile: %v", err)
 	}

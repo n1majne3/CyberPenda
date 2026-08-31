@@ -8,11 +8,10 @@ import {
   launchRuntimes,
   launchModelOverridePayload,
   launchReasoningEffortPayload,
-  launchRuntimeProfileId,
+  launchSelectionPayload,
   modelsForProvider,
   presetMatchesRuntime,
   presetsForRuntime,
-  resolveLaunchPayload,
   launchSelectionFromProfile,
 } from "./taskLaunchForm";
 
@@ -114,27 +113,34 @@ describe("taskLaunchForm", () => {
     expect(modelsForProvider(anthropicProvider)).toEqual(["claude-sonnet-4"]);
   });
 
-  it("builds resolve-launch payload with optional model override", () => {
+  it("builds direct configuration payload with canonical model", () => {
     expect(
-      resolveLaunchPayload({
-        runtime: "codex",
-        modelProviderId: "mimo",
-        modelOverride: "",
-      }),
-    ).toEqual({
-      provider: "codex",
-      model_provider_id: "mimo",
-    });
-    expect(
-      resolveLaunchPayload({
+      launchSelectionPayload("", {
         runtime: "codex",
         modelProviderId: "mimo",
         modelOverride: "mimo-v2-pro",
+        reasoningEffort: "high",
       }),
     ).toEqual({
-      provider: "codex",
+      runtime_plugin_id: "codex",
       model_provider_id: "mimo",
-      model_override: "mimo-v2-pro",
+      model: "mimo-v2-pro",
+      reasoning_effort: "high",
+    });
+  });
+
+  it("builds profile launch payload with owner-local model and reasoning overrides", () => {
+    expect(
+      launchSelectionPayload("profile-1", {
+        runtime: "codex",
+        modelProviderId: "mimo",
+        modelOverride: "mimo-v2-pro",
+        reasoningEffort: "xhigh",
+      }),
+    ).toEqual({
+      runtime_profile_id: "profile-1",
+      model: "mimo-v2-pro",
+      reasoning_effort: "xhigh",
     });
   });
 
@@ -208,13 +214,12 @@ describe("taskLaunchForm", () => {
     expect(presetMatchesRuntime("codex-preset", profiles, "pi")).toBe(false);
   });
 
-  it("excludes launch-resolved profiles from preset pickers", () => {
+  it("lists every persisted profile because automatic profiles no longer exist", () => {
     const profiles: RuntimeProfile[] = [
       {
         id: "codex-preset",
         name: "Codex MCP",
         provider: "codex",
-        kind: "manual",
         fields: { model_provider_id: "mimo" },
         created_at: "",
         updated_at: "",
@@ -223,22 +228,13 @@ describe("taskLaunchForm", () => {
         id: "codex-auto",
         name: "Codex · MiMo",
         provider: "codex",
-        kind: "launch_resolve",
         fields: { model_provider_id: "mimo" },
         created_at: "",
         updated_at: "",
       },
     ];
-    expect(presetsForRuntime(profiles, "codex").map((profile) => profile.id)).toEqual(["codex-preset"]);
-    expect(presetMatchesRuntime("codex-auto", profiles, "codex")).toBe(false);
-    expect(
-      initialLaunchState({
-        plugins: [codexPlugin],
-        modelProviders: [mimoProvider],
-        profiles,
-        defaultRuntimeProfileId: "codex-auto",
-      }).presetId,
-    ).toBe("");
+    expect(presetsForRuntime(profiles, "codex").map((profile) => profile.id)).toEqual(["codex-preset", "codex-auto"]);
+    expect(presetMatchesRuntime("codex-auto", profiles, "codex")).toBe(true);
   });
 
   it("builds launch form from a selected preset", () => {
@@ -263,7 +259,7 @@ describe("taskLaunchForm", () => {
     });
   });
 
-  it("initializes preset mode from project default runtime profile", () => {
+  it("always initializes direct configuration because Projects have no Profile default", () => {
     const profiles: RuntimeProfile[] = [
       {
         id: "codex-preset",
@@ -278,11 +274,10 @@ describe("taskLaunchForm", () => {
       plugins: [codexPlugin, piPlugin],
       modelProviders: [mimoProvider],
       profiles,
-      defaultRuntimeProfileId: "codex-preset",
       projectRunner: "sandbox",
     });
-    expect(state.presetId).toBe("codex-preset");
-    expect(state.presetOpen).toBe(true);
+    expect(state.presetId).toBe("");
+    expect(state.presetOpen).toBe(false);
     expect(state.form.runtime).toBe("codex");
     expect(state.form.modelProviderId).toBe("mimo");
   });
@@ -293,11 +288,6 @@ describe("taskLaunchForm", () => {
     expect(launchModelOverridePayload("codex-preset", { modelOverride: "mimo-v2-pro" })).toEqual({
       model_override: "mimo-v2-pro",
     });
-  });
-
-  it("uses preset profile id directly when preset mode is active", () => {
-    expect(launchRuntimeProfileId("codex-preset", "resolved-profile")).toBe("codex-preset");
-    expect(launchRuntimeProfileId("", "resolved-profile")).toBe("resolved-profile");
   });
 
   it("picks compatible provider and default model for a runtime", () => {

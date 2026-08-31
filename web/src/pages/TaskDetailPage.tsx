@@ -444,7 +444,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     setTranscriptViewport(node);
   }, []);
 
-  const currentProfileRuntimeProvider = profiles.find((profile) => profile.id === owner?.runtimeProfileID)?.provider;
+  const currentProfileRuntimeProvider = owner?.runtimeConfiguration?.runtime_plugin_id ?? profiles.find((profile) => profile.id === owner?.runtimeProfileID)?.provider;
   const currentRuntimeProvider =
     owner?.runtimeControls?.runtime_provider ??
     owner?.activeContinuation?.runtimeProvider ??
@@ -816,6 +816,20 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
             <span>continuation #{currentContinuation.number}</span>
             <span aria-hidden="true">·</span>
             <span>runtime: {currentContinuation.runtimeProvider}</span>
+            {owner.runtimeConfiguration && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span>model provider: {owner.runtimeConfiguration.model_provider_name || owner.runtimeConfiguration.model_provider_id}</span>
+                <span aria-hidden="true">·</span>
+                <span>model: {owner.runtimeConfiguration.model}</span>
+                {owner.runtimeConfiguration.runtime_profile_name && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span>profile: {owner.runtimeConfiguration.runtime_profile_name}</span>
+                  </>
+                )}
+              </>
+            )}
             <span aria-hidden="true">·</span>
             <span>runner: {owner.runner}</span>
             <span className="hidden xl:inline" aria-hidden="true">·</span>

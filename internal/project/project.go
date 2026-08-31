@@ -45,9 +45,8 @@ const (
 // runtime profile, runner, and task policy; they do not copy global runtime
 // profiles.
 type Defaults struct {
-	RuntimeProfile string `json:"runtime_profile,omitempty"`
-	Runner         Runner `json:"runner,omitempty"`
-	TaskPolicy     string `json:"task_policy,omitempty"`
+	Runner     Runner `json:"runner,omitempty"`
+	TaskPolicy string `json:"task_policy,omitempty"`
 }
 
 // KindPentest is the default Project kind: a bounded security-testing

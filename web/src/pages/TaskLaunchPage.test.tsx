@@ -485,14 +485,16 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
+    await userEvent.click(await screen.findByRole("button", { name: /use runtime profile/i }));
+    await userEvent.selectOptions(screen.getByLabelText("Runtime Profile"), "codex-preset");
     expect(await screen.findByText("Skills for this launch")).toBeInTheDocument();
-    expect(await screen.findByText(/selected preset/i)).toBeInTheDocument();
+    expect(await screen.findByText(/selected runtime profile/i)).toBeInTheDocument();
     expect(await screen.findByText("Recon Helper")).toBeInTheDocument();
     expect(within(screen.getByLabelText("1 enabled skills")).queryByText("Disabled")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /launch/i })).toBeInTheDocument();
   });
 
-  it("shows enabled skills preview for auto-resolve path before launch", async () => {
+  it("shows enabled global skills for direct configuration before launch", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -517,7 +519,7 @@ describe("TaskLaunchPage", () => {
         if (url.includes("/api/runtime-profiles/resolve-launch") && method === "POST") {
           return Promise.reject(new Error("skills preview must not create launch profiles"));
         }
-        if (url.includes("/api/skills?runtime_profile_id=resolved-profile")) {
+        if (url.includes("/api/skills")) {
           return Promise.resolve(
             new Response(
               JSON.stringify({
@@ -537,7 +539,7 @@ describe("TaskLaunchPage", () => {
         }
         if (url.includes("/api/runtime-profiles")) {
           return Promise.resolve(
-            new Response(JSON.stringify({ profiles: [autoResolvedProfile] }), {
+            new Response(JSON.stringify({ profiles: [] }), {
               status: 200,
               headers: { "Content-Type": "application/json" },
             }),
@@ -570,11 +572,9 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    await waitFor(() => {
-      expect(screen.getByText(/matching runtime profile/i)).toBeInTheDocument();
-    });
+    expect(await screen.findByText(/globally default-enabled/i)).toBeInTheDocument();
     expect(await screen.findByText("Recon Helper")).toBeInTheDocument();
-    expect(screen.getByText("Profile: resolved-profile")).toBeInTheDocument();
+    expect(screen.queryByText(/^Profile:/)).not.toBeInTheDocument();
   });
 
   it("does not resolve a launch profile just to preview skills", async () => {
@@ -601,7 +601,10 @@ describe("TaskLaunchPage", () => {
         return Promise.reject(new Error("resolve-launch should only run during launch"));
       }
       if (url.includes("/api/skills")) {
-        return Promise.reject(new Error("skills preview needs an existing profile id"));
+        return Promise.resolve(new Response(JSON.stringify({ skills: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }));
       }
       if (url.includes("/api/runtime-profiles")) {
         return Promise.resolve(
@@ -721,10 +724,12 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
+    await userEvent.click(await screen.findByRole("button", { name: /use runtime profile/i }));
+    await userEvent.selectOptions(screen.getByLabelText("Runtime Profile"), "codex-preset");
     expect(await screen.findByText("No skills enabled for this profile.")).toBeInTheDocument();
   });
 
-  it("preselects project default preset and launches without resolve-launch", async () => {
+  it("ignores removed project Runtime Profile defaults and uses direct configuration", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const method = init?.method ?? "GET";
@@ -756,8 +761,9 @@ describe("TaskLaunchPage", () => {
         );
       }
       if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
-        const body = JSON.parse(String(init?.body ?? "{}")) as { runtime_profile_id?: string };
-        expect(body.runtime_profile_id).toBe("codex-preset");
+        const body = JSON.parse(String(init?.body ?? "{}")) as { runtime_profile_id?: string; runtime_plugin_id?: string };
+        expect(body.runtime_profile_id).toBeUndefined();
+        expect(body.runtime_plugin_id).toBe("codex");
         return Promise.resolve(
           new Response(
             JSON.stringify({
@@ -802,16 +808,17 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    expect(await screen.findByLabelText("Runtime profile preset")).toHaveValue("codex-preset");
-    expect(screen.getByLabelText("Runtime")).toBeDisabled();
-    expect(screen.getByLabelText("Model provider")).toBeDisabled();
-    expect(screen.getByLabelText("Model")).not.toBeDisabled();
+    await screen.findByRole("option", { name: "MiMo" });
+    await userEvent.click(screen.getByRole("button", { name: /use runtime profile/i }));
+    expect(screen.getByLabelText("Runtime Profile")).toHaveValue("");
+    expect(screen.getByLabelText("Runtime")).not.toBeDisabled();
+    expect(screen.getByLabelText("Model provider")).not.toBeDisabled();
 
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
-    expect(await screen.findByText("Recon Helper")).toBeInTheDocument();
+    expect(await screen.findByText("Skills for this launch")).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalledWith(
       expect.stringContaining("/api/runtime-profiles/resolve-launch"),
       expect.objectContaining({ method: "POST" }),
@@ -904,7 +911,9 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    expect(await screen.findByLabelText("Runtime profile preset")).toHaveValue("legacy-preset");
+    await userEvent.click(await screen.findByRole("button", { name: /use runtime profile/i }));
+    await userEvent.selectOptions(screen.getByLabelText("Runtime Profile"), "legacy-preset");
+    expect(screen.getByLabelText("Runtime Profile")).toHaveValue("legacy-preset");
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run legacy recon");
 
@@ -1245,11 +1254,11 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    const presetToggle = await screen.findByRole("button", { name: /use saved preset/i });
+    const presetToggle = await screen.findByRole("button", { name: /use runtime profile/i });
     expect(presetToggle).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(presetToggle);
     expect(presetToggle).toHaveAttribute("aria-expanded", "true");
-    await userEvent.selectOptions(screen.getByLabelText("Runtime profile preset"), "");
+    await userEvent.selectOptions(screen.getByLabelText("Runtime Profile"), "");
 
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
@@ -1263,7 +1272,7 @@ describe("TaskLaunchPage", () => {
     expect(preview.parentElement).toHaveTextContent("API key: generated_env via MIMO_API_KEY");
   });
 
-  it("sends launch model override when preset model changes", async () => {
+  it("sends the canonical model field when direct configuration changes", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const method = init?.method ?? "GET";
@@ -1306,8 +1315,9 @@ describe("TaskLaunchPage", () => {
         );
       }
       if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
-        const body = JSON.parse(String(init?.body ?? "{}")) as { model_override?: string };
-        expect(body.model_override).toBe("mimo-v2-pro");
+        const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string; model_override?: string };
+        expect(body.model).toBe("mimo-v2-pro");
+        expect(body.model_override).toBeUndefined();
         return Promise.resolve(
           new Response(
             JSON.stringify({
@@ -1893,7 +1903,7 @@ describe("TaskLaunchPage", () => {
     });
   });
 
-  it("clears preset selection when switching to auto-resolve", async () => {
+  it("switches from a Runtime Profile back to direct configuration", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -1949,9 +1959,13 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    const presetSelect = await screen.findByLabelText("Runtime profile preset");
+    await userEvent.click(await screen.findByRole("button", { name: /use runtime profile/i }));
+    const presetSelect = screen.getByLabelText("Runtime Profile");
+    await userEvent.selectOptions(presetSelect, "codex-preset");
     expect(presetSelect).toHaveValue("codex-preset");
     expect(screen.getByLabelText("Runtime")).toBeDisabled();
+    expect(screen.getByLabelText("Model")).not.toBeDisabled();
+    expect(screen.getByLabelText("Reasoning effort")).not.toBeDisabled();
 
     await userEvent.selectOptions(presetSelect, "");
 

@@ -298,6 +298,41 @@ func (s *Service) SetOptOut(profileID, skillID string, optedOut bool) error {
 	return nil
 }
 
+func (s *Service) SetAllOptOut(profileID string, optedOut bool) error {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return ErrNotFound
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin bulk skill opt-out: %w", err)
+	}
+	defer tx.Rollback()
+
+	var profileCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM runtime_profiles WHERE id = ?`, profileID).Scan(&profileCount); err != nil {
+		return fmt.Errorf("check runtime profile: %w", err)
+	}
+	if profileCount == 0 {
+		return ErrNotFound
+	}
+	if optedOut {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO skill_profile_opt_outs (profile_id, skill_id, created_at)
+			 SELECT ?, id, ? FROM skills`,
+			profileID, time.Now().UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			return fmt.Errorf("store bulk skill opt-outs: %w", err)
+		}
+	} else if _, err := tx.Exec(`DELETE FROM skill_profile_opt_outs WHERE profile_id = ?`, profileID); err != nil {
+		return fmt.Errorf("delete bulk skill opt-outs: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit bulk skill opt-out: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) EnabledSkills(profileID string) ([]Skill, error) {
 	profileID = strings.TrimSpace(profileID)
 	rows, err := s.db.Query(

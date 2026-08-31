@@ -86,7 +86,7 @@ func newAuthorizedAssistedConclusionRecoveryServer(t *testing.T) (*Server, task.
 	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: projectRecord.ID, TaskID: created.ID, RuntimeProfileID: profile.ID,
 		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
-		RuntimeConfig: map[string]any{"provider": "codex"},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)

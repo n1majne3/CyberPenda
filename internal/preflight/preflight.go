@@ -94,6 +94,10 @@ type Result struct {
 type Request struct {
 	// RuntimeProfileID is the id of the runtime profile the task will use.
 	RuntimeProfileID string
+	// Profile is a source-neutral launch adapter. Direct configuration and
+	// already-captured Snapshots pass a detached Profile and never require a
+	// global Runtime Profile lookup.
+	Profile *runtimeprofile.Profile
 	// ProjectID scopes credential resolution. Project defaults may be empty when
 	// the task overrides them; the caller decides whether that is allowed.
 	ProjectID string
@@ -107,6 +111,13 @@ type Request struct {
 	HostActivated bool
 	// LaunchModelOverride applies a task-only model choice without editing the profile.
 	LaunchModelOverride string
+	// ModelProviderSnapshot is the immutable provider configuration captured by
+	// an existing Runtime Owner. Resume validates its current Secret source but
+	// never reloads mutable global Model Provider fields.
+	ModelProviderSnapshot *modelprovider.Snapshot
+	// CapturedSkillIDs is non-nil for an existing Runtime Owner. Resume checks
+	// exactly this immutable set and ignores later defaults and Profile Opt-Outs.
+	CapturedSkillIDs []string
 	// ProjectKind and ScopeCapabilities are explicit operator-owned state used
 	// only to validate Runtime Extension Requirements.
 	ProjectKind       string
@@ -129,6 +140,7 @@ type ProfileGetter interface {
 }
 
 type SkillGetter interface {
+	Get(id string) (skill.Skill, error)
 	EnabledSkills(profileID string) ([]skill.Skill, error)
 	EnabledSkillBundles(profileID string) ([]skill.Bundle, error)
 }
@@ -192,19 +204,27 @@ func (s *Service) WithHermesACPProbe(probe func(binary string) error) *Service {
 func (s *Service) Run(ctx context.Context, request Request) Result {
 	result := Result{Pass: true}
 
-	// Check 1: the runtime profile exists and is loadable.
-	profile, err := s.profiles.Get(request.RuntimeProfileID)
+	// Check 1: a source-neutral Runtime configuration is loadable.
+	var profile runtimeprofile.Profile
+	var err error
+	if request.Profile != nil {
+		profile = *request.Profile
+	} else if s.profiles != nil {
+		profile, err = s.profiles.Get(request.RuntimeProfileID)
+	} else {
+		err = runtimeprofile.ErrNotFound
+	}
 	profileLoaded := err == nil
 	if err != nil {
 		result.add(Check{
-			Name:   "runtime_profile",
+			Name:   "runtime_configuration",
 			Status: CheckFail,
-			Detail: notFoundOrError("runtime profile", request.RuntimeProfileID, err),
+			Detail: notFoundOrError("runtime configuration", request.RuntimeProfileID, err),
 		})
 		// Without a profile we cannot resolve credential refs, but we still run
 		// the runner check so the result lists every problem.
 	} else {
-		result.add(Check{Name: "runtime_profile", Status: CheckPass})
+		result.add(Check{Name: "runtime_configuration", Status: CheckPass})
 	}
 
 	// Structured Model Provider, model, and Reasoning Effort fields are
@@ -223,7 +243,27 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 	}
 
 	if profileLoaded && s.skills != nil {
-		enabledSkills, err := s.skills.EnabledSkills(profile.ID)
+		var enabledSkills []skill.Skill
+		var bundles []skill.Bundle
+		var err error
+		if request.CapturedSkillIDs != nil {
+			enabledSkills = make([]skill.Skill, 0, len(request.CapturedSkillIDs))
+			bundles = make([]skill.Bundle, 0, len(request.CapturedSkillIDs))
+			for _, skillID := range request.CapturedSkillIDs {
+				captured, captureErr := s.skills.Get(skillID)
+				if captureErr != nil {
+					err = fmt.Errorf("captured Skill %s is unavailable", skillID)
+					break
+				}
+				enabledSkills = append(enabledSkills, captured)
+				bundles = append(bundles, skill.Bundle{ID: captured.ID, Name: captured.Name, Source: captured.Source, Path: captured.BundlePath})
+			}
+		} else {
+			enabledSkills, err = s.skills.EnabledSkills(profile.ID)
+			if err == nil {
+				bundles, err = s.skills.EnabledSkillBundles(profile.ID)
+			}
+		}
 		if err != nil {
 			result.add(Check{
 				Name:   "skills",
@@ -238,14 +278,7 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 				}
 				result.Skills = append(result.Skills, preview)
 			}
-			bundles, err := s.skills.EnabledSkillBundles(profile.ID)
-			if err != nil {
-				result.add(Check{
-					Name:   "skills",
-					Status: CheckFail,
-					Detail: fmt.Sprintf("resolve enabled skill bundles: %v", err),
-				})
-			} else if bundleErr := validateEnabledSkillBundles(bundles); bundleErr != nil {
+			if bundleErr := validateEnabledSkillBundles(bundles); bundleErr != nil {
 				result.add(Check{
 					Name:   "skills",
 					Status: CheckFail,
@@ -263,17 +296,30 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		s.checkRuntimeExtensions(&result, profile, request)
 	}
 
-	if profileLoaded && s.modelProviders != nil && shouldCheckModelProvider(profile, s.runtimePlugins) {
-		snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
-			Profile:             profile,
-			Providers:           s.modelProviders,
-			Plugins:             s.runtimePlugins,
-			Credentials:         s.creds,
-			ProjectID:           request.ProjectID,
-			CheckEnv:            true,
-			LaunchModelOverride: request.LaunchModelOverride,
-			CapabilityCache:     s.capabilityCache,
-		})
+	if profileLoaded && shouldCheckModelProvider(profile, s.runtimePlugins) {
+		var snapshot modelprovider.Snapshot
+		var err error
+		if request.ModelProviderSnapshot != nil {
+			snapshot = *request.ModelProviderSnapshot
+			if snapshot.APIKeyEnv != "" {
+				if _, configured := os.LookupEnv(snapshot.APIKeyEnv); !configured {
+					err = fmt.Errorf("model provider API key environment variable %s is not configured", snapshot.APIKeyEnv)
+				}
+			}
+		} else if s.modelProviders == nil {
+			err = modelprovider.ErrMissingProvider
+		} else {
+			snapshot, err = modelprovider.Resolve(modelprovider.ResolveRequest{
+				Profile:             profile,
+				Providers:           s.modelProviders,
+				Plugins:             s.runtimePlugins,
+				Credentials:         s.creds,
+				ProjectID:           request.ProjectID,
+				CheckEnv:            true,
+				LaunchModelOverride: request.LaunchModelOverride,
+				CapabilityCache:     s.capabilityCache,
+			})
+		}
 		if err != nil {
 			result.add(Check{Name: "model_provider", Status: CheckFail, Detail: err.Error()})
 		} else if snapshot.ModelProviderID != "" {

@@ -82,6 +82,43 @@ func TestCreateSessionDerivesTitleAndOwnsInitialConversation(t *testing.T) {
 	}
 }
 
+func TestCreateSessionAtomicallyPersistsInitialRuntimeSnapshotAndContinuation(t *testing.T) {
+	dataRoot := t.TempDir()
+	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+
+	service := NewService(db, filepath.Join(dataRoot, "sessions"))
+	snapshot := map[string]any{
+		"snapshot_version":       1,
+		"runtime_plugin_id":      "codex",
+		"runner":                 "sandbox",
+		"runtime_turn_selection": map[string]any{"model_provider_id": "mimo", "model": "mimo-v2.5-pro"},
+	}
+	created, err := service.Create(CreateRequest{
+		Input: "Inspect the standalone target",
+		InitialRuntime: &CreateContinuationRequest{
+			RuntimeProvider: "codex", Runner: RunnerSandbox, RuntimeConfig: snapshot,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.LatestContinuation == nil || created.LatestContinuation.RuntimeConfigID == "" {
+		t.Fatalf("created Session = %#v, want initial Continuation pinned to Snapshot", created)
+	}
+	versions, err := service.RuntimeConfigVersions(created.ID)
+	if err != nil || len(versions) != 1 || versions[0].Config["snapshot_version"] != float64(1) {
+		t.Fatalf("Runtime Configuration versions = %#v, err=%v", versions, err)
+	}
+	events, err := service.Conversation(created.ID)
+	if err != nil || len(events) != 1 || events[0].Payload["continuation_id"] != created.LatestContinuation.ID {
+		t.Fatalf("initial input = %#v, err=%v", events, err)
+	}
+}
+
 func TestCreateSessionPersistsAssistedBlackboardConclusionRunControl(t *testing.T) {
 	dataRoot := t.TempDir()
 	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))

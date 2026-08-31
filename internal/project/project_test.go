@@ -50,7 +50,7 @@ func TestCreatePersistsScopeAndDefaults(t *testing.T) {
 			Excluded:      []string{"admin.example.com"},
 			TestingLimits: []string{"no destructive payloads"},
 		},
-		project.Defaults{Runner: project.RunnerSandbox, RuntimeProfile: "codex-default"},
+		project.Defaults{Runner: project.RunnerSandbox, TaskPolicy: "bounded"},
 	)
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -62,8 +62,8 @@ func TestCreatePersistsScopeAndDefaults(t *testing.T) {
 	if created.Defaults.Runner != project.RunnerSandbox {
 		t.Fatalf("expected default runner sandbox, got %q", created.Defaults.Runner)
 	}
-	if created.Defaults.RuntimeProfile != "codex-default" {
-		t.Fatalf("expected default runtime profile, got %q", created.Defaults.RuntimeProfile)
+	if created.Defaults.TaskPolicy != "bounded" {
+		t.Fatalf("expected default Task Policy, got %q", created.Defaults.TaskPolicy)
 	}
 
 	fetched, err := service.Get(created.ID)
@@ -76,7 +76,7 @@ func TestCreatePersistsScopeAndDefaults(t *testing.T) {
 	if got := fetched.Scope.TestingLimits; len(got) != 1 || got[0] != "no destructive payloads" {
 		t.Fatalf("expected testing limits preserved, got %#v", got)
 	}
-	if fetched.Defaults.RuntimeProfile != "codex-default" {
+	if fetched.Defaults.TaskPolicy != "bounded" {
 		t.Fatalf("expected defaults preserved, got %#v", fetched.Defaults)
 	}
 }

@@ -56,8 +56,8 @@ describe("taskLaunchSkills", () => {
     expect(enabledLaunchSkills(skills).map((skill) => skill.id)).toEqual(["recon-helper"]);
   });
 
-  it("explains preset vs auto-resolved profile semantics", () => {
-    expect(launchSkillsPreviewDetail(true)).toMatch(/preset/i);
-    expect(launchSkillsPreviewDetail(false)).toMatch(/auto-resolved|launch resolution/i);
+  it("explains Profile vs direct configuration semantics", () => {
+    expect(launchSkillsPreviewDetail(true)).toMatch(/Runtime Profile/i);
+    expect(launchSkillsPreviewDetail(false)).toMatch(/Direct configuration/i);
   });
 });

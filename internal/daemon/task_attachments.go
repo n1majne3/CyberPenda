@@ -50,6 +50,9 @@ type createTaskInput struct {
 	Goal             string            `json:"goal"`
 	Type             task.Type         `json:"type"`
 	RuntimeProfileID string            `json:"runtime_profile_id"`
+	RuntimePluginID  string            `json:"runtime_plugin_id,omitempty"`
+	ModelProviderID  string            `json:"model_provider_id,omitempty"`
+	Model            string            `json:"model,omitempty"`
 	ModelOverride    string            `json:"model_override,omitempty"`
 	ReasoningEffort  string            `json:"reasoning_effort,omitempty"`
 	Runner           task.Runner       `json:"runner"`
