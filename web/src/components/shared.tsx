@@ -78,6 +78,15 @@ export function SettingsPageHeader({
   );
 }
 
+/** Uppercase tracking-wide section label used for section headers. */
+export function SectionLabel({ className, children, ...props }: HTMLAttributes<HTMLParagraphElement>) {
+  return (
+    <p className={cn("font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground", className)} {...props}>
+      {children}
+    </p>
+  );
+}
+
 /** Fills the shell main pane on large screens so list/detail scroll independently. */
 export function SettingsPageShell({
   className,
