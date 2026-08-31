@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ChevronDown, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, ChevronRight, Plus, Trash2 } from "lucide-react";
 import { apiGet, apiPost, apiPatch, apiDelete, mergedConfigPreview, projectedConfig, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
 import { codexMultiAgentTOMLLines, enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
@@ -18,10 +18,11 @@ import {
 } from "@/pages/runtimeProfileForm";
 import { isLaunchResolvedProfile, isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { cn } from "@/lib/utils";
-import { Button, Input, Label, Badge, Textarea, Select, Card, CardTitle } from "@/components/ui";
+import { Button, Input, Label, Badge, Chip, Textarea, Select, Card, CardTitle } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SaveActionButton } from "@/components/SaveActionButton";
 import {
+  SectionLabel,
   SettingsAlert,
   SettingsPageHeader,
   SettingsPanel,
@@ -33,7 +34,6 @@ import {
   SettingsListColumn,
   SettingsScrollPanel,
 } from "@/components/settingsLibrary";
-import { settingsListItemClasses } from "@/components/sharedStyles";
 
 const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "hermes", "fake"] as const;
 // HIDDEN_PROVIDER_IDS are real, registered providers that should not be
@@ -54,6 +54,10 @@ const DEFAULT_API_KEY_ENV: Record<string, string> = {
   claude_code: "ANTHROPIC_AUTH_TOKEN",
   pi: "ANTHROPIC_API_KEY",
 };
+
+// The daemon redacts stored API keys to this sentinel in profile payloads;
+// runtimeProfileForm.ts carries the same constant for save-side handling.
+const API_KEY_CONFIGURED = "[configured]";
 
 const DEFAULT_DAEMON_MCP_PORT = "8787";
 
@@ -128,32 +132,34 @@ function ProfileListButton({
   profile,
   modelProviders,
   selected,
-  launchResolved,
   onSelect,
 }: {
   profile: RuntimeProfile;
   modelProviders: ModelProvider[];
   selected: boolean;
-  launchResolved?: boolean;
   onSelect: () => void;
 }) {
+  const modelHint = profileListModelHint(profile.fields, modelProviders);
   return (
     <button
       type="button"
       onClick={onSelect}
       aria-current={selected ? "true" : undefined}
-      className={settingsListItemClasses(selected)}
-    >
-      <span className="font-medium block truncate">{profile.name}</span>
-      {profileListModelHint(profile.fields, modelProviders) && (
-        <span className="text-[11px] truncate block opacity-70">
-          {profileListModelHint(profile.fields, modelProviders)}
-        </span>
+      className={cn(
+        "block w-full rounded-md px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        selected ? "border border-primary/20 bg-primary/[0.03]" : "hover:bg-muted/50",
       )}
-      {launchResolved && (
-        <span className="mt-0.5 block text-[10px] uppercase tracking-wide text-muted-foreground/80">
-          Auto-resolved
-        </span>
+    >
+      <div className="flex items-center gap-2">
+        <span className="truncate text-sm font-medium">{profile.name}</span>
+        {isManualRuntimeProfile(profile) && (
+          <Chip variant="signal" className="h-4 flex-none text-[9px]">
+            preset
+          </Chip>
+        )}
+      </div>
+      {modelHint && (
+        <div className="mt-0.5 truncate text-xs text-muted-foreground">{modelHint}</div>
       )}
     </button>
   );
@@ -449,7 +455,6 @@ export function RuntimeProfilesPage() {
         className="mb-4 shrink-0"
         title="Runtime profiles"
         eyebrow="Configuration"
-        description="Advanced presets for MCP servers, skills, binary paths, runner defaults, and extension hooks."
         actions={
           <Button
             size="sm"
@@ -489,7 +494,7 @@ export function RuntimeProfilesPage() {
           </SettingsPanel>
 
           <SettingsScrollPanel>
-            <div className="space-y-4">
+            <div className="space-y-3">
               {providerIds.map((provider) => {
                 const items = grouped.get(provider) ?? [];
                 const presetItems = items.filter((profile) => isManualRuntimeProfile(profile));
@@ -497,62 +502,59 @@ export function RuntimeProfilesPage() {
                 if (presetItems.length === 0 && launchResolvedItems.length === 0) return null;
                 return (
                   <div key={provider}>
-                    <p className="mb-1.5 px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                      {pluginLabel(effectivePlugins, provider)}
-                    </p>
-                    {presetItems.length > 0 && (
-                      <div className="space-y-1">
-                        <p className="px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80">
-                          Presets
-                        </p>
-                        {presetItems.map((p) => (
-                          <ProfileListButton
-                            key={p.id}
-                            profile={p}
-                            modelProviders={modelProviders}
-                            selected={selectedId === p.id && !creating}
-                            onSelect={() => {
-                              setCreating(false);
-                              setSelectedId(p.id);
-                            }}
-                          />
-                        ))}
-                      </div>
-                    )}
-                    {launchResolvedItems.length > 0 && (
-                      <div className={cn("space-y-1", presetItems.length > 0 && "mt-2")}>
-                        <button
-                          type="button"
-                          aria-expanded={Boolean(launchResolvedOpen[provider])}
-                          className="flex w-full items-center gap-1 rounded-md px-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-                          onClick={() =>
-                            setLaunchResolvedOpen((open) => ({ ...open, [provider]: !open[provider] }))
-                          }
-                        >
-                          <ChevronDown
-                            className={cn(
-                              "h-3 w-3 transition-transform",
-                              launchResolvedOpen[provider] && "rotate-180",
-                            )}
-                          />
-                          Launch-resolved ({launchResolvedItems.length})
-                        </button>
-                        {launchResolvedOpen[provider] &&
-                          launchResolvedItems.map((p) => (
-                            <ProfileListButton
-                              key={p.id}
-                              profile={p}
-                              modelProviders={modelProviders}
-                              selected={selectedId === p.id && !creating}
-                              launchResolved
-                              onSelect={() => {
-                                setCreating(false);
-                                setSelectedId(p.id);
-                              }}
+                    <div className="px-2 pt-1 pb-1.5">
+                      <SectionLabel>{pluginLabel(effectivePlugins, provider)}</SectionLabel>
+                    </div>
+                    <div className="space-y-0.5">
+                      {presetItems.map((p) => (
+                        <ProfileListButton
+                          key={p.id}
+                          profile={p}
+                          modelProviders={modelProviders}
+                          selected={selectedId === p.id && !creating}
+                          onSelect={() => {
+                            setCreating(false);
+                            setSelectedId(p.id);
+                          }}
+                        />
+                      ))}
+                      {launchResolvedItems.length > 0 && (
+                        <div>
+                          <button
+                            type="button"
+                            aria-expanded={Boolean(launchResolvedOpen[provider])}
+                            className="flex w-full items-center gap-1 rounded-md px-2 pb-1 pt-2 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                            onClick={() =>
+                              setLaunchResolvedOpen((open) => ({ ...open, [provider]: !open[provider] }))
+                            }
+                          >
+                            <ChevronRight
+                              className={cn(
+                                "h-3 w-3 transition-transform",
+                                launchResolvedOpen[provider] && "rotate-90",
+                              )}
                             />
-                          ))}
-                      </div>
-                    )}
+                            Launch-resolved ({launchResolvedItems.length})
+                          </button>
+                          {launchResolvedOpen[provider] && (
+                            <div className="mt-0.5 space-y-0.5">
+                              {launchResolvedItems.map((p) => (
+                                <ProfileListButton
+                                  key={p.id}
+                                  profile={p}
+                                  modelProviders={modelProviders}
+                                  selected={selectedId === p.id && !creating}
+                                  onSelect={() => {
+                                    setCreating(false);
+                                    setSelectedId(p.id);
+                                  }}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -571,6 +573,7 @@ export function RuntimeProfilesPage() {
         {creating ? (
           <SettingsDetailPane
             data-testid="runtime-profiles-settings-detail"
+            bodyClassName="px-6"
             header={
               <div className="min-w-0">
                 <h3 className="font-medium">New profile</h3>
@@ -606,17 +609,18 @@ export function RuntimeProfilesPage() {
         ) : selected && draft ? (
           <SettingsDetailPane
             data-testid="runtime-profiles-settings-detail"
+            bodyClassName="px-6"
             header={
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
-                  <div className="mb-1 flex flex-wrap items-center gap-2">
-                    <h3 className="font-medium">{selected.name}</h3>
-                    <Badge variant="primary">{pluginLabel(effectivePlugins, selected.provider)}</Badge>
-                    {isLaunchResolvedProfile(selected) && (
-                      <Badge variant="outline">Launch-resolved</Badge>
-                    )}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-base font-semibold">{selected.name}</h2>
+                    <Chip variant="neutral">{pluginLabel(effectivePlugins, selected.provider)}</Chip>
+                    <Chip variant="signal">
+                      {isLaunchResolvedProfile(selected) ? "launch-resolved" : "preset"}
+                    </Chip>
                   </div>
-                  <p className="truncate font-mono text-xs text-muted-foreground">{selected.id}</p>
+                  <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{selected.id}</p>
                   {isLaunchResolvedProfile(selected) && (
                     <p className="mt-1 text-xs text-muted-foreground">
                       Created by launch resolution. Skill opt-outs and MCP edits apply to future launches that resolve to this profile.
@@ -629,20 +633,19 @@ export function RuntimeProfilesPage() {
                       Promote to preset
                     </Button>
                   )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    aria-label={`Delete ${selected.name} runtime profile`}
+                    onClick={() => setConfirmDeleteId(selected.id)}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
                   <SaveActionButton
                     pending={saving}
                     saved={savedNotice}
                     onClick={() => void saveSelected()}
                   />
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    aria-label={`Delete ${selected.name} runtime profile`}
-                    onClick={() => setConfirmDeleteId(selected.id)}
-                    className="text-muted-foreground hover:text-destructive"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
                 </div>
               </div>
             }
@@ -1019,9 +1022,13 @@ function ProfileEditor({
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-5">
       {title && <h3 className="font-medium">{title}</h3>}
-      <div className="grid grid-cols-2 gap-3">
+      <section className="rounded-lg border border-border bg-card shadow-sm">
+        <div className="border-b border-border px-4 py-3">
+          <span className="text-sm font-medium">基本与模型</span>
+        </div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
         <div>
           <Label htmlFor="profile-name">Name</Label>
           <Input
@@ -1059,16 +1066,6 @@ function ProfileEditor({
               </option>
             ))}
           </Select>
-          {plugin && (
-            <div className="mt-2 flex flex-wrap gap-1">
-              <Badge variant="outline">{plugin.id}</Badge>
-              <Badge variant="outline">{plugin.config_projection.primitive}</Badge>
-              <Badge variant="outline">{plugin.transcript.parser}</Badge>
-              {plugin.capabilities.sandbox && <Badge variant="primary">sandbox</Badge>}
-              {plugin.capabilities.host && <Badge variant="default">host</Badge>}
-              {plugin.capabilities.mcp_config && <Badge variant="outline">mcp</Badge>}
-            </div>
-          )}
         </div>
         <div>
           <Label htmlFor="profile-model-provider">Model provider</Label>
@@ -1131,17 +1128,29 @@ function ProfileEditor({
           </Select>
         </div>
         <div>
-          <Label htmlFor="profile-reasoning-effort">Reasoning effort</Label>
-          <Select
-            id="profile-reasoning-effort"
-            name="reasoning_effort"
-            value={displayReasoningEffort(form.reasoning_effort)}
-            onChange={(e) => onChange({ ...form, reasoning_effort: e.target.value })}
+          <Label id="profile-reasoning-effort-label">Reasoning effort</Label>
+          <div
+            className="mt-1.5 flex rounded-lg border border-input p-0.5"
+            role="group"
+            aria-labelledby="profile-reasoning-effort-label"
           >
             {REASONING_EFFORT_VALUES.map((effort) => (
-              <option key={effort} value={effort}>{effort}</option>
+              <button
+                key={effort}
+                type="button"
+                aria-pressed={displayReasoningEffort(form.reasoning_effort) === effort}
+                onClick={() => onChange({ ...form, reasoning_effort: effort })}
+                className={cn(
+                  "flex-1 rounded-md px-2 py-1 text-xs transition-colors",
+                  displayReasoningEffort(form.reasoning_effort) === effort
+                    ? "bg-primary font-medium text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {effort}
+              </button>
             ))}
-          </Select>
+          </div>
         </div>
         {has("binary_path") && <div>
           <Label htmlFor="profile-binary-path">Binary path</Label>
@@ -1196,9 +1205,26 @@ function ProfileEditor({
             ))}
           </Select>
         </div>}
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        {has("custom_args") && <div>
+        </div>
+        {plugin && (
+          <div className="border-t border-border px-4 py-3">
+            <div className="flex flex-wrap gap-1.5">
+              <Chip variant="neutral">{plugin.id}</Chip>
+              <Chip variant="neutral">{plugin.config_projection.primitive}</Chip>
+              <Chip variant="neutral">{plugin.transcript.parser}</Chip>
+              {plugin.capabilities.sandbox && <Chip variant="signal">sandbox</Chip>}
+              {plugin.capabilities.host && <Chip variant="signal">host</Chip>}
+              {plugin.capabilities.mcp_config && <Chip variant="signal">mcp</Chip>}
+            </div>
+          </div>
+        )}
+      </section>
+      <section className="rounded-lg border border-border bg-card shadow-sm">
+        <div className="border-b border-border px-4 py-3">
+          <span className="text-sm font-medium">环境与高级</span>
+        </div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
+        {has("custom_args") && <div className="col-span-2">
           <Label htmlFor="profile-custom-args">Custom args</Label>
           <Textarea
             id="profile-custom-args"
@@ -1210,7 +1236,7 @@ function ProfileEditor({
             spellCheck={false}
           />
         </div>}
-        {has("env") && <div>
+        {has("env") && <div className="col-span-2">
           <Label htmlFor="profile-env">Environment</Label>
           <p className="text-[11px] text-muted-foreground mb-1">KEY=VALUE lines or a JSON object</p>
           <Textarea
@@ -1237,21 +1263,29 @@ function ProfileEditor({
         </div>}
         {has("api_keys") && legacyModelFields && <div>
           <Label htmlFor="profile-api-key">API key</Label>
-          <Input
-            id="profile-api-key"
-            name="api_key"
-            type="password"
-            value={form.api_key}
-            onChange={(e) => onChange({ ...form, api_key: e.target.value })}
-            placeholder="sk-…"
-            autoComplete="off"
-            spellCheck={false}
-          />
+          <div className="relative">
+            <Input
+              id="profile-api-key"
+              name="api_key"
+              type="password"
+              value={form.api_key}
+              onChange={(e) => onChange({ ...form, api_key: e.target.value })}
+              placeholder="sk-…"
+              autoComplete="off"
+              spellCheck={false}
+              className="pr-16"
+            />
+            {form.api_key.trim() === API_KEY_CONFIGURED && (
+              <span className="pointer-events-none absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1 text-[11px] text-success">
+                <CheckCircle2 className="h-3.5 w-3.5" /> configured
+              </span>
+            )}
+          </div>
           <p className="text-[11px] text-muted-foreground mt-1">
             Stored on this profile only. Leave as [configured] to keep the existing key.
           </p>
         </div>}
-        {has("mcp_servers") && <div>
+        {has("mcp_servers") && <div className="col-span-2">
           <Label htmlFor="profile-mcp-servers">MCP servers JSON</Label>
           <Textarea
             id="profile-mcp-servers"
@@ -1263,7 +1297,7 @@ function ProfileEditor({
             spellCheck={false}
           />
         </div>}
-        {has("sandbox_image") && <div>
+        {has("sandbox_image") && <div className="col-span-2">
           <Label htmlFor="profile-sandbox-image">Sandbox image</Label>
           <Input
             id="profile-sandbox-image"
@@ -1489,7 +1523,8 @@ function ProfileEditor({
             </div>
           )}
         </div>}
-      </div>
+        </div>
+      </section>
       {form.provider === "claude_code" && form.endpoint.includes("bigmodel.cn") && (
         <div className="space-y-1 rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
           <p className="font-medium text-foreground">智谱 GLM runtime notes</p>

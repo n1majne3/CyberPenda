@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useEffect } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -496,7 +496,10 @@ describe("RuntimeProfilesPage", () => {
     renderPage();
 
     expect(await screen.findByText("Codex MCP")).toBeInTheDocument();
-    expect(screen.getByText("Presets")).toBeInTheDocument();
+    // Direction A: presets are marked with a chip on each row instead of a
+    // "Presets" group subheading.
+    const list = screen.getByTestId("runtime-profiles-settings-list");
+    expect(within(list).getByText("preset")).toBeInTheDocument();
     expect(screen.getByText(/Launch-resolved \(1\)/)).toBeInTheDocument();
     expect(screen.queryByText("Codex · MiMo")).not.toBeInTheDocument();
 
