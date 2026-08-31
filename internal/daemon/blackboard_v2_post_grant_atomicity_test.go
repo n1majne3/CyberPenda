@@ -65,6 +65,7 @@ func TestClaudeAndPiV2PostGrantProjectionFailureRollsBackDurableLaunchAndGrantCo
 				ProjectID: createdProject.ID,
 				Type:      task.TypePentest, Goal: "inspect atomic.example",
 				RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+				RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 			})
 			if err != nil {
 				t.Fatalf("create Task: %v", err)
@@ -96,19 +97,20 @@ func TestClaudeAndPiV2PostGrantProjectionFailureRollsBackDurableLaunchAndGrantCo
 				t.Fatalf("post-grant failure error = %v, want injected failure", err)
 			}
 
-			for _, table := range []string{
-				"task_continuations",
-				"task_runtime_config_versions",
-				"blackboard_v2_continuation_pins",
-				"blackboard_v2_continuation_state",
-				"blackboard_continuation_grants",
+			for table, want := range map[string]int{
+				"task_continuations": 0,
+				// Owner creation committed Snapshot v1 before this Continuation attempt.
+				"task_runtime_config_versions":     1,
+				"blackboard_v2_continuation_pins":  0,
+				"blackboard_v2_continuation_state": 0,
+				"blackboard_continuation_grants":   0,
 			} {
 				var count int
 				if err := server.db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil {
 					t.Fatalf("count %s: %v", table, err)
 				}
-				if count != 0 {
-					t.Fatalf("%s retained %d rows after failed post-grant projection", table, count)
+				if count != want {
+					t.Fatalf("%s retained %d rows after failed post-grant projection, want %d", table, count, want)
 				}
 			}
 
@@ -167,6 +169,7 @@ func TestCodexV2LaunchStillSucceedsWithoutBindGrantSideEffects(t *testing.T) {
 		ProjectID: createdProject.ID,
 		Type:      task.TypePentest, Goal: "inspect codex.example",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
@@ -242,6 +245,7 @@ func TestClaudeAndPiV2SandboxArgvAndEnvOmitIdentityAndHostTaskRoots(t *testing.T
 				ProjectID: createdProject.ID,
 				Type:      task.TypePentest, Goal: "inspect sandbox.example",
 				RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+				RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 			})
 			if err != nil {
 				t.Fatalf("create Task: %v", err)

@@ -99,6 +99,71 @@ func TestSkillsPublishListOptOutDeleteAndAuditHTTP(t *testing.T) {
 	}
 }
 
+func TestSkillsBulkOptOutAndEnableForRuntimeProfileHTTP(t *testing.T) {
+	server := newDaemon(t)
+	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex"}`)
+
+	putSkill(t, server, "recon-helper", `{
+		"name":"Recon Helper",
+		"files":{"SKILL.md":"# Recon Helper"}
+	}`)
+	putSkill(t, server, "report-helper", `{
+		"name":"Report Helper",
+		"files":{"SKILL.md":"# Report Helper"}
+	}`)
+
+	bulkPath := "/api/skills/profiles/" + profileID + "/opt-out"
+	disableReq := httptest.NewRequest(http.MethodPut, bulkPath, nil)
+	disableResp := httptest.NewRecorder()
+	server.ServeHTTP(disableResp, disableReq)
+	if disableResp.Code != http.StatusNoContent {
+		t.Fatalf("expected bulk opt-out status 204, got %d with body %s", disableResp.Code, disableResp.Body.String())
+	}
+	assertListedSkillEnablement(t, server, profileID, map[string]bool{
+		"recon-helper":  false,
+		"report-helper": false,
+	})
+
+	enableReq := httptest.NewRequest(http.MethodDelete, bulkPath, nil)
+	enableResp := httptest.NewRecorder()
+	server.ServeHTTP(enableResp, enableReq)
+	if enableResp.Code != http.StatusNoContent {
+		t.Fatalf("expected bulk enable status 204, got %d with body %s", enableResp.Code, enableResp.Body.String())
+	}
+	assertListedSkillEnablement(t, server, profileID, map[string]bool{
+		"recon-helper":  true,
+		"report-helper": true,
+	})
+}
+
+func assertListedSkillEnablement(t *testing.T, server http.Handler, profileID string, want map[string]bool) {
+	t.Helper()
+	request := httptest.NewRequest(http.MethodGet, "/api/skills?runtime_profile_id="+profileID, nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected skills list status 200, got %d with body %s", response.Code, response.Body.String())
+	}
+	var body struct {
+		Skills []struct {
+			ID      string `json:"id"`
+			Enabled bool   `json:"enabled"`
+		} `json:"skills"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode skills list: %v", err)
+	}
+	if len(body.Skills) != len(want) {
+		t.Fatalf("listed skills = %#v, want enablement %#v", body.Skills, want)
+	}
+	for _, listed := range body.Skills {
+		enabled, ok := want[listed.ID]
+		if !ok || listed.Enabled != enabled {
+			t.Fatalf("listed skill %q enabled = %t, want %#v", listed.ID, listed.Enabled, want)
+		}
+	}
+}
+
 func TestControlledSkillImportPublishesBundle(t *testing.T) {
 	server := newDaemonWithConfig(t, daemon.Config{
 		Version:              "test-version",

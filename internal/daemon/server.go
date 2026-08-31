@@ -29,6 +29,7 @@ import (
 	"pentest/internal/reasontask"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeconfig"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
@@ -913,6 +914,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/sessions/{id}/transcript", server.handleSessionTranscript)
 	server.mux.HandleFunc("GET /api/sessions/{id}/transcript/entries/{entry_id}", server.handleSessionTranscriptEntry)
 	server.mux.HandleFunc("POST /api/sessions/{id}/messages", server.handleSessionMessage)
+	server.mux.HandleFunc("POST /api/sessions/{id}/runtime-profile", server.handleSaveSessionRuntimeProfile)
 	server.mux.HandleFunc("POST /api/sessions/{id}/resume", server.handleSessionMessage)
 	server.mux.HandleFunc("POST /api/sessions/{id}/steer", server.handleSessionSteer)
 	server.mux.HandleFunc("POST /api/sessions/{id}/steer/queue", server.handleSessionQueueSteer)
@@ -924,11 +926,9 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/sessions/{id}/restore", server.handleRestoreSession)
 	server.mux.HandleFunc("DELETE /api/sessions/{id}", server.handleDeleteSession)
 	server.mux.HandleFunc("POST /api/runtime-profiles", server.handleCreateRuntimeProfile)
-	server.mux.HandleFunc("POST /api/runtime-profiles/resolve-launch", server.handleResolveLaunchRuntimeProfile)
 	server.mux.HandleFunc("GET /api/runtime-profiles", server.handleListRuntimeProfiles)
 	server.mux.HandleFunc("GET /api/runtime-profiles/{id}", server.handleGetRuntimeProfile)
 	server.mux.HandleFunc("PATCH /api/runtime-profiles/{id}", server.handleUpdateRuntimeProfile)
-	server.mux.HandleFunc("POST /api/runtime-profiles/{id}/promote", server.handlePromoteRuntimeProfile)
 	server.mux.HandleFunc("DELETE /api/runtime-profiles/{id}", server.handleDeleteRuntimeProfile)
 	server.mux.HandleFunc("GET /api/runtime-profiles/{id}/model-provider-migration-preview", server.handlePreviewModelProviderMigration)
 	server.mux.HandleFunc("POST /api/runtime-profiles/{id}/model-provider-migration", server.handleApplyModelProviderMigration)
@@ -954,6 +954,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/skills/{skill_id}", server.handleGetSkill)
 	server.mux.HandleFunc("PUT /api/skills/{skill_id}", server.handlePutSkill)
 	server.mux.HandleFunc("DELETE /api/skills/{skill_id}", server.handleDeleteSkill)
+	server.mux.HandleFunc("PUT /api/skills/profiles/{profile_id}/opt-out", server.handlePutAllSkillProfileOptOuts)
+	server.mux.HandleFunc("DELETE /api/skills/profiles/{profile_id}/opt-out", server.handleDeleteAllSkillProfileOptOuts)
 	server.mux.HandleFunc("PUT /api/skills/{skill_id}/profiles/{profile_id}/opt-out", server.handlePutSkillProfileOptOut)
 	server.mux.HandleFunc("DELETE /api/skills/{skill_id}/profiles/{profile_id}/opt-out", server.handleDeleteSkillProfileOptOut)
 	server.mux.HandleFunc("PUT /api/credential-bindings", server.handleUpsertGlobalCredentialBinding)
@@ -964,6 +966,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("PUT /api/projects/{id}/credential-bindings", server.handleUpsertProjectCredentialBinding)
 	server.mux.HandleFunc("GET /api/projects/{id}/credential-bindings", server.handleListProjectCredentialBindings)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks", server.handleCreateTask)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/runtime-profile", server.handleSaveTaskRuntimeProfile)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks", server.handleListTasks)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}", server.handleGetTask)
 	server.mux.HandleFunc("DELETE /api/projects/{id}/tasks/{task_id}", server.handleDeleteTask)
@@ -1541,26 +1544,6 @@ func (server *Server) handleProjectedConfig(response http.ResponseWriter, reques
 	})
 }
 
-func (server *Server) handlePromoteRuntimeProfile(response http.ResponseWriter, request *http.Request) {
-	id := request.PathValue("id")
-	if id == "" {
-		writeError(response, http.StatusNotFound, "runtime profile not found")
-		return
-	}
-
-	promoted, err := server.profiles.PromoteToPreset(id)
-	if errors.Is(err, runtimeprofile.ErrNotFound) {
-		writeError(response, http.StatusNotFound, err.Error())
-		return
-	}
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "promote runtime profile")
-		return
-	}
-
-	writeJSON(response, http.StatusOK, runtimeprofile.SanitizeProfile(promoted))
-}
-
 func (server *Server) handleDeleteRuntimeProfile(response http.ResponseWriter, request *http.Request) {
 	id := request.PathValue("id")
 	if id == "" {
@@ -1693,6 +1676,9 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 
 	var input struct {
 		RuntimeProfileID        string           `json:"runtime_profile_id"`
+		RuntimePluginID         string           `json:"runtime_plugin_id,omitempty"`
+		ModelProviderID         string           `json:"model_provider_id,omitempty"`
+		Model                   string           `json:"model,omitempty"`
 		ModelOverride           string           `json:"model_override,omitempty"`
 		ReasoningEffort         string           `json:"reasoning_effort,omitempty"`
 		Runner                  string           `json:"runner"`
@@ -1719,9 +1705,26 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
+	model := strings.TrimSpace(input.Model)
+	if model == "" {
+		model = strings.TrimSpace(input.ModelOverride)
+	}
+	resolvedConfiguration, err := server.resolveLaunchConfiguration(runtimeconfig.LaunchSelection{
+		RuntimeProfileID: input.RuntimeProfileID, RuntimePluginID: input.RuntimePluginID,
+		ModelProviderID: input.ModelProviderID, Model: model,
+		ReasoningEffort: input.ReasoningEffort, Runner: string(defaulted.runner),
+	}, projectID)
+	var resolvedProfile *runtimeprofile.Profile
+	if err == nil {
+		resolvedProfile = &resolvedConfiguration.Profile
+	} else if strings.TrimSpace(defaulted.runtimeProfileID) == "" {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
+	}
 	result := server.preflight.Run(request.Context(), preflight.Request{
 		RuntimeProfileID:        defaulted.runtimeProfileID,
-		LaunchModelOverride:     strings.TrimSpace(input.ModelOverride),
+		Profile:                 resolvedProfile,
+		LaunchModelOverride:     model,
 		ProjectID:               projectID,
 		CredentialRefsToResolve: input.CredentialRefsToResolve,
 		Runner:                  string(defaulted.runner),

@@ -1,9 +1,8 @@
 import type { Skill } from "@/lib/api";
-import { launchRuntimeProfileId } from "@/pages/taskLaunchForm";
 import type { LaunchForm } from "@/pages/taskLaunchForm";
 
 export function launchProfileIdForSkillsPreview(presetId: string, resolvedProfileId: string): string {
-  return launchRuntimeProfileId(presetId, resolvedProfileId);
+  return presetId.trim() || resolvedProfileId.trim();
 }
 
 export function canPreviewLaunchSkills(form: Pick<LaunchForm, "runtime" | "modelProviderId">, presetId: string): boolean {
@@ -17,7 +16,7 @@ export function enabledLaunchSkills(skills: Skill[]): Skill[] {
 
 export function launchSkillsPreviewDetail(presetMode: boolean): string {
   if (presetMode) {
-    return "Skills follow the selected preset. Library skills are enabled by default unless this profile has opt-outs.";
+    return "Skills follow the selected Runtime Profile. Library Skills are enabled by default unless this Profile has Opt-Outs.";
   }
-  return "Skills follow the matching runtime profile from launch resolution. Library skills are enabled by default unless that profile has opt-outs.";
+  return "Direct configuration captures the current globally default-enabled Skills. Later library changes do not change this Runtime Owner.";
 }

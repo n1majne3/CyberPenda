@@ -836,7 +836,15 @@ func assertDisabledOwnerTimelineOmitsContent(t *testing.T, server *Server, path,
 
 func assertNoBlackboardLaunchMaterial(t *testing.T, launch ProviderSessionLaunchRequest) {
 	t.Helper()
-	encoded, err := json.Marshal(launch.RuntimeConfig)
+	// Snapshot settings are inert owner-local source data. Authority leakage is
+	// checked on the actual Config Projection, launch goal, adapter env and argv.
+	projected := make(map[string]any, len(launch.RuntimeConfig))
+	for key, value := range launch.RuntimeConfig {
+		if key != "settings" {
+			projected[key] = value
+		}
+	}
+	encoded, err := json.Marshal(projected)
 	if err != nil {
 		t.Fatal(err)
 	}

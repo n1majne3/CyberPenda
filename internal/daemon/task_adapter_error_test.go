@@ -139,6 +139,7 @@ func TestBuildTaskAdapterAppliesHostProxyOnlySandboxNetworkFromRunControls(t *te
 		Type: task.TypePentest, Goal: "test http://localhost:3000",
 		RuntimeProfileID: profile.ID,
 		Runner:           task.RunnerSandbox,
+		RuntimeConfig:    testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 		RunControls: task.RunControls{
 			SandboxNetwork: "host_proxy_only",
 		},
@@ -199,6 +200,7 @@ func TestBuildTaskAdapterAppliesSandboxVPNTunFromRunControls(t *testing.T) {
 		Goal:             "openvpn client for CTF",
 		RuntimeProfileID: profile.ID,
 		Runner:           task.RunnerSandbox,
+		RuntimeConfig:    testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 		RunControls: task.RunControls{
 			SandboxVPNTun: true,
 		},
@@ -269,6 +271,7 @@ func TestSandboxLaunchPlanWiresImagePullProgressToDaemonLogger(t *testing.T) {
 	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: proj.ID, Type: task.TypePentest, Goal: "enumerate example.com", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -406,12 +409,17 @@ func createAdapterErrorTestProject(t *testing.T, server *Server) project.Project
 
 func createAdapterErrorTestTask(t *testing.T, server *Server, projectID, profileID string) task.Task {
 	t.Helper()
+	profile, err := server.profiles.Get(profileID)
+	if err != nil {
+		t.Fatalf("get profile: %v", err)
+	}
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectID,
 
 		Type: task.TypePentest, Goal: "enumerate example.com",
 		RuntimeProfileID: profileID,
 		Runner:           task.RunnerSandbox,
+		RuntimeConfig:    testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)

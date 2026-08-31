@@ -34,13 +34,12 @@ export function TaskLaunchPage() {
     setLaunching(true);
     launchControls.setError(null);
     try {
-      const profileId = await launchControls.resolveRuntimeProfileId();
-      const checked = await launchControls.runPreflight(`/api/projects/${projectId}/preflight`, profileId);
+      const checked = await launchControls.runPreflight(`/api/projects/${projectId}/preflight`);
       if (!checked.pass) {
         launchControls.setError("preflight failed");
         return;
       }
-      const launch = launchControls.launchPayload(profileId);
+      const launch = launchControls.launchPayload();
       const payload = {
         type: reasonTask ? projectKind : taskType,
         goal: effectiveGoal,

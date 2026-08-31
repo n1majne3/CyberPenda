@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  Ban,
   BookOpen,
+  CheckCheck,
   Download,
   LoaderCircle,
   Pencil,
@@ -10,7 +12,6 @@ import {
   X,
 } from "lucide-react";
 import { apiDelete, apiGet, apiPost, apiPostForm, apiPut, type RuntimeProfile, type Skill } from "@/lib/api";
-import { isLaunchResolvedProfile } from "@/pages/runtimeProfileKind";
 import { Badge, Button, Input, Label, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
@@ -64,6 +65,8 @@ export function SkillsPage() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDeleteSkill, setConfirmDeleteSkill] = useState<Skill | null>(null);
+  const [confirmDisableAllProfile, setConfirmDisableAllProfile] = useState<RuntimeProfile | null>(null);
+  const [bulkUpdating, setBulkUpdating] = useState(false);
   const [skillsLoading, setSkillsLoading] = useState(true);
 
   const selectedProfile = profiles.find((profile) => profile.id === profileId) ?? null;
@@ -205,6 +208,24 @@ export function SkillsPage() {
     }
   }
 
+  async function setAllSkillsOptOut(profile: RuntimeProfile, optedOut: boolean) {
+    setBulkUpdating(true);
+    setError(null);
+    try {
+      const path = `/api/skills/profiles/${encodeURIComponent(profile.id)}/opt-out`;
+      if (optedOut) {
+        await apiPut(path);
+      } else {
+        await apiDelete(path);
+      }
+      await loadSkills(profile.id);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBulkUpdating(false);
+    }
+  }
+
   async function editSkill(skill: Skill) {
     setError(null);
     try {
@@ -307,22 +328,43 @@ export function SkillsPage() {
                   {profiles.map((profile) => (
                     <option key={profile.id} value={profile.id}>
                       {profile.name} ({profile.provider})
-                      {isLaunchResolvedProfile(profile) ? " · launch-resolved" : ""}
                     </option>
                   ))}
                 </Select>
-                {selectedProfile && isLaunchResolvedProfile(selectedProfile) && (
+                {selectedProfile && profileId && (
                   <p className="mt-2 text-xs text-muted-foreground">
-                    This profile was created by launch resolution. Skill opt-outs bind to this record and apply to future launches that resolve to the same runtime, model provider, and model override.
-                  </p>
-                )}
-                {selectedProfile && !isLaunchResolvedProfile(selectedProfile) && profileId && (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Skill opt-outs apply to this preset for every task that launches with it.
+                    Skill opt-outs apply to this Runtime Profile when it is selected for a new Task or Session.
                   </p>
                 )}
               </div>
-              <SettingsStatSummary value={enabledCount} unit="enabled" total={skills.length} />
+              <div className="flex shrink-0 flex-col items-start gap-2 lg:items-end">
+                <SettingsStatSummary value={enabledCount} unit="enabled" total={skills.length} />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    aria-label="Enable all skills"
+                    disabled={!selectedProfile || optedOutCount === 0 || bulkUpdating || skillsLoading}
+                    onClick={() => {
+                      if (selectedProfile) void setAllSkillsOptOut(selectedProfile, false);
+                    }}
+                  >
+                    <CheckCheck className="h-3.5 w-3.5" /> Enable all
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    aria-label="Disable all skills"
+                    disabled={!selectedProfile || enabledCount === 0 || bulkUpdating || skillsLoading}
+                    onClick={() => {
+                      if (selectedProfile) setConfirmDisableAllProfile(selectedProfile);
+                    }}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    <Ban className="h-3.5 w-3.5" /> Disable all
+                  </Button>
+                </div>
+              </div>
             </div>
 
             <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center">
@@ -683,6 +725,23 @@ export function SkillsPage() {
           )}
         </SettingsListColumn>
       </SettingsSplitLayout>
+      <ConfirmDialog
+        open={confirmDisableAllProfile !== null}
+        title={
+          confirmDisableAllProfile
+            ? `Disable all skills for ${confirmDisableAllProfile.name}?`
+            : "Disable all skills?"
+        }
+        description="This adds Skill Opt-Outs for all current Skills in this Runtime Profile. Started Tasks do not change, and future imported Skills remain default-on."
+        confirmLabel="Disable all"
+        destructive
+        onConfirm={() => {
+          const profile = confirmDisableAllProfile;
+          setConfirmDisableAllProfile(null);
+          if (profile) void setAllSkillsOptOut(profile, true);
+        }}
+        onCancel={() => setConfirmDisableAllProfile(null)}
+      />
       <ConfirmDialog
         open={confirmDeleteSkill !== null}
         title={confirmDeleteSkill ? `Delete skill ${displaySkillName(confirmDeleteSkill)}?` : "Delete skill?"}

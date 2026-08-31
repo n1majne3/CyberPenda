@@ -250,7 +250,7 @@ func TestProjectsCanBeListedForDashboard(t *testing.T) {
 	}
 }
 
-func TestCreateProjectPersistsDefaults(t *testing.T) {
+func TestCreateProjectPersistsRunnerAndDropsRemovedRuntimeProfileDefault(t *testing.T) {
 	server, err := daemon.NewServer(daemon.Config{
 		Version: "test-version",
 		DBPath:  filepath.Join(t.TempDir(), "pentest.db"),
@@ -270,18 +270,15 @@ func TestCreateProjectPersistsDefaults(t *testing.T) {
 	}`)
 
 	var fetched struct {
-		Defaults struct {
-			Runner         string `json:"runner"`
-			RuntimeProfile string `json:"runtime_profile"`
-		} `json:"defaults"`
+		Defaults map[string]any `json:"defaults"`
 	}
 	getProject(t, server, id, &fetched)
 
-	if fetched.Defaults.Runner != "sandbox" {
-		t.Fatalf("expected default runner sandbox, got %q", fetched.Defaults.Runner)
+	if fetched.Defaults["runner"] != "sandbox" {
+		t.Fatalf("expected default runner sandbox, got %#v", fetched.Defaults["runner"])
 	}
-	if fetched.Defaults.RuntimeProfile != "codex-default" {
-		t.Fatalf("expected default runtime profile codex-default, got %q", fetched.Defaults.RuntimeProfile)
+	if _, exists := fetched.Defaults["runtime_profile"]; exists {
+		t.Fatalf("removed runtime_profile default was persisted: %#v", fetched.Defaults)
 	}
 }
 

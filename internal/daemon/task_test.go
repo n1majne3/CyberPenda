@@ -194,13 +194,11 @@ func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 
 // #205: A Task whose latest Task Runtime Configuration references a deleted
 // Runtime Profile must remain readable. The captured configuration is
-// self-contained, so task detail falls back to the Task's own launch profile
-// instead of failing the whole page.
+// self-contained and does not reload the deleted Profile.
 func TestGetTaskSurvivesDeletedLatestRuntimeProfile(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
-	profileB := createRuntimeProfile(t, server, `{"name":"Fake B","provider":"fake"}`)
 	taskID := createTask(t, server, projectID, `{
 		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileA)+`,
@@ -208,24 +206,8 @@ func TestGetTaskSurvivesDeletedLatestRuntimeProfile(t *testing.T) {
 	}`)
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 
-	// Steer onto profile B, which records a second Task Runtime Configuration
-	// Version referencing profile B, then delete profile B so the latest
-	// configuration version points at a missing profile while the Task's own
-	// launch Runtime Profile still exists.
-	resp := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
-		"directive":"continue",
-		"runtime_profile_id":`+quoteJSON(profileB)+`,
-		"submitted_by":"operator"
-	}`)))
-	req.Header.Set("Content-Type", "application/json")
-	server.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected steer status 200, got %d with body %s", resp.Code, resp.Body.String())
-	}
-
 	del := httptest.NewRecorder()
-	delReq := httptest.NewRequest(http.MethodDelete, "/api/runtime-profiles/"+profileB, nil)
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/runtime-profiles/"+profileA, nil)
 	server.ServeHTTP(del, delReq)
 	if del.Code != http.StatusNoContent {
 		t.Fatalf("expected delete profile status 204, got %d with body %s", del.Code, del.Body.String())
@@ -257,12 +239,9 @@ func TestGetTaskSurvivesDeletedLatestRuntimeProfile(t *testing.T) {
 	}
 }
 
-// #205: When both the latest Task Runtime Configuration Version profile and the
-// Task's own launch Runtime Profile are deleted, task detail must still render
-// with degraded controls instead of a 500, so a deep link into a historical
-// Task never dies. Queue steering is explicitly unavailable because no steer
-// could resolve a target profile.
-func TestGetTaskDegradesWhenEveryRuntimeProfileIsDeleted(t *testing.T) {
+// Deleting the provenance Profile never degrades an existing owner. Runtime
+// controls and later turns use the immutable owner-local Snapshot.
+func TestGetTaskKeepsSnapshotWhenRuntimeProfileIsDeleted(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
@@ -300,21 +279,20 @@ func TestGetTaskDegradesWhenEveryRuntimeProfileIsDeleted(t *testing.T) {
 	if err := json.NewDecoder(get.Body).Decode(&found); err != nil {
 		t.Fatalf("decode task detail: %v", err)
 	}
-	if found.RuntimeControls.RuntimeProvider != "" {
-		t.Fatalf("expected degraded empty runtime provider, got %q", found.RuntimeControls.RuntimeProvider)
+	if found.RuntimeControls.RuntimeProvider != "fake" {
+		t.Fatalf("expected captured runtime provider fake, got %q", found.RuntimeControls.RuntimeProvider)
 	}
 	if !strings.Contains(found.RuntimeControls.NativeResumeReason, "unsupported") {
 		t.Fatalf("expected degraded native resume reason, got %q", found.RuntimeControls.NativeResumeReason)
 	}
-	if found.RuntimeControls.QueueSteerAvailable {
-		t.Fatal("expected queue steering to be unavailable with no resolvable Runtime Profile")
+	if !found.RuntimeControls.QueueSteerAvailable {
+		t.Fatal("expected queue steering to remain available from the captured Snapshot")
 	}
 	if found.LatestContinuation == nil || found.LatestContinuation.RuntimeProvider != "fake" {
 		t.Fatalf("expected latest continuation from the fake runtime, got %#v", found.LatestContinuation)
 	}
 
-	// The steer boundary must reject with the closed reason vocabulary instead
-	// of recording a config version with an empty Runtime Profile.
+	// The steer boundary also uses the captured Snapshot.
 	steer := httptest.NewRecorder()
 	steerReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
 		"directive":"continue",
@@ -322,11 +300,8 @@ func TestGetTaskDegradesWhenEveryRuntimeProfileIsDeleted(t *testing.T) {
 	}`)))
 	steerReq.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(steer, steerReq)
-	if steer.Code != http.StatusBadRequest {
-		t.Fatalf("expected steer status 400 with no resolvable profile, got %d with body %s", steer.Code, steer.Body.String())
-	}
-	if !strings.Contains(steer.Body.String(), "runtime profile not found") {
-		t.Fatalf("expected closed reason 'runtime profile not found', got %s", steer.Body.String())
+	if steer.Code != http.StatusOK {
+		t.Fatalf("expected steer status 200 from captured Snapshot, got %d with body %s", steer.Code, steer.Body.String())
 	}
 }
 
@@ -718,27 +693,13 @@ func TestLaunchTaskFailsPreflightWhenRuntimeProfileMissing(t *testing.T) {
 		t.Fatalf("expected task launch preflight failure status 400, got %d with body %s", resp.Code, resp.Body.String())
 	}
 	var body struct {
-		Error     string `json:"error"`
-		Preflight struct {
-			Pass   bool `json:"pass"`
-			Checks []struct {
-				Name   string `json:"name"`
-				Status string `json:"status"`
-				Detail string `json:"detail"`
-			} `json:"checks"`
-		} `json:"preflight"`
+		Error string `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatalf("decode preflight launch failure: %v", err)
 	}
-	if body.Error != "preflight failed" {
-		t.Fatalf("expected preflight failed error, got %q", body.Error)
-	}
-	if body.Preflight.Pass {
-		t.Fatalf("expected preflight pass=false, got %#v", body.Preflight)
-	}
-	if !checkNamed(body.Preflight.Checks, "runtime_profile", "fail") {
-		t.Fatalf("expected runtime_profile check to fail, got %#v", body.Preflight.Checks)
+	if body.Error != "runtime profile not found" {
+		t.Fatalf("expected missing profile error, got %q", body.Error)
 	}
 
 	listResp := httptest.NewRecorder()
@@ -758,7 +719,7 @@ func TestLaunchTaskFailsPreflightWhenRuntimeProfileMissing(t *testing.T) {
 	}
 }
 
-func TestLaunchTaskUsesProjectDefaultsWhenRuntimeControlsAreOmitted(t *testing.T) {
+func TestLaunchTaskDoesNotResolveRemovedProjectRuntimeProfileDefault(t *testing.T) {
 	server := newDaemon(t)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	projectID := createProject(t, server, `{
@@ -774,25 +735,9 @@ func TestLaunchTaskUsesProjectDefaultsWhenRuntimeControlsAreOmitted(t *testing.T
 	resp := httptest.NewRecorder()
 	server.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusCreated {
-		t.Fatalf("expected create task status 201, got %d with body %s", resp.Code, resp.Body.String())
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("expected create task status 400 without a launch selection, got %d with body %s", resp.Code, resp.Body.String())
 	}
-	var created struct {
-		ID               string `json:"id"`
-		RuntimeProfileID string `json:"runtime_profile_id"`
-		Runner           string `json:"runner"`
-		Status           string `json:"status"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
-		t.Fatalf("decode task response: %v", err)
-	}
-	if created.RuntimeProfileID != profileID {
-		t.Fatalf("expected default runtime profile %q, got %q", profileID, created.RuntimeProfileID)
-	}
-	if created.Runner != "sandbox" {
-		t.Fatalf("expected default runner sandbox, got %q", created.Runner)
-	}
-	waitForTaskStatus(t, server, projectID, created.ID, "completed")
 }
 
 func TestLaunchTaskUsesRuntimeProfileProviderAdapter(t *testing.T) {
@@ -1119,7 +1064,7 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 	}
 }
 
-func TestSteerTaskRecordsDirectiveAndRuntimeProfileSwitch(t *testing.T) {
+func TestSteerTaskRejectsRuntimeProfileSwitch(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
@@ -1140,46 +1085,8 @@ func TestSteerTaskRecordsDirectiveAndRuntimeProfileSwitch(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(resp, req)
 
-	if resp.Code != http.StatusOK {
-		t.Fatalf("expected steer status 200, got %d with body %s", resp.Code, resp.Body.String())
-	}
-
-	var steered struct {
-		Event struct {
-			Kind    string         `json:"kind"`
-			Payload map[string]any `json:"payload"`
-		} `json:"event"`
-		RuntimeConfigVersion struct {
-			Version          int    `json:"version"`
-			RuntimeProfileID string `json:"runtime_profile_id"`
-		} `json:"runtime_config_version"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&steered); err != nil {
-		t.Fatalf("decode steer response: %v", err)
-	}
-	if steered.Event.Kind != "steering" {
-		t.Fatalf("expected steering event, got %q", steered.Event.Kind)
-	}
-	if steered.Event.Payload["directive"] != "focus on http services before dns brute force" {
-		t.Fatalf("expected directive payload, got %#v", steered.Event.Payload)
-	}
-	if steered.RuntimeConfigVersion.Version != 2 {
-		t.Fatalf("expected second runtime config version, got %d", steered.RuntimeConfigVersion.Version)
-	}
-	if steered.RuntimeConfigVersion.RuntimeProfileID != profileB {
-		t.Fatalf("expected switched profile, got %q", steered.RuntimeConfigVersion.RuntimeProfileID)
-	}
-
-	events := getTaskEvents(t, server, projectID, taskID)
-	sawSteering := false
-	for _, event := range events {
-		if event["kind"] == "steering" {
-			sawSteering = true
-			break
-		}
-	}
-	if !sawSteering {
-		t.Fatalf("expected steering event, got %#v", events)
+	if resp.Code != http.StatusBadRequest || !strings.Contains(resp.Body.String(), "runtime_profile_locked") {
+		t.Fatalf("expected locked profile status 400, got %d with body %s", resp.Code, resp.Body.String())
 	}
 }
 
@@ -1540,12 +1447,12 @@ func TestSteerTaskRejectsRuntimeProviderChange(t *testing.T) {
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("expected steer status 400 for provider change, got %d with body %s", resp.Code, resp.Body.String())
 	}
-	if !strings.Contains(resp.Body.String(), "runtime provider") {
-		t.Fatalf("expected provider-change error, got %s", resp.Body.String())
+	if !strings.Contains(resp.Body.String(), "runtime_profile_locked") {
+		t.Fatalf("expected locked profile error, got %s", resp.Body.String())
 	}
 }
 
-func TestResumeTaskUsesSteeredRuntimeProfileWhenProviderMatches(t *testing.T) {
+func TestResumeTaskKeepsSnapshotAfterLockedRuntimeProfileSwitch(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
@@ -1564,8 +1471,8 @@ func TestResumeTaskUsesSteeredRuntimeProfileWhenProviderMatches(t *testing.T) {
 	}`)))
 	steerReq.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(steerResp, steerReq)
-	if steerResp.Code != http.StatusOK {
-		t.Fatalf("expected steer status 200, got %d with body %s", steerResp.Code, steerResp.Body.String())
+	if steerResp.Code != http.StatusBadRequest || !strings.Contains(steerResp.Body.String(), "runtime_profile_locked") {
+		t.Fatalf("expected locked profile status 400, got %d with body %s", steerResp.Code, steerResp.Body.String())
 	}
 
 	resp := httptest.NewRecorder()
@@ -1586,13 +1493,13 @@ func TestResumeTaskUsesSteeredRuntimeProfileWhenProviderMatches(t *testing.T) {
 	if resumed.LatestContinuation == nil {
 		t.Fatal("expected latest continuation in resume response")
 	}
-	if resumed.LatestContinuation.RuntimeProfileID != profileB {
-		t.Fatalf("expected resumed continuation profile %q, got %q", profileB, resumed.LatestContinuation.RuntimeProfileID)
+	if resumed.LatestContinuation.RuntimeProfileID != profileA {
+		t.Fatalf("expected captured continuation profile %q, got %q", profileA, resumed.LatestContinuation.RuntimeProfileID)
 	}
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 }
 
-func TestQueueSteerRecordsSameProviderRuntimeProfileForNextContinuation(t *testing.T) {
+func TestQueueSteerRejectsSameProviderRuntimeProfileSwitch(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileA := createRuntimeProfile(t, server, `{"name":"Fake A","provider":"fake"}`)
@@ -1611,19 +1518,8 @@ func TestQueueSteerRecordsSameProviderRuntimeProfileForNextContinuation(t *testi
 	}`)))
 	steerReq.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(steerResp, steerReq)
-	if steerResp.Code != http.StatusOK {
-		t.Fatalf("expected queue steer status 200, got %d with body %s", steerResp.Code, steerResp.Body.String())
-	}
-	var queued struct {
-		RuntimeConfigVersion *struct {
-			RuntimeProfileID string `json:"runtime_profile_id"`
-		} `json:"runtime_config_version"`
-	}
-	if err := json.NewDecoder(steerResp.Body).Decode(&queued); err != nil {
-		t.Fatalf("decode queue steer: %v", err)
-	}
-	if queued.RuntimeConfigVersion == nil || queued.RuntimeConfigVersion.RuntimeProfileID != profileB {
-		t.Fatalf("expected queued runtime profile %q, got %#v", profileB, queued.RuntimeConfigVersion)
+	if steerResp.Code != http.StatusBadRequest || !strings.Contains(steerResp.Body.String(), "runtime_profile_locked") {
+		t.Fatalf("expected locked profile status 400, got %d with body %s", steerResp.Code, steerResp.Body.String())
 	}
 
 	resumeResp := httptest.NewRecorder()
@@ -1640,8 +1536,8 @@ func TestQueueSteerRecordsSameProviderRuntimeProfileForNextContinuation(t *testi
 	if err := json.NewDecoder(resumeResp.Body).Decode(&resumed); err != nil {
 		t.Fatalf("decode resumed task: %v", err)
 	}
-	if resumed.LatestContinuation == nil || resumed.LatestContinuation.RuntimeProfileID != profileB {
-		t.Fatalf("expected resumed continuation profile %q, got %#v", profileB, resumed.LatestContinuation)
+	if resumed.LatestContinuation == nil || resumed.LatestContinuation.RuntimeProfileID != profileA {
+		t.Fatalf("expected captured runtime profile %q, got %#v", profileA, resumed.LatestContinuation)
 	}
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 }
@@ -1672,6 +1568,7 @@ func TestQueueSteerRecordsSameRuntimeModelSelection(t *testing.T) {
 	}`)
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 
+	t.Setenv("MIMO_API_KEY", "sk-test")
 	providerID := createModelProvider(t, server, `{
 		"name":"MiMo",
 		"base_url":"https://api.example.test/v1",
@@ -1702,43 +1599,15 @@ func TestQueueSteerRecordsSameRuntimeModelSelection(t *testing.T) {
 	if queued.RuntimeConfigVersion == nil {
 		t.Fatal("expected queued runtime config version")
 	}
-	queuedProfileID := queued.RuntimeConfigVersion.RuntimeProfileID
-	if queuedProfileID == "" || queuedProfileID == profileID {
-		t.Fatalf("expected launch-resolved continuation profile, got %q", queuedProfileID)
+	if queued.RuntimeConfigVersion.RuntimeProfileID != profileID {
+		t.Fatalf("expected immutable profile provenance %q, got %q", profileID, queued.RuntimeConfigVersion.RuntimeProfileID)
 	}
-	if queued.RuntimeConfigVersion.Config["model_provider_id"] != providerID {
+	turn, _ := queued.RuntimeConfigVersion.Config["runtime_turn_selection"].(map[string]any)
+	if turn["model_provider_id"] != providerID {
 		t.Fatalf("expected queued model provider %q, got %#v", providerID, queued.RuntimeConfigVersion.Config)
 	}
-	if queued.RuntimeConfigVersion.Config["model_override"] != "mimo-v2-pro" {
+	if turn["model"] != "mimo-v2-pro" {
 		t.Fatalf("expected queued model override, got %#v", queued.RuntimeConfigVersion.Config)
-	}
-
-	getProfile := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+queuedProfileID, nil)
-	getResp := httptest.NewRecorder()
-	server.ServeHTTP(getResp, getProfile)
-	if getResp.Code != http.StatusOK {
-		t.Fatalf("expected get profile status 200, got %d with body %s", getResp.Code, getResp.Body.String())
-	}
-	var profile struct {
-		Provider string `json:"provider"`
-		Kind     string `json:"kind"`
-		Fields   struct {
-			BinaryPath      string `json:"binary_path"`
-			ModelProviderID string `json:"model_provider_id"`
-			ModelOverride   string `json:"model_override"`
-		} `json:"fields"`
-	}
-	if err := json.NewDecoder(getResp.Body).Decode(&profile); err != nil {
-		t.Fatalf("decode profile: %v", err)
-	}
-	if profile.Provider != "codex" || profile.Kind != "launch_resolve" {
-		t.Fatalf("expected same-runtime launch profile, got %#v", profile)
-	}
-	if profile.Fields.BinaryPath != binary {
-		t.Fatalf("expected continuation profile to preserve binary path %q, got %q", binary, profile.Fields.BinaryPath)
-	}
-	if profile.Fields.ModelProviderID != providerID || profile.Fields.ModelOverride != "mimo-v2-pro" {
-		t.Fatalf("expected continuation model selection, got %#v", profile.Fields)
 	}
 }
 
@@ -1854,35 +1723,19 @@ func TestResumeTaskUsesContinuationModelSelectionWithoutDroppingRuntimeFields(t 
 		LatestContinuation *struct {
 			RuntimeProfileID string `json:"runtime_profile_id"`
 		} `json:"latest_continuation"`
+		RuntimeConfiguration *struct {
+			ModelProviderID string `json:"model_provider_id"`
+			Model           string `json:"model"`
+		} `json:"runtime_configuration"`
 	}
 	if err := json.NewDecoder(detailResp.Body).Decode(&resumed); err != nil {
 		t.Fatalf("decode resumed task: %v", err)
 	}
-	if resumed.LatestContinuation == nil || resumed.LatestContinuation.RuntimeProfileID == profileID {
-		t.Fatalf("expected continuation-specific runtime profile, got %#v", resumed.LatestContinuation)
+	if resumed.LatestContinuation == nil || resumed.LatestContinuation.RuntimeProfileID != profileID {
+		t.Fatalf("expected immutable profile provenance %q, got %#v", profileID, resumed.LatestContinuation)
 	}
-
-	getProfile := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+resumed.LatestContinuation.RuntimeProfileID, nil)
-	getResp := httptest.NewRecorder()
-	server.ServeHTTP(getResp, getProfile)
-	if getResp.Code != http.StatusOK {
-		t.Fatalf("expected get profile status 200, got %d with body %s", getResp.Code, getResp.Body.String())
-	}
-	var profile struct {
-		Fields struct {
-			BinaryPath      string `json:"binary_path"`
-			ModelProviderID string `json:"model_provider_id"`
-			ModelOverride   string `json:"model_override"`
-		} `json:"fields"`
-	}
-	if err := json.NewDecoder(getResp.Body).Decode(&profile); err != nil {
-		t.Fatalf("decode profile: %v", err)
-	}
-	if profile.Fields.BinaryPath != binary {
-		t.Fatalf("expected continuation profile to preserve binary path %q, got %q", binary, profile.Fields.BinaryPath)
-	}
-	if profile.Fields.ModelProviderID != providerID || profile.Fields.ModelOverride != "mimo-v2-pro" {
-		t.Fatalf("expected continuation model selection, got %#v", profile.Fields)
+	if resumed.RuntimeConfiguration == nil || resumed.RuntimeConfiguration.ModelProviderID != providerID || resumed.RuntimeConfiguration.Model != "mimo-v2-pro" {
+		t.Fatalf("expected continuation model selection in Snapshot summary, got %#v", resumed.RuntimeConfiguration)
 	}
 }
 

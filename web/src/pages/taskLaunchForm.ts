@@ -1,5 +1,4 @@
 import type { ModelProvider, RuntimePlugin, RuntimeProfile } from "@/lib/api";
-import { isManualRuntimeProfile } from "@/pages/runtimeProfileKind";
 import { displayReasoningEffort, selectableModelProviders } from "@/pages/runtimeProfileForm";
 
 export const LAUNCH_RUNTIME_IDS = ["codex", "claude_code", "pi", "hermes"] as const;
@@ -56,28 +55,6 @@ export function launchSelectionFromProfile(profile: RuntimeProfile): Partial<Lau
   };
 }
 
-export function resolveLaunchPayload(
-  form: Pick<LaunchForm, "runtime" | "modelProviderId" | "modelOverride">,
-): {
-  provider: string;
-  model_provider_id: string;
-  model_override?: string;
-} {
-  const payload: {
-    provider: string;
-    model_provider_id: string;
-    model_override?: string;
-  } = {
-    provider: form.runtime,
-    model_provider_id: form.modelProviderId,
-  };
-  const modelOverride = form.modelOverride.trim();
-  if (modelOverride) {
-    payload.model_override = modelOverride;
-  }
-  return payload;
-}
-
 type DefaultLaunchFormInput = {
   plugins: RuntimePlugin[];
   modelProviders: ModelProvider[];
@@ -88,9 +65,7 @@ type DefaultLaunchFormInput = {
 export function presetsForRuntime(profiles: RuntimeProfile[], runtime: string): RuntimeProfile[] {
   const normalized = runtime.trim();
   if (!normalized) return [];
-  return profiles.filter(
-    (profile) => profile.provider === normalized && isManualRuntimeProfile(profile),
-  );
+  return profiles.filter((profile) => profile.provider === normalized);
 }
 
 export function presetMatchesRuntime(
@@ -101,17 +76,7 @@ export function presetMatchesRuntime(
   const normalized = presetId.trim();
   if (!normalized) return true;
   const preset = profiles.find((profile) => profile.id === normalized);
-  return Boolean(preset && preset.provider === runtime.trim() && isManualRuntimeProfile(preset));
-}
-
-export function defaultPresetSelection(
-  profiles: RuntimeProfile[],
-  defaultRuntimeProfileId?: string,
-): string {
-  const normalized = defaultRuntimeProfileId?.trim();
-  if (!normalized) return "";
-  const preset = profiles.find((profile) => profile.id === normalized);
-  return preset && isManualRuntimeProfile(preset) ? normalized : "";
+  return Boolean(preset && preset.provider === runtime.trim());
 }
 
 export function formFromPreset(
@@ -134,10 +99,6 @@ export function formFromPreset(
     reasoningEffort: displayReasoningEffort(selection.reasoningEffort),
     runner: projectRunner?.trim() || selection.runner || "sandbox",
   };
-}
-
-export function launchRuntimeProfileId(presetId: string, resolvedProfileId: string): string {
-  return presetId.trim() || resolvedProfileId;
 }
 
 export function findLaunchProfileForSelection(
@@ -181,11 +142,31 @@ export function launchReasoningEffortPayload(
   return { reasoning_effort: displayReasoningEffort(form.reasoningEffort) };
 }
 
+export function launchSelectionPayload(
+  presetId: string,
+  form: Pick<LaunchForm, "runtime" | "modelProviderId" | "modelOverride" | "reasoningEffort">,
+): { runtime_profile_id: string; model?: string; reasoning_effort: string } | { runtime_plugin_id: string; model_provider_id: string; model: string; reasoning_effort: string } {
+  const profileId = presetId.trim();
+  if (profileId) {
+    const model = form.modelOverride.trim();
+    return {
+      runtime_profile_id: profileId,
+      ...(model ? { model } : {}),
+      reasoning_effort: displayReasoningEffort(form.reasoningEffort),
+    };
+  }
+  return {
+    runtime_plugin_id: form.runtime.trim(),
+    model_provider_id: form.modelProviderId.trim(),
+    model: form.modelOverride.trim(),
+    reasoning_effort: displayReasoningEffort(form.reasoningEffort),
+  };
+}
+
 type InitialLaunchStateInput = {
   plugins: RuntimePlugin[];
   modelProviders: ModelProvider[];
   profiles: RuntimeProfile[];
-  defaultRuntimeProfileId?: string;
   projectRunner?: string;
 };
 
@@ -213,17 +194,6 @@ export function initialLaunchState(input: InitialLaunchStateInput): {
   presetId: string;
   presetOpen: boolean;
 } {
-  const presetId = defaultPresetSelection(input.profiles, input.defaultRuntimeProfileId);
-  if (presetId) {
-    const preset = input.profiles.find((profile) => profile.id === presetId);
-    if (preset && isManualRuntimeProfile(preset)) {
-      return {
-        form: formFromPreset(preset, input.modelProviders, input.projectRunner),
-        presetId,
-        presetOpen: true,
-      };
-    }
-  }
   return {
     form: defaultLaunchForm({
       plugins: input.plugins,

@@ -1574,9 +1574,11 @@ func TestMigration58AddsChallengeOperationRecoverySettlement(t *testing.T) {
 		);
 		CREATE INDEX idx_challenge_operations_recovery
 			ON challenge_operations (state, updated_at);
-		INSERT INTO projects (id, name, description, scope_json, defaults_json, created_at, updated_at)
-			VALUES ('proj-challenge','Challenge','','{}','{}','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z');
-		INSERT INTO tasks (
+			INSERT INTO projects (id, name, description, scope_json, defaults_json, created_at, updated_at)
+				VALUES ('proj-challenge','Challenge','','{}','{}','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z');
+			INSERT INTO runtime_profiles (id,name,provider,fields_json,created_at,updated_at)
+				VALUES ('profile-1','Legacy Fake','fake','{"model":"fake","default_runner":"sandbox"}','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z');
+			INSERT INTO tasks (
 			id,project_id,goal,status,runner,runtime_profile_id,run_controls_json,scope_snapshot_json,created_at,updated_at,task_type
 		) VALUES (
 			'task-challenge','proj-challenge','solve','pending','sandbox','profile-1','{}','{}','2026-08-09T00:00:00Z','2026-08-09T00:00:00Z','ctf_challenge'

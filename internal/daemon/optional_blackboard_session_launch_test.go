@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"pentest/internal/modelprovider"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
@@ -40,13 +41,17 @@ func newOptionalBlackboardSessionFixture(t *testing.T) optionalBlackboardSession
 		t.Fatalf("start daemon: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
-	goal := "continue this ordinary Session"
-	found, err := server.sessions.Create(session.CreateRequest{Input: goal})
+	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "Optional Session Provider", BaseURL: "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolAnthropicMessages},
+		Catalog:   modelprovider.Catalog{Manual: []string{"claude-session"}, DefaultModel: "claude-session"},
+	})
 	if err != nil {
-		t.Fatalf("create Session: %v", err)
+		t.Fatalf("create Model Provider: %v", err)
 	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
 	profile, err := server.profiles.Create("Session Claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
-		BinaryPath: "/bin/sh", Model: "claude-session", DefaultRunner: "host",
+		BinaryPath: "/bin/sh", ModelProviderID: provider.ID, ModelOverride: "claude-session", DefaultRunner: "host",
 		MCPServers: []runtimeprofile.MCPServer{{
 			Name: "session-memory", Mode: runtimeprofile.MCPServerTrusted,
 			URL: "http://daemon.test/mcp?token=stale-session-grant",
@@ -59,6 +64,17 @@ func newOptionalBlackboardSessionFixture(t *testing.T) optionalBlackboardSession
 	prepared, err := server.prepareSessionRuntime(t.Context(), session.BlackboardConclusionModeInteractive, input, nil)
 	if err != nil {
 		t.Fatalf("prepare Session Runtime: %v", err)
+	}
+	goal := "continue this ordinary Session"
+	found, err := server.sessions.Create(session.CreateRequest{
+		Input: goal,
+		InitialRuntime: &session.CreateContinuationRequest{
+			RuntimeProfileID: profile.ID, RuntimeProvider: string(profile.Provider), Runner: session.RunnerHost,
+			RuntimeConfig: prepared.RuntimeConfig,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
 	}
 	return optionalBlackboardSessionFixture{
 		server: server, factory: factory, goal: goal, found: found, profile: profile, input: input, prepared: prepared,
@@ -86,7 +102,8 @@ func TestSessionLaunchPlanCanOmitBlackboardProjection(t *testing.T) {
 	if plan.LaunchGoal != fixture.goal || plan.Profile.ID != fixture.profile.ID || plan.Runner != session.RunnerHost {
 		t.Fatalf("ordinary Session launch context changed: %#v", plan)
 	}
-	if plan.Facts.Workdir != fixture.found.Workdir || plan.RuntimeConfig["runtime_profile_id"] != fixture.profile.ID {
+	provenance, _ := plan.RuntimeConfig["runtime_profile"].(map[string]any)
+	if plan.Facts.Workdir != fixture.found.Workdir || provenance["id"] != fixture.profile.ID {
 		t.Fatalf("ordinary Session Runtime configuration is incomplete: %#v", plan)
 	}
 	launch, ok := runtime.CommandAdapterLaunch(plan.Adapter)

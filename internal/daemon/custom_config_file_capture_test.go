@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
@@ -43,6 +44,7 @@ func TestLaunchCapturesCustomConfigFileOverlay(t *testing.T) {
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -52,9 +54,10 @@ func TestLaunchCapturesCustomConfigFileOverlay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build launch plan: %v", err)
 	}
-	overlay, ok := plan.CapturedRuntimeConfig["custom_config_file"].(string)
+	settings, _ := plan.CapturedRuntimeConfig["settings"].(map[string]any)
+	overlay, ok := settings["custom_config_file"].(string)
 	if !ok || overlay == "" {
-		t.Fatalf("captured runtime config must carry the custom config file overlay, got %#v", plan.CapturedRuntimeConfig["custom_config_file"])
+		t.Fatalf("captured Snapshot must carry the custom config file overlay, got %#v", settings["custom_config_file"])
 	}
 	if overlay != profile.Fields.CustomConfigFile {
 		t.Fatalf("captured overlay = %q, want %q", overlay, profile.Fields.CustomConfigFile)
@@ -93,6 +96,7 @@ func TestContinuationReproducesCapturedCustomConfigFile(t *testing.T) {
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -101,7 +105,8 @@ func TestContinuationReproducesCapturedCustomConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first launch plan: %v", err)
 	}
-	if got, _ := first.CapturedRuntimeConfig["custom_config_file"].(string); got != overlayA {
+	firstSettings, _ := first.CapturedRuntimeConfig["settings"].(map[string]any)
+	if got, _ := firstSettings["custom_config_file"].(string); got != overlayA {
 		t.Fatalf("first capture = %q, want overlay A", got)
 	}
 	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, first.CapturedRuntimeConfig); err != nil {
@@ -127,9 +132,8 @@ func TestContinuationReproducesCapturedCustomConfigFile(t *testing.T) {
 	}
 }
 
-// Story 18 pins overlay for the same profile. An explicit switch to another
-// same-provider profile must capture that profile's overlay, not the previous one.
-func TestExplicitProfileSwitchUsesRequestedProfileOverlay(t *testing.T) {
+// Runtime Profile provenance is immutable after Owner creation.
+func TestExplicitProfileSwitchIsLocked(t *testing.T) {
 	factory := &effortProviderSessionFactory{}
 	root := t.TempDir()
 	server, err := NewServer(Config{
@@ -163,6 +167,7 @@ func TestExplicitProfileSwitchUsesRequestedProfileOverlay(t *testing.T) {
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profileA.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profileA, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatalf("create task: %v", err)
@@ -176,14 +181,10 @@ func TestExplicitProfileSwitchUsesRequestedProfileOverlay(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	recorded, ok := server.recordSelectedRuntimeConfig(rec, created, "", taskContinuationSelectionInput{
+	_, ok := server.recordSelectedRuntimeConfig(rec, created, "", taskContinuationSelectionInput{
 		RuntimeProfileID: profileB.ID,
 	})
-	if !ok {
-		t.Fatalf("switch record failed status %d body %s", rec.Code, rec.Body.String())
-	}
-	got, _ := recorded.Config["custom_config_file"].(string)
-	if got != overlayB {
-		t.Fatalf("explicit switch must capture overlay B, got %q", got)
+	if ok || rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "runtime_profile_locked") {
+		t.Fatalf("profile switch status=%d ok=%v body=%s", rec.Code, ok, rec.Body.String())
 	}
 }

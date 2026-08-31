@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"mime/multipart"
@@ -15,11 +16,133 @@ import (
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeconfig"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
+	"pentest/internal/skill"
 	"pentest/internal/task"
 )
+
+func TestSessionRuntimePlanProjectsOnlyCapturedSnapshotSkills(t *testing.T) {
+	runtimeRoot := t.TempDir()
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: runtimeRoot, DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	provider := createSnapshotTestModelProvider(t, server, "captured-model")
+	captured, err := server.skills.Publish(context.Background(), skill.PublishRequest{
+		Metadata: skill.Metadata{ID: "captured-skill", Name: "Captured Skill"},
+		Files:    map[string]string{"SKILL.md": "# Captured Skill"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := runtimeconfig.RuntimeConfigurationSnapshot{
+		SnapshotVersion: runtimeconfig.SnapshotVersion, RuntimePluginID: "codex", Runner: "host",
+		ModelProvider: modelprovider.Snapshot{
+			ModelProviderID: provider.ID, ModelProviderName: provider.Name, EndpointBaseURL: provider.BaseURL,
+			Protocol: modelprovider.ProtocolOpenAIResponses, Model: "captured-model", APIKeyEnv: provider.APIKeyEnv,
+		},
+		TurnSelection: runtimeconfig.RuntimeTurnSelection{ModelProviderID: provider.ID, Model: "captured-model", ReasoningEffort: "high"},
+		Settings: map[string]any{
+			"binary_path": "/bin/true", "default_runner": "host", "model_provider_id": provider.ID, "model_override": "captured-model",
+		},
+		EnabledSkillIDs: []string{captured.ID}, ConfigProjection: map[string]any{},
+	}
+	config := runtimeSnapshotMap(snapshot)
+	created, err := server.sessions.Create(session.CreateRequest{
+		Input: "project captured skills",
+		InitialRuntime: &session.CreateContinuationRequest{
+			RuntimeProvider: "codex", Runner: session.RunnerHost, RuntimeConfig: config,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.skills.Publish(context.Background(), skill.PublishRequest{
+		Metadata: skill.Metadata{ID: "late-skill", Name: "Late Skill"},
+		Files:    map[string]string{"SKILL.md": "# Late Skill"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := runtimeProfileFromSnapshot(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.buildSessionRuntimePlan(created, "continue", sessionRuntimeInput{HostActivated: true}, profile, session.RunnerHost, "token", ""); err != nil {
+		t.Fatalf("build Session Runtime plan: %v", err)
+	}
+	skillsRoot := filepath.Join(created.Workdir, ".runtime", "skills")
+	if _, err := os.Stat(filepath.Join(skillsRoot, captured.ID)); err != nil {
+		t.Fatalf("captured Skill was not projected: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillsRoot, "late-skill")); !os.IsNotExist(err) {
+		t.Fatalf("late global Skill was projected, stat error=%v", err)
+	}
+}
+
+func TestPrepareSessionResumeUsesCapturedModelProviderSnapshot(t *testing.T) {
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(), DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	t.Setenv("CAPTURED_API_KEY", "sk-test")
+	snapshot := runtimeconfig.RuntimeConfigurationSnapshot{
+		SnapshotVersion: runtimeconfig.SnapshotVersion, RuntimePluginID: "codex", Runner: "host",
+		ModelProvider: modelprovider.Snapshot{
+			ModelProviderID: "deleted-provider", ModelProviderName: "Captured Provider",
+			EndpointBaseURL: "https://captured.example.test/v1", Protocol: modelprovider.ProtocolOpenAIResponses,
+			Model: "captured-model", APIKeyEnv: "CAPTURED_API_KEY",
+		},
+		TurnSelection: runtimeconfig.RuntimeTurnSelection{
+			ModelProviderID: "deleted-provider", Model: "captured-model", ReasoningEffort: "high",
+		},
+		Settings:        map[string]any{"binary_path": "/bin/true", "default_runner": "host"},
+		EnabledSkillIDs: []string{}, ConfigProjection: map[string]any{},
+	}
+	created, err := server.sessions.Create(session.CreateRequest{
+		Input: "resume captured provider",
+		InitialRuntime: &session.CreateContinuationRequest{
+			RuntimeProvider: "codex", Runner: session.RunnerHost, RuntimeConfig: runtimeSnapshotMap(snapshot),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := created.LatestContinuation
+	if previous == nil {
+		t.Fatal("initial Session continuation is missing")
+	}
+	late, err := server.skills.Publish(context.Background(), skill.PublishRequest{
+		Metadata: skill.Metadata{ID: "late-invalid-skill", Name: "Late Invalid Skill"},
+		Files:    map[string]string{"SKILL.md": "# Late Invalid Skill"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(late.BundlePath); err != nil {
+		t.Fatal(err)
+	}
+
+	prepared, err := server.prepareSessionRuntime(context.Background(), session.BlackboardConclusionModeInteractive, sessionRuntimeInput{HostActivated: true}, previous)
+	if err != nil {
+		t.Fatalf("prepare Session Resume: %v", err)
+	}
+	cloned, err := decodeRuntimeSnapshot(prepared.RuntimeConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cloned.ModelProvider.EndpointBaseURL != snapshot.ModelProvider.EndpointBaseURL {
+		t.Fatalf("resumed Model Provider = %#v, want captured %#v", cloned.ModelProvider, snapshot.ModelProvider)
+	}
+}
 
 func TestCreateSessionDoesNotReportSuccessWhenFirstRuntimeTurnCannotLaunch(t *testing.T) {
 	factory := &recordingProviderSessionFactory{err: errors.New("provider bridge unavailable")}
@@ -31,8 +154,9 @@ func TestCreateSessionDoesNotReportSuccessWhenFirstRuntimeTurnCannotLaunch(t *te
 		t.Fatalf("NewServer: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
+	modelProvider := createSnapshotTestModelProvider(t, server, "gpt-session")
 	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		DefaultRunner: "host", BinaryPath: "/bin/sh", Model: "gpt-session",
+		DefaultRunner: "host", BinaryPath: "/bin/sh", ModelProviderID: modelProvider.ID, ModelOverride: "gpt-session",
 	})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -65,7 +189,7 @@ func TestSessionRuntimePlanUsesNativeResumeArgvWithoutAProviderBridge(t *testing
 		t.Fatalf("create Session: %v", err)
 	}
 	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		DefaultRunner: "host", BinaryPath: "codex", Model: "gpt-session",
+		DefaultRunner: "host", BinaryPath: "codex", ModelProviderID: createSnapshotTestModelProvider(t, server, "gpt-session").ID, ModelOverride: "gpt-session",
 	})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -94,10 +218,9 @@ func TestSessionPiProjectedProviderAllowedUsesLatestRuntimeConfig(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.sessions.CreateContinuation(created.ID, "profile-pi", string(runtimeprofile.ProviderPi), session.RunnerSandbox, map[string]any{
-		"model_provider_id":            "provider-a",
-		"projected_model_provider_ids": []string{"provider-a", "provider-b"},
-	}); err != nil {
+	snapshot := testSessionRuntimeSnapshot(t, server, runtimeprofile.ProviderPi, session.RunnerSandbox)
+	snapshot["config_projection"] = map[string]any{"projected_model_provider_ids": []string{"provider-a", "provider-b"}}
+	if _, err := server.sessions.CreateContinuation(created.ID, "profile-pi", string(runtimeprofile.ProviderPi), session.RunnerSandbox, snapshot); err != nil {
 		t.Fatal(err)
 	}
 	if !server.sessionPiProjectedProviderAllowed(created.ID, "provider-b") {
@@ -159,7 +282,7 @@ func TestCreateSandboxSessionMountsExternalManagedWorkdirThroughPublicHTTP(t *te
 	}
 	t.Cleanup(func() { _ = server.Close() })
 	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		DefaultRunner: "sandbox", BinaryPath: "codex", Model: "gpt-session", SandboxImage: "sandbox:test",
+		DefaultRunner: "sandbox", BinaryPath: "codex", ModelProviderID: createSnapshotTestModelProvider(t, server, "gpt-session").ID, ModelOverride: "gpt-session", SandboxImage: "sandbox:test",
 	})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -235,8 +358,9 @@ func TestCreateSessionProjectsUploadedAttachmentPathIntoInitialRuntimeTurn(t *te
 		t.Fatalf("NewServer: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
+	modelProvider := createSnapshotTestModelProvider(t, server, "gpt-session")
 	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		DefaultRunner: "host", BinaryPath: "/bin/sh", Model: "gpt-session",
+		DefaultRunner: "host", BinaryPath: "/bin/sh", ModelProviderID: modelProvider.ID, ModelOverride: "gpt-session",
 	})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -302,7 +426,7 @@ func TestResumedSessionDoesNotAdvertiseDeletedHistoricalAttachments(t *testing.T
 	}
 	t.Cleanup(func() { _ = server.Close() })
 	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		DefaultRunner: "host", BinaryPath: "/bin/sh", Model: "gpt-session",
+		DefaultRunner: "host", BinaryPath: "/bin/sh", ModelProviderID: createSnapshotTestModelProvider(t, server, "gpt-session").ID, ModelOverride: "gpt-session",
 	})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -394,7 +518,7 @@ func TestRejectedResumeAttachmentDoesNotCreateAContinuationOrEvent(t *testing.T)
 	}
 	t.Cleanup(func() { _ = server.Close() })
 	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		DefaultRunner: "host", BinaryPath: "/bin/sh", Model: "gpt-session",
+		DefaultRunner: "host", BinaryPath: "/bin/sh", ModelProviderID: createSnapshotTestModelProvider(t, server, "gpt-session").ID, ModelOverride: "gpt-session",
 	})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -479,7 +603,7 @@ func TestRejectedSessionRuntimeTurnsDoNotPersistAttachments(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = server.Close() })
 			profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-				DefaultRunner: "host", BinaryPath: "/bin/sh", Model: "gpt-session",
+				DefaultRunner: "host", BinaryPath: "/bin/sh", ModelProviderID: createSnapshotTestModelProvider(t, server, "gpt-session").ID, ModelOverride: "gpt-session",
 			})
 			if err != nil {
 				t.Fatalf("create profile: %v", err)
@@ -645,12 +769,12 @@ func TestSessionRestartCarriesNativeProviderIdentityIntoTheNewContinuation(t *te
 		t.Fatalf("create Session: %v", err)
 	}
 	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		DefaultRunner: "host", BinaryPath: "/bin/sh", Model: "gpt-session",
+		DefaultRunner: "host", BinaryPath: "/bin/sh", ModelProviderID: createSnapshotTestModelProvider(t, server, "gpt-session").ID, ModelOverride: "gpt-session",
 	})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
-	previous, err := server.sessions.CreateContinuation(created.ID, profile.ID, "codex", session.RunnerHost, map[string]any{"provider": "codex"})
+	previous, err := server.sessions.CreateContinuation(created.ID, profile.ID, "codex", session.RunnerHost, testSessionProfileRuntimeSnapshot(t, server, profile, session.RunnerHost))
 	if err != nil {
 		t.Fatalf("create previous continuation: %v", err)
 	}
@@ -663,7 +787,7 @@ func TestSessionRestartCarriesNativeProviderIdentityIntoTheNewContinuation(t *te
 	}
 
 	if _, err := server.startSessionRuntime(t.Context(), created, "continue", sessionRuntimeInput{
-		RuntimeProfileID: profile.ID, Runner: "host", HostActivated: true,
+		Runner: "host", HostActivated: true,
 	}); err != nil {
 		t.Fatalf("restart Session Runtime: %v", err)
 	}
@@ -710,13 +834,24 @@ func TestResolveSessionRuntimeProfileHonorsNewModelProviderAfterPreviousContinua
 	if err != nil {
 		t.Fatalf("create glm profile: %v", err)
 	}
-	previous := &session.Continuation{RuntimeProfileID: glmProfile.ID, RuntimeProvider: "hermes", Runner: session.RunnerSandbox}
+	created, err := server.sessions.Create(session.CreateRequest{
+		Input: "switch provider",
+		InitialRuntime: &session.CreateContinuationRequest{
+			RuntimeProfileID: glmProfile.ID, RuntimeProvider: "hermes", Runner: session.RunnerSandbox,
+			RuntimeConfig: testSessionProfileRuntimeSnapshot(t, server, glmProfile, session.RunnerSandbox),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
+	}
+	previous, err := server.sessions.LatestContinuation(created.ID)
+	if err != nil || previous == nil {
+		t.Fatalf("latest continuation: %#v, %v", previous, err)
+	}
 
 	resolved, err := server.resolveSessionRuntimeProfile(sessionRuntimeInput{
-		RuntimeProfileID: glmProfile.ID,
-		RuntimeProvider:  "hermes",
-		ModelProviderID:  hub.ID,
-		Model:            "MiniMax-M3",
+		ModelProviderID: hub.ID,
+		Model:           "MiniMax-M3",
 	}, previous)
 	if err != nil {
 		t.Fatalf("resolve Session Runtime Profile: %v", err)
@@ -729,10 +864,8 @@ func TestResolveSessionRuntimeProfileHonorsNewModelProviderAfterPreviousContinua
 	}
 
 	if _, err := server.prepareSessionRuntime(t.Context(), session.BlackboardConclusionModeInteractive, sessionRuntimeInput{
-		RuntimeProfileID: glmProfile.ID,
-		RuntimeProvider:  "hermes",
-		ModelProviderID:  hub.ID,
-		Model:            "MiniMax-M3",
+		ModelProviderID: hub.ID,
+		Model:           "MiniMax-M3",
 	}, previous); err != nil {
 		t.Fatalf("prepare Session Runtime after Model Provider switch: %v", err)
 	}
@@ -756,8 +889,9 @@ func TestSessionProviderControlsUseTheSameOwnerContractForBuiltInProviders(t *te
 				t.Fatalf("NewServer: %v", err)
 			}
 			t.Cleanup(func() { _ = server.Close() })
+			modelProvider := createSnapshotTestModelProvider(t, server, "session-model")
 			profile, err := server.profiles.Create(string(provider), provider, runtimeprofile.Fields{
-				DefaultRunner: "host", BinaryPath: "/bin/sh", Model: "session-model",
+				DefaultRunner: "host", BinaryPath: "/bin/sh", ModelProviderID: modelProvider.ID, ModelOverride: "session-model",
 			})
 			if err != nil {
 				t.Fatalf("create profile: %v", err)
@@ -808,8 +942,9 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 		t.Fatalf("NewServer: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
+	modelProvider := createSnapshotTestModelProvider(t, server, "gpt-session")
 	profile, err := server.profiles.Create("Session Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		DefaultRunner: "host", Model: "gpt-session",
+		DefaultRunner: "host", ModelProviderID: modelProvider.ID, ModelOverride: "gpt-session",
 	})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)

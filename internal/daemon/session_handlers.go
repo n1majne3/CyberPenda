@@ -21,6 +21,7 @@ type createSessionInput struct {
 	Message                  string                           `json:"message"`
 	Directive                string                           `json:"directive"`
 	RuntimeProfileID         string                           `json:"runtime_profile_id"`
+	RuntimePluginID          string                           `json:"runtime_plugin_id"`
 	Provider                 string                           `json:"provider"`
 	RuntimeProvider          string                           `json:"runtime_provider"`
 	ModelProviderID          string                           `json:"model_provider_id"`
@@ -142,7 +143,13 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
-	created, err := server.sessions.Create(session.CreateRequest{Input: input.value(), Attachments: attachments, BlackboardConclusionMode: mode})
+	created, err := server.sessions.Create(session.CreateRequest{
+		Input: input.value(), Attachments: attachments, BlackboardConclusionMode: mode,
+		InitialRuntime: &session.CreateContinuationRequest{
+			RuntimeProfileID: prepared.Profile.ID, RuntimeProvider: string(prepared.Profile.Provider),
+			Runner: prepared.Runner, RuntimeConfig: prepared.RuntimeConfig,
+		},
+	})
 	if err != nil {
 		writeSessionError(response, err)
 		return
@@ -327,6 +334,8 @@ func (server *Server) handleDeleteSession(response http.ResponseWriter, request 
 
 func writeSessionError(response http.ResponseWriter, err error) {
 	switch {
+	case strings.TrimSpace(err.Error()) == "runtime_profile_locked":
+		writeError(response, http.StatusBadRequest, "runtime_profile_locked")
 	case errors.Is(err, session.ErrNotFound):
 		writeError(response, http.StatusNotFound, session.ErrNotFound.Error())
 	case errors.Is(err, session.ErrMissingInput), errors.Is(err, session.ErrMissingTitle), errors.Is(err, session.ErrInvalidLifecycle), errors.Is(err, session.ErrInvalidAttachment), errors.Is(err, session.ErrInvalidRunner), errors.Is(err, session.ErrMissingRuntimeProfile), errors.Is(err, session.ErrInvalidBlackboardConclusionMode):

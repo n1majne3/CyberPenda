@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"pentest/internal/modelprovider"
 	"pentest/internal/project"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
@@ -56,6 +57,7 @@ func TestCodexLaunchSendsResolvedRequestedReasoningEffort(t *testing.T) {
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -65,11 +67,9 @@ func TestCodexLaunchSendsResolvedRequestedReasoningEffort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := plan.CapturedRuntimeConfig["requested_reasoning_effort"]; got != "max" {
+	turn, _ := plan.CapturedRuntimeConfig["runtime_turn_selection"].(map[string]any)
+	if got := turn["requested_reasoning_effort"]; got != "max" {
 		t.Fatalf("captured requested effort = %#v, want max", got)
-	}
-	if got := plan.CapturedRuntimeConfig["launch_reasoning_effort_override"]; got != "max" {
-		t.Fatalf("captured launch override = %#v, want max", got)
 	}
 	if plan.LaunchReasoningEffort != "max" {
 		t.Fatalf("plan launch effort = %q, want max", plan.LaunchReasoningEffort)
@@ -110,7 +110,8 @@ func TestCodexLaunchSendsResolvedRequestedReasoningEffort(t *testing.T) {
 	if len(versions) == 0 {
 		t.Fatal("expected captured runtime config version")
 	}
-	if got := versions[0].Config["requested_reasoning_effort"]; got != "max" {
+	storedTurn, _ := versions[len(versions)-1].Config["runtime_turn_selection"].(map[string]any)
+	if got := storedTurn["requested_reasoning_effort"]; got != "max" {
 		t.Fatalf("stored requested effort = %#v, want max", got)
 	}
 
@@ -161,6 +162,7 @@ func TestCodexLaunchDefaultsRequestedReasoningEffortToHighWhenMissing(t *testing
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "inspect example.com",
 		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -169,7 +171,8 @@ func TestCodexLaunchDefaultsRequestedReasoningEffortToHighWhenMissing(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := plan.CapturedRuntimeConfig["requested_reasoning_effort"]; got != "high" {
+	turn, _ := plan.CapturedRuntimeConfig["runtime_turn_selection"].(map[string]any)
+	if got := turn["requested_reasoning_effort"]; got != "high" {
 		t.Fatalf("default requested effort = %#v, want high", got)
 	}
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
@@ -220,8 +223,17 @@ func TestTaskCreateHTTPAcceptsLaunchReasoningEffortOverrideWithoutMutatingProfil
 	if err != nil {
 		t.Fatal(err)
 	}
+	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: "Reasoning Provider", BaseURL: "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog:   modelprovider.Catalog{Manual: []string{"gpt-test"}, DefaultModel: "gpt-test"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
-		Model: "gpt-test", SandboxImage: "cyberpenda:test", ReasoningEffort: "low",
+		ModelProviderID: provider.ID, ModelOverride: "gpt-test", SandboxImage: "cyberpenda:test", ReasoningEffort: "low",
 	})
 	if err != nil {
 		t.Fatal(err)

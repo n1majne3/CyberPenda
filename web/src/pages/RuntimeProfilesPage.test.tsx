@@ -434,7 +434,7 @@ describe("RuntimeProfilesPage", () => {
     expect(document.querySelector(".save-check-pop")).not.toBeNull();
   });
 
-  it("groups launch-resolved profiles separately from presets", async () => {
+  it("shows every returned user-created Runtime Profile without kind grouping", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -496,15 +496,12 @@ describe("RuntimeProfilesPage", () => {
     renderPage();
 
     expect(await screen.findByText("Codex MCP")).toBeInTheDocument();
-    expect(screen.getByText("Presets")).toBeInTheDocument();
-    expect(screen.getByText(/Launch-resolved \(1\)/)).toBeInTheDocument();
-    expect(screen.queryByText("Codex · MiMo")).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: /Launch-resolved \(1\)/ }));
-    expect(await screen.findByText("Codex · MiMo")).toBeInTheDocument();
+    expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
+    expect(screen.queryByText(/Launch-resolved/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Presets")).not.toBeInTheDocument();
   });
 
-  it("promotes a launch-resolved profile to a preset", async () => {
+  it("does not expose the removed promote operation", async () => {
     let promoted = false;
     vi.stubGlobal(
       "fetch",
@@ -574,12 +571,9 @@ describe("RuntimeProfilesPage", () => {
     );
 
     renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: /Launch-resolved \(1\)/ }));
     await userEvent.click((await screen.findAllByRole("button", { name: /Codex · MiMo/i }))[0]);
-    await userEvent.click(await screen.findByRole("button", { name: "Promote to preset" }));
-
-    await waitFor(() => expect(promoted).toBe(true));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Promote to preset" })).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Promote to preset" })).not.toBeInTheDocument();
+    expect(promoted).toBe(false);
   });
 
   it("keeps long Codex generated config preview from widening the page", async () => {

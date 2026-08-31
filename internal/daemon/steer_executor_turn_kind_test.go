@@ -28,7 +28,7 @@ func TestInterruptThenReplaceSteerSendsWorkTurnKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: projectRecord.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,8 +21,10 @@ import (
 	"pentest/internal/projectinterface"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeconfig"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
+	"pentest/internal/skill"
 	"pentest/internal/steering"
 	"pentest/internal/task"
 	"pentest/internal/timeline"
@@ -35,6 +37,7 @@ import (
 // Project Interface inputs.
 type sessionRuntimeInput struct {
 	RuntimeProfileID string         `json:"runtime_profile_id"`
+	RuntimePluginID  string         `json:"runtime_plugin_id"`
 	Provider         string         `json:"provider"`
 	RuntimeProvider  string         `json:"runtime_provider"`
 	ModelProviderID  string         `json:"model_provider_id"`
@@ -63,6 +66,9 @@ func (input sessionRuntimeInput) provider() runtimeprofile.Provider {
 	value := strings.TrimSpace(input.RuntimeProvider)
 	if value == "" {
 		value = strings.TrimSpace(input.Provider)
+	}
+	if value == "" {
+		value = strings.TrimSpace(input.RuntimePluginID)
 	}
 	return runtimeprofile.Provider(value)
 }
@@ -115,8 +121,8 @@ func (server *Server) sessionLaunchGoal(found session.Session, goal string, run 
 
 func (server *Server) resolveSessionRuntimeProfile(input sessionRuntimeInput, previous *session.Continuation) (runtimeprofile.Profile, error) {
 	profileID := strings.TrimSpace(input.RuntimeProfileID)
-	if profileID == "" && previous != nil {
-		profileID = strings.TrimSpace(previous.RuntimeProfileID)
+	if previous != nil && profileID != "" {
+		return runtimeprofile.Profile{}, fmt.Errorf("runtime_profile_locked")
 	}
 	if profileID != "" {
 		profile, err := server.profiles.Get(profileID)
@@ -126,28 +132,30 @@ func (server *Server) resolveSessionRuntimeProfile(input sessionRuntimeInput, pr
 		if provider := input.provider(); provider != "" && provider != profile.Provider {
 			return runtimeprofile.Profile{}, fmt.Errorf("runtime profile provider does not match requested provider")
 		}
-		wantProvider := strings.TrimSpace(input.ModelProviderID)
-		if wantProvider != "" && wantProvider != strings.TrimSpace(profile.Fields.ModelProviderID) {
-			// A later Launch Selection may change Model Provider. Reusing the
-			// previous profile then fails preflight when the new model is not
-			// in that profile's catalog.
-			provider := input.provider()
-			if provider == "" {
-				provider = profile.Provider
-			}
-			providerName := wantProvider
-			if found, getErr := server.modelProviders.Get(wantProvider); getErr == nil {
-				providerName = found.Name
-			}
-			resolution, resolveErr := server.profiles.ResolveLaunchProfile(runtimeprofile.LaunchSelection{
-				Provider: provider, ModelProviderID: wantProvider, ModelOverride: input.selectedModel(),
-			}, providerName)
-			if resolveErr != nil {
-				return runtimeprofile.Profile{}, resolveErr
-			}
-			return resolution.Profile, nil
-		}
 		return profile, nil
+	}
+	if previous != nil {
+		versions, err := server.sessions.RuntimeConfigVersions(previous.SessionID)
+		if err != nil || len(versions) == 0 {
+			return runtimeprofile.Profile{}, session.ErrMissingRuntimeProfile
+		}
+		latest := versions[len(versions)-1]
+		captured, err := runtimeProfileFromSnapshot(latest.Config)
+		if err != nil {
+			return runtimeprofile.Profile{}, err
+		}
+		provider := captured.Provider
+		fields := captured.Fields
+		if requested := strings.TrimSpace(input.ModelProviderID); requested != "" {
+			fields.ModelProviderID = requested
+		}
+		if model := input.selectedModel(); model != "" {
+			fields.ModelOverride = model
+		}
+		if effort := strings.TrimSpace(input.ReasoningEffort); effort != "" {
+			fields.ReasoningEffort = effort
+		}
+		return runtimeprofile.Profile{Provider: provider, Fields: fields}, nil
 	}
 
 	provider := input.provider()
@@ -157,17 +165,15 @@ func (server *Server) resolveSessionRuntimeProfile(input sessionRuntimeInput, pr
 	if provider == "" || strings.TrimSpace(input.ModelProviderID) == "" {
 		return runtimeprofile.Profile{}, session.ErrMissingRuntimeProfile
 	}
-	providerName := strings.TrimSpace(input.ModelProviderID)
-	if found, err := server.modelProviders.Get(input.ModelProviderID); err == nil {
-		providerName = found.Name
+	if input.selectedModel() == "" {
+		return runtimeprofile.Profile{}, modelprovider.ErrMissingModel
 	}
-	resolution, err := server.profiles.ResolveLaunchProfile(runtimeprofile.LaunchSelection{
-		Provider: provider, ModelProviderID: input.ModelProviderID, ModelOverride: input.selectedModel(),
-	}, providerName)
-	if err != nil {
-		return runtimeprofile.Profile{}, err
-	}
-	return resolution.Profile, nil
+	return runtimeprofile.Profile{Provider: provider, Fields: runtimeprofile.Fields{
+		ModelProviderID: input.ModelProviderID,
+		ModelOverride:   input.selectedModel(),
+		ReasoningEffort: input.ReasoningEffort,
+		DefaultRunner:   input.Runner,
+	}}, nil
 }
 
 func resolveSessionRunner(input sessionRuntimeInput, profile runtimeprofile.Profile, previous *session.Continuation) (session.Runner, error) {
@@ -264,7 +270,11 @@ func (server *Server) buildSessionRuntimePlanForBlackboardProjection(found sessi
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
-	modelSnapshot, err := server.resolveSessionModelSnapshot(profile, input)
+	capturedSnapshot, err := server.latestSessionRuntimeSnapshot(found.ID)
+	if err != nil {
+		return sessionRuntimePlan{}, err
+	}
+	modelSnapshot, err := server.resolveSessionModelSnapshotForTurn(profile, input, capturedSnapshot)
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
@@ -272,6 +282,9 @@ func (server *Server) buildSessionRuntimePlanForBlackboardProjection(found sessi
 		profile = runner.BlackboardV2ProfileWithModelSnapshot(profile, *modelSnapshot)
 	}
 	config := sessionRuntimeConfig(profile, run, input)
+	if capturedSnapshot != nil {
+		config = runtimeSnapshotMap(*capturedSnapshot)
+	}
 	selection, err := sessionSelection(profile, config, input)
 	if err != nil {
 		return sessionRuntimePlan{}, err
@@ -319,7 +332,12 @@ func (server *Server) buildSessionRuntimePlanForBlackboardProjection(found sessi
 	if server.skills == nil {
 		return sessionRuntimePlan{}, fmt.Errorf("Session Runtime skills service is unavailable")
 	}
-	skillBundles, err := server.skills.EnabledSkillBundles(profile.ID)
+	var skillBundles []skill.Bundle
+	if capturedSnapshot != nil {
+		skillBundles, err = server.runtimeSnapshotSkillBundles(*capturedSnapshot)
+	} else {
+		skillBundles, err = server.skills.EnabledSkillBundles(profile.ID)
+	}
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
@@ -440,10 +458,19 @@ func (server *Server) buildSessionRuntimePlanForBlackboardProjection(found sessi
 }
 
 func (server *Server) resolveSessionModelSnapshot(profile runtimeprofile.Profile, input sessionRuntimeInput) (*modelprovider.Snapshot, error) {
+	return server.resolveSessionModelSnapshotForTurn(profile, input, nil)
+}
+
+func (server *Server) resolveSessionModelSnapshotForTurn(profile runtimeprofile.Profile, input sessionRuntimeInput, prior *runtimeconfig.RuntimeConfigurationSnapshot) (*modelprovider.Snapshot, error) {
 	if profile.Provider == runtimeprofile.ProviderFake {
 		return nil, nil
 	}
 	providerID := strings.TrimSpace(input.ModelProviderID)
+	if prior != nil && (providerID == "" || providerID == prior.TurnSelection.ModelProviderID) {
+		captured := prior.ModelProvider
+		captured.Model = firstNonBlank(input.selectedModel(), prior.TurnSelection.Model, captured.Model)
+		return &captured, nil
+	}
 	if providerID == "" {
 		providerID = strings.TrimSpace(profile.Fields.ModelProviderID)
 	}
@@ -485,7 +512,28 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 	if err != nil {
 		return sessionRuntimePreparation{}, err
 	}
-	preflightResult := server.preflight.Run(ctx, preflightRequestForSession(server, profile, input, run, input.selectedModel()))
+	var priorSnapshot *runtimeconfig.RuntimeConfigurationSnapshot
+	if previous != nil {
+		versions, versionErr := server.sessions.RuntimeConfigVersions(previous.SessionID)
+		if versionErr != nil || len(versions) == 0 {
+			return sessionRuntimePreparation{}, errors.New("runtime configuration snapshot is missing")
+		}
+		captured, decodeErr := decodeRuntimeSnapshot(versions[len(versions)-1].Config)
+		if decodeErr != nil {
+			return sessionRuntimePreparation{}, decodeErr
+		}
+		priorSnapshot = &captured
+	}
+	preflightRequest := preflightRequestForSession(server, profile, input, run, input.selectedModel())
+	if priorSnapshot != nil && (strings.TrimSpace(input.ModelProviderID) == "" || strings.TrimSpace(input.ModelProviderID) == priorSnapshot.TurnSelection.ModelProviderID) {
+		captured := priorSnapshot.ModelProvider
+		captured.Model = firstNonBlank(input.selectedModel(), priorSnapshot.TurnSelection.Model, captured.Model)
+		preflightRequest.ModelProviderSnapshot = &captured
+	}
+	if priorSnapshot != nil {
+		preflightRequest.CapturedSkillIDs = append([]string{}, priorSnapshot.EnabledSkillIDs...)
+	}
+	preflightResult := server.preflight.Run(ctx, preflightRequest)
 	if !preflightResult.Pass {
 		fails := make([]string, 0, len(preflightResult.Checks))
 		for _, check := range preflightResult.Checks {
@@ -503,16 +551,22 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 		}
 		return sessionRuntimePreparation{}, fmt.Errorf("Session Runtime preflight failed: %s", strings.Join(fails, "; "))
 	}
-	modelSnapshot, err := server.resolveSessionModelSnapshot(profile, input)
+	modelSnapshot, err := server.resolveSessionModelSnapshotForTurn(profile, input, priorSnapshot)
 	if err != nil {
 		return sessionRuntimePreparation{}, err
 	}
 	continuationProfile := profile
+	resolvedModelSnapshot := modelprovider.Snapshot{}
 	if modelSnapshot != nil {
+		resolvedModelSnapshot = *modelSnapshot
 		continuationProfile = runner.BlackboardV2ProfileWithModelSnapshot(profile, *modelSnapshot)
 	}
+	runtimeConfig, err := server.resolveSessionSnapshot(continuationProfile, run, input, resolvedModelSnapshot, previous)
+	if err != nil {
+		return sessionRuntimePreparation{}, err
+	}
 	return sessionRuntimePreparation{
-		Profile: profile, Runner: run, RuntimeConfig: sessionRuntimeConfig(continuationProfile, run, input),
+		Profile: profile, Runner: run, RuntimeConfig: runtimeConfig,
 	}, nil
 }
 
@@ -551,10 +605,13 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 	profile, run, runtimeConfig := prepared.Profile, prepared.Runner, prepared.RuntimeConfig
 	var err error
 	var continuation session.Continuation
+	precreatedInitial := previous == nil && found.LatestContinuation != nil && found.LatestContinuation.Number == 1
 	resumeNativeIdentity := previous != nil &&
-		previous.RuntimeProfileID == profile.ID && previous.RuntimeProvider == string(profile.Provider) && previous.Runner == run &&
+		previous.RuntimeProvider == string(profile.Provider) && previous.Runner == run &&
 		(strings.TrimSpace(previous.NativeSessionID) != "" || strings.TrimSpace(previous.NativeSessionPath) != "")
-	if resumeNativeIdentity {
+	if precreatedInitial {
+		continuation = *found.LatestContinuation
+	} else if resumeNativeIdentity {
 		if conversationInput != nil {
 			continuation, err = server.sessions.CreateReplacementContinuationWithInput(*previous, runtimeConfig, *conversationInput)
 		} else {
@@ -676,6 +733,7 @@ func (server *Server) handleSessionPreflight(response http.ResponseWriter, reque
 func preflightRequestForSession(server *Server, profile runtimeprofile.Profile, input sessionRuntimeInput, run session.Runner, launchModel string) preflight.Request {
 	return preflight.Request{
 		RuntimeProfileID:    profile.ID,
+		Profile:             &profile,
 		ProjectID:           "",
 		Runner:              string(run),
 		HostActivated:       input.HostActivated,
@@ -862,6 +920,12 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 	}
 	controls.ProviderPermissions = server.sessionProviderPermissions(found.ID)
 	found.RuntimeControls = controls
+	if versions, versionErr := server.sessions.RuntimeConfigVersions(found.ID); versionErr == nil && len(versions) > 0 {
+		if snapshot, snapshotErr := decodeRuntimeSnapshot(versions[len(versions)-1].Config); snapshotErr == nil {
+			summary := runtimeconfig.Summarize(snapshot)
+			found.RuntimeConfiguration = &summary
+		}
+	}
 	found.BlackboardConclusion.Mode = found.RunControls.BlackboardConclusionMode
 	found.BlackboardConclusion.State = session.BlackboardConclusionStateClean
 	if receipt, receiptErr := server.sessions.LatestBlackboardConclusion(found.ID); receiptErr == nil && receipt != nil {
@@ -878,10 +942,6 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 }
 
 func (server *Server) sessionCurrentSelection(continuation session.Continuation) (runtime.ProviderSessionRequest, error) {
-	profile, err := server.profiles.Get(continuation.RuntimeProfileID)
-	if err != nil {
-		return runtime.ProviderSessionRequest{}, err
-	}
 	versions, err := server.sessions.RuntimeConfigVersions(continuation.SessionID)
 	if err != nil {
 		return runtime.ProviderSessionRequest{}, err
@@ -889,6 +949,10 @@ func (server *Server) sessionCurrentSelection(continuation session.Continuation)
 	var config map[string]any
 	if len(versions) > 0 {
 		config = versions[len(versions)-1].Config
+	}
+	profile, err := runtimeProfileFromSnapshot(config)
+	if err != nil {
+		return runtime.ProviderSessionRequest{}, err
 	}
 	return sessionSelection(profile, config, sessionRuntimeInput{})
 }
@@ -1044,6 +1108,10 @@ func (server *Server) handleSessionMessage(response http.ResponseWriter, request
 
 func (server *Server) handleSessionMessageInput(response http.ResponseWriter, request *http.Request, found session.Session, input createSessionInput, uploads []uploadedAttachment) {
 	id := found.ID
+	if strings.TrimSpace(input.RuntimeProfileID) != "" {
+		writeError(response, http.StatusBadRequest, "runtime_profile_locked")
+		return
+	}
 	if found.Lifecycle != session.LifecycleOpen {
 		writeSessionError(response, session.ErrSessionNotOpen)
 		return
@@ -1134,7 +1202,7 @@ func (server *Server) handleSessionMessageInput(response http.ResponseWriter, re
 
 func sessionRuntimeInputFromCreate(input createSessionInput) sessionRuntimeInput {
 	return sessionRuntimeInput{
-		RuntimeProfileID: input.RuntimeProfileID, Provider: input.Provider, RuntimeProvider: input.RuntimeProvider,
+		RuntimeProfileID: input.RuntimeProfileID, RuntimePluginID: input.RuntimePluginID, Provider: input.Provider, RuntimeProvider: input.RuntimeProvider,
 		ModelProviderID: input.ModelProviderID, Model: input.Model, ModelOverride: input.ModelOverride,
 		ReasoningEffort: input.ReasoningEffort, Runner: input.Runner, HostActivated: input.HostActivated,
 		RuntimeConfig:  input.RuntimeConfig,
@@ -1167,29 +1235,25 @@ func sessionInputChangesTurnSelection(input sessionRuntimeInput) bool {
 
 func (server *Server) sessionTurnSelectionConfig(sessionID string, continuation session.Continuation, selection runtime.ProviderSessionRequest) (map[string]any, error) {
 	versions, err := server.sessions.RuntimeConfigVersions(sessionID)
+	if err != nil || len(versions) == 0 {
+		if err == nil {
+			err = errors.New("runtime configuration snapshot is missing")
+		}
+		return nil, err
+	}
+	prior, err := decodeRuntimeSnapshot(versions[len(versions)-1].Config)
 	if err != nil {
 		return nil, err
 	}
-	config := map[string]any{
-		"runtime_profile_id": continuation.RuntimeProfileID,
-		"provider":           continuation.RuntimeProvider,
-		"runner":             string(continuation.Runner),
+	cloned, err := server.cloneSnapshotForTurn(prior, "", runtimeconfig.RuntimeTurnSelection{
+		ModelProviderID: selection.ModelProviderID,
+		Model:           selection.Model,
+		ReasoningEffort: selection.RequestedReasoningEffort,
+	})
+	if err != nil {
+		return nil, err
 	}
-	if len(versions) > 0 {
-		for key, value := range versions[len(versions)-1].Config {
-			config[key] = value
-		}
-	}
-	if selection.ModelProviderID != "" {
-		config["model_provider_id"] = selection.ModelProviderID
-	}
-	if selection.Model != "" {
-		config["model"] = selection.Model
-	}
-	if selection.RequestedReasoningEffort != "" {
-		config["reasoning_effort"] = selection.RequestedReasoningEffort
-	}
-	return config, nil
+	return runtimeSnapshotMap(cloned), nil
 }
 
 func (server *Server) sessionPiProjectedProviderAllowed(sessionID, providerID string) bool {
@@ -1201,7 +1265,11 @@ func (server *Server) sessionPiProjectedProviderAllowed(sessionID, providerID st
 	if err != nil || len(versions) == 0 {
 		return false
 	}
-	for _, projectedID := range stringSliceFromConfig(versions[len(versions)-1].Config["projected_model_provider_ids"]) {
+	snapshot, err := decodeRuntimeSnapshot(versions[len(versions)-1].Config)
+	if err != nil {
+		return false
+	}
+	for _, projectedID := range stringSliceFromConfig(snapshot.ConfigProjection["projected_model_provider_ids"]) {
 		if projectedID == providerID {
 			return true
 		}
