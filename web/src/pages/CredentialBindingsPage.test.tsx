@@ -61,8 +61,7 @@ describe("CredentialBindingsPage", () => {
       "rounded-lg",
       "border",
       "bg-card",
-      "min-w-0",
-      "overflow-hidden",
+      "shadow-sm",
     );
     expect(screen.getByRole("heading", { name: "Library actions" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Credential reference")).not.toBeInTheDocument();
