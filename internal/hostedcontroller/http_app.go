@@ -13,10 +13,16 @@ import (
 	"time"
 )
 
-const hostedChallengeSkillID = "tsecbench-hosted-challenge-loop"
+const hostedChallengeSkillID = "ctf-orchestrator"
 
-//go:embed assets/tsecbench-hosted-challenge-loop/SKILL.md
+//go:embed assets/ctf-orchestrator/SKILL.md
 var hostedChallengeSkillInstruction string
+
+//go:embed assets/ctf-orchestrator/references/graph-protocol.md
+var hostedChallengeGraphProtocol string
+
+//go:embed assets/ctf-orchestrator/references/execute-prompt.md
+var hostedChallengeExecutePrompt string
 
 // HTTPApp uses only the normal daemon HTTP surface for hosted bootstrap and
 // observation. It does not add TSecBench routes to the daemon.
@@ -56,13 +62,17 @@ func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootstrap) (HostedEvaluationReference, error) {
 	if err := app.request(ctx, http.MethodPut, "/api/skills/"+hostedChallengeSkillID, map[string]any{
 		"name":        hostedChallengeSkillID,
-		"description": "Completes a TSecBench Hosted Evaluation Run through the injected challenge API. Use only when the Task Goal requires TSecBench hosted evaluation.",
+		"description": "Orchestrates a TSecBench Hosted Evaluation Run with the tested Decide/Execute and FGS protocol.",
 		"source_provenance": map[string]string{
 			"kind": "hosted",
 		},
-		"files": map[string]string{"SKILL.md": hostedChallengeSkillInstruction},
+		"files": map[string]string{
+			"SKILL.md":                     hostedChallengeSkillInstruction,
+			"references/graph-protocol.md": hostedChallengeGraphProtocol,
+			"references/execute-prompt.md": hostedChallengeExecutePrompt,
+		},
 	}, nil); err != nil {
-		return HostedEvaluationReference{}, fmt.Errorf("publish hosted TSecBench Skill: %w", err)
+		return HostedEvaluationReference{}, fmt.Errorf("publish hosted ctf-orchestrator Skill: %w", err)
 	}
 
 	var provider struct {
@@ -114,6 +124,9 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootst
 	if strings.TrimSpace(app.runtimeBinary) != "" {
 		fields["binary_path"] = app.runtimeBinary
 	}
+	if evaluation.Runtime.Provider == "codex" {
+		fields["codex_multi_agent"] = map[string]any{"enabled": true}
+	}
 	var profile struct {
 		ID string `json:"id"`
 	}
@@ -139,7 +152,7 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootst
 	if err := app.request(ctx, http.MethodPost, "/api/projects/"+project.ID+"/tasks", map[string]any{
 		"type": evaluation.Task.Type, "goal": evaluation.Task.Goal,
 		"runtime_profile_id": profile.ID, "runner": evaluation.Task.Runner,
-		"run_controls": map[string]any{"host_activated": evaluation.Task.HostActivated, "blackboard_conclusion_mode": "interactive"},
+		"run_controls": map[string]any{"host_activated": evaluation.Task.HostActivated, "blackboard_conclusion_mode": "disabled"},
 	}, &task); err != nil {
 		return HostedEvaluationReference{}, fmt.Errorf("create hosted Task: %w", err)
 	}

@@ -58,11 +58,11 @@ func TestHostedControllerRejectsInvalidConfigurationBeforeBootstrap(t *testing.T
 	}
 }
 
-func TestHostedControllerStartsOnePiEvaluationAndOnlyObservesIt(t *testing.T) {
+func TestHostedControllerStartsOneCodexEvaluationAndOnlyObservesIt(t *testing.T) {
 	env := map[string]string{
 		"BENCHMARK_BASE_URL":        "http://benchmark.tsecbench.gw/openapi/v1",
 		"BENCHMARK_TOKEN":           "benchmark-secret",
-		"CYBERPENDA_MODEL_PROTOCOL": "openai_chat_completions",
+		"CYBERPENDA_MODEL_PROTOCOL": "openai_responses",
 		"CYBERPENDA_MODEL_BASE_URL": "http://model.tsecbench.gw/v1",
 		"CYBERPENDA_MODEL":          "hosted-model",
 		"CYBERPENDA_MODEL_API_KEY":  "model-secret",
@@ -88,7 +88,7 @@ func TestHostedControllerStartsOnePiEvaluationAndOnlyObservesIt(t *testing.T) {
 	if !strings.Contains(evaluation.Project.ScopeNotes, "ephemeral target addresses returned") {
 		t.Fatalf("Scope notes = %q, want Platform-Issued Scope", evaluation.Project.ScopeNotes)
 	}
-	if evaluation.Runtime.Provider != "pi" || evaluation.Runtime.Env["BENCHMARK_BASE_URL"] != env["BENCHMARK_BASE_URL"] {
+	if evaluation.Runtime.Provider != "codex" || evaluation.Runtime.Env["BENCHMARK_BASE_URL"] != env["BENCHMARK_BASE_URL"] {
 		t.Fatalf("Runtime = %#v", evaluation.Runtime)
 	}
 	if evaluation.Runtime.Credentials["BENCHMARK_TOKEN"] != env["BENCHMARK_TOKEN"] || evaluation.Runtime.ModelAPIKey != env["CYBERPENDA_MODEL_API_KEY"] {
@@ -285,7 +285,7 @@ func TestHTTPAppCreatesOneHostedProjectAndMatchingHostTask(t *testing.T) {
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.Method + " " + request.URL.Path {
-		case "PUT /api/skills/tsecbench-hosted-challenge-loop":
+		case "PUT /api/skills/ctf-orchestrator":
 			_, _ = io.WriteString(response, `{}`)
 		case "POST /api/model-providers":
 			response.WriteHeader(http.StatusCreated)
@@ -343,7 +343,7 @@ func TestHTTPAppProjectsHostedReasoningEffortAndAppendedTaskGoal(t *testing.T) {
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.Method + " " + request.URL.Path {
-		case "PUT /api/skills/tsecbench-hosted-challenge-loop":
+		case "PUT /api/skills/ctf-orchestrator":
 			_, _ = io.WriteString(response, `{}`)
 		case "POST /api/model-providers":
 			response.WriteHeader(http.StatusCreated)
@@ -396,7 +396,7 @@ func TestHTTPAppProjectsHostedCompactThresholdAndMaxOutputTokens(t *testing.T) {
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.Method + " " + request.URL.Path {
-		case "PUT /api/skills/tsecbench-hosted-challenge-loop":
+		case "PUT /api/skills/ctf-orchestrator":
 			_, _ = io.WriteString(response, `{}`)
 		case "POST /api/model-providers":
 			response.WriteHeader(http.StatusCreated)
@@ -460,7 +460,7 @@ func (fn roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, err
 func validHostedEnv() map[string]string {
 	return map[string]string{
 		"BENCHMARK_BASE_URL": "http://benchmark.tsecbench.gw/openapi/v1", "BENCHMARK_TOKEN": "token",
-		"CYBERPENDA_MODEL_PROTOCOL": "openai_chat_completions", "CYBERPENDA_MODEL_BASE_URL": "http://model.tsecbench.gw/v1",
+		"CYBERPENDA_MODEL_PROTOCOL": "openai_responses", "CYBERPENDA_MODEL_BASE_URL": "http://model.tsecbench.gw/v1",
 		"CYBERPENDA_MODEL": "model", "CYBERPENDA_MODEL_API_KEY": "key",
 	}
 }

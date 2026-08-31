@@ -12,7 +12,7 @@ Claude bridge.
 ## Hosted Mode
 
 Set the required values from `tsecbench.env.example` on the TSecBench page.
-`CYBERPENDA_RUNTIME` defaults to `pi`. Optional `CYBERPENDA_REASONING_EFFORT`
+`CYBERPENDA_RUNTIME` defaults to `codex`. Optional `CYBERPENDA_REASONING_EFFORT`
 is `low`, `medium`, `high`, `xhigh`, or `max`; an omitted value uses `high`.
 Optional `CYBERPENDA_TASK_GOAL_APPENDIX` is appended to the required Task Goal.
 Optional `CYBERPENDA_AUTO_COMPACT_THRESHOLD` is an integer from 1 to 100.
@@ -22,10 +22,11 @@ For DeepSeek on Claude Code, set max output to 393216 (384K) and set the
 compact window to 524288 so messages plus 393216 stay under 1048576.
 The strict Runtime and protocol matrix is:
 
-- Pi: `openai_chat_completions`, `openai_responses`, or `anthropic_messages`
 - Codex: `openai_responses`
 - Claude Code: `anthropic_messages`
-- Hermes: `openai_chat_completions`, `openai_responses`, or `anthropic_messages`
+
+Pi and Hermes remain installed as image tools, but Hosted bootstrap rejects them
+as the selected Runtime.
 
 Enter the converted HTTP gateway Base URL with the `.tsecbench.gw` host. Enter
 a protocol Base URL. Do not append `/chat/completions`, `/responses`, or
@@ -33,12 +34,18 @@ a protocol Base URL. Do not append `/chat/completions`, `/responses`, or
 
 TSecBench injects `BENCHMARK_BASE_URL` and the one-use `BENCHMARK_TOKEN`.
 Hosted Mode uses the isolated TSecBench network. It does not start a VPN and
-has no public Internet access. The Runtime uses only tools already in
-the image.
+has no public Internet access. The Runtime uses only tools already in the
+image. The image includes `tmux`.
+
+The Hosted daemon publishes only the Hosted-adapted `ctf-orchestrator` Skill.
+The Task runs with Blackboard disabled and uses the orchestrator FGS as its only
+agent-managed semantic state. The Decide process owns list, start, hint, close,
+and abandon. Execute agents may submit a candidate through the Hosted Challenge
+Client, but they do not change the challenge lifecycle.
 
 The container standard output is a sequence-ordered JSONL Hosted Transcript
 Stream. Operational logs use standard error. TSecBench owns the formal score
-and completion state. The container-local Project, Task, Blackboard, Evidence,
+and completion state. The container-local Project, Task, FGS, Evidence,
 database, and logs are diagnostic state only.
 
 ## Local Mode validation

@@ -701,11 +701,11 @@ The Host Runner execution of a Runtime as a direct process inside the **TSecBenc
 _Avoid_: Sandbox Runner, physical host access, Docker-in-Docker, privileged container
 
 **Hosted Tool Baseline**:
-The bounded set of general-purpose tools preinstalled in the **TSecBench Hosted Image** on top of Kali Rolling: packaged Runtimes, shell and source utilities, Python/Go/C toolchains, compact binary and network tools, pwntools, Chromium, agent-browser, ffuf, gobuster, sqlmap, hydra, john, common protocol clients, compact forensic utilities, and compact reverse-engineering tools (gdb-multiarch, radare2, capstone, unicorn, pefile, ropper, ROPgadget, qemu-user, yara, upx, nasm, smali, dex2jar, Volatility 3, uncompyle6, xdis, PyInstaller archive viewer, pyinstxtractor-ng). The Runtime implements missing challenge-specific capability instead of relying on the full CyberPenda Sandbox tool inventory or large reverse-engineering suites.
+The bounded set of general-purpose tools preinstalled in the **TSecBench Hosted Image** on top of Kali Rolling: packaged Runtimes, shell and source utilities, tmux, Python/Go/C toolchains, compact binary and network tools, pwntools, Chromium, agent-browser, ffuf, gobuster, sqlmap, hydra, john, common protocol clients, compact forensic utilities, and compact reverse-engineering tools (gdb-multiarch, radare2, capstone, unicorn, pefile, ropper, ROPgadget, qemu-user, yara, upx, nasm, smali, dex2jar, Volatility 3, uncompyle6, xdis, PyInstaller archive viewer, pyinstxtractor-ng). The Runtime implements missing challenge-specific capability instead of relying on the full CyberPenda Sandbox tool inventory or large reverse-engineering suites.
 _Avoid_: full Sandbox image, runtime package installation, per-challenge image
 
 **Hosted Model Configuration**:
-The operator-supplied Runtime family, model protocol, converted gateway base URL, model identifier, model API key, optional **Reasoning Effort**, optional **Hosted Auto Compact Threshold**, optional **Hosted Auto Compact Window**, optional **Hosted Max Output Tokens**, and optional **Model Context Window** used by one **Hosted Evaluation Run**. These values enter through stable `CYBERPENDA_*` environment names and are translated into normal Model Provider, Credential Binding, and Runtime Profile inputs during bootstrap. Compatibility is strict: Codex accepts only `openai_responses`, Claude Code accepts only `anthropic_messages`, and Pi and Hermes accept `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
+The operator-supplied Runtime family, model protocol, converted gateway base URL, model identifier, model API key, optional **Reasoning Effort**, optional **Hosted Auto Compact Threshold**, optional **Hosted Auto Compact Window**, optional **Hosted Max Output Tokens**, and optional **Model Context Window** used by one **Hosted Evaluation Run**. These values enter through stable `CYBERPENDA_*` environment names and are translated into normal Model Provider, Credential Binding, and Runtime Profile inputs during bootstrap. Compatibility is strict: Codex accepts only `openai_responses`, and Claude Code accepts only `anthropic_messages`. Pi and Hermes remain in the **Hosted Tool Baseline** but are not valid Hosted Runtime selections.
 _Avoid_: vendor-specific environment contract, model discovery, persisted hosted profile
 
 **Hosted Auto Compact Threshold**:
@@ -725,7 +725,7 @@ Optional operator-supplied text appended to the required hosted **Task Goal**. I
 _Avoid_: replacement Task Goal, Skill rewrite, vendor prompt file
 
 **Hosted Acceptance Configuration**:
-The reference Runtime and model configuration used for hosted bootstrap, model-call, and fake-platform validation: Pi with `openai_chat_completions`, plus the deployer-supplied gateway base URL, model identifier, and dedicated evaluation API key. Real TSecBench local-mode acceptance validates the platform API separately and does not require challenge solving.
+The reference Runtime and model configuration used for hosted bootstrap, model-call, and fake-platform validation: Codex with `openai_responses`, plus the deployer-supplied gateway base URL, model identifier, and dedicated evaluation API key. Real TSecBench local-mode acceptance validates the platform API separately and does not require challenge solving.
 _Avoid_: only supported hosted configuration, build-time model selection, production credential
 
 **Hosted Delivery Bundle**:
@@ -767,6 +767,10 @@ _Avoid_: Hosted Controller, background sidecar, challenge scheduler, direct curl
 **Challenge Pass Clock**:
 The Hosted Challenge Client file under the Runtime Workdir that stores each active Benchmark Challenge `started_at`, first-pass `budget_min`, and `attempt_n`. `list` projects `elapsed_min`, `budget_min`, `over_budget`, and `attempt_n` on stdout. It is not Blackboard knowledge and does not abandon a challenge.
 _Avoid_: appendix timer, Lead memory, Blackboard timestamp, Hosted Controller scheduler
+
+**Hosted FGS**:
+The `ctf-orchestrator` file graph state under the Runtime Workdir for one Hosted Evaluation Run. It is the Runtime's sole semantic working state in disabled Blackboard Mode and remains an **Agent-Managed Trace**, not a CyberPenda Blackboard or Project Knowledge source.
+_Avoid_: Hosted Blackboard, Working Blackboard Snapshot, Project Interface memory
 
 **Platform-Issued Scope**:
 An operator authorization statement in Scope notes that permits testing only the ephemeral target addresses returned by the Challenge Platform for the current evaluation credential. It guides the Runtime but is not a structured dynamic target selector.
@@ -930,6 +934,10 @@ _Avoid_: transcript, export, source of truth
 - The **Challenge Workflow** enforces Task Policy before each governed external operation, independently of prompt compliance.
 - The **Hosted Challenge Client** is process-isolated from the **Hosted Controller**, daemon, and Runtime session; one client command failure affects only that command.
 - The **Hosted Challenge Client** records the **Challenge Pass Clock** on successful start and clears it on successful close or abandon. `list` annotates `over_budget` from that clock. The Runtime still decides abandon or close.
+- The `ctf-orchestrator` reads per-challenge timing from the **Challenge Pass Clock** projection and does not duplicate that timing state in the **Hosted FGS**.
+- The Hosted Task uses disabled **Blackboard Mode**, receives no built-in **Project Interface**, and uses the **Hosted FGS** as its only Runtime-managed semantic state.
+- The `ctf-orchestrator` Decide process is the sole caller of Hosted Challenge Client `list`, `start`, `hint`, `close`, and `abandon`, so every Challenge lifecycle, hint decision, and Clock write is serialized from the Runtime Workdir.
+- An Execute agent may call Hosted Challenge Client `submit` directly with the candidate on standard input. Submit does not change the **Challenge Pass Clock**, and an Execute agent never starts, closes, or abandons a Benchmark Challenge.
 - A clock file error does not fail the client command and does not terminate the Hosted Controller.
 - Overlay adapter files under `/data/adapters` replace baked adapters without rebuilding the **TSecBench Hosted Image**.
 - The **Hosted Challenge Client** never combines submit, close, and start in one operation.
@@ -1635,14 +1643,14 @@ _Avoid_: transcript, export, source of truth
 - The **Challenge Workflow** is not the mandatory challenge execution path; resolved: TSecBench keeps **Runtime-Managed Challenge Execution** and may use a Hosted-only structured client without making the Hosted Controller a scheduler or coupling hosted execution to Challenge Workflow.
 - A TSecBench **Benchmark Challenge** is not mapped to its own Project or Task; resolved: one **Hosted Evaluation Run** uses one CTF Challenge Project and one CTF Challenge Task whose Runtime owns the complete evaluation loop.
 - The **Hosted Controller** is not a challenge orchestrator or lifecycle finisher; resolved: it owns bootstrap and Task observation while the Runtime uses the process-isolated **Hosted Challenge Client** for challenge operations, and TSecBench owns container termination.
-- TSecBench integration knowledge is not embedded as one oversized Task Goal or a new MCP server; resolved: the **TSecBench Hosted Image** supplies a hosted-only TSecBench Skill and the Task Goal requires its use.
+- TSecBench integration knowledge is not embedded as one oversized Task Goal or a new MCP server; resolved: the **TSecBench Hosted Image** supplies one Hosted-adapted `ctf-orchestrator` Skill and the Task Goal requires its use.
 - TSecBench target addresses are not individually approved Scope Expansions or structured dynamic targets; resolved: a **Platform-Issued Scope** statement in Scope notes authorizes only the ephemeral addresses returned for the current evaluation credential.
 - The **TSecBench Hosted Image** is not limited to one Runtime family; resolved: it packages Pi, Codex, Claude Code, and Hermes.
 - A TSecBench hint is not forbidden or automatically requested; resolved: the Runtime may decide to request it after the hosted Skill explains its score cost and requires sufficient prior effort.
 - The Hosted Controller does not prescribe serial Benchmark Challenge execution; resolved: the Runtime may manage between one and three active platform instances and remains responsible for closing them.
 - Hosted Runtime completion is not converted into normal **Task Finish** or container exit; resolved: the Runtime remains available and the **Hosted Controller** waits until TSecBench terminates the container.
 - The one-use `BENCHMARK_TOKEN` is not guaranteed to be redacted from persistent Runtime output; resolved: direct Runtime access is retained and this evaluation-time disclosure risk is accepted without a new redaction mechanism.
-- Runtime family selection is not inferred only from model protocol; resolved: Pi is the default, an environment value may select Codex, Claude Code, or Hermes, and startup validation rejects incompatible model protocols.
+- Runtime family selection is not inferred only from model protocol; resolved: Codex is the default, Hosted bootstrap accepts Codex or Claude Code, and startup validation rejects Pi, Hermes, or an incompatible model protocol. All four Runtime CLIs remain in the **Hosted Tool Baseline**.
 - A hosted Model Protocol Base URL is not transformed by the **Hosted Controller**; resolved: the operator enters the already converted `.tsecbench.gw` HTTP URL on the TSecBench environment-variable page.
 - A missing hosted model protocol is not inferred or defaulted; resolved: startup fails unless the operator supplies it explicitly.
 - The **TSecBench Hosted Image** does not depend on launching a nested Sandbox Runner; resolved: selected Runtimes and tools execute through the **Container Host Runner** and the image assumes no Docker Socket, privileged mode, or nested container engine.
@@ -1658,7 +1666,9 @@ _Avoid_: transcript, export, source of truth
 - A failed initial hosted Runtime Turn is not retried, replaced, or left running until the platform deadline; resolved: the controller reports a redacted failure and exits the container nonzero.
 - A live Hosted Evaluation Run is not ended by Transcript drain, stdout write, Task observe, or later Task status errors; resolved: those errors are Hosted Operational Log lines, the Runtime stays live, and the Controller waits for TSecBench to terminate the container.
 - The **Hosted Controller** does not send Task Conversation input or continuation Turns; resolved: it creates only the initial Task, then observes it until Runtime failure or TSecBench termination.
-- Hosted Skill selection is not a benchmark-specific reduction of CyberPenda capability; resolved: load every normally default-enabled built-in Skill and add the hosted-only TSecBench Skill.
+- Hosted Skill selection is a Hosted-only runtime reduction that does not change normal product defaults; resolved: disable Built-in Skill seeding for the Hosted daemon and publish only the Hosted-adapted `ctf-orchestrator`, so the Hosted Runtime Extension Library and Task Skills Root each contain exactly that one Skill. Packaged Built-in Skill bytes may remain embedded in the Hosted binary.
+- The Hosted Task does not use CyberPenda Blackboard as orchestration memory; resolved: launch it in disabled **Blackboard Mode** and use the **Hosted FGS** as its sole Runtime-managed semantic state.
+- Per-challenge timing is not copied into the **Hosted FGS**; resolved: the `ctf-orchestrator` reads `elapsed_min`, `budget_min`, `over_budget`, and `attempt_n` from the **Challenge Pass Clock** projection while retaining only its scheduling decisions in the Hosted FGS.
 - The initial hosted Work Runtime Turn is not complete after one traversal or a subjective no-progress judgment; resolved: it returns only when the platform reports every Benchmark Challenge complete or the evaluation enters `invalid_state`.
 - Hosted delivery is not accepted by unit tests alone; resolved: require fake-platform contract and failure tests with the **Hosted Acceptance Configuration**, a real TSecBench local-mode API validation after the deployer connects the host VPN, and the compressed-image size gate before upload.
 - Hosted Runtime dependencies are not pinned at source level; resolved: builds install current Pi, Codex, Claude Code, and Hermes releases, and each produced archive records the exact resolved versions for traceability.
@@ -1667,9 +1677,10 @@ _Avoid_: transcript, export, source of truth
 - The hosted container does not establish a TSecBench VPN; resolved: hosted execution uses the isolated network supplied by TSecBench, while the real local-mode acceptance run requires the deployer to connect the TSecBench VPN on the host before starting the container.
 - Pi unattended execution does not need a synthetic YOLO mode; resolved: Pi's built-in tools have no permission popups and execute with the Pi process permissions, while bootstrap deterministically trusts the projected CyberPenda project resources required by the hosted run.
 - Container root is not permission to require elevated platform capabilities; resolved: the **Container Host Runner** uses only normal default container capabilities, does not request TUN, `NET_ADMIN`, privileged mode, or a Docker Socket, and challenge tools must fall back to normal TCP or HTTP methods when a capability is unavailable.
-- Hosted Runtime and model protocol compatibility is not approximate OpenAI compatibility; resolved: validate the exact built-in matrix of Codex with `openai_responses`, Claude Code with `anthropic_messages`, and Pi or Hermes with `openai_chat_completions`, `openai_responses`, or `anthropic_messages`.
-- The **Hosted Acceptance Configuration** is not a requirement to solve a real local-mode challenge; resolved: use Pi with `openai_chat_completions` for hosted bootstrap, model-call, and fake-platform validation, while real TSecBench local mode validates only the platform API.
+- Hosted Runtime and model protocol compatibility is not approximate OpenAI compatibility; resolved: validate Codex with `openai_responses` and Claude Code with `anthropic_messages`, and reject Pi or Hermes as Hosted Runtime selections.
+- The **Hosted Acceptance Configuration** is not a requirement to solve a real local-mode challenge; resolved: use Codex with `openai_responses` for hosted bootstrap, model-call, and fake-platform validation, while real TSecBench local mode validates only the platform API.
 - TSecBench challenge access is not performed through direct Runtime-built curl chains; resolved: the **Hosted Challenge Client** provides separate structured list, start, hint, submit, and guarded close commands while preserving Runtime-owned scheduling and process isolation from the host lifecycle.
+- Hosted Challenge Client access is not all-or-nothing for Execute agents; resolved: Execute agents may submit candidates directly through `submit` on standard input, while the `ctf-orchestrator` Decide process exclusively serializes `list`, `start`, `hint`, `close`, and `abandon` and retains Challenge lifecycle and hint authority.
 - An active Benchmark Challenge is not kept open after success or explicit abandonment; resolved: the hosted Skill requires immediate close in those cases, preserves the platform limit of three active challenges, and leaves other scheduling choices to the Runtime.
 - The hosted model API key is not a reusable production credential; resolved: the deployer supplies a dedicated, revocable evaluation key and accepts that persistent Runtime records or complete standard output may disclose it.
 - Hosted standard output is not a bounded operational summary or provider-native stream; resolved: emit every retained Runtime conversation and tool-result Transcript entry as sequence-ordered JSONL, fetch complete detail for truncated entries, and mask exact known evaluation credential values before output. Flags, targets, attack data, and other sensitive content remain visible.

@@ -127,6 +127,7 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"iputils-ping",
 		"openssh-client",
 		"openssl",
+		"tmux",
 		"ffuf",
 		"gobuster",
 		"sqlmap",
@@ -143,7 +144,7 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	}
 
 	for _, executable := range []string{
-		"pi", "codex", "claude", "hermes", "bash", "git", "curl", "jq", "rg",
+		"pi", "codex", "claude", "hermes", "bash", "git", "curl", "jq", "rg", "tmux",
 		"python3", "go", "gcc", "g++", "make", "gdb", "radare2", "strace",
 		"ltrace", "patchelf", "checksec", "nmap", "nc", "socat", "dig", "ip",
 		"ss", "ping", "ssh", "openssl", "chromium", "agent-browser", "tesseract", "java", "jadx", "apktool", "column",
@@ -231,7 +232,7 @@ func TestTSecBenchHostedImageSmokeWhenAnImageIsConfigured(t *testing.T) {
 
 	smoke := `set -eu
 test "$(id -u)" = 0
-	for command in pi codex claude hermes bash git curl jq rg python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column ffuf gobuster sqlmap hydra john smbclient php exiftool binwalk steghide convert tcpdump redis-cli mysql psql 7z gdb-multiarch nasm upx yara foremost xxd qemu-x86_64 qemu-x86_64-static ropper ROPgadget smali vol uncompyle6 pydisasm pyi-archive_viewer pyinstxtractor-ng pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client pentest-challenge-client; do
+	for command in pi codex claude hermes bash git curl jq rg tmux python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column ffuf gobuster sqlmap hydra john smbclient php exiftool binwalk steghide convert tcpdump redis-cli mysql psql 7z gdb-multiarch nasm upx yara foremost xxd qemu-x86_64 qemu-x86_64-static ropper ROPgadget smali vol uncompyle6 pydisasm pyi-archive_viewer pyinstxtractor-ng pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client pentest-challenge-client; do
   command -v "$command" >/dev/null
 done
 python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'

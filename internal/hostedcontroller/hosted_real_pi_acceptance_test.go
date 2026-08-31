@@ -311,7 +311,7 @@ func (model *realPiControlledModel) serveHTTP(response http.ResponseWriter, requ
 	model.calls++
 	call := model.calls
 	model.lastRequest = append([]byte(nil), body...)
-	if bytes.Contains(body, []byte("Stability boundary")) {
+	if bytes.Contains(body, []byte("Runtime 工具术语")) {
 		model.skillRead = true
 	}
 	model.mu.Unlock()
@@ -320,7 +320,7 @@ func (model *realPiControlledModel) serveHTTP(response http.ResponseWriter, requ
 	switch call {
 	case 1:
 		writeRealPiToolCall(response, "accepted-read", "read", map[string]any{
-			"path": ".agents/skills/tsecbench-hosted-challenge-loop/SKILL.md",
+			"path": ".agents/skills/ctf-orchestrator/SKILL.md",
 		})
 	case 2:
 		writeRealPiToolCall(response, "accepted-bash", "bash", map[string]any{
