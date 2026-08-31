@@ -475,7 +475,11 @@ describe("ModelProvidersPage", () => {
     renderPage();
 
     await screen.findByText("No model providers yet.");
-    expect(screen.queryByLabelText("openai_responses endpoint base URL")).not.toBeInTheDocument();
+    // Protocol rows keep every endpoint input mounted; unselected protocols
+    // render disabled with no value instead of disappearing.
+    const draftEndpoint = screen.getByLabelText("openai_responses endpoint base URL");
+    expect(draftEndpoint).toBeDisabled();
+    expect(draftEndpoint).toHaveValue("");
 
     await userEvent.type(await screen.findByLabelText("Name"), "Draft");
     await userEvent.type(screen.getByLabelText("API key"), "sk-test");
@@ -694,5 +698,72 @@ describe("ModelProvidersPage", () => {
     await userEvent.click(screen.getByRole("button", { name: /clear search/i }));
     expect(screen.getByRole("button", { name: /MiMo/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /OpenAI/i })).toBeInTheDocument();
+  });
+
+  it("preselects the provider named by the selected search param", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/model-providers")) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                providers: [
+                  {
+                    id: "mimo",
+                    name: "MiMo",
+                    base_url: "https://api.example.test/v1",
+                    protocols: ["openai_responses"],
+                    api_key_env: "MIMO_API_KEY",
+                    catalog: { manual: ["mimo-v2"], default_model: "mimo-v2" },
+                    created_at: "2026-06-25T00:00:00Z",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                  {
+                    id: "openai",
+                    name: "OpenAI",
+                    base_url: "https://api.openai.com/v1",
+                    protocols: ["openai_chat_completions"],
+                    api_key_env: "OPENAI_API_KEY",
+                    catalog: { manual: ["gpt-4o"], default_model: "gpt-4o" },
+                    created_at: "2026-06-25T00:00:00Z",
+                    updated_at: "2026-06-25T00:00:00Z",
+                  },
+                ],
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            ),
+          );
+        }
+        if (url.includes("/api/credential-bindings")) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ bindings: [] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        return Promise.resolve(
+          new Response(JSON.stringify({}), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }),
+    );
+
+    render(
+      <StrictMode>
+        <MemoryRouter initialEntries={["/model-providers?selected=openai"]}>
+          <ModelProvidersPage />
+        </MemoryRouter>
+      </StrictMode>,
+    );
+
+    // The param beats the default first-provider selection.
+    expect(await screen.findByRole("button", { name: /OpenAI/i })).toHaveAttribute("aria-current", "true");
+    expect(screen.getByRole("button", { name: /MiMo/i })).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("heading", { name: "OpenAI" })).toBeInTheDocument();
   });
 });
