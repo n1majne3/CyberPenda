@@ -91,7 +91,8 @@ describe("SessionHomePage", () => {
     expect(screen.queryByLabelText("Runtime profile")).not.toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Initial input"), "Inspect the standalone target");
-    await user.selectOptions(screen.getByLabelText("Reasoning effort"), "xhigh");
+    await user.click(screen.getByRole("button", { name: "xhigh" }));
+    await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
     await user.selectOptions(screen.getByLabelText("Blackboard conclusions"), "assisted");
     await user.click(screen.getByRole("button", { name: /create session/i }));
 
@@ -246,6 +247,7 @@ describe("SessionHomePage", () => {
 
     await screen.findByRole("option", { name: "MiMo" });
     await user.type(await screen.findByRole("textbox", { name: /initial input/i }), "Inspect the standalone target");
+    await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
     await user.selectOptions(screen.getByRole("combobox", { name: /blackboard conclusions/i }), "assisted");
     await user.click(screen.getByRole("button", { name: /create session/i }));
 
