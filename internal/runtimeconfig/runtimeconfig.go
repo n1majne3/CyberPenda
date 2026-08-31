@@ -173,7 +173,7 @@ func CloneForTurn(prior RuntimeConfigurationSnapshot, turn RuntimeTurnSelection,
 	turn.ModelProviderID = strings.TrimSpace(turn.ModelProviderID)
 	turn.Model = strings.TrimSpace(turn.Model)
 	turn.ReasoningEffort = strings.TrimSpace(turn.ReasoningEffort)
-	if cloned.RuntimeProfile == nil && (turn.ModelProviderID == "" || turn.Model == "") {
+	if cloned.RuntimeProfile == nil && (turn.Model == "" || (turn.ModelProviderID == "" && !hasProviderNativeSettings(cloned.Settings))) {
 		return RuntimeConfigurationSnapshot{}, ErrInvalidLaunchSelection
 	}
 	cloned.TurnSelection = turn
@@ -200,10 +200,30 @@ func validate(snapshot RuntimeConfigurationSnapshot) error {
 	// explicit legacy Runtime Profile can instead carry provider-native fields
 	// in Settings; keep that captured state readable without inventing a global
 	// Model Provider identity.
-	if snapshot.RuntimeProfile == nil && (strings.TrimSpace(snapshot.TurnSelection.ModelProviderID) == "" || strings.TrimSpace(snapshot.TurnSelection.Model) == "") {
+	if snapshot.RuntimeProfile == nil && strings.TrimSpace(snapshot.TurnSelection.Model) == "" {
+		return ErrInvalidSnapshot
+	}
+	if snapshot.RuntimeProfile == nil && strings.TrimSpace(snapshot.TurnSelection.ModelProviderID) == "" && !hasProviderNativeSettings(snapshot.Settings) {
 		return ErrInvalidSnapshot
 	}
 	return nil
+}
+
+func hasProviderNativeSettings(settings map[string]any) bool {
+	for _, key := range []string{"model", "model_override", "endpoint"} {
+		if value, ok := settings[key].(string); ok && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	generated, _ := settings["generated_config"].(map[string]any)
+	if len(generated) == 0 {
+		return false
+	}
+	if value, ok := generated["model"].(string); ok && strings.TrimSpace(value) != "" {
+		return true
+	}
+	_, hasAuthReference := generated["auth_json"]
+	return hasAuthReference
 }
 
 func cloneSnapshot(snapshot RuntimeConfigurationSnapshot) (RuntimeConfigurationSnapshot, error) {

@@ -113,6 +113,34 @@ func TestResolveExplicitLegacyProfileDoesNotInventModelProvider(t *testing.T) {
 	}
 }
 
+func TestCloneForTurnAcceptsMigratedProviderNativeSnapshotWithoutProvenance(t *testing.T) {
+	prior := runtimeconfig.RuntimeConfigurationSnapshot{
+		SnapshotVersion: runtimeconfig.SnapshotVersion,
+		RuntimePluginID: "codex",
+		Runner:          "sandbox",
+		ModelProvider:   modelprovider.Snapshot{Model: "gpt-5.5"},
+		TurnSelection: runtimeconfig.RuntimeTurnSelection{
+			Model: "gpt-5.5",
+		},
+		Settings: map[string]any{
+			"model": "gpt-5.5",
+			"generated_config": map[string]any{
+				"auth_json": map[string]any{"source": "host_codex_auth"},
+			},
+		},
+		EnabledSkillIDs:  []string{},
+		ConfigProjection: map[string]any{"primitive": "codex_home"},
+	}
+
+	cloned, err := runtimeconfig.CloneForTurn(prior, prior.TurnSelection, prior.ModelProvider)
+	if err != nil {
+		t.Fatalf("CloneForTurn migrated provider-native Snapshot: %v", err)
+	}
+	if cloned.TurnSelection.ModelProviderID != "" || cloned.TurnSelection.Model != "gpt-5.5" {
+		t.Fatalf("cloned provider-native turn = %#v", cloned.TurnSelection)
+	}
+}
+
 func TestResolveRejectsMixedOrIncompleteLaunchSelection(t *testing.T) {
 	tests := []runtimeconfig.LaunchSelection{
 		{RuntimeProfileID: "profile-1", RuntimePluginID: "codex", ModelProviderID: "provider-1", Model: "gpt-5"},

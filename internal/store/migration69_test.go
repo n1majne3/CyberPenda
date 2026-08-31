@@ -207,6 +207,185 @@ func TestMigration69CapturesHistoricalProfileSkillOptOutResult(t *testing.T) {
 	}
 }
 
+func TestMigration69MigratesLegacyCodexAuthSnapshotWithoutModelProvider(t *testing.T) {
+	db := newMigration69Fixture(t)
+	defer db.Close()
+	mustExec69(t, db, `INSERT INTO runtime_profiles VALUES
+		('auto-codex','Legacy Codex','codex','launch_resolve','{"model":"gpt-5.5","default_runner":"sandbox"}','now','now')`)
+	mustExec69(t, db, `INSERT INTO projects VALUES ('project-1','{}')`)
+	mustExec69(t, db, `INSERT INTO tasks VALUES ('task-1','project-1','sandbox','auto-codex','now')`)
+	mustExec69(t, db, `INSERT INTO task_runtime_config_versions VALUES
+		('config-1','task-1',1,'auto-codex','{"provider":"codex","model":"gpt-5.5","generated_config":{"auth_json":{"source":"host_codex_auth"},"model":"gpt-5.5","provider":"codex"}}','now')`)
+	mustExec69(t, db, `INSERT INTO task_continuations VALUES
+		('continuation-1','task-1',1,'auto-codex','codex','sandbox','config-1','now')`)
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migration69Up(tx); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("migration69Up() legacy Codex auth error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var raw string
+	if err := db.QueryRow(`SELECT config_json FROM task_runtime_config_versions WHERE id='config-1'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		ModelProvider map[string]any `json:"model_provider_snapshot"`
+		TurnSelection map[string]any `json:"runtime_turn_selection"`
+		Settings      map[string]any `json:"settings"`
+	}
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if got := migration69String(snapshot.TurnSelection, "model_provider_id"); got != "" {
+		t.Fatalf("legacy Codex auth gained Model Provider ID %q", got)
+	}
+	if got := migration69String(snapshot.TurnSelection, "model"); got != "gpt-5.5" {
+		t.Fatalf("legacy Codex model = %q", got)
+	}
+	generated, _ := snapshot.Settings["generated_config"].(map[string]any)
+	if auth, _ := generated["auth_json"].(map[string]any); migration69String(auth, "source") != "host_codex_auth" {
+		t.Fatalf("legacy Codex auth reference was not preserved: %#v", snapshot.Settings)
+	}
+}
+
+func TestMigration69ReplaysSparseRuntimeSelectionVersionsIntoCompleteSnapshots(t *testing.T) {
+	db := newMigration69Fixture(t)
+	defer db.Close()
+	mustExec69(t, db, `INSERT INTO projects VALUES ('project-1','{}')`)
+	mustExec69(t, db, `INSERT INTO tasks VALUES ('task-1','project-1','sandbox','deleted-auto-profile','now')`)
+	mustExec69(t, db, `INSERT INTO task_runtime_config_versions VALUES
+		('config-1','task-1',1,'deleted-auto-profile','{"provider":"claude_code","model_provider_id":"glm","model_override":"glm-5","endpoint":"https://legacy.example.test","custom_args":["--legacy"]}','now'),
+		('config-2','task-1',2,'deleted-auto-profile','{"model_provider_id":"glm","model_override":"glm-5.2","steering_event_id":"steer-1"}','now')`)
+	mustExec69(t, db, `INSERT INTO task_continuations VALUES
+		('continuation-1','task-1',1,'deleted-auto-profile','claude_code','sandbox','config-2','now')`)
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migration69Up(tx); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("migration69Up() sparse Runtime selection error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var raw string
+	if err := db.QueryRow(`SELECT config_json FROM task_runtime_config_versions WHERE id='config-2'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		RuntimePluginID string         `json:"runtime_plugin_id"`
+		TurnSelection   map[string]any `json:"runtime_turn_selection"`
+		Settings        map[string]any `json:"settings"`
+	}
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.RuntimePluginID != "claude_code" {
+		t.Fatalf("sparse version Runtime Plugin = %q", snapshot.RuntimePluginID)
+	}
+	if got := migration69String(snapshot.TurnSelection, "model"); got != "glm-5.2" {
+		t.Fatalf("sparse version model = %q", got)
+	}
+	if migration69String(snapshot.Settings, "endpoint") != "https://legacy.example.test" {
+		t.Fatalf("sparse version lost prior endpoint: %#v", snapshot.Settings)
+	}
+	args, _ := snapshot.Settings["custom_args"].([]any)
+	if len(args) != 1 || args[0] != "--legacy" {
+		t.Fatalf("sparse version lost prior Custom Args: %#v", snapshot.Settings)
+	}
+}
+
+func TestMigration69BackfillsProviderNativeManualProfileWithoutModelSelection(t *testing.T) {
+	db := newMigration69Fixture(t)
+	defer db.Close()
+	mustExec69(t, db, `INSERT INTO runtime_profiles VALUES
+		('manual-pi','Provider Native Pi','pi','manual','{"default_runner":"sandbox","runtime_extensions":[{"id":"npm:pi-mcp-adapter","enabled":true}]}','now','now')`)
+	mustExec69(t, db, `INSERT INTO projects VALUES ('project-1','{}')`)
+	mustExec69(t, db, `INSERT INTO tasks VALUES ('task-1','project-1','sandbox','manual-pi','now')`)
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migration69Up(tx); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("migration69Up() provider-native manual Profile error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var raw string
+	if err := db.QueryRow(`SELECT config_json FROM task_runtime_config_versions WHERE task_id='task-1'`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var snapshot struct {
+		RuntimeProfile map[string]any `json:"runtime_profile"`
+		RuntimePlugin  string         `json:"runtime_plugin_id"`
+		TurnSelection  map[string]any `json:"runtime_turn_selection"`
+	}
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if migration69String(snapshot.RuntimeProfile, "id") != "manual-pi" || snapshot.RuntimePlugin != "pi" {
+		t.Fatalf("provider-native manual provenance = %#v plugin=%q", snapshot.RuntimeProfile, snapshot.RuntimePlugin)
+	}
+	if migration69String(snapshot.TurnSelection, "model_provider_id") != "" || migration69String(snapshot.TurnSelection, "model") != "" {
+		t.Fatalf("provider-native manual Profile gained invented selection: %#v", snapshot.TurnSelection)
+	}
+}
+
+func TestMigration69RecoversDeletedAutomaticProfileSourceFromOwnerHistory(t *testing.T) {
+	db := newMigration69Fixture(t)
+	defer db.Close()
+	mustExec69(t, db, `INSERT INTO projects VALUES ('project-1','{}')`)
+	mustExec69(t, db, `INSERT INTO tasks VALUES
+		('task-with-history','project-1','sandbox','deleted-auto-profile','now'),
+		('task-without-version','project-1','sandbox','deleted-auto-profile','now')`)
+	mustExec69(t, db, `INSERT INTO task_runtime_config_versions VALUES
+		('config-1','task-with-history',1,'deleted-auto-profile','{"provider":"claude_code","model_provider_id":"glm","model_override":"glm-5.2","reasoning_effort":"high"}','now')`)
+
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migration69Up(tx); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("migration69Up() deleted automatic Profile recovery error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	var raw, provenance string
+	if err := db.QueryRow(`SELECT config_json,runtime_profile_id FROM task_runtime_config_versions WHERE task_id='task-without-version'`).Scan(&raw, &provenance); err != nil {
+		t.Fatal(err)
+	}
+	if provenance != "" {
+		t.Fatalf("recovered deleted automatic Profile provenance = %q", provenance)
+	}
+	var snapshot struct {
+		RuntimePlugin string         `json:"runtime_plugin_id"`
+		TurnSelection map[string]any `json:"runtime_turn_selection"`
+	}
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.RuntimePlugin != "claude_code" || migration69String(snapshot.TurnSelection, "model_provider_id") != "glm" || migration69String(snapshot.TurnSelection, "model") != "glm-5.2" {
+		t.Fatalf("recovered deleted automatic Profile Snapshot = %#v", snapshot)
+	}
+}
+
 func TestMigration69RollsBackWhenCapturedSkillIsMissing(t *testing.T) {
 	db := newMigration69Fixture(t)
 	defer db.Close()

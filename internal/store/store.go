@@ -973,6 +973,9 @@ func migration69Up(tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
+	if err := migration69RecoverMissingProfileSources(tx, profiles); err != nil {
+		return err
+	}
 	for _, table := range []struct {
 		name       string
 		owner      string
@@ -1036,6 +1039,116 @@ func migration69Up(tx *sql.Tx) error {
 	return nil
 }
 
+func migration69RecoverMissingProfileSources(tx *sql.Tx, profiles map[string]migration69Profile) error {
+	realProfiles := make(map[string]bool, len(profiles))
+	for id := range profiles {
+		realProfiles[id] = true
+	}
+	for _, table := range []string{"task_runtime_config_versions", "session_runtime_config_versions"} {
+		present, err := migration69TableExists(tx, table)
+		if err != nil || !present {
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		rows, err := tx.Query(fmt.Sprintf(`SELECT runtime_profile_id,config_json FROM %s WHERE trim(runtime_profile_id)<>'' ORDER BY created_at,version`, table))
+		if err != nil {
+			return fmt.Errorf("recover deleted Runtime Profile sources from %s: %w", table, err)
+		}
+		type historicalSource struct{ profileID, raw string }
+		var sources []historicalSource
+		for rows.Next() {
+			var source historicalSource
+			if err := rows.Scan(&source.profileID, &source.raw); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			sources = append(sources, source)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, source := range sources {
+			if realProfiles[source.profileID] {
+				continue
+			}
+			var config map[string]any
+			if err := json.Unmarshal([]byte(source.raw), &config); err != nil {
+				return fmt.Errorf("decode historical Runtime Profile source %s: %w", source.profileID, err)
+			}
+			candidate := migration69ProfileSourceFromHistory(source.profileID, config)
+			if candidate.provider == "" {
+				continue
+			}
+			recovered := profiles[source.profileID]
+			if recovered.id == "" {
+				recovered = migration69Profile{id: source.profileID, kind: "launch_resolve", fields: map[string]any{}}
+			}
+			if recovered.provider != "" && recovered.provider != candidate.provider {
+				return fmt.Errorf("deleted Runtime Profile %s has conflicting historical Runtime Plugins %s and %s", source.profileID, recovered.provider, candidate.provider)
+			}
+			recovered.provider = candidate.provider
+			recovered.fields = migration69MergeMaps(recovered.fields, candidate.fields)
+			profiles[source.profileID] = recovered
+		}
+	}
+	return nil
+}
+
+func migration69ProfileSourceFromHistory(profileID string, config map[string]any) migration69Profile {
+	fieldsSource := config
+	if settings, ok := config["settings"].(map[string]any); ok {
+		fieldsSource = settings
+	}
+	fields := map[string]any{}
+	for _, key := range []string{
+		"binary_path", "model", "endpoint", "model_provider_id", "model_provider_protocol", "model_override",
+		"reasoning_effort", "custom_args", "credential_refs", "runtime_extensions", "mcp_servers", "default_runner",
+		"sandbox_image", "codex_multi_agent", "custom_config_file",
+	} {
+		if value, ok := fieldsSource[key]; ok {
+			fields[key] = value
+		}
+	}
+	generated, _ := config["generated_config"].(map[string]any)
+	turn, _ := config["runtime_turn_selection"].(map[string]any)
+	providerSnapshot, _ := config["model_provider_snapshot"].(map[string]any)
+	if providerSnapshot == nil && generated != nil {
+		providerSnapshot, _ = generated["model_provider_snapshot"].(map[string]any)
+	}
+	if providerSnapshot != nil {
+		fields["model_provider_snapshot"] = migration69CloneMap(providerSnapshot)
+	}
+	if value := migration69String(turn, "model_provider_id"); value != "" {
+		fields["model_provider_id"] = value
+	} else if value := migration69String(providerSnapshot, "model_provider_id"); value != "" {
+		fields["model_provider_id"] = value
+	}
+	if value := migration69String(turn, "model"); value != "" {
+		fields["model_override"] = value
+	} else if value := migration69String(providerSnapshot, "model"); value != "" {
+		fields["model_override"] = value
+	} else if value := migration69String(generated, "model"); value != "" {
+		fields["model_override"] = value
+	}
+	if value := migration69String(turn, "requested_reasoning_effort"); value != "" {
+		fields["reasoning_effort"] = value
+	}
+	if value := migration69String(config, "runner"); value != "" {
+		fields["default_runner"] = value
+	}
+	pluginID := migration69String(config, "runtime_plugin_id", "provider")
+	if pluginID == "" {
+		pluginID = migration69String(generated, "runtime_plugin_id", "provider")
+	}
+	return migration69Profile{id: profileID, provider: pluginID, kind: "launch_resolve", fields: fields}
+}
+
 func migration69Profiles(tx *sql.Tx) (map[string]migration69Profile, error) {
 	hasKind, err := storeTableHasColumn(tx, "runtime_profiles", "kind")
 	if err != nil {
@@ -1076,16 +1189,19 @@ func migration69ConfigVersions(tx *sql.Tx, table, ownerColumn, ownerTable string
 	if err != nil || !present {
 		return err
 	}
-	query := fmt.Sprintf(`SELECT c.id,c.runtime_profile_id,c.config_json FROM %s c`, table)
+	query := fmt.Sprintf(`SELECT c.id,c.%s,c.version,c.runtime_profile_id,c.config_json FROM %s c ORDER BY c.%s,c.version`, ownerColumn, table, ownerColumn)
 	rows, err := tx.Query(query)
 	if err != nil {
 		return fmt.Errorf("read %s for migration 69: %w", table, err)
 	}
-	type rowValue struct{ id, profileID, configJSON string }
+	type rowValue struct {
+		id, ownerID, profileID, configJSON string
+		version                            int
+	}
 	var values []rowValue
 	for rows.Next() {
 		var value rowValue
-		if err := rows.Scan(&value.id, &value.profileID, &value.configJSON); err != nil {
+		if err := rows.Scan(&value.id, &value.ownerID, &value.version, &value.profileID, &value.configJSON); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan %s for migration 69: %w", table, err)
 		}
@@ -1098,26 +1214,36 @@ func migration69ConfigVersions(tx *sql.Tx, table, ownerColumn, ownerTable string
 	if err := rows.Close(); err != nil {
 		return err
 	}
+	type replayState struct {
+		profileID string
+		actual    map[string]any
+	}
+	replayed := map[string]replayState{}
 	for _, value := range values {
 		var actual map[string]any
 		if err := json.Unmarshal([]byte(value.configJSON), &actual); err != nil {
 			return fmt.Errorf("decode %s %s: %w", table, value.id, err)
 		}
 		if version, ok := actual["snapshot_version"].(float64); ok && int(version) == 1 {
+			replayed[value.ownerID] = replayState{profileID: value.profileID, actual: migration69LegacyActualFromSnapshot(actual)}
 			continue
 		}
 		if migration69HasInlineSecret(actual) {
 			return fmt.Errorf("Runtime configuration %s contains a legacy inline secret that cannot be represented as a Credential Reference", value.id)
 		}
-		if _, captured := actual["enabled_skill_ids"]; !captured {
+		effective := migration69CloneMap(actual)
+		if prior, ok := replayed[value.ownerID]; ok && (prior.profileID == value.profileID || value.profileID == "" || profiles[value.profileID].id == "") {
+			effective = migration69MergeMaps(prior.actual, effective)
+		}
+		if _, captured := effective["enabled_skill_ids"]; !captured {
 			enabled, err := migration69EnabledSkills(tx, value.profileID)
 			if err != nil {
 				return fmt.Errorf("capture enabled Skills for Runtime configuration %s: %w", value.id, err)
 			}
-			actual["enabled_skill_ids"] = enabled
+			effective["enabled_skill_ids"] = enabled
 		}
 		profile := profiles[value.profileID]
-		snapshot := migration69Snapshot(profile, actual)
+		snapshot := migration69Snapshot(profile, effective)
 		encoded, err := json.Marshal(snapshot)
 		if err != nil {
 			return fmt.Errorf("encode Runtime configuration Snapshot %s: %w", value.id, err)
@@ -1129,10 +1255,46 @@ func migration69ConfigVersions(tx *sql.Tx, table, ownerColumn, ownerTable string
 		if _, err := tx.Exec(fmt.Sprintf(`UPDATE %s SET runtime_profile_id=?,config_json=? WHERE id=?`, table), provenance, string(encoded), value.id); err != nil {
 			return fmt.Errorf("store Runtime configuration Snapshot %s: %w", value.id, err)
 		}
+		replayed[value.ownerID] = replayState{profileID: value.profileID, actual: effective}
 	}
-	_ = ownerColumn
 	_ = ownerTable
 	return nil
+}
+
+func migration69MergeMaps(base, overlay map[string]any) map[string]any {
+	merged := migration69CloneMap(base)
+	for key, value := range overlay {
+		baseMap, baseIsMap := merged[key].(map[string]any)
+		overlayMap, overlayIsMap := value.(map[string]any)
+		if baseIsMap && overlayIsMap {
+			merged[key] = migration69MergeMaps(baseMap, overlayMap)
+			continue
+		}
+		merged[key] = value
+	}
+	return merged
+}
+
+func migration69LegacyActualFromSnapshot(snapshot map[string]any) map[string]any {
+	settings, _ := snapshot["settings"].(map[string]any)
+	actual := migration69CloneMap(settings)
+	actual["runtime_plugin_id"] = migration69String(snapshot, "runtime_plugin_id")
+	actual["runner"] = migration69String(snapshot, "runner")
+	if provider, ok := snapshot["model_provider_snapshot"].(map[string]any); ok {
+		actual["model_provider_snapshot"] = migration69CloneMap(provider)
+	}
+	if turn, ok := snapshot["runtime_turn_selection"].(map[string]any); ok {
+		actual["model_provider_id"] = migration69String(turn, "model_provider_id")
+		actual["model"] = migration69String(turn, "model")
+		actual["requested_reasoning_effort"] = migration69String(turn, "requested_reasoning_effort")
+	}
+	if skills, ok := snapshot["enabled_skill_ids"]; ok {
+		actual["enabled_skill_ids"] = skills
+	}
+	if projection, ok := snapshot["config_projection"].(map[string]any); ok {
+		actual["config_projection"] = migration69CloneMap(projection)
+	}
+	return actual
 }
 
 func migration69EnabledSkills(tx *sql.Tx, profileID string) ([]string, error) {
@@ -1154,6 +1316,7 @@ func migration69EnabledSkills(tx *sql.Tx, profileID string) ([]string, error) {
 
 func migration69Snapshot(profile migration69Profile, actual map[string]any) map[string]any {
 	settings := migration69CloneMap(profile.fields)
+	delete(settings, "model_provider_snapshot")
 	for key, value := range actual {
 		if key == "snapshot_version" || key == "runtime_profile" || key == "model_provider_snapshot" || key == "runtime_turn_selection" || key == "enabled_skill_ids" || key == "config_projection" || key == "projected_model_provider_ids" {
 			continue
@@ -1165,6 +1328,9 @@ func migration69Snapshot(profile migration69Profile, actual map[string]any) map[
 	providerSnapshot, _ := actual["model_provider_snapshot"].(map[string]any)
 	if providerSnapshot == nil && generated != nil {
 		providerSnapshot, _ = generated["model_provider_snapshot"].(map[string]any)
+	}
+	if providerSnapshot == nil {
+		providerSnapshot, _ = profile.fields["model_provider_snapshot"].(map[string]any)
 	}
 	pluginID := migration69String(actual, "runtime_plugin_id", "provider")
 	if pluginID == "" {
@@ -1392,8 +1558,6 @@ func migration69ValidateContinuations(tx *sql.Tx, continuationTable, configTable
 	query := fmt.Sprintf(`SELECT COUNT(*) FROM %s c LEFT JOIN %s v ON v.id=c.runtime_config_version_id WHERE v.id IS NULL
 		OR json_extract(v.config_json,'$.snapshot_version') <> 1
 		OR trim(COALESCE(json_extract(v.config_json,'$.runtime_plugin_id'),'')) = ''
-		OR trim(COALESCE(json_extract(v.config_json,'$.runtime_turn_selection.model_provider_id'),'')) = ''
-		OR trim(COALESCE(json_extract(v.config_json,'$.runtime_turn_selection.model'),'')) = ''
 		OR json_type(v.config_json,'$.settings') <> 'object'
 		OR json_type(v.config_json,'$.enabled_skill_ids') <> 'array'
 		OR json_type(v.config_json,'$.config_projection') <> 'object'`, continuationTable, configTable)
@@ -1423,6 +1587,7 @@ func migration69ValidateSnapshots(tx *sql.Tx, ownerName, configTable string) err
 		}
 		var snapshot struct {
 			SnapshotVersion  int            `json:"snapshot_version"`
+			RuntimeProfile   map[string]any `json:"runtime_profile"`
 			RuntimePluginID  string         `json:"runtime_plugin_id"`
 			ModelProvider    map[string]any `json:"model_provider_snapshot"`
 			TurnSelection    map[string]any `json:"runtime_turn_selection"`
@@ -1433,11 +1598,16 @@ func migration69ValidateSnapshots(tx *sql.Tx, ownerName, configTable string) err
 		if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
 			return fmt.Errorf("%s Runtime configuration Snapshot %s is unreadable: %w", ownerName, id, err)
 		}
+		hasProfileProvenance := strings.TrimSpace(migration69String(snapshot.RuntimeProfile, "id")) != ""
 		if snapshot.SnapshotVersion != 1 || strings.TrimSpace(snapshot.RuntimePluginID) == "" ||
-			strings.TrimSpace(migration69String(snapshot.TurnSelection, "model_provider_id")) == "" ||
-			strings.TrimSpace(migration69String(snapshot.TurnSelection, "model")) == "" ||
 			snapshot.Settings == nil || snapshot.EnabledSkillIDs == nil || snapshot.ConfigProjection == nil {
 			return fmt.Errorf("%s Runtime configuration Snapshot %s cannot be read for Resume and replacement Continuation: %s", ownerName, id, raw)
+		}
+		if !hasProfileProvenance && strings.TrimSpace(migration69String(snapshot.TurnSelection, "model")) == "" {
+			return fmt.Errorf("%s Runtime configuration Snapshot %s has neither Profile provenance nor a captured model: %s", ownerName, id, raw)
+		}
+		if !hasProfileProvenance && strings.TrimSpace(migration69String(snapshot.TurnSelection, "model_provider_id")) == "" && !migration69HasProviderNativeSettings(snapshot.Settings) {
+			return fmt.Errorf("%s Runtime configuration Snapshot %s has neither a Model Provider nor captured provider-native settings: %s", ownerName, id, raw)
 		}
 		for _, skillID := range snapshot.EnabledSkillIDs {
 			var exists int
@@ -1450,6 +1620,23 @@ func migration69ValidateSnapshots(tx *sql.Tx, ownerName, configTable string) err
 		}
 	}
 	return rows.Err()
+}
+
+func migration69HasProviderNativeSettings(settings map[string]any) bool {
+	for _, key := range []string{"model", "model_override", "endpoint"} {
+		if strings.TrimSpace(migration69String(settings, key)) != "" {
+			return true
+		}
+	}
+	generated, _ := settings["generated_config"].(map[string]any)
+	if len(generated) == 0 {
+		return false
+	}
+	if strings.TrimSpace(migration69String(generated, "model")) != "" {
+		return true
+	}
+	_, hasAuthReference := generated["auth_json"]
+	return hasAuthReference
 }
 
 func migration69HasInlineSecret(config map[string]any) bool {
