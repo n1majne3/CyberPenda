@@ -14,9 +14,9 @@ bounded error before it creates the Project.
 
 ## Runtime and protocol mismatch
 
-Use the strict matrix in `README.md`. Pi and Hermes support the three packaged
-protocols. Codex requires `openai_responses`. Claude Code requires
-`anthropic_messages`.
+Use the strict matrix in `README.md`. Codex requires `openai_responses`. Claude
+Code requires `anthropic_messages`. Pi and Hermes remain installed in the
+image, but Hosted bootstrap rejects them as the selected Runtime.
 
 ## Claude request exceeds the 1M context
 
@@ -56,10 +56,10 @@ diagnostics and standard output for the JSONL Hosted Transcript Stream.
 
 ## Challenge Platform API behavior changes
 
-The hosted Skill describes the known `/openapi/v1` list, start, hint, submit,
-and close requests. The Runtime inspects unexpected responses and decides if a
-compatible request or retry is useful. The Controller does not apply an API
-retry policy.
+The Hosted-adapted `ctf-orchestrator` uses the Hosted Challenge Client for the
+known `/openapi/v1` list, start, hint, submit, close, and abandon operations.
+The Runtime inspects unexpected responses and decides if a compatible request
+or retry is useful. The Controller does not apply an API retry policy.
 
 ## Local Mode cannot reach a challenge
 

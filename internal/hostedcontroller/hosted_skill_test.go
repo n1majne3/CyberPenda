@@ -18,7 +18,7 @@ import (
 	"pentest/internal/skill"
 )
 
-func TestHostedEvaluationPublishesOnlyItsTSecBenchSkillAndProjectsBenchmarkEnvironment(t *testing.T) {
+func TestHostedEvaluationPublishesOnlyCTFOrchestratorAndProjectsBenchmarkEnvironment(t *testing.T) {
 	var skillRequest struct {
 		Name        string            `json:"name"`
 		Description string            `json:"description"`
@@ -26,14 +26,15 @@ func TestHostedEvaluationPublishesOnlyItsTSecBenchSkillAndProjectsBenchmarkEnvir
 		Files       map[string]string `json:"files"`
 	}
 	var profileRequest map[string]any
+	var taskRequest map[string]any
 	bindings := map[string]map[string]any{}
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.Method + " " + request.URL.Path {
-		case "PUT /api/skills/tsecbench-hosted-challenge-loop":
+		case "PUT /api/skills/ctf-orchestrator":
 			_ = json.NewDecoder(request.Body).Decode(&skillRequest)
 			response.WriteHeader(http.StatusCreated)
-			_, _ = io.WriteString(response, `{"id":"tsecbench-hosted-challenge-loop"}`)
+			_, _ = io.WriteString(response, `{"id":"ctf-orchestrator"}`)
 		case "POST /api/model-providers":
 			response.WriteHeader(http.StatusCreated)
 			_, _ = io.WriteString(response, `{"id":"hosted-model","api_key_env":"HOSTED_MODEL_API_KEY"}`)
@@ -50,6 +51,7 @@ func TestHostedEvaluationPublishesOnlyItsTSecBenchSkillAndProjectsBenchmarkEnvir
 			bindings[body["credential_ref"].(string)] = body
 			_, _ = io.WriteString(response, `{}`)
 		case "POST /api/projects/project-1/tasks":
+			_ = json.NewDecoder(request.Body).Decode(&taskRequest)
 			response.WriteHeader(http.StatusCreated)
 			_, _ = io.WriteString(response, `{"id":"task-1"}`)
 		default:
@@ -62,30 +64,38 @@ func TestHostedEvaluationPublishesOnlyItsTSecBenchSkillAndProjectsBenchmarkEnvir
 	})
 	config := hostedcontroller.Config{
 		BenchmarkBaseURL: "http://benchmark.test", BenchmarkToken: "benchmark-secret",
-		Runtime: "pi", ModelProtocol: "openai_chat_completions", ModelBaseURL: "http://model.tsecbench.gw/v1",
+		Runtime: "codex", ModelProtocol: "openai_responses", ModelBaseURL: "http://model.tsecbench.gw/v1",
 		Model: "hosted-model", ModelAPIKey: "model-secret",
 	}
 
 	if _, err := app.Start(context.Background(), hostedcontroller.EvaluationForConfig(config)); err != nil {
 		t.Fatalf("Start error = %v", err)
 	}
-	if skillRequest.Name != "tsecbench-hosted-challenge-loop" || skillRequest.Source["kind"] != "hosted" {
+	if skillRequest.Name != "ctf-orchestrator" || skillRequest.Source["kind"] != "hosted" {
 		t.Fatalf("hosted Skill metadata = %#v", skillRequest)
 	}
 	instruction := skillRequest.Files["SKILL.md"]
 	for _, required := range []string{
 		"pentest-tsecbench-client list", "pentest-tsecbench-client start", "pentest-tsecbench-client hint",
 		"pentest-tsecbench-client submit", "pentest-tsecbench-client close", "pentest-tsecbench-client abandon",
-		"correct_flag_count", "total_flag_count", "At most three", "hint_cost_radio", "duplicate", "invalid_state",
-		"Never chain", "read-only Working Snapshot", "first pass", "third slot",
-		"over_budget", "elapsed_min", "attempt_n", "challenge-clock.json",
-		"Do not invent a longer budget", "CYBERPENDA_CHALLENGE_ADAPTER", "/data/adapters",
+		"Decide", "Execute agent", "FGS", "graph/facts", "ledger.tsv", "WS=\"$(pwd -P)\"",
+		"Codex", "spawn_agent", "wait_agent", "interrupt_agent",
+		"Claude Code", "run_in_background", "TaskOutput", "TaskStop", "SendMessage",
+		"over_budget", "elapsed_min", "budget_min", "attempt_n", "Challenge Pass Clock",
 	} {
 		if !strings.Contains(instruction, required) {
 			t.Errorf("hosted Skill instruction missing %q", required)
 		}
 	}
-	for _, forbidden := range []string{"curl ", "set -x", "curl -v", "--trace", "printenv", "benchmark-secret", "blackboard.json >", "> .pentest/blackboard.json"} {
+	for _, requiredFile := range []string{"references/graph-protocol.md", "references/execute-prompt.md"} {
+		if strings.TrimSpace(skillRequest.Files[requiredFile]) == "" {
+			t.Errorf("hosted Skill bundle missing %q", requiredFile)
+		}
+	}
+	for _, forbidden := range []string{
+		"curl ", "PLATFORM_TOKEN", "PLATFORM_BASE_URL", "Authorization: Bearer", "/workdir/run",
+		".pentest/blackboard.json", "trusted Project Interface", "benchmark-secret",
+	} {
 		if strings.Contains(instruction, forbidden) {
 			t.Errorf("hosted Skill contains forbidden pattern %q", forbidden)
 		}
@@ -106,6 +116,10 @@ func TestHostedEvaluationPublishesOnlyItsTSecBenchSkillAndProjectsBenchmarkEnvir
 	modelSource, _ := bindings["HOSTED_MODEL_API_KEY"]["source"].(map[string]any)
 	if modelSource["destination_env"] != "HOSTED_MODEL_API_KEY" || modelSource["value"] != config.ModelAPIKey {
 		t.Fatalf("model binding = %#v", bindings["HOSTED_MODEL_API_KEY"])
+	}
+	runControls, _ := taskRequest["run_controls"].(map[string]any)
+	if runControls["blackboard_conclusion_mode"] != "disabled" {
+		t.Fatalf("hosted Task run controls = %#v", runControls)
 	}
 }
 
@@ -132,13 +146,13 @@ func TestTSecBenchSkillTreatsClientFailureAsLocalAndRecoverable(t *testing.T) {
 	}
 }
 
-func TestNormalBuiltinSkillCatalogDoesNotContainTheHostedTSecBenchSkill(t *testing.T) {
+func TestNormalBuiltinSkillCatalogDoesNotContainTheHostedCTFOrchestrator(t *testing.T) {
 	bundles, err := skill.BuiltinBundles()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, bundle := range bundles {
-		if bundle.Metadata.ID == "tsecbench-hosted-challenge-loop" {
+		if bundle.Metadata.ID == "ctf-orchestrator" {
 			t.Fatal("hosted-only Skill leaked into the normal built-in catalog")
 		}
 	}
@@ -160,7 +174,7 @@ func captureHostedSkillInstruction(t *testing.T) string {
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.Method + " " + request.URL.Path {
-		case "PUT /api/skills/tsecbench-hosted-challenge-loop":
+		case "PUT /api/skills/ctf-orchestrator":
 			var body struct {
 				Files map[string]string `json:"files"`
 			}
@@ -190,8 +204,8 @@ func captureHostedSkillInstruction(t *testing.T) string {
 		BaseURL: "http://hosted.test", Client: &http.Client{Transport: hostedSkillRoundTripper{handler: handler}},
 	})
 	config := hostedcontroller.Config{
-		BenchmarkBaseURL: "http://benchmark.test", BenchmarkToken: "benchmark-secret", Runtime: "pi",
-		ModelProtocol: "openai_chat_completions", ModelBaseURL: "http://model.tsecbench.gw/v1",
+		BenchmarkBaseURL: "http://benchmark.test", BenchmarkToken: "benchmark-secret", Runtime: "codex",
+		ModelProtocol: "openai_responses", ModelBaseURL: "http://model.tsecbench.gw/v1",
 		Model: "model", ModelAPIKey: "model-secret",
 	}
 	if _, err := app.Start(context.Background(), hostedcontroller.EvaluationForConfig(config)); err != nil {

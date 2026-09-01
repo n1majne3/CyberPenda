@@ -41,7 +41,10 @@ func TestHostedAcceptanceConfigurationCompletesTheRuntimeManagedChallengeLoop(t 
 		t.Fatalf("fake Pi Runtime loop failed: %v", result.err)
 	}
 	if !result.hostedSkillProjected {
-		t.Fatal("hosted-only TSecBench Skill was not projected into the real Host Runner layout")
+		t.Fatal("hosted-only ctf-orchestrator Skill was not projected into the real Host Runner layout")
+	}
+	if !reflect.DeepEqual(result.projectedSkillIDs, []string{"ctf-orchestrator"}) {
+		t.Fatalf("Hosted Task projected Skills = %#v, want only ctf-orchestrator", result.projectedSkillIDs)
 	}
 	if result.modelAPI != "openai-completions" || !result.modelCalled {
 		t.Fatalf("Hosted Acceptance Configuration model projection = API %q called=%v", result.modelAPI, result.modelCalled)
@@ -116,6 +119,7 @@ func newHostedAcceptanceFixture(t *testing.T, platform *acceptedPlatform) *hoste
 	server, err := daemon.NewServer(daemon.Config{
 		Version: "hosted-acceptance", DBPath: filepath.Join(root, "pentest.db"),
 		RuntimeRoot: filepath.Join(root, "runs"), ProviderSessionFactory: factory,
+		DisableBuiltinSkills: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +192,7 @@ func (fixture *hostedAcceptanceFixture) await(t *testing.T) acceptedPiResult {
 type acceptedPiResult struct {
 	err                  error
 	hostedSkillProjected bool
+	projectedSkillIDs    []string
 	modelAPI             string
 	modelCalled          bool
 	platformRequests     []string
@@ -227,9 +232,16 @@ func (starter *acceptedPiStarter) serve(spec runtime.HostProcessSpec, input io.R
 		result.err = fmt.Errorf("Production Provider Session Factory did not launch the Pi wire bridge")
 		return
 	}
-	skillPath := filepath.Join(filepath.Dir(spec.Workdir), "skills", "tsecbench-hosted-challenge-loop", "SKILL.md")
+	skillPath := filepath.Join(filepath.Dir(spec.Workdir), "skills", "ctf-orchestrator", "SKILL.md")
 	if instruction, err := os.ReadFile(skillPath); err == nil {
 		result.hostedSkillProjected = bytes.Contains(instruction, []byte("pentest-tsecbench-client list"))
+	}
+	if entries, err := os.ReadDir(filepath.Join(filepath.Dir(spec.Workdir), "skills")); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				result.projectedSkillIDs = append(result.projectedSkillIDs, entry.Name())
+			}
+		}
 	}
 
 	scanner := bufio.NewScanner(input)

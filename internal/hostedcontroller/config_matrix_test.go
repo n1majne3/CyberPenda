@@ -13,7 +13,7 @@ import (
 	"pentest/internal/hostedcontroller"
 )
 
-func TestHostedConfigurationRequiresInputsAndDefaultsToPi(t *testing.T) {
+func TestHostedConfigurationRequiresInputsAndDefaultsToCodex(t *testing.T) {
 	required := []string{
 		"BENCHMARK_BASE_URL", "BENCHMARK_TOKEN", "CYBERPENDA_MODEL_PROTOCOL",
 		"CYBERPENDA_MODEL_BASE_URL", "CYBERPENDA_MODEL", "CYBERPENDA_MODEL_API_KEY",
@@ -31,8 +31,8 @@ func TestHostedConfigurationRequiresInputsAndDefaultsToPi(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if config.Runtime != "pi" {
-		t.Fatalf("default Runtime = %q, want pi", config.Runtime)
+	if config.Runtime != "codex" {
+		t.Fatalf("default Runtime = %q, want codex", config.Runtime)
 	}
 }
 
@@ -41,18 +41,18 @@ func TestHostedConfigurationAcceptsOnlyTheRuntimeProtocolMatrix(t *testing.T) {
 		runtime, protocol string
 		valid             bool
 	}{
-		{"pi", "openai_chat_completions", true},
-		{"pi", "openai_responses", true},
-		{"pi", "anthropic_messages", true},
+		{"pi", "openai_chat_completions", false},
+		{"pi", "openai_responses", false},
+		{"pi", "anthropic_messages", false},
 		{"codex", "openai_chat_completions", false},
 		{"codex", "openai_responses", true},
 		{"codex", "anthropic_messages", false},
 		{"claude_code", "openai_chat_completions", false},
 		{"claude_code", "openai_responses", false},
 		{"claude_code", "anthropic_messages", true},
-		{"hermes", "openai_chat_completions", true},
-		{"hermes", "openai_responses", true},
-		{"hermes", "anthropic_messages", true},
+		{"hermes", "openai_chat_completions", false},
+		{"hermes", "openai_responses", false},
+		{"hermes", "anthropic_messages", false},
 		{"unknown", "openai_responses", false},
 	}
 	for _, test := range tests {
@@ -104,10 +104,8 @@ func TestHostedStartProjectsEachRuntimeThroughNormalProviderAndCredentialInputs(
 		runtime, protocol, binary string
 		customArgs                []any
 	}{
-		{"pi", "openai_chat_completions", "/opt/bin/pi", []any{"--approve"}},
 		{"codex", "openai_responses", "/opt/bin/codex", nil},
 		{"claude_code", "anthropic_messages", "/opt/bin/claude", nil},
-		{"hermes", "openai_chat_completions", "/opt/bin/hermes", nil},
 	}
 	for _, test := range tests {
 		t.Run(test.runtime, func(t *testing.T) {
@@ -116,7 +114,7 @@ func TestHostedStartProjectsEachRuntimeThroughNormalProviderAndCredentialInputs(
 			handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 				response.Header().Set("Content-Type", "application/json")
 				switch request.Method + " " + request.URL.Path {
-				case "PUT /api/skills/tsecbench-hosted-challenge-loop":
+				case "PUT /api/skills/ctf-orchestrator":
 					_, _ = io.WriteString(response, `{}`)
 				case "POST /api/model-providers":
 					_ = json.NewDecoder(request.Body).Decode(&providerRequest)
@@ -167,6 +165,13 @@ func TestHostedStartProjectsEachRuntimeThroughNormalProviderAndCredentialInputs(
 				fields["model_override"] != "model" {
 				t.Fatalf("Runtime Profile request = %#v", profileRequest)
 			}
+			multiAgent, hasMultiAgent := fields["codex_multi_agent"].(map[string]any)
+			if test.runtime == "codex" && (!hasMultiAgent || multiAgent["enabled"] != true) {
+				t.Fatalf("Codex Hosted Profile did not enable multi-agent: %#v", fields)
+			}
+			if test.runtime == "claude_code" && hasMultiAgent {
+				t.Fatalf("Claude Hosted Profile received Codex multi-agent config: %#v", fields)
+			}
 			if !maps.Equal(fields["env"].(map[string]any), map[string]any{"BENCHMARK_BASE_URL": env["BENCHMARK_BASE_URL"]}) {
 				t.Fatalf("Runtime Profile env = %#v", fields["env"])
 			}
@@ -183,8 +188,12 @@ func TestHostedStartProjectsEachRuntimeThroughNormalProviderAndCredentialInputs(
 			if fields["reasoning_effort"] != nil {
 				t.Fatalf("Runtime Profile set Reasoning Effort without a hosted value: %#v", fields)
 			}
-			if controls, _ := taskRequest["run_controls"].(map[string]any); controls["yolo"] != nil {
+			controls, _ := taskRequest["run_controls"].(map[string]any)
+			if controls["yolo"] != nil {
 				t.Fatalf("Task added synthetic YOLO control: %#v", taskRequest)
+			}
+			if controls["blackboard_conclusion_mode"] != "disabled" {
+				t.Fatalf("Hosted Task Blackboard Mode = %#v, want disabled", controls)
 			}
 			assertHostedLiteralBinding(t, bindingRequests, "BENCHMARK_TOKEN", "token")
 			assertHostedLiteralBinding(t, bindingRequests, "HOSTED_MODEL_API_KEY", "key")
@@ -224,7 +233,7 @@ func assertHostedLiteralBinding(t *testing.T, requests []map[string]any, credent
 func hostedMatrixEnv() map[string]string {
 	return map[string]string{
 		"BENCHMARK_BASE_URL": "http://benchmark.tsecbench.gw/openapi/v1", "BENCHMARK_TOKEN": "token",
-		"CYBERPENDA_MODEL_PROTOCOL": "openai_chat_completions", "CYBERPENDA_MODEL_BASE_URL": "http://model.tsecbench.gw/v1",
+		"CYBERPENDA_MODEL_PROTOCOL": "openai_responses", "CYBERPENDA_MODEL_BASE_URL": "http://model.tsecbench.gw/v1",
 		"CYBERPENDA_MODEL": "model", "CYBERPENDA_MODEL_API_KEY": "key",
 	}
 }

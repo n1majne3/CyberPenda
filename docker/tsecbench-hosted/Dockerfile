@@ -43,7 +43,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update \
   && SYSTEMD_OFFLINE=1 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates curl wget git jq ripgrep file binutils unzip xz-utils \
-    bash dash zsh coreutils findutils grep sed gawk procps \
+    bash dash zsh coreutils findutils grep sed gawk procps tmux \
     python3 python3-pip python3-venv python3-pwntools python3-pil tesseract-ocr \
     default-jre-headless jadx apktool bsdextrautils \
     golang-go build-essential gdb gdb-multiarch radare2 strace ltrace patchelf checksec \
@@ -162,6 +162,7 @@ RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
   && command -v curl || missing_hosted_tool curl \
   && command -v jq || missing_hosted_tool jq \
   && command -v rg || missing_hosted_tool rg \
+  && command -v tmux || missing_hosted_tool tmux \
   && command -v python3 || missing_hosted_tool python3 \
   && command -v go || missing_hosted_tool go \
   && command -v gcc || missing_hosted_tool gcc \

@@ -78,7 +78,7 @@ func TestTSecBenchHostedBundleExportsAndVerifiesUploadArchive(t *testing.T) {
 		contents, _ := os.ReadFile(filepath.Join(bundle, document))
 		for _, want := range map[string][]string{
 			"README.md": {
-				".tsecbench.gw", "openai_chat_completions", "openai_responses", "anthropic_messages",
+				".tsecbench.gw", "openai_responses", "anthropic_messages", "ctf-orchestrator", "FGS", "tmux",
 				"does not start a VPN", "no public Internet", "formal score", "--env-file",
 				"Before you upload", "successful Local Mode validation", "Hermes",
 			},
