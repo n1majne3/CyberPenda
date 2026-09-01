@@ -803,10 +803,10 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       hideChrome={focusMode}
       data-testid="task-detail-shell"
       className={focusMode ? "h-[calc(100dvh-3.5rem)] max-w-none p-0 md:h-dvh lg:p-0" : "flex min-h-full flex-col"}
-      contentClassName={focusMode ? undefined : "max-w-none px-0 pb-0 lg:px-0 lg:pb-0"}
+      contentClassName={focusMode ? undefined : "mx-auto max-w-6xl px-0 pb-0 lg:px-0 lg:pb-0"}
       bodyClassName={focusMode ? "flex h-full min-h-0 flex-col" : "flex min-h-[32rem] flex-1 flex-col pb-0 lg:min-h-0"}
     >
-      <header data-testid="task-session-header" className="shrink-0 px-2 py-2 sm:px-3">
+      <header data-testid="task-session-header" className="shrink-0 rounded-t-xl border border-b-0 border-border bg-card px-2 py-2 sm:px-3">
         <div className="flex min-w-0 items-start gap-2">
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -947,7 +947,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         />
       )}
 
-      <div className="flex h-10 shrink-0 items-center gap-1 px-2 sm:px-3">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-x border-border bg-card px-2 sm:px-3">
         <button
           type="button"
           className={tabClass(activeView === "conversation")}
@@ -975,7 +975,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
 
       <div
         data-testid="task-workspace"
-        className="flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible bg-card/30 md:overflow-hidden lg:min-h-0"
+        className="flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible rounded-b-xl border border-border bg-card/30 md:overflow-hidden lg:min-h-0"
       >
         {activeView === "timeline" ? (
           <div className="min-h-0 flex-1 overflow-hidden p-2 pb-44 sm:p-3 md:pb-5">
@@ -1181,7 +1181,7 @@ function RuntimeOwnerShell({ projectChrome, children, bodyClassName, contentClas
   return (
     <PageContainer
       data-testid={props["data-testid"]}
-      className={cn("flex w-full max-w-none min-w-0 flex-col p-0 lg:p-0", props.className)}
+      className={cn("mx-auto flex w-full max-w-6xl min-w-0 flex-col p-0 lg:p-0", props.className)}
     >
       <div className={cn("flex min-w-0 w-full flex-1 flex-col", contentClassName, bodyClassName)}>{children}</div>
     </PageContainer>
@@ -1390,7 +1390,7 @@ function RuntimeOwnerComposer({
   // resume: explain the state and its consequence instead of a bare badge.
   const runtimeOffline = sendMode === "resume";
   return (
-    <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none">
+    <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none lg:px-0">
       <div className="mx-auto max-w-3xl space-y-2">
         {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
         {runtimeOffline && (

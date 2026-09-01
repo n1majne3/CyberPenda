@@ -446,7 +446,7 @@ export function RuntimeProfilesPage() {
   }
 
   return (
-    <SettingsPageShell className="max-w-none gap-0 p-0 lg:overflow-hidden lg:p-0">
+    <SettingsPageShell data-testid="runtime-profiles-page" className="mx-auto max-w-6xl gap-0 p-0 lg:overflow-hidden lg:p-0">
       <header className="flex-none border-b border-border px-6 py-5 lg:px-8">
         <SettingsPageHeader
           className="mb-0"

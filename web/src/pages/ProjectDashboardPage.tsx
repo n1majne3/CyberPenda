@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -12,13 +12,12 @@ import {
   FolderLock,
   LayoutGrid,
   ListChecks,
-  Plus,
   RefreshCw,
+  Plus,
   Rocket,
 } from "lucide-react";
 import { apiGet, apiPost, type Dashboard, type Project, type ProjectKind, type Task } from "@/lib/api";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { BackLink } from "@/components/shared";
 import { Button, buttonVariants, Card, CardDescription, CardTitle, Chip } from "@/components/ui";
 import { formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -100,22 +99,9 @@ export function ProjectDashboardPage() {
   const projectKindLabel = project.kind === "ctf_challenge" ? "CTF Challenge Project" : "Pentest Project";
   const targetKind: ProjectKind = project.kind === "ctf_challenge" ? "pentest" : "ctf_challenge";
 
-  // Direction A pill tabs rendered in page markup: ProjectNav is shared chrome
-  // and cannot carry live count badges, so the dashboard ships its own nav in
-  // the same item order (Overview → Tasks → Blackboard → Findings|Solution →
-  // Evidence → Report? → Scope).
+  // Count badges on the section tabs come from the shared ProjectNav chrome,
+  // so the dashboard renders no second nav (keeps every tab on one plane).
   const isCTF = project.kind === "ctf_challenge";
-  const navItems: { to: string; label: string; end?: boolean; count?: number }[] = [
-    { to: "", label: "Overview", end: true },
-    { to: "/tasks", label: "Tasks", count: dash.counts.tasks },
-    { to: "/blackboard", label: "Blackboard" },
-    isCTF
-      ? { to: "/solution", label: "Solution" }
-      : { to: "/findings", label: "Findings", count: dash.counts.findings },
-    { to: "/evidence", label: "Evidence", count: dash.counts.evidence },
-    ...(!isCTF ? [{ to: "/report", label: "Report" }] : []),
-    { to: "/scope", label: "Scope" },
-  ];
 
   // Scope readiness checklist derived from the scope summary the dashboard
   // already loads: one required item (at least one named in-scope asset — the
@@ -199,17 +185,13 @@ export function ProjectDashboardPage() {
 
   return (
     <ProjectPageShell
-      hideChrome
       title={
         <div>
-          <BackLink to="/" className="mb-2 w-fit">
-            All projects
-          </BackLink>
           <p className="mb-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
             Engagement
           </p>
           <div className="mt-0.5 flex flex-wrap items-center gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{project.name}</h1>
+            <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
             <Chip variant="signal" dot>{projectKindLabel}</Chip>
           </div>
         </div>
@@ -221,28 +203,8 @@ export function ProjectDashboardPage() {
         </Link>
       }
       bodyClassName="min-w-0 max-w-full space-y-5"
-      contentClassName="min-w-0 max-w-full p-6 lg:p-8"
+      contentClassName="mx-auto min-w-0 max-w-6xl px-6 pb-6 lg:px-8 lg:pb-8"
     >
-      <nav aria-label="Project sections" className="flex min-w-0 max-w-full flex-wrap gap-1 text-sm">
-        {navItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={`${base}${item.to}`}
-            end={item.end}
-            className={({ isActive }) =>
-              cn(
-                "rounded-md px-3 py-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                isActive ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-muted",
-              )
-            }
-          >
-            {item.label}
-            {item.count != null && item.count > 0 && (
-              <span className="ml-1 rounded-sm bg-muted px-1 text-[10px]">{item.count}</span>
-            )}
-          </NavLink>
-        ))}
-      </nav>
 
       {!scopeReady && (
         <section

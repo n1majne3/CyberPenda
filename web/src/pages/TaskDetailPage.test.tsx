@@ -243,6 +243,7 @@ describe("TaskDetailPage", () => {
     expect(screen.getByLabelText("Continuation reasoning effort")).toHaveClass("appearance-none");
     expect(screen.getByTestId("task-workspace")).toHaveClass("overflow-visible", "md:overflow-hidden");
     expect(screen.getByTestId("task-composer")).toHaveClass("fixed", "inset-x-0", "bottom-0", "md:static");
+    expect(screen.getByTestId("task-session-header").parentElement?.parentElement).toHaveClass("mx-auto", "max-w-6xl");
     expect(screen.getByTestId("conversation-workspace")).toHaveClass("pb-44", "md:pb-5");
     expect(screen.getByLabelText("Continuation reasoning effort").parentElement).toHaveClass("w-[5.25rem]", "shrink-0");
     expect(screen.queryByText(/Shift\+Enter for a new line/i)).not.toBeInTheDocument();
@@ -250,11 +251,15 @@ describe("TaskDetailPage", () => {
     expect(screen.queryByText("Timeline opened first")).not.toBeInTheDocument();
   });
 
-  it("does not draw an outer frame around the Runtime Owner Workspace", async () => {
+  it("frames the Runtime Owner Workspace as one continuous card", async () => {
     stubTaskDetailApi();
 
     renderPage();
 
+    expect(await screen.findByTestId("task-session-header")).toHaveClass("border", "bg-card");
+    expect(screen.getByRole("button", { name: "Conversation" }).parentElement).toHaveClass("border-x");
+    expect(await screen.findByTestId("task-workspace")).toHaveClass("rounded-b-xl", "border");
+    expect(screen.getByTestId("task-composer")).not.toHaveClass("border-t");
     expect(await screen.findByTestId("task-session-header")).not.toHaveClass("border-b");
     expect(screen.getByRole("button", { name: "Conversation" }).parentElement).not.toHaveClass("border-b");
     expect(await screen.findByTestId("task-workspace")).not.toHaveClass("border-x", "border-b");

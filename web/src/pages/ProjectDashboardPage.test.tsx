@@ -142,7 +142,10 @@ describe("ProjectDashboardPage", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { level: 1, name: "Acme External" })).toBeInTheDocument();
-    expect(screen.getByTestId("project-page-shell-header").parentElement).toHaveClass("p-6", "lg:p-8");
+    expect(screen.getByTestId("project-page-shell-header").parentElement).toHaveClass("mx-auto", "max-w-6xl", "px-6", "lg:px-8");
+    // Overview now rides the shared chrome: back link plus section tabs live in
+    // the same sticky plane as every other project tab.
+    expect(screen.getByRole("link", { name: /All projects/i })).toHaveAttribute("href", "/");
     expect(screen.getByRole("link", { name: /launch task/i })).toHaveClass("rounded-md", "bg-primary");
     // Pentest projects get the mockup's outline Open report button in the footer.
     expect(screen.getByRole("link", { name: /open report/i })).toHaveClass("border-border", "bg-background");
@@ -151,9 +154,8 @@ describe("ProjectDashboardPage", () => {
       "/projects/project-1/blackboard",
     );
 
-    // Pill-style project nav with count badges, rendered in page markup.
+    // Shared ProjectNav chrome with count badges from the dashboard payload.
     const nav = screen.getByRole("navigation", { name: /project sections/i });
-    expect(within(nav).getByRole("link", { name: "Overview" })).toHaveClass("bg-secondary", "font-medium");
     expect(within(nav).getByRole("link", { name: /tasks/i })).toHaveTextContent("3");
     expect(within(nav).getByRole("link", { name: /evidence/i })).toHaveTextContent("5");
     expect(within(nav).getByRole("link", { name: /findings/i })).toHaveTextContent("1");

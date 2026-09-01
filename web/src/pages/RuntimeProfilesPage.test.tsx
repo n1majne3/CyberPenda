@@ -186,6 +186,7 @@ describe("RuntimeProfilesPage", () => {
     renderPage();
 
     const layout = await screen.findByTestId("runtime-profiles-settings-layout");
+    expect(screen.getByTestId("runtime-profiles-page")).toHaveClass("mx-auto", "max-w-6xl");
     expect(layout).toHaveClass(
       "grid",
       "min-w-0",

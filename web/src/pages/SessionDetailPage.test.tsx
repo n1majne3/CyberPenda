@@ -99,7 +99,7 @@ describe("SessionDetailPage", () => {
     );
 
     expect(await screen.findByTestId("task-session-header")).toHaveTextContent("Reuse the task workspace");
-    expect(screen.getByTestId("task-detail-shell")).toHaveClass("w-full", "max-w-none", "p-0", "lg:p-0");
+    expect(screen.getByTestId("task-detail-shell")).toHaveClass("mx-auto", "w-full", "max-w-6xl", "p-0", "lg:p-0");
     expect(screen.getByTestId("task-workspace")).toBeInTheDocument();
     expect(screen.getByTestId("task-composer")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Session message" })).toBeInTheDocument();
