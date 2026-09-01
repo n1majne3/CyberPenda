@@ -160,13 +160,13 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
           <div className="space-y-5">
             <section className="rounded-lg border border-border bg-card shadow-sm">
               <div className="p-4">
-                <Label htmlFor="session-initial-input" className="text-sm font-medium">你想探索什么？</Label>
+                <Label htmlFor="session-initial-input" className="text-sm font-medium">What do you want to explore?</Label>
                 <Textarea
                   id="session-initial-input"
                   name="input"
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder="描述目标，例如：对 staging.example.com 做认证面枚举…"
+                  placeholder="Describe the goal, for example: enumerate the authenticated surface of staging.example.com…"
                   rows={4}
                   className="mt-2 w-full resize-none rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground focus:border-ring"
                 />

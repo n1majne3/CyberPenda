@@ -23,6 +23,9 @@ describe("ProjectPageShell", () => {
 
     const chrome = screen.getByTestId("project-page-shell-chrome");
     expect(chrome).toHaveClass("sticky", "top-0");
+    expect(chrome).toHaveClass("w-full", "border-b");
+    expect(chrome.parentElement).toHaveClass("min-w-0", "max-w-full");
+    expect(screen.getByTestId("project-page-shell-header").parentElement).toHaveClass("min-w-0", "w-full");
     expect(screen.getByRole("link", { name: /All projects/i })).toHaveAttribute("href", "/");
     const nav = screen.getByRole("navigation", { name: "Project sections" });
     expect(nav).toHaveClass("w-full");
@@ -40,7 +43,7 @@ describe("ProjectPageShell", () => {
       "Report",
       "Scope",
     ]) {
-      expect(screen.getByRole("link", { name: label })).toHaveClass("flex-1", "text-center");
+      expect(screen.getByRole("link", { name: label })).toHaveClass("rounded-md", "px-3");
     }
 
     const chromeText = chrome.textContent ?? "";

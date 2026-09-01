@@ -147,10 +147,10 @@ export function AttachmentPicker({
           <div className="flex min-w-0 items-center gap-2.5 text-xs text-muted-foreground">
             <Paperclip className="h-4 w-4 shrink-0" aria-hidden="true" />
             <span>
-              拖拽文件到这里，或 <span className="font-medium text-foreground underline underline-offset-2">浏览</span> · 最多 {MAX_ATTACHMENT_COUNT} 个文件，每个 {MAX_ATTACHMENT_MB} MB
+              Drag files here, or <span className="font-medium text-foreground underline underline-offset-2">browse</span> · up to {MAX_ATTACHMENT_COUNT} files, {MAX_ATTACHMENT_MB} MB each
             </span>
           </div>
-          <span className="shrink-0 text-[11px] text-muted-foreground">投影到 {ownerLabel} workdir</span>
+          <span className="shrink-0 text-[11px] text-muted-foreground">Projected into the {ownerLabel} workdir</span>
           {fileInput}
         </div>
         {fileList}

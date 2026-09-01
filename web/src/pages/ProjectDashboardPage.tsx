@@ -132,20 +132,20 @@ export function ProjectDashboardPage() {
     {
       id: "assets",
       done: namedAssets > 0,
-      label: "添加至少一个 in-scope 资产（domain / IP / CIDR / URL），否则 task 结果不可依赖",
-      action: { label: "添加资产", to: `${base}/scope` },
+      label: "Add at least one in-scope asset (domain, IP, CIDR, or URL) before relying on Task results.",
+      action: { label: "Add asset", to: `${base}/scope` },
     },
     {
       id: "notes",
       done: dash.scope.has_notes,
       optional: true,
-      label: "可选：填写 Scope notes 说明授权边界",
+      label: "Optional: add Scope notes that explain the authorization boundary.",
     },
     {
       id: "limits",
       done: dash.scope.has_testing_limits,
       optional: true,
-      label: "可选：设置 Testing limits 约束测试窗口",
+      label: "Optional: define Testing limits for the permitted testing window.",
     },
   ];
   const completedCount = checklistItems.filter((item) => item.done).length;
@@ -220,9 +220,10 @@ export function ProjectDashboardPage() {
           <Rocket className="h-4 w-4" /> Launch task
         </Link>
       }
-      bodyClassName="space-y-5"
+      bodyClassName="min-w-0 max-w-full space-y-5"
+      contentClassName="min-w-0 max-w-full p-6 lg:p-8"
     >
-      <nav aria-label="Project sections" className="flex flex-wrap gap-1 text-sm">
+      <nav aria-label="Project sections" className="flex min-w-0 max-w-full flex-wrap gap-1 text-sm">
         {navItems.map((item) => (
           <NavLink
             key={item.to}
@@ -254,7 +255,7 @@ export function ProjectDashboardPage() {
               <AlertTriangle className="h-4 w-4 text-warning" /> Scope readiness
             </div>
             <span className="text-xs font-medium text-[hsl(28_90%_32%)]">
-              {completedCount} / {checklistItems.length} 项完成
+              {completedCount} / {checklistItems.length} complete
             </span>
           </div>
           <div className="px-4 py-3.5">
@@ -290,14 +291,14 @@ export function ProjectDashboardPage() {
         </section>
       )}
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           icon={<ListChecks className="h-3.5 w-3.5" />}
           label="Tasks"
           n={dash.counts.tasks}
           to={`${base}/tasks`}
-          chip={runningCount > 0 ? `${runningCount} 运行中` : undefined}
-          sub={latestTask ? `最近：${latestTask.goal} · ${formatRelativeTime(latestTask.updated_at)}` : undefined}
+          chip={runningCount > 0 ? `${runningCount} running` : undefined}
+          sub={latestTask ? `Latest: ${latestTask.goal} · ${formatRelativeTime(latestTask.updated_at)}` : undefined}
         />
         <StatCard icon={<FileText className="h-3.5 w-3.5" />} label="Facts" n={dash.counts.facts} to={`${base}/facts`} />
         <StatCard
@@ -305,20 +306,20 @@ export function ProjectDashboardPage() {
           label="Findings"
           n={dash.counts.findings}
           to={`${base}/findings`}
-          zeroHint="尚无 Finding — 从 Task 结论中产生"
+          zeroHint="No Findings yet — generated from Task conclusions"
         />
         <StatCard icon={<FolderLock className="h-3.5 w-3.5" />} label="Evidence" n={dash.counts.evidence} to={`${base}/evidence`} />
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-5">
+      <div className="grid min-w-0 max-w-full gap-5 lg:grid-cols-5">
         <section
           aria-labelledby="recent-activity-title"
-          className="rounded-lg border border-border bg-card shadow-sm lg:col-span-3"
+          className="min-w-0 rounded-lg border border-border bg-card shadow-sm lg:col-span-3"
         >
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <span id="recent-activity-title" className="text-sm font-medium">Recent activity</span>
             <Link to={`${base}/tasks`} className="text-xs text-muted-foreground hover:text-foreground">
-              查看全部
+              View all
             </Link>
           </div>
           {recentTasks.length === 0 ? (
@@ -342,7 +343,7 @@ export function ProjectDashboardPage() {
 
         <section
           aria-labelledby="current-work-title"
-          className="rounded-lg border border-border bg-card shadow-sm lg:col-span-2"
+          className="min-w-0 rounded-lg border border-border bg-card shadow-sm lg:col-span-2"
         >
           <div className="border-b border-border px-4 py-3">
             <span id="current-work-title" className="text-sm font-medium">Current work</span>
@@ -352,13 +353,13 @@ export function ProjectDashboardPage() {
               <span className="flex items-center gap-2">
                 <Compass className="h-4 w-4 text-muted-foreground" /> Exploration objectives
               </span>
-              <span className="font-semibold">{openTaskCount} 开放</span>
+              <span className="font-semibold">{openTaskCount} open</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
                 <FlaskConical className="h-4 w-4 text-muted-foreground" /> Attempts
               </span>
-              <span className="font-semibold">{runningCount} 进行中</span>
+              <span className="font-semibold">{runningCount} in progress</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
@@ -371,13 +372,13 @@ export function ProjectDashboardPage() {
               to={`${base}/blackboard`}
               className="mt-1 flex h-8 items-center justify-center gap-1.5 rounded-md border border-border text-xs font-medium hover:bg-muted"
             >
-              <LayoutGrid className="h-3.5 w-3.5" /> 打开 Blackboard
+              <LayoutGrid className="h-3.5 w-3.5" /> Open Blackboard
             </Link>
           </div>
         </section>
       </div>
 
-      <Card role="region" aria-labelledby="project-kind-title" className="gap-4">
+      <Card role="region" aria-labelledby="project-kind-title" className="min-w-0 gap-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle id="project-kind-title">Project kind</CardTitle>
@@ -465,7 +466,7 @@ function StatCard({
       to={to}
       aria-label={`View ${n} ${countLabel(label, n)}`}
       className={cn(
-        "group rounded-lg border p-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "group min-w-0 overflow-hidden rounded-lg border p-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         empty
           ? "border-dashed border-border bg-card/50 hover:border-ring"
           : "border-border bg-card shadow-sm hover:border-ring",
@@ -515,30 +516,25 @@ function statusDotClass(status: string): string {
   }
 }
 
-/**
- * Chinese state phrase for the activity feed, mapped from Task status plus the
- * live Runtime Activity signal: a live runtime that is busy reads 运行中, live
- * and idle reads 空闲，等待输入; otherwise the durable lifecycle wins.
- */
+/** Maps durable Task state and live Runtime Activity to operator-facing text. */
 function activityStatusText(task: Task): string {
   const activity = task.runtime_activity;
   if (activity?.liveness === "live") {
-    return activity.turn_activity === "busy" ? "运行中" : "空闲，等待输入";
+    return activity.turn_activity === "busy" ? "Running" : "Idle, awaiting input";
   }
   switch (task.status) {
     case "running":
-      return "运行中";
+      return "Running";
     case "completed":
-      return "已完成";
+      return "Completed";
     case "failed":
-      return "失败";
+      return "Failed";
     case "paused":
-      return "已暂停";
+      return "Paused";
     case "pending":
-      return "排队中";
+      return "Queued";
     default:
-      // stopped / interrupted, or a non-live (offline/orphaned) runtime.
-      return "已停止";
+      return "Stopped";
   }
 }
 

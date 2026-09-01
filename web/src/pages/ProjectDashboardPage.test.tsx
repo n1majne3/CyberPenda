@@ -142,6 +142,7 @@ describe("ProjectDashboardPage", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { level: 1, name: "Acme External" })).toBeInTheDocument();
+    expect(screen.getByTestId("project-page-shell-header").parentElement).toHaveClass("p-6", "lg:p-8");
     expect(screen.getByRole("link", { name: /launch task/i })).toHaveClass("rounded-md", "bg-primary");
     // Pentest projects get the mockup's outline Open report button in the footer.
     expect(screen.getByRole("link", { name: /open report/i })).toHaveClass("border-border", "bg-background");
@@ -160,11 +161,11 @@ describe("ProjectDashboardPage", () => {
     // Scope readiness checklist (scope is incomplete in this fixture).
     const scope = screen.getByRole("region", { name: /scope readiness/i });
     expect(scope).toHaveClass("rounded-lg", "border-warning/30");
-    expect(scope).toHaveTextContent("2 / 3 项完成");
-    expect(scope).toHaveTextContent("添加至少一个 in-scope 资产");
+    expect(scope).toHaveTextContent("2 / 3 complete");
+    expect(scope).toHaveTextContent("Add at least one in-scope asset");
     expect(scope).toHaveTextContent("Scope notes");
     expect(scope).toHaveTextContent("Testing limits");
-    expect(within(scope).getByRole("link", { name: /添加资产/ })).toHaveAttribute(
+    expect(within(scope).getByRole("link", { name: /add asset/i })).toHaveAttribute(
       "href",
       "/projects/project-1/scope",
     );
@@ -172,8 +173,9 @@ describe("ProjectDashboardPage", () => {
     // Stat cards link to their sections; the Tasks card carries a running chip.
     const tasksCard = screen.getByRole("link", { name: /view 3 tasks/i });
     expect(tasksCard).toHaveClass("rounded-lg", "border", "bg-card");
-    expect(within(tasksCard).getByText("1 运行中")).toBeInTheDocument();
-    expect(within(tasksCard).getByText(/最近：Enumerate api\.acme\.example · .* ago/)).toBeInTheDocument();
+    expect(within(tasksCard).getByText("1 running")).toBeInTheDocument();
+    expect(tasksCard).toHaveClass("min-w-0", "overflow-hidden");
+    expect(within(tasksCard).getByText(/Latest: Enumerate api\.acme\.example · .* ago/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 8 facts/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 1 finding/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 5 evidence items/i })).toBeInTheDocument();
@@ -181,12 +183,13 @@ describe("ProjectDashboardPage", () => {
     // Recent activity lists recent tasks with status text and relative time.
     const activity = screen.getByText("Recent activity").closest("section");
     expect(activity).not.toBeNull();
-    expect(activity!).toHaveTextContent("Enumerate api.acme.example — 运行中");
+    expect(activity!).toHaveClass("min-w-0");
+    expect(activity!).toHaveTextContent("Enumerate api.acme.example — Running");
     expect(activity!).toHaveTextContent("12 minutes ago");
-    expect(activity!).toHaveTextContent("Port scan 203.0.113.10 — 已完成");
+    expect(activity!).toHaveTextContent("Port scan 203.0.113.10 — Completed");
     expect(activity!).toHaveTextContent("2 hours ago");
-    expect(activity!).toHaveTextContent("Fingerprint cdn.acme.example — 已停止");
-    expect(within(activity!).getByRole("link", { name: "查看全部" })).toHaveAttribute(
+    expect(activity!).toHaveTextContent("Fingerprint cdn.acme.example — Stopped");
+    expect(within(activity!).getByRole("link", { name: "View all" })).toHaveAttribute(
       "href",
       "/projects/project-1/tasks",
     );
@@ -194,11 +197,12 @@ describe("ProjectDashboardPage", () => {
     // Current work summarizes open work and links into the Blackboard.
     const currentWork = screen.getByText("Current work").closest("section");
     expect(currentWork).not.toBeNull();
+    expect(currentWork!).toHaveClass("min-w-0");
     expect(currentWork!).toHaveTextContent("Exploration objectives");
-    expect(currentWork!).toHaveTextContent("1 开放");
-    expect(currentWork!).toHaveTextContent("1 进行中");
+    expect(currentWork!).toHaveTextContent("1 open");
+    expect(currentWork!).toHaveTextContent("1 in progress");
     expect(currentWork!).toHaveTextContent("1 current");
-    expect(within(currentWork!).getByRole("link", { name: /打开 Blackboard/ })).toHaveAttribute(
+    expect(within(currentWork!).getByRole("link", { name: /open Blackboard/i })).toHaveAttribute(
       "href",
       "/projects/project-1/blackboard",
     );

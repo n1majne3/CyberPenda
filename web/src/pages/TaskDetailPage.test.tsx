@@ -244,6 +244,9 @@ describe("TaskDetailPage", () => {
     expect(screen.getByTestId("task-workspace")).toHaveClass("overflow-visible", "md:overflow-hidden");
     expect(screen.getByTestId("task-composer")).toHaveClass("fixed", "inset-x-0", "bottom-0", "md:static");
     expect(screen.getByTestId("conversation-workspace")).toHaveClass("pb-44", "md:pb-5");
+    expect(screen.getByLabelText("Continuation reasoning effort").parentElement).toHaveClass("w-[5.25rem]", "shrink-0");
+    expect(screen.queryByText(/Shift\+Enter for a new line/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("composer-send").querySelector(".lucide-arrow-up")).not.toBeNull();
     expect(screen.queryByText("Timeline opened first")).not.toBeInTheDocument();
   });
 
@@ -655,7 +658,7 @@ describe("TaskDetailPage", () => {
     expect(rows[3]).toHaveClass("mt-1");
     expect(rows[4]).toHaveClass("mt-4");
     expect(screen.getAllByTestId("transcript-turn-header").map((header) => header.textContent)).toEqual(
-      expect.arrayContaining([expect.stringContaining("你"), expect.stringContaining("Codex")]),
+      expect.arrayContaining([expect.stringContaining("You"), expect.stringContaining("Codex")]),
     );
   });
 

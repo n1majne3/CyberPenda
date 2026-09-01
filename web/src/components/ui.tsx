@@ -161,7 +161,7 @@ export function Chip({ className, variant, dot, children, ...props }: ChipProps)
 }
 
 const controlBaseClasses =
-  "w-full rounded-md border bg-background text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
+  "w-full rounded-lg border bg-background text-sm text-foreground shadow-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-50";
 const controlToneVariants = {
   default: "border-input",
   invalid: "border-destructive focus-visible:border-destructive focus-visible:ring-destructive/30",

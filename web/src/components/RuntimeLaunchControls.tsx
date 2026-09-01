@@ -355,17 +355,17 @@ export function RuntimeLaunchControls({
   const engineLabel = form.runner === "host" ? "host" : containerCLI;
   const runnerSummary = form.runner === "host"
     ? "Host"
-    : `${engineLabel === "podman" ? "Podman" : "Docker"} · ${sandboxNetwork === "host_proxy_only" ? "Host proxy only" : "Default bridge"} · VPN TUN ${sandboxVPNTun ? "开" : "关"}`;
+    : `${engineLabel === "podman" ? "Podman" : "Docker"} · ${sandboxNetwork === "host_proxy_only" ? "Host proxy only" : "Default bridge"} · VPN TUN ${sandboxVPNTun ? "on" : "off"}`;
   const skillsSummary = skillsPreviewLoading
     ? "Loading…"
     : skillsPreviewError
       ? "Error"
-      : `${enabledSkillsPreview.length} 个已启用`;
+      : `${enabledSkillsPreview.length} enabled`;
   const blackboardModeCards: { mode: BlackboardConclusionMode; icon: LucideIcon; title: string; description: string; disabled: boolean }[] = [
-    { mode: "interactive", icon: UserCheck, title: "Interactive", description: "由你决定何时把 Runtime 工作写入 Blackboard。", disabled: false },
-    { mode: "assisted", icon: Sparkles, title: "Assisted", description: "Harness 检测语义债务并自动派发 Conclude Turn。", disabled: !assistedConclusionSupported },
+    { mode: "interactive", icon: UserCheck, title: "Interactive", description: "You decide when Runtime work is committed to the Blackboard.", disabled: false },
+    { mode: "assisted", icon: Sparkles, title: "Assisted", description: "The harness detects semantic debt and dispatches a Conclude Turn automatically.", disabled: !assistedConclusionSupported },
     ...(allowDisabledBlackboardMode
-      ? [{ mode: "disabled" as const, icon: Ban, title: "Disabled", description: ownerLabel === "task" ? "此 Task 不写入 Blackboard。" : "此 Session 不写入 Blackboard。", disabled: false }]
+      ? [{ mode: "disabled" as const, icon: Ban, title: "Disabled", description: ownerLabel === "task" ? "This Task does not write to the Blackboard." : "This Session does not write to the Blackboard.", disabled: false }]
       : []),
   ];
 
@@ -373,7 +373,7 @@ export function RuntimeLaunchControls({
     <>
       <section className="rounded-lg border border-border bg-card shadow-sm">
         <div className="border-b border-border px-4 py-3">
-          <span className="text-sm font-medium">Runtime 与模型</span>
+          <span className="text-sm font-medium">Runtime and model</span>
         </div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
           <div>
@@ -434,9 +434,9 @@ export function RuntimeLaunchControls({
       </section>
 
 <div>
-        <SectionLabel className="mb-2 px-0.5">高级配置</SectionLabel>
+        <SectionLabel className="mb-2 px-0.5">Advanced configuration</SectionLabel>
         <div className="space-y-2">
-          <ConfigAccordion icon={Container} title="Runner 与网络" summary={runnerSummary}>
+          <ConfigAccordion icon={Container} title="Runner and network" summary={runnerSummary}>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label htmlFor="launch-runner">Runner</Label>
@@ -554,8 +554,8 @@ export function RuntimeLaunchControls({
           {controller.profiles.length > 0 && (
             <ConfigAccordion
               icon={Bookmark}
-              title="使用已保存的 Runtime Profile"
-              summary={presetMode ? (controller.profiles.find((profile) => profile.id === presetId)?.name ?? presetId) : "未选择"}
+              title="Use a saved Runtime Profile"
+              summary={presetMode ? (controller.profiles.find((profile) => profile.id === presetId)?.name ?? presetId) : "Not selected"}
               open={presetOpen}
               onOpenChange={setPresetOpen}
             >
@@ -662,14 +662,14 @@ export function LaunchSummaryRail({
   const modelDisplay = [summaryProvider?.name, form.modelOverride || "Default model"].filter(Boolean).join(" · ") || "—";
   const runnerDisplay = form.runner === "host" ? "Host" : containerCLI === "podman" ? "Podman" : "Docker";
   const blackboardDisplay = blackboardConclusionMode === "assisted" ? "Assisted" : blackboardConclusionMode === "disabled" ? "Disabled" : "Interactive";
-  const profileDisplay = presetMode ? `Runtime Profile: ${profiles.find((profile) => profile.id === presetId)?.name ?? presetId}` : "直接配置";
+  const profileDisplay = presetMode ? `Runtime Profile: ${profiles.find((profile) => profile.id === presetId)?.name ?? presetId}` : "Direct configuration";
   const apiKeyEnv = summaryProvider?.api_key_env ?? "";
   const credentialConfigured = bindings !== null && bindings.some((binding) => binding.credential_ref === apiKeyEnv && !binding.disabled);
 
   return (
     <aside className="h-fit lg:sticky lg:top-6">
       <div className="rounded-lg border border-border bg-card shadow-sm">
-        <div className="border-b border-border px-4 py-3"><span className="text-sm font-medium">Launch 摘要</span></div>
+        <div className="border-b border-border px-4 py-3"><span className="text-sm font-medium">Launch summary</span></div>
         <dl className="space-y-2.5 px-4 py-3.5 text-xs">
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Runtime</dt><dd className="min-w-0 truncate font-medium">{runtimeDisplay}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Model</dt><dd className="min-w-0 truncate font-mono">{modelDisplay}</dd></div>
@@ -682,11 +682,11 @@ export function LaunchSummaryRail({
           <Button type={submit ? "submit" : "button"} onClick={onClick} disabled={disabled} className="w-full">
             <Rocket className="h-4 w-4" /> {busy ? busyLabel : label}
           </Button>
-          <p className="mt-2 text-center text-xs text-muted-foreground">启动前会自动运行 Preflight 检查</p>
+          <p className="mt-2 text-center text-xs text-muted-foreground">Preflight checks run automatically before launch.</p>
         </div>
       </div>
       <div className="mt-3 rounded-lg border border-dashed border-border p-3.5 text-xs text-muted-foreground">
-        <div className="flex items-center gap-2 font-medium text-foreground"><ShieldCheck className="h-4 w-4 text-success" />Preflight 预览</div>
+        <div className="flex items-center gap-2 font-medium text-foreground"><ShieldCheck className="h-4 w-4 text-success" />Preflight preview</div>
         <p className="mt-1">
           {profileDisplay}
           {apiKeyEnv && (
@@ -694,8 +694,8 @@ export function LaunchSummaryRail({
               {" · "}
               <span className="font-mono">{apiKeyEnv}</span>
               {bindings !== null && (credentialConfigured
-                ? <span className="text-success"> 已配置</span>
-                : <span className="text-warning"> 未配置</span>)}
+                ? <span className="text-success"> configured</span>
+                : <span className="text-warning"> not configured</span>)}
             </>
           )}
         </p>

@@ -847,24 +847,21 @@ function RuntimeActivityIndicator({ activity, failed = false, className }: { act
   );
 }
 
-// Direction A status dots with the mockup's state text: a busy Runtime pulses
-// green (运行中), a live-but-idle one is blue (空闲), offline/missing activity
-// falls back to muted gray (已停止), and liveness the daemon cannot determine
-// is amber (状态未知). Durable failures keep a red dot (失败) so they never
-// visually collapse into offline. `label` stays English for aria; `text` is
-// the visible second-line state from the mockup.
+// Direction A status dots keep the visible state text aligned with the
+// accessible Runtime Activity label. Durable failures remain distinct from an
+// offline Runtime so operators never mistake failure for a normal stop.
 function runtimeActivityState(activity?: RuntimeActivity, failed = false) {
-  if (failed) return { label: "Runtime failure", text: "失败", dot: "bg-destructive", busy: false };
+  if (failed) return { label: "Runtime failure", text: "Failed", dot: "bg-destructive", busy: false };
   if (activity?.liveness === "live" && activity.turn_activity === "busy") {
-    return { label: "Runtime busy", text: "运行中", dot: "bg-success", busy: true };
+    return { label: "Runtime busy", text: "Running", dot: "bg-success", busy: true };
   }
-  if (activity?.liveness === "live") return { label: "Runtime live idle", text: "空闲", dot: "bg-info", busy: false };
-  if (activity?.liveness === "offline") return { label: "Runtime offline", text: "已停止", dot: "bg-muted-foreground/40", busy: false };
+  if (activity?.liveness === "live") return { label: "Runtime live idle", text: "Idle", dot: "bg-info", busy: false };
+  if (activity?.liveness === "offline") return { label: "Runtime offline", text: "Stopped", dot: "bg-muted-foreground/40", busy: false };
   if (activity?.liveness === "orphaned") {
-    return { label: "Runtime failure (orphaned)", text: "状态未知", dot: "bg-warning", busy: false };
+    return { label: "Runtime failure (orphaned)", text: "Unknown", dot: "bg-warning", busy: false };
   }
-  if (activity?.liveness === "unknown") return { label: "Runtime unavailable (unknown)", text: "状态未知", dot: "bg-warning", busy: false };
-  return { label: "Runtime activity unavailable", text: "已停止", dot: "bg-muted-foreground/40", busy: false };
+  if (activity?.liveness === "unknown") return { label: "Runtime unavailable (unknown)", text: "Unknown", dot: "bg-warning", busy: false };
+  return { label: "Runtime activity unavailable", text: "Stopped", dot: "bg-muted-foreground/40", busy: false };
 }
 
 function isSessionBusy(session: Session) {

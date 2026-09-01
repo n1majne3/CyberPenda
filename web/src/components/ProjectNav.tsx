@@ -44,10 +44,7 @@ export function ProjectNav() {
   ];
 
   return (
-    <nav
-      aria-label="Project sections"
-      className="flex w-full gap-1 rounded-lg border border-border bg-card p-1 shadow-sm"
-    >
+    <nav aria-label="Project sections" className="flex w-full flex-wrap gap-1 text-sm">
       {links.map((link) => (
         <NavLink
           key={link.to}
@@ -55,14 +52,14 @@ export function ProjectNav() {
           end={link.end}
           className={({ isActive }) =>
             cn(
-              "min-w-0 flex-1 rounded-md border px-1.5 py-1.5 text-center text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background sm:px-2",
+              "rounded-md px-3 py-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
               isActive
-                ? "border-signal/30 bg-signal/10 font-medium text-foreground shadow-sm"
-                : "border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+                ? "bg-secondary font-medium text-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
             )
           }
         >
-          <span className="block truncate">{link.label}</span>
+          {link.label}
         </NavLink>
       ))}
     </nav>

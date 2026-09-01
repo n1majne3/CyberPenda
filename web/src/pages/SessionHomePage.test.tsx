@@ -83,7 +83,7 @@ describe("SessionHomePage", () => {
     renderPage();
 
     await screen.findByRole("option", { name: "MiMo" });
-    await user.type(screen.getByLabelText("你想探索什么？"), "Inspect the standalone target");
+    await user.type(screen.getByLabelText("What do you want to explore?"), "Inspect the standalone target");
     await user.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
     const disabledCard = screen.getByRole("radio", { name: /^disabled/i });
     expect(disabledCard).toBeEnabled();
@@ -128,7 +128,7 @@ describe("SessionHomePage", () => {
     expect(screen.getByLabelText("Reasoning effort")).toBeInTheDocument();
     expect(screen.queryByLabelText("Runtime profile")).not.toBeInTheDocument();
 
-    await user.type(screen.getByLabelText("你想探索什么？"), "Inspect the standalone target");
+    await user.type(screen.getByLabelText("What do you want to explore?"), "Inspect the standalone target");
     await user.click(screen.getByRole("button", { name: "xhigh" }));
     await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
     await user.click(screen.getByRole("radio", { name: /^assisted/i }));
@@ -233,7 +233,7 @@ describe("SessionHomePage", () => {
     renderPage();
 
     await screen.findByRole("option", { name: "MiMo" });
-    const input = await screen.findByRole("textbox", { name: "你想探索什么？" });
+    const input = await screen.findByRole("textbox", { name: "What do you want to explore?" });
     await user.type(input, "Check the exposed service");
     await user.click(screen.getByRole("button", { name: /launch session/i }));
 
@@ -267,8 +267,8 @@ describe("SessionHomePage", () => {
     renderPage();
 
     const dropzone = await screen.findByTestId("attachment-dropzone");
-    expect(dropzone).toHaveTextContent("拖拽文件到这里，或 浏览");
-    expect(dropzone).toHaveTextContent("最多 25 个文件，每个 100 MB");
+    expect(dropzone).toHaveTextContent("Drag files here, or browse");
+    expect(dropzone).toHaveTextContent("up to 25 files, 100 MB each");
 
     await user.upload(screen.getByLabelText("Attachments"), new File(["notes"], "notes.txt", { type: "text/plain" }));
     expect(screen.getByText("notes.txt")).toBeInTheDocument();
@@ -288,7 +288,7 @@ describe("SessionHomePage", () => {
     renderPage();
 
     await screen.findByRole("option", { name: "MiMo" });
-    await user.type(await screen.findByRole("textbox", { name: "你想探索什么？" }), "Inspect the standalone target");
+    await user.type(await screen.findByRole("textbox", { name: "What do you want to explore?" }), "Inspect the standalone target");
     await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
     await user.click(screen.getByRole("radio", { name: /^Assisted/ }));
     await user.click(screen.getByRole("button", { name: /launch session/i }));
@@ -320,7 +320,7 @@ describe("SessionHomePage", () => {
 
     renderPage(["/sessions#new-session"]);
 
-    expect(await screen.findByRole("textbox", { name: "你想探索什么？" })).toHaveFocus();
+    expect(await screen.findByRole("textbox", { name: "What do you want to explore?" })).toHaveFocus();
   });
 
   it("navigates to the created session page after creation", async () => {
@@ -363,7 +363,7 @@ describe("SessionHomePage", () => {
     render(<RouterProvider router={router} />);
 
     await screen.findByRole("option", { name: "MiMo" });
-    await user.type(await screen.findByRole("textbox", { name: "你想探索什么？" }), "Check the exposed service");
+    await user.type(await screen.findByRole("textbox", { name: "What do you want to explore?" }), "Check the exposed service");
     await user.click(screen.getByRole("button", { name: /launch session/i }));
 
     await waitFor(() => {

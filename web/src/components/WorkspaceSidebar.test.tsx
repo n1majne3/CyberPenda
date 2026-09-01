@@ -831,11 +831,11 @@ describe("WorkspaceSidebar", () => {
     // Every row carries the time · state line, so same-titled Sessions stay
     // distinguishable. Recent-first ordering: the two-day-old duplicate ranks
     // above the five-day one.
-    expect(duplicateLinks[0]).toHaveTextContent("2 days ago · 已停止");
-    expect(duplicateLinks[1]).toHaveTextContent("5 days ago · 已停止");
+    expect(duplicateLinks[0]).toHaveTextContent("2 days ago · Stopped");
+    expect(duplicateLinks[1]).toHaveTextContent("5 days ago · Stopped");
     // The line is not conditional on duplicates: unique rows show it too.
     const uniqueLink = within(nonProject).getByRole("link", { name: /unique session conversation/i });
-    expect(uniqueLink).toHaveTextContent("2 days ago · 已停止");
+    expect(uniqueLink).toHaveTextContent("2 days ago · Stopped");
   });
 
   it("shows item counts on the Non-project and Projects group headers", async () => {
@@ -940,10 +940,10 @@ describe("WorkspaceSidebar", () => {
     expect(failedDot).toHaveClass("bg-destructive");
 
     // Visible second-line state text per row (mockup: time · state).
-    expect(within(nonProject).getByRole("link", { name: /busy session/i })).toHaveTextContent("· 运行中");
-    expect(within(nonProject).getByRole("link", { name: /idle session/i })).toHaveTextContent("· 空闲");
-    expect(within(nonProject).getByRole("link", { name: /offline session/i })).toHaveTextContent("· 已停止");
-    expect(within(nonProject).getByRole("link", { name: /orphaned session/i })).toHaveTextContent("· 状态未知");
-    expect(within(nonProject).getByRole("link", { name: /failed session/i })).toHaveTextContent("· 失败");
+    expect(within(nonProject).getByRole("link", { name: /busy session/i })).toHaveTextContent("· Running");
+    expect(within(nonProject).getByRole("link", { name: /idle session/i })).toHaveTextContent("· Idle");
+    expect(within(nonProject).getByRole("link", { name: /offline session/i })).toHaveTextContent("· Stopped");
+    expect(within(nonProject).getByRole("link", { name: /orphaned session/i })).toHaveTextContent("· Unknown");
+    expect(within(nonProject).getByRole("link", { name: /failed session/i })).toHaveTextContent("· Failed");
   });
 });
