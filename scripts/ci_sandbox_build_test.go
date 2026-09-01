@@ -100,6 +100,26 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	}
 }
 
+func TestSandboxRuntimeImageProvidesPentestctlOnPath(t *testing.T) {
+	repoRoot := repoRoot(t)
+	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read sandbox Dockerfile: %v", err)
+	}
+	dockerfile := string(dockerfileBytes)
+
+	for _, required := range []string{
+		"AS pentestctl-build",
+		"go build -trimpath -o /out/pentestctl ./cmd/pentestctl",
+		"COPY --from=pentestctl-build /out/pentestctl /usr/local/bin/pentestctl",
+		"pentestctl blackboard --help",
+	} {
+		if !strings.Contains(dockerfile, required) {
+			t.Fatalf("sandbox Runtime image must provide a verified pentestctl CLI; missing %q", required)
+		}
+	}
+}
+
 func TestSandboxDockerfileInstallsHermesWithXZForOfficialInstaller(t *testing.T) {
 	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot(t), "docker", "pentest-sandbox", "Dockerfile"))
 	if err != nil {
