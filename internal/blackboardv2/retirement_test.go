@@ -106,7 +106,6 @@ func TestBlackboardV2HasNoCurrentGraphV1ReadOrAuditProjection(t *testing.T) {
 	for _, relativePath := range []string{
 		"internal/daemon/server.go",
 		"internal/daemon/task_handlers.go",
-		"internal/mcpserver/v2.go",
 		"internal/pentestctl/blackboard_v2.go",
 		"internal/runner/mcp.go",
 		"internal/runner/projection.go",

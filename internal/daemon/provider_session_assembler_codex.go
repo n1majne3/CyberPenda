@@ -74,10 +74,7 @@ func (a codexAssembler) Setup(ctx context.Context, bridge productionBridgeTransp
 	if err != nil {
 		return providerSessionSetup{}, err
 	}
-	// The manifest owns the shared capability set; adapter conformance owns
-	// assisted conclusion, which the manifest must not claim for production
-	// providers before it is proven.
-	capabilities.AssistedConclusion = true
+	// The manifest owns the shared persistent-session capability set.
 	// InitializeResponse exposes server identity, not a server capability set.
 	// Keep the manifest capability until the wire call negotiates support. A
 	// JSON-RPC method-not-found response downgrades this adapter and safely

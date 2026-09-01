@@ -125,7 +125,7 @@ func (s *Service) Prepare(_ context.Context, request OwnerContext) (Projection, 
 	if err != nil || root == "" {
 		return Projection{}, errors.New("Working Graph workdir is invalid")
 	}
-	if err := ensureDirectory(root); err != nil {
+	if err := ensureDirectoryTree(root); err != nil {
 		return Projection{}, err
 	}
 	graph := filepath.Join(root, "graph")
@@ -151,6 +151,45 @@ func (s *Service) Prepare(_ context.Context, request OwnerContext) (Projection, 
 		}
 	}
 	return projection, nil
+}
+
+// Status returns owner-scoped unsettled intent counts from the durable Store.
+func (s *Service) Status(ctx context.Context, contract owner.Contract) (Status, error) {
+	if s.db == nil {
+		return Status{}, errors.New("Working Graph Store is unavailable")
+	}
+	if err := contract.Validate(); err != nil {
+		return Status{}, fmt.Errorf("validate Working Graph owner: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT state,COUNT(*) FROM working_graph_intents
+		WHERE owner_kind=? AND owner_id=? AND state IN (?,?,?) GROUP BY state`,
+		OwnerKind(contract.Kind), contract.ID,
+		IntentStatePending, IntentStateRetryPending, IntentStateActionRequired,
+	)
+	if err != nil {
+		return Status{}, fmt.Errorf("read Working Graph status: %w", err)
+	}
+	defer rows.Close()
+	var status Status
+	for rows.Next() {
+		var state IntentState
+		var count int
+		if err := rows.Scan(&state, &count); err != nil {
+			return Status{}, fmt.Errorf("scan Working Graph status: %w", err)
+		}
+		switch state {
+		case IntentStatePending:
+			status.Pending = count
+		case IntentStateRetryPending:
+			status.RetryPending = count
+		case IntentStateActionRequired:
+			status.ActionRequired = count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return Status{}, fmt.Errorf("iterate Working Graph status: %w", err)
+	}
+	return status, nil
 }
 
 type IntentInput struct {
@@ -598,6 +637,34 @@ func ensureDirectory(path string) error {
 	}
 	if err := os.Mkdir(path, 0o700); err != nil {
 		return fmt.Errorf("create Working Graph directory %s: %w", path, err)
+	}
+	return nil
+}
+
+func ensureDirectoryTree(path string) error {
+	path = filepath.Clean(path)
+	missing := make([]string, 0)
+	for current := path; ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("Working Graph path is not a regular directory: %s", current)
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		missing = append(missing, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			return fmt.Errorf("Working Graph directory has no existing ancestor: %s", path)
+		}
+	}
+	for index := len(missing) - 1; index >= 0; index-- {
+		if err := ensureDirectory(missing[index]); err != nil {
+			return err
+		}
 	}
 	return nil
 }

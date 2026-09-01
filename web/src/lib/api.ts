@@ -151,19 +151,6 @@ export interface ScopeExpansion {
   decided_at?: string;
 }
 
-export interface ReasonTaskProposal {
-  id: string;
-  project_id: string;
-  reason_task_id: string;
-  next_task_goals: string[];
-  exploration_objective_changes: string[];
-  readiness_judgment: string;
-  changes: unknown[];
-  status: ApprovalStatus;
-  created_at: string;
-  decided_at?: string;
-}
-
 export interface ProjectDefaults {
   runner?: string;
   task_policy?: string;
@@ -503,7 +490,6 @@ export interface RuntimePluginCapabilities {
   mcp_config: boolean;
   streaming_transcript: boolean;
   resume: boolean;
-  assisted_conclusion?: boolean;
 }
 
 export type BlackboardMode = "interactive" | "working_graph" | "disabled";

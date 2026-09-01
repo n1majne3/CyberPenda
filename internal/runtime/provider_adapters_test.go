@@ -919,7 +919,6 @@ func TestClaudeProviderSessionEmitsAssistedObservationsAndValidatedControlResult
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptTurn: true,
 			InterruptThenReplace: true, PermissionResponse: true, ResumeSession: true,
-			AssistedConclusion: true,
 		},
 	})
 	var observations []ProviderSessionObservation

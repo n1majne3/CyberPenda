@@ -254,7 +254,6 @@ const readRoutes: Array<[RegExp, unknown | ((path: string) => unknown)]> = [
   ] }],
   [new RegExp(`^/api/v2/projects/${PROJECT_ID}/blackboard/snapshot$`), snapshot],
   [new RegExp(`^/api/v2/projects/${PROJECT_ID}/blackboard/health$`), health],
-  [new RegExp(`^/api/projects/${PROJECT_ID}/reason-task-proposals$`), { proposals: [] }],
   [new RegExp(`^/api/v2/projects/${PROJECT_ID}/reports/pentest\\?format=json$`), report],
   [new RegExp(`^/api/v2/projects/${PROJECT_ID}/reports/pentest\\?format=markdown$`), { schema: "report-markdown/v2", markdown: reportMarkdown }],
   [/^\/api\/runtime-profiles$/, { profiles: [] }],

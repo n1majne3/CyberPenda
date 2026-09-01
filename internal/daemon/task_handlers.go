@@ -96,6 +96,9 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	if input.RunControls.Extras == nil && input.Extras != nil {
 		input.RunControls.Extras = input.Extras
 	}
+	if input.RunControls.BlackboardMode == "" {
+		input.RunControls.BlackboardMode = task.BlackboardModeWorkingGraph
+	}
 	if input.Type != task.TypePentest && input.Type != task.TypeCTFChallenge {
 		writeTaskError(response, task.ErrInvalidTaskType)
 		return
@@ -800,7 +803,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	var capturedModelSnapshot *modelprovider.Snapshot
 	var materializedCredentials map[string]string
 	var globalSnapshot *runner.GlobalModelProviderSnapshot
-	if captured != nil && strings.TrimSpace(captured.ResolvedProfile.ID) != "" && captured.GlobalModelProviderSnapshot != nil {
+	if captured != nil && captured.ResolvedProfile.Provider != "" && captured.GlobalModelProviderSnapshot != nil {
 		profile = captured.ResolvedProfile
 		skillBundles = append([]skill.Bundle(nil), captured.SkillBundles...)
 		capturedModelSnapshot = captured.ModelSnapshot
@@ -808,7 +811,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		globalSnapshot = captured.GlobalModelProviderSnapshot
 	} else {
 		var err error
-		if captured != nil && strings.TrimSpace(captured.ResolvedProfile.ID) != "" {
+		if captured != nil && captured.ResolvedProfile.Provider != "" {
 			profile = captured.ResolvedProfile
 		} else {
 			profile, err = server.resolveTaskRuntimeProfile(created)
@@ -834,12 +837,15 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if profile.Provider == runtimeprofile.ProviderFake {
 		runtimeConfig["provider"] = string(runtimeprofile.ProviderFake)
 		runtimeConfig["generated_config"] = runtimeprofile.GeneratedConfig(profile)
-		capturedRuntimeConfig, err := server.capturedTaskRuntimeConfig(created, profile, nil, launchModelOverride, launchReasoningEffort)
-		if err != nil {
-			return taskLaunchPlan{}, err
-		}
+		var capturedRuntimeConfig map[string]any
 		if captured != nil {
 			capturedRuntimeConfig = captured.CapturedRuntimeConfig
+		} else {
+			var err error
+			capturedRuntimeConfig, err = server.capturedTaskRuntimeConfig(created, profile, nil, launchModelOverride, launchReasoningEffort)
+			if err != nil {
+				return taskLaunchPlan{}, err
+			}
 		}
 		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, LaunchReasoningEffort: launchReasoningEffort, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal, BlackboardProjection: blackboardProjection}, nil
 	}
@@ -1303,11 +1309,6 @@ func (server *Server) handleListTasks(response http.ResponseWriter, request *htt
 	// Decorate list entries with current Runtime Activity (not Task status).
 	for index := range tasks {
 		tasks[index] = server.attachRuntimeActivity(tasks[index])
-		tasks[index], err = server.attachBlackboardConclusion(tasks[index])
-		if err != nil {
-			writeError(response, http.StatusInternalServerError, "load Blackboard conclusion")
-			return
-		}
 	}
 	writeJSON(response, http.StatusOK, struct {
 		Tasks []task.Task `json:"tasks"`
@@ -1450,11 +1451,6 @@ func (server *Server) handleWorkspaceNavigation(response http.ResponseWriter, re
 		// Task list so runtime_activity is live and consistent.
 		for index := range inlined {
 			inlined[index] = server.attachRuntimeActivity(inlined[index])
-			inlined[index], err = server.attachBlackboardConclusion(inlined[index])
-			if err != nil {
-				writeError(response, http.StatusInternalServerError, "load Blackboard conclusion")
-				return
-			}
 		}
 		summaries = append(summaries, workspaceNavigationProject{
 			Project:        current,
@@ -1588,10 +1584,6 @@ func (server *Server) decorateTask(found task.Task) (task.Task, error) {
 	// Runtime Activity is attached first so unexpected offline/orphaned health
 	// can reconcile durable lifecycle before controls are computed.
 	found = server.attachRuntimeActivity(found)
-	found, err := server.attachBlackboardConclusion(found)
-	if err != nil {
-		return task.Task{}, err
-	}
 	active, err := server.tasks.ActiveContinuation(found.ID)
 	if err != nil {
 		return task.Task{}, err
@@ -1948,12 +1940,6 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 				return
 			}
 		}
-		if found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
-			if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
-				writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
-				return
-			}
-		}
 		// Durable Task may still be running when harness/session already gone
 		// (finish abort, orphan cleanup). Always settle stopped after cleanup.
 		if err := server.settleTaskStopped(taskID); err != nil {
@@ -1973,12 +1959,6 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeError(response, http.StatusConflict, "provider session did not close")
 		return
 	}
-	if found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
-		if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
-			writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
-			return
-		}
-	}
 	if err := server.settleTaskStopped(taskID); err != nil {
 		writeTaskError(response, err)
 		return
@@ -1996,24 +1976,6 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 // coordinator after Stop has canceled every provider control. A later Resume
 // therefore sees explicit operator-recoverable debt instead of waiting forever
 // on a Conclude Turn whose provider session was intentionally closed.
-func (server *Server) markStoppedBlackboardConclusionsRecoveryRequired(taskID string) error {
-	receipts, err := server.tasks.BlackboardConclusionRecoveryCandidates()
-	if err != nil {
-		return err
-	}
-	for _, receipt := range receipts {
-		if receipt.TaskID != taskID {
-			continue
-		}
-		if _, _, err := server.tasks.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
-			receipt.ID, task.ConclusionRecoveryRuntimeOwnershipNotProven, time.Now().UTC(), blackboardConclusionRetryCooldown,
-		); err != nil && !errors.Is(err, task.ErrInvalidBlackboardConclusionReceipt) {
-			return err
-		}
-	}
-	return nil
-}
-
 // settleTaskStopped marks Task and any non-terminal Continuation as stopped.
 // Does not overwrite an existing different terminal Continuation status.
 func (server *Server) settleTaskStopped(taskID string) error {
@@ -2063,7 +2025,7 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 	}
 	blackboardDisabled := found.RunControls.BlackboardMode == task.BlackboardModeDisabled
 	if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
-		if err := server.acquireTaskControlAfterAssistedSettlement(request.Context(), found, false, false); err != nil {
+		if err := server.acquireTaskControlAfterWorkingGraphSettlement(request.Context(), found, false, false); err != nil {
 			if errors.Is(err, errSemanticConclusionActionRequired) {
 				writeError(response, http.StatusConflict, "semantic_conclusion_action_required")
 				return
@@ -2207,47 +2169,23 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 var errSemanticConclusionActionRequired = errors.New("semantic_conclusion_action_required")
 var errTaskControlOperationActive = errors.New("task control operation already active")
 
-func (server *Server) waitForAssistedConclusionDrain(ctx context.Context, found task.Task) error {
-	return server.waitForAssistedConclusionSettlement(ctx, found, false)
+func (server *Server) waitForWorkingGraphDrain(ctx context.Context, found task.Task) error {
+	return server.waitForWorkingGraphSettlement(ctx, found, false)
 }
 
-func (server *Server) waitForAssistedConclusionSettlement(ctx context.Context, found task.Task, allowActionRequired bool) error {
+func (server *Server) waitForWorkingGraphSettlement(ctx context.Context, found task.Task, allowActionRequired bool) error {
 	if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
 		_, err := server.settleTaskWorkingGraph(ctx, found, allowActionRequired)
 		return err
 	}
-	for {
-		receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
-		if err != nil {
-			return err
-		}
-		if receipt == nil {
-			return nil
-		}
-		switch receipt.View(found.RunControls.BlackboardMode).State {
-		case task.BlackboardConclusionStateClean:
-			return nil
-		case task.BlackboardConclusionStateActionRequired:
-			if allowActionRequired {
-				return nil
-			}
-			return errSemanticConclusionActionRequired
-		}
-		timer := time.NewTimer(5 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-	}
+	return nil
 }
 
-// acquireTaskControlAfterAssistedSettlement closes the drain/acquire race:
+// acquireTaskControlAfterWorkingGraphSettlement closes the settle/acquire race:
 // after taking Task control it rechecks the durable receipt. If a conclusion
 // became pending between the optimistic drain and acquisition, it releases
 // control so the Harness coordinator can run, drains again, and retries.
-func (server *Server) acquireTaskControlAfterAssistedSettlement(ctx context.Context, found task.Task, allowActionRequired, providerControl bool) error {
+func (server *Server) acquireTaskControlAfterWorkingGraphSettlement(ctx context.Context, found task.Task, allowActionRequired, providerControl bool) error {
 	if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
 		acquired := server.acquireTaskControl(found.ID)
 		if providerControl {
@@ -2266,85 +2204,16 @@ func (server *Server) acquireTaskControlAfterAssistedSettlement(ctx context.Cont
 		}
 		return nil
 	}
-	waitedForConclusion := false
-	for {
-		before, err := server.tasks.LatestBlackboardConclusion(found.ID)
-		if err != nil {
-			return err
-		}
-		if before != nil {
-			switch before.View(found.RunControls.BlackboardMode).State {
-			case task.BlackboardConclusionStatePending, task.BlackboardConclusionStateConcluding:
-				waitedForConclusion = true
-			}
-		}
-		if err := server.waitForAssistedConclusionSettlement(ctx, found, allowActionRequired); err != nil {
-			return err
-		}
-		acquired := false
-		if providerControl {
-			acquired = server.acquireProviderTaskControl(found.ID)
-		} else {
-			acquired = server.acquireTaskControl(found.ID)
-		}
-		if !acquired {
-			receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
-			if err != nil {
-				return err
-			}
-			if receipt != nil {
-				state := receipt.View(found.RunControls.BlackboardMode).State
-				if state == task.BlackboardConclusionStatePending || state == task.BlackboardConclusionStateConcluding {
-					waitedForConclusion = true
-					continue
-				}
-			}
-			if waitedForConclusion {
-				timer := time.NewTimer(5 * time.Millisecond)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return ctx.Err()
-				case <-timer.C:
-					continue
-				}
-			}
+	if providerControl {
+		if !server.acquireProviderTaskControl(found.ID) {
 			return errTaskControlOperationActive
 		}
-
-		receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
-		if err != nil {
-			if providerControl {
-				server.releaseProviderTaskControl(found.ID)
-			} else {
-				server.releaseTaskControl(found.ID)
-			}
-			return err
-		}
-		if receipt == nil {
-			return nil
-		}
-		switch receipt.View(found.RunControls.BlackboardMode).State {
-		case task.BlackboardConclusionStateClean:
-			return nil
-		case task.BlackboardConclusionStateActionRequired:
-			if allowActionRequired {
-				return nil
-			}
-			if providerControl {
-				server.releaseProviderTaskControl(found.ID)
-			} else {
-				server.releaseTaskControl(found.ID)
-			}
-			return errSemanticConclusionActionRequired
-		default:
-			if providerControl {
-				server.releaseProviderTaskControl(found.ID)
-			} else {
-				server.releaseTaskControl(found.ID)
-			}
-		}
+		return nil
 	}
+	if !server.acquireTaskControl(found.ID) {
+		return errTaskControlOperationActive
+	}
+	return nil
 }
 
 // finishFailClosed settles a post-runtime Finish failure: Task must not stay
@@ -3316,7 +3185,7 @@ func writeTaskAcceptedSteering(response http.ResponseWriter, record *owner.Steer
 // the session mode (in_turn_steer or interrupt_then_replace).
 type nativeSteerOperationFunc func(context.Context, runtime.ProviderSessionRequest, runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error)
 
-// taskConclusionSettlement waits for the durable assisted conclusion to settle
+// taskConclusionSettlement waits for durable Working Graph intents to settle
 // before an accepted native steer may take the provider control boundary. The
 // second (post-acquisition) pass is non-blocking so a conclusion that becomes
 // pending can yield control to its own coordinator.
@@ -3325,33 +3194,7 @@ func (server *Server) taskConclusionSettlement(found task.Task) providerControlS
 		if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
 			return server.settleTaskWorkingGraph(ctx, found, true)
 		}
-		for {
-			receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
-			if err != nil {
-				return false, err
-			}
-			if receipt == nil {
-				return true, nil
-			}
-			switch receipt.View(found.RunControls.BlackboardMode).State {
-			case task.BlackboardConclusionStateClean:
-				return true, nil
-			case task.BlackboardConclusionStateActionRequired:
-				// The conclusion needs operator action, not Harness work; the
-				// provider control boundary is free for the accepted steering.
-				return true, nil
-			}
-			if !wait {
-				return false, nil
-			}
-			timer := time.NewTimer(5 * time.Millisecond)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return false, ctx.Err()
-			case <-timer.C:
-			}
-		}
+		return true, nil
 	}
 }
 
@@ -3616,9 +3459,6 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 	// retry delivers its control turn against the live replacement session
 	// instead of looping on the pre-steer (now dead) session. Historical
 	// dispatch identity is never rewritten (ADR 0021).
-	if !disabled {
-		server.recoverConclusionObligationsForReplacedContinuation(old.TaskID, old.ID, next.ID, session.SessionID())
-	}
 	if _, err := server.tasks.UpdateContinuationStatus(old.ID, task.StatusCompleted); err != nil {
 		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
 		return fmt.Errorf("settle old continuation: %w", err)
@@ -3687,9 +3527,6 @@ func (server *Server) createWritableContinuationForLiveSession(found task.Task, 
 	// retry delivers its control turn against the live replacement session
 	// instead of looping on the pre-steer (now dead) session. Historical
 	// dispatch identity is never rewritten (ADR 0021).
-	if !disabled {
-		server.recoverConclusionObligationsForReplacedContinuation(found.ID, previous.ID, next.ID, session.SessionID())
-	}
 	if _, err := server.tasks.UpdateContinuationStatus(next.ID, task.StatusRunning); err != nil {
 		return fail(fmt.Errorf("start writable continuation: %w", err))
 	}
@@ -4240,8 +4077,6 @@ func writeTaskError(response http.ResponseWriter, err error) {
 
 func writeTaskAdapterError(response http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, errAssistedConclusionUnsupported):
-		writeError(response, http.StatusBadRequest, errAssistedConclusionUnsupported.Error())
 	case errors.Is(err, skill.ErrInvalidSkill),
 		errors.Is(err, modelprovider.ErrMissingAPIKeyEnv),
 		errors.Is(err, modelprovider.ErrMissingProvider),

@@ -3,6 +3,7 @@ package workinggraph_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -107,6 +108,57 @@ func TestSettleStopsAtActionRequiredAndDoesNotClaimLaterIntent(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("claimed intent count = %d", count)
+	}
+}
+
+func TestStatusCountsOwnerScopedUnsettledIntents(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := workinggraph.NewService(db)
+	contract := owner.NewTaskContract("task-status", "project-1", t.TempDir())
+
+	for sequence, state := range []workinggraph.IntentState{
+		workinggraph.IntentStatePending,
+		workinggraph.IntentStateRetryPending,
+		workinggraph.IntentStateActionRequired,
+		workinggraph.IntentStateApplied,
+	} {
+		intent := workinggraph.Intent{
+			Schema: workinggraph.IntentSchema,
+			ID:     fmt.Sprintf("intent_%08d", sequence+1),
+			Kind:   workinggraph.IntentSemanticChanges,
+			Payload: map[string]any{
+				"changes": []any{},
+			},
+		}
+		record, _, err := service.Claim(context.Background(), contract, "continuation-1", sequence+1, intent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state != workinggraph.IntentStatePending {
+			if _, err := db.Exec(`UPDATE working_graph_intents SET state=? WHERE id=?`, state, record.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	status, err := service.Status(context.Background(), contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Pending != 1 || status.RetryPending != 1 || status.ActionRequired != 1 {
+		t.Fatalf("status = %#v", status)
+	}
+
+	other, err := service.Status(context.Background(), owner.NewTaskContract("task-other", "project-1", t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other != (workinggraph.Status{}) {
+		t.Fatalf("other owner status = %#v", other)
 	}
 }
 

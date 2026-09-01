@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Terminal, GitBranch, MessageSquare, Play, ChevronRight, ChevronsUpDown, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip, Brain, PlugZap, Info } from "lucide-react";
+import { Square, Terminal, GitBranch, MessageSquare, Play, ChevronRight, ChevronsUpDown, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip, Brain, PlugZap, Info } from "lucide-react";
 import { apiGet, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Chip, Input, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -17,7 +17,7 @@ import { mergeTimelineItems, mergeTranscriptEntries, prependTimelineItems, prepe
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 import { useVirtualWindow } from "@/lib/virtualWindow";
 import { taskRuntimeOwnerAdapter, sessionRuntimeOwnerAdapter, type RuntimeOwnerAdapter } from "@/lib/runtimeOwner/adapter";
-import { canPiNativeCrossProvider, conversationModeText, conversationQueueUnavailable, conversationSendLabel, newBlackboardRetryID, newSteerRequestID, resolveConversationAction, resolveConversationSendMode, steerPendingState } from "@/lib/runtimeOwner/conversationKernel";
+import { canPiNativeCrossProvider, conversationModeText, conversationQueueUnavailable, conversationSendLabel, newSteerRequestID, resolveConversationAction, resolveConversationSendMode, steerPendingState } from "@/lib/runtimeOwner/conversationKernel";
 import { cn } from "@/lib/utils";
 import { emptyHistory, type ConversationSendMode, type OwnerHistory, type RuntimeOwnerKind, type RuntimeOwnerView } from "@/lib/runtimeOwner/types";
 
@@ -58,7 +58,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
   const [runtimePlugins, setRuntimePlugins] = useState<RuntimePlugin[]>([]);
   const [permissionBusy, setPermissionBusy] = useState("");
-  const [retryingConclusion, setRetryingConclusion] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -522,20 +521,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     }
   }
 
-  async function retryBlackboardConclusion() {
-    if (retryingConclusion) return;
-    setRetryingConclusion(true);
-    try {
-      const retried = await ownerAdapter.retryConclusion(newBlackboardRetryID());
-      setOwner(retried);
-      setActionError(null);
-    } catch (e) {
-      setActionError((e as Error).message);
-    } finally {
-      setRetryingConclusion(false);
-    }
-  }
-
   async function deleteTask() {
     if (!owner?.capabilities.delete) return;
     try {
@@ -779,7 +764,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     "active_turn_not_steerable", "target_turn_changed", "target_turn_completed",
   ].includes(controls?.native_steer_error_code ?? "");
   const focusMode = searchParams.get("focus") === "1";
-  const blackboardDisabled = runtimeOwnerBlackboardMode(owner) === "disabled";
   const runtimeDisplayName = profiles.find((profile) => profile.id === owner.runtimeProfileID)?.name
     ?? currentContinuation?.runtimeProvider
     ?? "Runtime";
@@ -932,19 +916,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
             ))}
           </div>
         </section>
-      )}
-
-      {!blackboardDisabled && owner.blackboardConclusion?.state === "action_required" && (
-        <BlackboardConclusionRecovery
-          errorCode={owner.blackboardConclusion.error_code}
-          validationReason={owner.blackboardConclusion.validation_reason}
-          validationFieldPath={owner.blackboardConclusion.validation_field_path}
-          validationExpected={owner.blackboardConclusion.validation_expected}
-          retryAvailable={owner.blackboardConclusion.retry_available === true}
-          nextEligibleAt={owner.blackboardConclusion.next_eligible_at}
-          retrying={retryingConclusion}
-          onRetry={() => void retryBlackboardConclusion()}
-        />
       )}
 
       <div className="flex h-10 shrink-0 items-center gap-1 border-x border-border bg-card px-2 sm:px-3">
@@ -1606,7 +1577,8 @@ function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
   const sourceTurn = owner.blackboardConclusion?.source_turn_id;
   const appliedRevision = owner.blackboardConclusion?.applied_revision;
   const stateLabel = state === "action_required" ? "action required" : state;
-  const label = `Blackboard · ${mode} · ${stateLabel}${appliedRevision !== undefined ? ` · applied revision ${appliedRevision}` : ""}`;
+	const modeLabel = mode === "working_graph" ? "Working Graph" : "Interactive";
+	const label = `Blackboard · ${modeLabel} · ${stateLabel}${appliedRevision !== undefined ? ` · applied revision ${appliedRevision}` : ""}`;
   const details = [label];
   if (sourceTurn) details.push(`source Turn ${sourceTurn}`);
   if (appliedRevision !== undefined) details.push(`applied revision ${appliedRevision}`);
@@ -1625,66 +1597,6 @@ function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
 
 function runtimeOwnerBlackboardMode(owner: RuntimeOwnerView) {
   return owner.blackboardMode ?? owner.blackboardConclusion?.mode ?? "interactive";
-}
-
-const blackboardConclusionErrorCopy: Record<string, string> = {
-  semantic_conclusion_invalid_result: "The runtime returned an invalid Blackboard conclusion.",
-  semantic_conclusion_repair_exhausted: "The runtime could not produce a valid Blackboard conclusion after one repair attempt.",
-  conclude_tool_use_forbidden: "The runtime attempted to use a tool while concluding Blackboard state.",
-};
-
-function BlackboardConclusionRecovery({
-  errorCode,
-  validationReason,
-  validationFieldPath,
-  validationExpected,
-  retryAvailable,
-  nextEligibleAt,
-  retrying,
-  onRetry,
-}: {
-  errorCode?: string;
-  validationReason?: string;
-  validationFieldPath?: string;
-  validationExpected?: string;
-  retryAvailable: boolean;
-  nextEligibleAt?: string;
-  retrying: boolean;
-  onRetry: () => void;
-}) {
-  const code = errorCode?.trim() || "conclusion_action_required";
-  const message = blackboardConclusionErrorCopy[code] ?? "Blackboard conclusion requires operator attention.";
-  const validationDetail = [validationReason, validationFieldPath, validationExpected].filter(Boolean).join(" · ");
-  return (
-    <div
-      role="alert"
-      aria-label="Blackboard conclusion requires attention"
-      className="flex shrink-0 flex-col gap-2 border-b border-destructive/30 bg-destructive/5 px-3 py-2 text-sm sm:flex-row sm:items-center"
-    >
-      <TriangleAlert className="h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
-      <div className="min-w-0 flex-1">
-        <p className="text-foreground">{message}</p>
-        <p className="break-all font-mono text-xs text-muted-foreground">{code}</p>
-        {validationDetail && (
-          <p data-testid="blackboard-conclusion-validation" className="break-all font-mono text-xs text-muted-foreground">
-            {validationDetail}
-          </p>
-        )}
-      </div>
-      <Button
-        type="button"
-        size="sm"
-        variant="outline"
-        onClick={onRetry}
-        disabled={retrying || !retryAvailable}
-        aria-label="Retry Blackboard conclusion"
-        title={!retryAvailable && nextEligibleAt ? `Retry available after ${formatDateTime(nextEligibleAt)}` : "Retry Blackboard conclusion"}
-      >
-        <RefreshCcw className={`h-4 w-4 ${retrying ? "animate-spin motion-reduce:animate-none" : ""}`} />
-        Retry
-      </Button>
-    </div>
-  );
 }
 
 function liveReasoningEntryID(entries: TaskTranscriptEntry[], runtimeBusy: boolean): string | undefined {

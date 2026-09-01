@@ -102,7 +102,7 @@ func TestProviderSessionAssemblersRejectJSONRPCSetupErrors(t *testing.T) {
 }
 
 func TestProviderSessionAssemblerSandboxConformance(t *testing.T) {
-	claudeFullHandshake := `{"session_id":"conf-claude","status":"ready","capabilities":{"persistent_session":true,"send_turn":true,"interrupt_turn":true,"normalized_tool_events":true,"normalized_turn_events":true,"attempt_result":true,"assisted_conclusion":true}}`
+	claudeFullHandshake := `{"session_id":"conf-claude","status":"ready","capabilities":{"persistent_session":true,"send_turn":true,"interrupt_turn":true}}`
 	cases := []struct {
 		provider        runtimeprofile.Provider
 		respond         func(method string, params json.RawMessage) string
@@ -189,14 +189,8 @@ func TestProviderSessionAssemblerSandboxConformance(t *testing.T) {
 				!capabilities.InterruptThenReplace || !capabilities.PermissionResponse || !capabilities.ResumeSession {
 				t.Fatalf("capabilities = %#v, want the manifest persistent-session set", capabilities)
 			}
-			if !capabilities.AssistedConclusion {
-				t.Fatalf("capabilities = %#v, want assisted conclusion projected for %s", capabilities, tc.provider)
-			}
 			if capabilities.InTurnSteer != tc.wantInTurnSteer {
 				t.Fatalf("in-turn steer = %v, want %v", capabilities.InTurnSteer, tc.wantInTurnSteer)
-			}
-			if err := validateAssistedConclusionBinding(binding); err != nil {
-				t.Fatalf("assisted binding validation failed: %v", err)
 			}
 
 			docker.mu.Lock()
@@ -222,8 +216,7 @@ func TestProviderSessionAssemblerSandboxConformance(t *testing.T) {
 }
 
 // TestProviderSessionAssemblerManifestIsCapabilitySource proves the factory
-// reads assisted-conclusion capability from the Runtime Plugin manifest for
-// Codex, Pi, and Hermes, while Claude keeps its handshake gate.
+// reads persistent-session capabilities from the Runtime Plugin manifest.
 func TestProviderSessionAssemblerManifestIsCapabilitySource(t *testing.T) {
 	registry := runtimeplugin.MustBuiltinRegistry()
 	for _, provider := range []runtimeprofile.Provider{
@@ -238,19 +231,6 @@ func TestProviderSessionAssemblerManifestIsCapabilitySource(t *testing.T) {
 			!capabilities.InterruptTurn || !capabilities.InterruptThenReplace ||
 			!capabilities.PermissionResponse || !capabilities.ResumeSession {
 			t.Fatalf("manifest capabilities for %s = %#v, want the persistent-session set", provider, capabilities)
-		}
-		if capabilities.AssistedConclusion {
-			t.Fatalf("manifest for %s must not claim assisted conclusion; adapter conformance proves it", provider)
-		}
-	}
-	// The factory is the adapter-conformance layer that proves assisted
-	// conclusion for the implemented families.
-	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{})
-	for _, provider := range []runtimeprofile.Provider{
-		runtimeprofile.ProviderCodex, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes,
-	} {
-		if !factory.SupportsAssistedConclusion(provider) {
-			t.Fatalf("factory did not project adapter-proven assisted support for %s", provider)
 		}
 	}
 }
@@ -282,7 +262,7 @@ func (a *fakeAssembler) Setup(_ context.Context, _ productionBridgeTransport, _ 
 		SessionID: "fake-asm-session",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true,
-			PermissionResponse: true, ResumeSession: true, AssistedConclusion: true,
+			PermissionResponse: true, ResumeSession: true,
 		},
 	})
 	return providerSessionSetup{Session: session}, nil

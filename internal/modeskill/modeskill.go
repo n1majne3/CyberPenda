@@ -83,16 +83,16 @@ func ValidateBundleCompatibility(mode Mode, bundle skill.Bundle) error {
 	}
 	for _, spec := range specs {
 		if skill.DisplayID(bundle.ID, bundle.Source) == spec.ID {
-			return fmt.Errorf("user Skill %q conflicts with system Mode Skill", bundle.ID)
+			return fmt.Errorf("%w: user Skill %q conflicts with system Mode Skill", skill.ErrInvalidSkill, bundle.ID)
 		}
 	}
 	body, err := os.ReadFile(filepath.Join(bundle.Path, "SKILL.md"))
 	if err != nil {
-		return fmt.Errorf("read Skill compatibility metadata: %w", err)
+		return fmt.Errorf("%w: read Skill compatibility metadata for %q: %v", skill.ErrInvalidSkill, bundle.ID, err)
 	}
 	allowed, present, err := parseBlackboardModes(string(body))
 	if err != nil {
-		return fmt.Errorf("Skill %q blackboard_modes: %w", bundle.ID, err)
+		return fmt.Errorf("%w: Skill %q blackboard_modes: %v", skill.ErrInvalidSkill, bundle.ID, err)
 	}
 	if !present {
 		return nil
@@ -107,7 +107,7 @@ func ValidateBundleCompatibility(mode Mode, bundle skill.Bundle) error {
 		values = append(values, string(candidate))
 	}
 	sort.Strings(values)
-	return fmt.Errorf("Skill %q is incompatible with Blackboard Mode %q; allowed modes: %s", bundle.ID, mode, strings.Join(values, ", "))
+	return fmt.Errorf("%w: Skill %q is incompatible with Blackboard Mode %q; allowed modes: %s", skill.ErrInvalidSkill, bundle.ID, mode, strings.Join(values, ", "))
 }
 
 func parseBlackboardModes(document string) ([]Mode, bool, error) {

@@ -57,10 +57,6 @@ type Capabilities struct {
 	InTurnSteer          bool `json:"in_turn_steer"`
 	PermissionResponse   bool `json:"permission_response"`
 	ResumeSession        bool `json:"resume_session"`
-	// AssistedConclusion remains only as a temporary internal compatibility
-	// field while the old provider observer files are deleted. Launch and UI
-	// selection no longer consume it.
-	AssistedConclusion bool `json:"assisted_conclusion"`
 }
 
 type ProfileSchema struct {

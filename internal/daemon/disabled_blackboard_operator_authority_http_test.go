@@ -420,10 +420,6 @@ type authorityProviderSessionFactory struct {
 	*recordingProviderSessionFactory
 }
 
-func (factory *authorityProviderSessionFactory) SupportsAssistedConclusion(provider runtimeprofile.Provider) bool {
-	return provider == runtimeprofile.ProviderCodex
-}
-
 func newDisabledOutputAuthorityFixture(t *testing.T, authToken string) disabledOutputAuthorityFixture {
 	t.Helper()
 	root := t.TempDir()
@@ -436,7 +432,6 @@ func newDisabledOutputAuthorityFixture(t *testing.T, authToken string) disabledO
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession:  true,
 			SendTurn:           true,
-			AssistedConclusion: true,
 		},
 	})
 	recordingFactory := &recordingProviderSessionFactory{session: providerSession, adapter: &persistentTestAdapter{}}

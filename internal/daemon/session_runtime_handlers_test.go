@@ -24,6 +24,29 @@ import (
 	"pentest/internal/task"
 )
 
+func testSessionRuntimeSnapshot(t *testing.T, server *Server, plugin runtimeprofile.Provider, run session.Runner) map[string]any {
+	t.Helper()
+	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: string(plugin) + " test provider", BaseURL: "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog: modelprovider.Catalog{Manual: []string{"test-model"}, DefaultModel: "test-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	return map[string]any{
+		"snapshot_version": 1, "runtime_plugin_id": string(plugin), "runner": string(run),
+		"model_provider_snapshot": map[string]any{
+			"model_provider_id": provider.ID, "model_provider_name": provider.Name, "base_url": provider.BaseURL,
+			"protocol": string(modelprovider.ProtocolOpenAIResponses), "model": "test-model", "api_key_env": provider.APIKeyEnv,
+		},
+		"runtime_turn_selection": map[string]any{"model_provider_id": provider.ID, "model": "test-model"},
+		"settings": map[string]any{"model_provider_id": provider.ID, "model_override": "test-model"},
+		"enabled_skill_ids": []string{}, "config_projection": map[string]any{},
+	}
+}
+
 func TestSessionRuntimePlanProjectsOnlyCapturedSnapshotSkills(t *testing.T) {
 	runtimeRoot := t.TempDir()
 	server, err := NewServer(Config{

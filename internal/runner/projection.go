@@ -1842,13 +1842,13 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 		env["PENTEST_BLACKBOARD_MODE"] = ctx.BlackboardMode
 	}
 	if ctx.WorkingGraphRoot != "" {
-		env["PENTEST_WORKING_GRAPH_ROOT"] = ctx.WorkingGraphRoot
+		env["PENTEST_WORKING_GRAPH_ROOT"] = launchVisiblePath(layout, ctx.WorkingGraphRoot, sandbox)
 	}
 	if ctx.WorkingGraphOutbox != "" {
-		env["PENTEST_WORKING_GRAPH_OUTBOX"] = ctx.WorkingGraphOutbox
+		env["PENTEST_WORKING_GRAPH_OUTBOX"] = launchVisiblePath(layout, ctx.WorkingGraphOutbox, sandbox)
 	}
 	if ctx.WorkingGraphReceipts != "" {
-		env["PENTEST_WORKING_GRAPH_RECEIPTS"] = ctx.WorkingGraphReceipts
+		env["PENTEST_WORKING_GRAPH_RECEIPTS"] = launchVisiblePath(layout, ctx.WorkingGraphReceipts, sandbox)
 	}
 	manifestEnvRendered := false
 	if plugin, ok := runtimePluginForProvider(profile.Provider, registry); ok {
@@ -1866,6 +1866,17 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 		}
 	}
 	return env
+}
+
+func launchVisiblePath(layout Layout, hostPath string, sandbox bool) string {
+	if !sandbox || !filepath.IsAbs(hostPath) {
+		return hostPath
+	}
+	rel, err := filepath.Rel(layout.TaskRoot, hostPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return hostPath
+	}
+	return "/task/" + filepath.ToSlash(rel)
 }
 
 func processEnvRenderContext(layout Layout, profile runtimeprofile.Profile, sandbox bool) runtimeplugin.RenderContext {

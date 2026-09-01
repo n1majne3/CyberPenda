@@ -87,12 +87,6 @@ func TestClaudeSettingsDeepMergesCustomConfigFileOverlay(t *testing.T) {
 	if len(deny) == 0 || deny[0] != "Bash(rm -rf *)" {
 		t.Fatalf("overlay permissions.deny missing: %#v", settings["permissions"])
 	}
-	// permissions.allow is harness-generated (managed); it must survive
-	// alongside the non-managed deny key the overlay contributed.
-	if _, hasAllow := permissions["allow"]; !hasAllow {
-		t.Fatalf("structured permissions.allow must survive the merge: %#v", settings["permissions"])
-	}
-
 	// Preview reflects the merged result.
 	previewPlugins, ok := projection.Config["enabled_plugins"].([]string)
 	if !ok || len(previewPlugins) == 0 {
@@ -330,9 +324,7 @@ func TestHermesPluginsEnabledMergesOperatorEntries(t *testing.T) {
 	}
 }
 
-// Story 14/15: overlay extra permissions.allow entries must not union into
-// the harness-generated allow list. Arrays are whole-replace; structured wins.
-func TestClaudePermissionsAllowDoesNotUnionOverlayEntries(t *testing.T) {
+func TestClaudePermissionsAllowPreservesOperatorEntries(t *testing.T) {
 	layout, _ := projectForTest(t, runtimeprofile.ProviderClaudeCode)
 	profile := runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderClaudeCode,
@@ -349,10 +341,8 @@ func TestClaudePermissionsAllowDoesNotUnionOverlayEntries(t *testing.T) {
 	settings := readJSONFile(t, projection.ConfigPath)
 	permissions, _ := settings["permissions"].(map[string]any)
 	allow, _ := permissions["allow"].([]any)
-	for _, item := range allow {
-		if text, ok := item.(string); ok && text == "Bash(*)" {
-			t.Fatalf("overlay extra allow entry must not union into the managed list: %#v", allow)
-		}
+	if len(allow) != 1 || allow[0] != "Bash(*)" {
+		t.Fatalf("operator allow entries were not preserved: %#v", allow)
 	}
 	deny, _ := permissions["deny"].([]any)
 	if len(deny) == 0 || deny[0] != "Bash(rm -rf *)" {

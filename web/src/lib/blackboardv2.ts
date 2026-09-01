@@ -916,7 +916,7 @@ export function attentionLabel(state: AttentionBudgetState): string {
     case "above_target":
       return "Above 16K target";
     case "warning":
-      return "32K warning — offer Reason Task";
+      return "32K warning — review Working Graph";
     case "required":
       return "64K consolidation required";
   }

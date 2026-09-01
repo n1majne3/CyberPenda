@@ -98,8 +98,6 @@ func (a piAssembler) Setup(ctx context.Context, bridge productionBridgeTransport
 	if err != nil {
 		return providerSessionSetup{}, err
 	}
-	// Adapter conformance owns assisted conclusion; see the Codex assembler.
-	capabilities.AssistedConclusion = true
 	return providerSessionSetup{
 		Session: runtime.NewPiProviderSession(runtime.PiProviderSessionConfig{
 			Transport: bridge, SessionID: sessionID, Capabilities: capabilities,

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -12,8 +11,6 @@ import (
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
-
-var errAssistedConclusionUnsupported = errors.New("assisted_conclusion_unsupported: Runtime does not expose the complete persistent SendTurn, normalized Tool/Turn event, and closed AttemptResult contract")
 
 // ProviderSessionLaunchFacts carries the structured launch inputs a
 // provider-session assembler consumes: the resolved provider binary, the
@@ -156,13 +153,6 @@ type ProviderSessionRecoveryReport struct {
 	Outcomes                       []ProviderSessionRecoveryOutcome
 }
 
-// ProviderSessionAssistedConclusionReporter is the additive capability seam
-// used before Runtime creation. Persistent SendTurn alone is insufficient: the
-// factory must also promise bounded Tool/Turn observations for this provider.
-type ProviderSessionAssistedConclusionReporter interface {
-	SupportsAssistedConclusion(runtimeprofile.Provider) bool
-}
-
 type ProviderSessionFactoryFunc func(context.Context, ProviderSessionLaunchRequest) (ProviderSessionBinding, error)
 
 func (f ProviderSessionFactoryFunc) Open(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
@@ -237,29 +227,4 @@ func validateProviderSessionBinding(binding ProviderSessionBinding) error {
 		return fmt.Errorf("provider session factory returned no session adapter")
 	}
 	return nil
-}
-
-func validateAssistedConclusionBinding(binding ProviderSessionBinding) error {
-	if !binding.Session.Capabilities().AssistedConclusion {
-		return errAssistedConclusionUnsupported
-	}
-	if _, ok := binding.Session.(runtime.ProviderSessionObservationSink); !ok {
-		return errAssistedConclusionUnsupported
-	}
-	if _, ok := binding.Session.(runtime.ProviderSessionCompleteTurnLineageResolver); !ok {
-		return errAssistedConclusionUnsupported
-	}
-	if _, ok := binding.Session.(runtime.ProviderSessionAttemptResultSource); !ok {
-		return errAssistedConclusionUnsupported
-	}
-	return nil
-}
-
-func (server *Server) supportsAssistedConclusion(provider runtimeprofile.Provider) bool {
-	plugin, ok := server.runtimePlugins.Get(string(provider))
-	if !ok || !plugin.Capabilities.PersistentSession || !plugin.Capabilities.SendTurn {
-		return false
-	}
-	reporter, ok := server.providerSessionFactory.(ProviderSessionAssistedConclusionReporter)
-	return ok && reporter.SupportsAssistedConclusion(provider)
 }

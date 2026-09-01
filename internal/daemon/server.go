@@ -151,7 +151,6 @@ type Server struct {
 	providerSessionFactory  ProviderSessionFactory
 	runtimeRecoveryMu       sync.RWMutex
 	runtimeRecovery         map[string]task.RuntimeActivity
-	blackboardConclusions   *runtime.AssistedConclusionTracker
 	runtimeStopTimeout      time.Duration
 	steeringDispatchTimeout time.Duration
 }
@@ -328,7 +327,6 @@ func NewServer(config Config) (*Server, error) {
 		sessionProviderSessions: newProviderSessionRegistry(),
 		providerSessionFactory:  config.ProviderSessionFactory,
 		runtimeRecovery:         map[string]task.RuntimeActivity{},
-		blackboardConclusions:   runtime.NewAssistedConclusionTracker(),
 		runtimeStopTimeout:      10 * time.Second,
 		steeringDispatchTimeout: defaultAcceptedSteeringDispatchTimeout,
 	}
@@ -387,13 +385,8 @@ func NewServer(config Config) (*Server, error) {
 		return text, generated, nil
 	})
 	server.routes()
-	server.reconcileValidatedBlackboardConclusionApplies()
-	recovery := server.recoverBlackboardConclusionReceipts(context.Background())
-	server.reconcileInterruptedTasks(recovery.ReconciliationExcludedOwnerIDs)
-	server.applyProviderSessionRecoveryLifecycle(recovery.Outcomes)
-	server.reconcileValidatedSessionBlackboardConclusionApplies()
-	sessionRecovery := server.recoverSessionBlackboardConclusionReceipts(context.Background())
-	server.reconcileInterruptedSessions(sessionRecovery.LiveOwnerIDs)
+	server.reconcileInterruptedTasks(nil)
+	server.reconcileInterruptedSessions(nil)
 	server.recoverAcceptedSteering(context.Background())
 
 	return server, nil
@@ -736,10 +729,10 @@ func (server *Server) authorized(request *http.Request) bool {
 		}
 	}
 	// A Continuation Interface Grant is a separate, narrower credential from
-	// the daemon operator token. Accept it only on Blackboard v2 HTTP and MCP.
+	// the daemon operator token. Accept it only on Blackboard v2 HTTP.
 	if token := projectinterface.BearerToken(request); token != "" {
 		if server.blackboardV2 != nil && server.projectInterfaceGrants != nil &&
-			(isBlackboardV2HTTPTransport(request) || request.URL.Path == "/mcp") {
+			isBlackboardV2HTTPTransport(request) {
 			_, err := server.projectInterfaceGrants.Resolve(request.Context(), token)
 			return err == nil
 		}
@@ -914,7 +907,6 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/sessions/{id}/steer", server.handleSessionSteer)
 	server.mux.HandleFunc("POST /api/sessions/{id}/steer/queue", server.handleSessionQueueSteer)
 	server.mux.HandleFunc("POST /api/sessions/{id}/permissions/{permission_id}/respond", server.handleSessionProviderPermissionResponse)
-	server.mux.HandleFunc("POST /api/sessions/{id}/blackboard-conclusion/retry", server.handleRetrySessionBlackboardConclusion)
 	server.mux.HandleFunc("POST /api/sessions/{id}/stop", server.handleSessionStop)
 	server.mux.HandleFunc("PATCH /api/sessions/{id}", server.handleRenameSession)
 	server.mux.HandleFunc("POST /api/sessions/{id}/archive", server.handleArchiveSession)
@@ -978,13 +970,11 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/submit", server.handleChallengeSubmit)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/abandon", server.handleChallengeAbandon)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/finalize", server.handleChallengeFinalize)
-	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/blackboard-conclusion/retry", server.handleRetryBlackboardConclusion)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer/queue", server.handleQueueSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/permissions/{permission_id}/respond", server.handleProviderPermissionResponse)
 	server.registerBlackboardV2Routes()
-	server.registerMCP()
 	server.registerSPA()
 }
 
@@ -994,10 +984,6 @@ func (server *Server) handleHealth(response http.ResponseWriter, request *http.R
 		Database struct {
 			Status string `json:"status"`
 		} `json:"database"`
-		MCP struct {
-			Status string `json:"status"`
-			Path   string `json:"path"`
-		} `json:"mcp"`
 		Runner struct {
 			RuntimeRoot  string `json:"runtime_root"`
 			SandboxImage string `json:"sandbox_image"`
@@ -1009,8 +995,6 @@ func (server *Server) handleHealth(response http.ResponseWriter, request *http.R
 		Version: server.version,
 	}
 	payload.Database.Status = "ok"
-	payload.MCP.Status = "ok"
-	payload.MCP.Path = "/mcp"
 	payload.Runner.RuntimeRoot = server.runtimeRoot
 	payload.Runner.SandboxImage = server.sandboxImage
 	payload.Runner.ContainerCLI = server.containerCLI

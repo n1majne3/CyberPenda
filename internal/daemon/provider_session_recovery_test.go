@@ -154,7 +154,7 @@ func TestRecoveredUnknownActivityDoesNotOverrideOperatorStop(t *testing.T) {
 func TestRecoverProviderSessionOwnershipAdoptsOnlyExactHealthyLiveBinding(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
 		SessionID:    "source-session",
-		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, AssistedConclusion: true},
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 	})
 	adapter := runtime.NewProviderSessionRunAdapter(session, make(chan struct{}))
 	factory := &recoverySessionFactory{result: ProviderSessionRecoveryResult{
@@ -243,10 +243,9 @@ func TestRecoverProviderSessionOwnershipRejectsUnhealthyOrIncapableLiveBinding(t
 		prepare func(*runtime.FakeProviderSession)
 		caps    runtimeplugin.Capabilities
 	}{
-		{name: "missing SendTurn", caps: runtimeplugin.Capabilities{PersistentSession: true, AssistedConclusion: true}},
-		{name: "missing assisted conclusion", caps: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true}},
-		{name: "offline", caps: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, AssistedConclusion: true}, prepare: func(session *runtime.FakeProviderSession) { session.MarkOffline() }},
-		{name: "unknown health", caps: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, AssistedConclusion: true}, prepare: func(session *runtime.FakeProviderSession) { session.MarkHealthUnknown() }},
+		{name: "missing SendTurn", caps: runtimeplugin.Capabilities{PersistentSession: true}},
+		{name: "offline", caps: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true}, prepare: func(session *runtime.FakeProviderSession) { session.MarkOffline() }},
+		{name: "unknown health", caps: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true}, prepare: func(session *runtime.FakeProviderSession) { session.MarkHealthUnknown() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{SessionID: "source-session", Capabilities: test.caps})
@@ -280,31 +279,10 @@ func TestRecoverProviderSessionOwnershipRejectsUnhealthyOrIncapableLiveBinding(t
 	}
 }
 
-func TestRecoverProviderSessionOwnershipRejectsLiveBindingWithoutTypedAssistedContract(t *testing.T) {
-	inner := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
-		SessionID:    "source-session",
-		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, AssistedConclusion: true},
-	})
-	session := &contractlessRecoverySession{inner: inner}
-	factory := &recoverySessionFactory{result: ProviderSessionRecoveryResult{
-		Liveness: ProviderSessionRecoveryLive,
-		Binding:  ProviderSessionBinding{Session: session, Adapter: runtime.NewProviderSessionRunAdapter(session, make(chan struct{}))},
-	}}
-	server, found, continuation := newRecoveryOwnershipFixture(t, factory)
-	report := server.recoverProviderSessionOwnership(context.Background(), []ProviderSessionRecoveryRequest{recoveryRequest(found, continuation)})
-	if len(report.Outcomes) != 1 || report.Outcomes[0].Liveness != ProviderSessionRecoveryOrphaned || report.Outcomes[0].Adopted {
-		t.Fatalf("outcomes = %#v", report.Outcomes)
-	}
-	if _, bound := server.providerSessions.get(found.ID); bound {
-		t.Fatal("contractless assisted session was bound")
-	}
-	assertRecoveryDidNotLaunch(t, server, factory, found.ID)
-}
-
 func TestRecoverProviderSessionOwnershipRejectsTerminalTaskBeforeFactoryProbe(t *testing.T) {
 	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
 		SessionID:    "source-session",
-		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, AssistedConclusion: true},
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 	})
 	factory := &recoverySessionFactory{result: ProviderSessionRecoveryResult{
 		Liveness: ProviderSessionRecoveryLive,

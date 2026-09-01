@@ -624,10 +624,6 @@ _Avoid_: model acknowledgement, transient stdout, Blackboard record
 Optional files that a Runtime chooses and maintains in its ordinary workdir when **Blackboard Mode** is disabled. CyberPenda may remind the Runtime that file tracing is available, but it does not define, parse, or migrate a trace file.
 _Avoid_: file-backed Blackboard, fixed state file, Working Blackboard Snapshot, cross-Runtime handoff
 
-**Pending Blackboard Conclusion**:
-A durable semantic reconciliation obligation created when a completed **Work Runtime Turn** has uncovered semantic debt. It may own multiple immutable **Conclusion Dispatches** and remains Runtime Owner Timeline state, not a conversation message, semantic Blackboard record, or authority to perform **Task Finish**.
-_Avoid_: finding, fact, task completion, model lifecycle authority
-
 **Conclusion Dispatch**:
 A durable, idempotent attempt to deliver one **Conclude Runtime Turn** for a **Pending Blackboard Conclusion**. It is bound immutably to one **Runtime Continuation**, source Runtime session, and source **Runtime Turn Selection**; safe recovery creates a new dispatch instead of rewriting an earlier one.
 _Avoid_: semantic obligation, mutable receipt, continuation migration
@@ -1579,7 +1575,7 @@ _Avoid_: transcript, export, source of truth
 - **Generated Runtime Config** is not a secret preview; resolved: show generated API key environment variable names and projection targets, not API key values.
 - **Profile Config Import** is not raw passthrough; resolved: edited config must round-trip into structured profile fields before saving.
 - **MCP Configuration** is not raw JSON as source of truth; resolved: manage entries structurally and use raw JSON only for preview or import.
-- **External MCP Server** is not a trusted project interface by default; resolved: project write authority belongs only to **Trusted MCP Servers** or explicitly granted interfaces.
+- **External MCP Server** is not a Blackboard interface; resolved: it remains ordinary Runtime configuration and never receives Blackboard authority automatically.
 - **External MCP Server** execution is not separately gated by the daemon; resolved: it follows the runtime's runner environment while project write authority remains controlled.
 - **External MCP Server** output is not automatic memory; resolved: runtimes interpret and write useful results through trusted project interfaces.
 - **Task Runtime Configuration** is not secret storage; resolved: task launch uses credential references and injection rather than persisted secret values.
@@ -1626,7 +1622,7 @@ _Avoid_: transcript, export, source of truth
 - **Task Event** and project-level history are distinct; resolved: task events are task-local timeline entries, while project-level records are security history.
 - **Task Event** is not raw output storage; resolved: preserve full output through logs or **Evidence Artifacts** and keep the task timeline structured.
 - **Task Deletion** is not runtime cancellation or **Trusted Origin** erasure; resolved: only terminal Tasks may be removed from normal surfaces, and minimum integrity bindings remain available internally.
-- Cairn-style **Reason** is not daemon reasoning; resolved: use an operator-triggered **Reason Task** whose proposed Blackboard changes require approval.
+- Blackboard consolidation is not a second model workflow; resolved: the operator reviews Working Graph health and the Harness settles explicit Intents through the normal Blackboard service.
 - Cairn-style graph export is not a new graph store or relevance-selected planning view; resolved: use the complete **Runtime Blackboard Snapshot**.
 - A Task conclusion is not automatic objective closure; resolved: an **Exploration Objective** closes only through its semantic transition and supporting `satisfies` relationship.
 - **Trusted Origin** is not project history or Blackboard knowledge; resolved: it is internal integrity binding, while project history is chronological security records.

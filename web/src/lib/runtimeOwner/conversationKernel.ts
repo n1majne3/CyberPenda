@@ -1,7 +1,7 @@
 import type { RuntimeOwnerAdapter } from "./adapter";
 import type { ConversationSelection, ConversationSendMode, RuntimeOwnerView } from "./types";
 
-export { newBlackboardRetryID, newSteerRequestID } from "./ids";
+export { newSteerRequestID } from "./ids";
 
 /**
  * The conversation decision kernel: from owner-neutral runtime controls it

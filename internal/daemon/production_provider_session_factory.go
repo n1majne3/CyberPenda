@@ -18,8 +18,8 @@ import (
 // seam: Codex App Server, Claude Agent SDK, Pi headless RPC, and Hermes ACP
 // each own their durable process argv and bridge handshake, while this module
 // owns owner-scoped binding, bridge registries, and the shared finish.
-// Capabilities come from the Runtime Plugin manifest; Claude's assisted
-// conclusion capability is proven by its runtime bridge handshake.
+// Capabilities come from the Runtime Plugin manifest and provider bridge
+// handshake.
 type ProductionProviderSessionFactoryConfig struct {
 	Docker runtime.SandboxBridgeDocker
 	// BridgeCommand is the sandbox-local provider-bridge path used inside
@@ -42,46 +42,19 @@ type ProductionProviderSessionFactoryConfig struct {
 }
 
 type ProductionProviderSessionFactory struct {
-	config               ProductionProviderSessionFactoryConfig
-	bridges              *runtime.SandboxSessionBridgeRegistry
-	hostBridges          *runtime.HostSessionBridgeRegistry
-	claudeAssistedStatic bool
-	assemblers           map[runtimeprofile.Provider]providerSessionAssembler
+	config      ProductionProviderSessionFactoryConfig
+	bridges     *runtime.SandboxSessionBridgeRegistry
+	hostBridges *runtime.HostSessionBridgeRegistry
+	assemblers  map[runtimeprofile.Provider]providerSessionAssembler
 
 	mu     sync.Mutex
 	bounds map[string]ProviderSessionBinding
 }
 
-// SupportsAssistedConclusion reports the production implementations whose
-// bridge + adapter chain exposes normalized observations and a closed Attempt
-// result seam. Codex, Pi, and Hermes read their capability from the Runtime
-// Plugin manifest; a concrete Claude session still verifies the SDK bridge
-// handshake and fails closed if an older/incomplete bridge is active.
-func (f *ProductionProviderSessionFactory) SupportsAssistedConclusion(provider runtimeprofile.Provider) bool {
-	switch provider {
-	case runtimeprofile.ProviderCodex, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes:
-		return true
-	case runtimeprofile.ProviderClaudeCode:
-		return f.claudeAssistedStatic
-	default:
-		return false
-	}
-}
-
 type claudeBridgeCapabilities struct {
-	PersistentSession    bool `json:"persistent_session"`
-	SendTurn             bool `json:"send_turn"`
-	InterruptTurn        bool `json:"interrupt_turn"`
-	NormalizedToolEvents bool `json:"normalized_tool_events"`
-	NormalizedTurnEvents bool `json:"normalized_turn_events"`
-	AttemptResult        bool `json:"attempt_result"`
-	AssistedConclusion   bool `json:"assisted_conclusion"`
-}
-
-func (capabilities claudeBridgeCapabilities) supportsAssistedConclusion() bool {
-	return capabilities.PersistentSession && capabilities.SendTurn && capabilities.InterruptTurn &&
-		capabilities.NormalizedToolEvents && capabilities.NormalizedTurnEvents &&
-		capabilities.AttemptResult && capabilities.AssistedConclusion
+	PersistentSession bool `json:"persistent_session"`
+	SendTurn          bool `json:"send_turn"`
+	InterruptTurn     bool `json:"interrupt_turn"`
 }
 
 type productionBoundSession struct {
@@ -165,7 +138,6 @@ type productionBridgeTransport interface {
 }
 
 func NewProductionProviderSessionFactory(config ProductionProviderSessionFactoryConfig) *ProductionProviderSessionFactory {
-	claudeAssistedStatic := strings.TrimSpace(config.ClaudeSDKBridgeCommand) == ""
 	if strings.TrimSpace(config.BridgeCommand) == "" {
 		config.BridgeCommand = "/usr/local/bin/pentest-provider-bridge"
 	}
@@ -177,12 +149,11 @@ func NewProductionProviderSessionFactory(config ProductionProviderSessionFactory
 		plugins = runtimeplugin.MustBuiltinRegistry()
 	}
 	factory := &ProductionProviderSessionFactory{
-		config:               config,
-		bridges:              runtime.NewSandboxSessionBridgeRegistry(),
-		hostBridges:          runtime.NewHostSessionBridgeRegistry(),
-		claudeAssistedStatic: claudeAssistedStatic,
-		assemblers:           map[runtimeprofile.Provider]providerSessionAssembler{},
-		bounds:               map[string]ProviderSessionBinding{},
+		config:      config,
+		bridges:     runtime.NewSandboxSessionBridgeRegistry(),
+		hostBridges: runtime.NewHostSessionBridgeRegistry(),
+		assemblers:  map[runtimeprofile.Provider]providerSessionAssembler{},
+		bounds:      map[string]ProviderSessionBinding{},
 	}
 	factory.assemblers[runtimeprofile.ProviderCodex] = codexAssembler{plugins: plugins, bridge: config.BridgeCommand}
 	factory.assemblers[runtimeprofile.ProviderClaudeCode] = claudeAssembler{plugins: plugins, sdkCommand: config.ClaudeSDKBridgeCommand}

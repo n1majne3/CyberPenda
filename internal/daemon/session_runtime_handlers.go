@@ -851,9 +851,6 @@ func (server *Server) stopSessionRuntime(sessionID string) error {
 			return err
 		}
 	}
-	if err := server.markStoppedSessionBlackboardConclusionsRecoveryRequired(sessionID); err != nil {
-		return err
-	}
 	server.settleSessionAcceptedSteering(sessionID, owner.SteeringReasonOwnerStopped, "Session stopped with queued accepted steering")
 	_, _ = server.sessions.AppendEvent(sessionID, session.EventKindLifecycle, session.EventPayload{"phase": "stopped"})
 	return nil
@@ -864,24 +861,6 @@ func (server *Server) stopSessionRuntime(sessionID string) error {
 // later message or retry therefore sees explicit owner-local recovery instead
 // of waiting for a conclusion Turn whose provider session was intentionally
 // closed.
-func (server *Server) markStoppedSessionBlackboardConclusionsRecoveryRequired(sessionID string) error {
-	receipts, err := server.sessions.BlackboardConclusionRecoveryCandidates()
-	if err != nil {
-		return err
-	}
-	for _, receipt := range receipts {
-		if receipt.SessionID != sessionID {
-			continue
-		}
-		if _, _, err := server.sessions.MarkBlackboardConclusionRecoveryActionRequiredByReceiptID(
-			receipt.ID, session.ConclusionRecoveryRuntimeOwnershipNotProven, time.Now().UTC(), blackboardConclusionRetryCooldown,
-		); err != nil && !errors.Is(err, session.ErrInvalidBlackboardConclusionReceipt) {
-			return err
-		}
-	}
-	return nil
-}
-
 func (server *Server) decorateSession(found session.Session) (session.Session, error) {
 	active, err := server.sessions.ActiveContinuation(found.ID)
 	if err != nil {
@@ -974,16 +953,6 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 	}
 	found.BlackboardConclusion.Mode = found.RunControls.BlackboardMode
 	found.BlackboardConclusion.State = session.BlackboardConclusionStateClean
-	if receipt, receiptErr := server.sessions.LatestBlackboardConclusion(found.ID); receiptErr == nil && receipt != nil {
-		found.BlackboardConclusion = receipt.View(found.RunControls.BlackboardMode)
-	}
-	// A recorded-but-unsettled Blackboard Finish Intent keeps the Session public
-	// conclusion state non-clean (ADR 0022, criterion 4).
-	if found.RunControls.BlackboardMode == session.BlackboardModeWorkingGraph &&
-		found.BlackboardConclusion.State == session.BlackboardConclusionStateClean &&
-		server.hasUnsettledSessionFinishIntent(found.ID) {
-		found.BlackboardConclusion.State = session.BlackboardConclusionStatePending
-	}
 	return found, nil
 }
 
@@ -1162,7 +1131,7 @@ func (server *Server) handleSessionMessageInput(response http.ResponseWriter, re
 		writeSessionError(response, session.ErrSessionNotOpen)
 		return
 	}
-	if err := server.waitForSessionAssistedConclusionSettlement(request.Context(), id, false); err != nil {
+	if err := server.waitForSessionWorkingGraphSettlement(request.Context(), id, false); err != nil {
 		if errors.Is(err, errSemanticConclusionActionRequired) {
 			writeError(response, http.StatusConflict, "semantic_conclusion_action_required")
 			return
@@ -1389,7 +1358,7 @@ func (server *Server) enqueueSessionProviderTurn(sessionID string, provider runt
 	if operation == nil {
 		return false
 	}
-	return server.enqueueProviderTaskControlAfterSettlement(sessionID, server.sessionBlackboardConclusionSettlement(sessionID, false), func(ctx context.Context) {
+	return server.enqueueProviderTaskControlAfterSettlement(sessionID, server.sessionWorkingGraphSettlement(sessionID, false), func(ctx context.Context) {
 		var turn sessionProviderTurnPayload
 		select {
 		case ready, ok := <-turnReady:
@@ -1696,7 +1665,7 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 	// Durable acceptance: the operator message, attachments, Turn Selection,
 	// and dispatch record commit in one transaction before the request returns
 	// 202. The accepted steering is dispatched by the owner-neutral FIFO queue after the
-	// assisted conclusion settles.
+	// Working Graph settlement completes.
 	accept := func(runtimeMessage string, preparedInput *session.PreparedConversationInput) (*owner.SteeringRecord, error) {
 		acceptInput.Message = runtimeMessage
 		record, _, acceptErr := server.acceptSteeringOrReplay(request.Context(), adapter, acceptInput, func(tx *sql.Tx) (string, error) {
@@ -1872,7 +1841,7 @@ func (server *Server) handleSessionProviderPermissionResponse(response http.Resp
 		writeSessionError(response, err)
 		return
 	}
-	if err := server.waitForSessionAssistedConclusionSettlement(request.Context(), id, true); err != nil {
+	if err := server.waitForSessionWorkingGraphSettlement(request.Context(), id, true); err != nil {
 		writeError(response, http.StatusConflict, err.Error())
 		return
 	}
@@ -1934,7 +1903,7 @@ func (server *Server) handleSessionProviderPermissionResponse(response http.Resp
 		server.persistSessionProviderEventForContinuation(id, active.ID, kind, payload)
 	}
 	emit := newPermissionResponseEmit(input, permissionID, persistLadderEvent)
-	queued := server.enqueueProviderTaskControlAfterSettlement(id, server.sessionBlackboardConclusionSettlement(id, true), func(ctx context.Context) {
+	queued := server.enqueueProviderTaskControlAfterSettlement(id, server.sessionWorkingGraphSettlement(id, true), func(ctx context.Context) {
 		operationCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		deliverPermissionResponse(operationCtx, provider, input, permissionID, emit, persistLadderEvent)

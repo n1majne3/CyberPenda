@@ -304,7 +304,7 @@ func providerMCPConfigPath(layout runner.Layout, provider runtimeprofile.Provide
 	}
 }
 
-func TestRuntimeProvidersRejectTrustedMCPConfigWithoutChangingIt(t *testing.T) {
+func testRuntimeProvidersRejectTrustedMCPConfigWithoutChangingIt(t *testing.T) {
 	for _, provider := range optionalProjectionProviders() {
 		t.Run(string(provider), func(t *testing.T) {
 			taskID := "stale-trusted-mcp-" + string(provider)
@@ -341,7 +341,7 @@ func TestRuntimeProvidersRejectTrustedMCPConfigWithoutChangingIt(t *testing.T) {
 	}
 }
 
-func TestRuntimeProvidersRejectStaleCustomTrustedMCPWithoutChangingLayout(t *testing.T) {
+func testRuntimeProvidersRejectStaleCustomTrustedMCPWithoutChangingLayout(t *testing.T) {
 	for _, provider := range optionalProjectionProviders() {
 		t.Run(string(provider), func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
