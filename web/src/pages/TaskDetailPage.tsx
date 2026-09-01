@@ -802,7 +802,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       projectChrome={owner.capabilities.projectChrome}
       hideChrome={focusMode}
       data-testid="task-detail-shell"
-      className={focusMode ? "h-[calc(100dvh-3.5rem)] max-w-none p-0 md:h-dvh lg:p-0" : "flex min-h-full flex-col"}
+      className={focusMode ? "h-[calc(100dvh-3.5rem)] max-w-none p-0 md:h-dvh lg:p-0" : "flex h-full flex-col lg:min-h-0 lg:overflow-hidden"}
       contentClassName={focusMode ? undefined : "mx-auto max-w-6xl px-0 pb-0 lg:px-0 lg:pb-0"}
       bodyClassName={focusMode ? "flex h-full min-h-0 flex-col" : "flex min-h-[32rem] flex-1 flex-col pb-0 lg:min-h-0"}
     >
@@ -1022,7 +1022,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           <div
             ref={bindTranscriptViewport}
             data-testid="conversation-workspace"
-            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 py-5 pb-44 sm:px-6 md:pb-5"
+            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 pt-3 pb-44 sm:px-6 md:pb-5"
           >
             <div className="mx-auto max-w-[860px]">
               {history.transcriptHasOlder && (
@@ -1183,7 +1183,7 @@ function RuntimeOwnerShell({ projectChrome, children, bodyClassName, contentClas
       data-testid={props["data-testid"]}
       className={cn("mx-auto flex w-full max-w-6xl min-w-0 flex-col p-0 lg:p-0", props.className)}
     >
-      <div className={cn("flex min-w-0 w-full flex-1 flex-col", contentClassName, bodyClassName)}>{children}</div>
+      <div className={cn("flex min-h-0 min-w-0 w-full flex-1 flex-col", contentClassName, bodyClassName)}>{children}</div>
     </PageContainer>
   );
 }

@@ -57,7 +57,7 @@ export const ProjectPageShell = forwardRef<HTMLDivElement, ProjectPageShellProps
 
         <div
           className={cn(
-            "mx-auto flex w-full max-w-6xl min-w-0 flex-1 flex-col px-6 pb-6 lg:px-8 lg:pb-8",
+            "mx-auto flex w-full max-w-6xl min-w-0 flex-1 flex-col min-h-0 px-6 pb-6 lg:px-8 lg:pb-8",
             hideChrome && "max-w-none p-0 lg:p-0",
             contentClassName,
           )}
