@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { KeyRound, LoaderCircle, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { LoaderCircle, Plus, RefreshCw, Server, Trash2, X, Zap } from "lucide-react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiPut, ApiError, type CredentialBinding, type ModelProvider } from "@/lib/api";
-import { Button, Input, Label, Select, Textarea, Badge } from "@/components/ui";
+import { Button, Chip, Input, Label, Select, Textarea, Badge } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SaveActionButton } from "@/components/SaveActionButton";
 import {
+  SectionLabel,
   SettingsAlert,
   SettingsPageHeader,
   SettingsPanel,
@@ -57,6 +59,7 @@ const emptyForm: Form = {
 export function ModelProvidersPage() {
   const [providers, setProviders] = useState<ModelProvider[]>([]);
   const [bindings, setBindings] = useState<CredentialBinding[]>([]);
+  const [searchParams] = useSearchParams();
   const [selectedId, setSelectedId] = useState("");
   const [form, setForm] = useState<Form>(emptyForm);
   const [creating, setCreating] = useState(true);
@@ -101,7 +104,15 @@ export function ModelProvidersPage() {
       const loaded = data.providers ?? [];
       setBindings(credentialData.bindings ?? []);
       setProviders(loaded);
-      setSelectedId((current) => current && loaded.some((p) => p.id === current) ? current : loaded[0]?.id ?? "");
+      // Deep links (e.g. from the credential library) preselect a provider via
+      // ?selected=<id>; it only wins when nothing is selected yet and the id
+      // matches a loaded provider.
+      const requestedId = searchParams.get("selected") ?? "";
+      setSelectedId((current) => {
+        if (current && loaded.some((p) => p.id === current)) return current;
+        if (requestedId && loaded.some((p) => p.id === requestedId)) return requestedId;
+        return loaded[0]?.id ?? "";
+      });
       setCreating(loaded.length === 0);
       setLoaded(true);
       setError(null);
@@ -300,7 +311,6 @@ export function ModelProvidersPage() {
         className="mb-4 shrink-0"
         title="Model providers"
         eyebrow="Configuration"
-        description="Reusable model endpoints, supported protocols, catalogs, and generated API key env vars."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={() => void load()} aria-label="Refresh model providers">
@@ -373,6 +383,7 @@ export function ModelProvidersPage() {
                   const isSelected = selectedId === provider.id && !creating;
                   const protocols = providerProtocols(provider);
                   const binding = bindings.find((item) => item.credential_ref === provider.api_key_env);
+                  const hasApiKey = Boolean(binding && !binding.disabled);
                   const displayUrl = providerDisplayURL(provider);
                   return (
                     <li key={provider.id}>
@@ -387,30 +398,38 @@ export function ModelProvidersPage() {
                           setSavedNotice(false);
                         }}
                       >
-                        <span className="flex items-start justify-between gap-2">
-                          <span className="min-w-0">
-                            <span className="block truncate font-medium text-foreground">{provider.name}</span>
-                            {displayUrl ? (
-                              <span className="mt-0.5 block truncate font-mono text-[11px] opacity-70">
-                                {displayUrl}
-                              </span>
-                            ) : (
-                              <span className="mt-0.5 block font-mono text-[11px] opacity-70">
-                                {provider.api_key_env}
-                              </span>
+                        <span className="flex items-center gap-2">
+                          <span
+                            className={cn(
+                              "h-1.5 w-1.5 flex-none rounded-full",
+                              hasApiKey ? "bg-success" : "bg-muted-foreground/40",
                             )}
-                          </span>
-                          <KeyStatusBadge binding={binding} />
+                          />
+                          <span className="truncate text-sm font-medium text-foreground">{provider.name}</span>
+                          {hasApiKey && (
+                            <Chip variant="success" className="h-4 flex-none text-[9px]">key set</Chip>
+                          )}
                         </span>
+                        {displayUrl ? (
+                          <span className="mt-1 block truncate font-mono text-xs text-muted-foreground">
+                            {displayUrl}
+                          </span>
+                        ) : (
+                          <span className="mt-1 block truncate font-mono text-xs text-muted-foreground">
+                            {provider.api_key_env}
+                          </span>
+                        )}
                         {protocols.length > 0 && (
                           <span className="mt-1.5 flex flex-wrap gap-1">
                             {protocols.slice(0, 2).map((protocol) => (
-                              <Badge key={protocol} variant="outline" size="sm" className="font-normal opacity-80">
+                              <Chip key={protocol} variant="neutral" className="h-4 text-[9px]">
                                 {shortProtocol(protocol)}
-                              </Badge>
+                              </Chip>
                             ))}
                             {protocols.length > 2 && (
-                              <span className="text-[10px] opacity-60">+{protocols.length - 2}</span>
+                              <Chip variant="neutral" className="h-4 text-[9px]">
+                                +{protocols.length - 2}
+                              </Chip>
                             )}
                           </span>
                         )}
@@ -440,15 +459,15 @@ export function ModelProvidersPage() {
                 </p>
                 {!creating && selected && (
                   <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                    <Badge variant="outline" size="sm" className="font-mono font-normal">
+                    <Chip variant="neutral" className="font-mono">
                       {selected.api_key_env}
-                    </Badge>
+                    </Chip>
                     {selected.catalog?.default_model && (
-                      <Badge variant="primary" size="sm">
-                        default · {selected.catalog.default_model}
-                      </Badge>
+                      <Chip variant="signal">default · {selected.catalog.default_model}</Chip>
                     )}
-                    <KeyStatusBadge binding={selectedBinding} />
+                    {selectedBinding && !selectedBinding.disabled && (
+                      <Chip variant="success">key set</Chip>
+                    )}
                   </div>
                 )}
               </div>
@@ -462,33 +481,7 @@ export function ModelProvidersPage() {
               )}
             </div>
           }
-          footer={
-            !loaded ? undefined : (
-              <>
-                <SaveActionButton
-                  label={creating ? "Create provider" : "Save provider"}
-                  pending={saving}
-                  saved={savedNotice}
-                  disabled={!canSubmit}
-                  onClick={() => void (creating ? create() : save())}
-                />
-                {selected && !creating && (
-                  <Button variant="outline" onClick={() => refresh(selected)}>
-                    <RefreshCw className="h-4 w-4" /> Refresh models
-                  </Button>
-                )}
-                <Button variant="outline" onClick={() => void refreshCapabilityCache()} disabled={cacheRefreshing}>
-                  <RefreshCw className={`h-4 w-4 ${cacheRefreshing ? "animate-spin" : ""}`} />
-                  Refresh capability cache
-                </Button>
-                {selected && !creating && (
-                  <Button variant="destructive" onClick={() => setConfirmDelete(selected)}>
-                    <Trash2 className="h-4 w-4" /> Delete
-                  </Button>
-                )}
-              </>
-            )
-          }
+          bodyClassName="space-y-5 px-6 py-5"
         >
           {!loaded ? (
             <div role="status" aria-label="Loading model providers" className="flex items-center justify-center py-12 text-sm text-muted-foreground">
@@ -497,240 +490,254 @@ export function ModelProvidersPage() {
             </div>
           ) : (
             <>
-              <section className="space-y-2.5">
-                <SectionLabel>Identity</SectionLabel>
-              <div className="grid gap-3 md:grid-cols-2">
-                <div>
-                  <Label htmlFor="provider-name">Name</Label>
-                  <Input
-                    id="provider-name"
-                    name="provider_name"
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    placeholder="MiMo…"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
+              <section className="rounded-lg border border-border bg-card shadow-sm">
+                <div className="border-b border-border px-4 py-3">
+                  <span className="text-sm font-medium">连接与协议</span>
                 </div>
-                <div>
-                  <Label htmlFor="provider-base-url">Base URL</Label>
-                  <Input
-                    id="provider-base-url"
-                    name="base_url"
-                    type="url"
-                    inputMode="url"
-                    value={form.base_url}
-                    onChange={(e) => setForm({
-                      ...form,
-                      base_url: e.target.value,
-                      endpoint_base_urls: {},
-                    })}
-                    placeholder="https://api.example.test/v1…"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    Shared base used to derive protocol endpoints in quick setup.
-                  </p>
-                </div>
-              </div>
-            </section>
-
-            <section className="space-y-2.5 rounded-lg border border-border bg-muted/30 p-3">
-              <div className="flex items-start gap-2">
-                <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-                <div className="min-w-0 flex-1 space-y-2.5">
+                <div className="grid gap-3 p-4 md:grid-cols-2">
                   <div>
+                    <Label htmlFor="provider-name">Name</Label>
+                    <Input
+                      id="provider-name"
+                      name="provider_name"
+                      value={form.name}
+                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                      placeholder="MiMo…"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="provider-base-url">Base URL</Label>
+                    <Input
+                      id="provider-base-url"
+                      name="base_url"
+                      type="url"
+                      inputMode="url"
+                      value={form.base_url}
+                      onChange={(e) => setForm({
+                        ...form,
+                        base_url: e.target.value,
+                        endpoint_base_urls: {},
+                      })}
+                      placeholder="https://api.example.test/v1…"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Shared base used to derive protocol endpoints in quick setup.
+                    </p>
+                  </div>
+                  <div className="md:col-span-2">
                     <Label htmlFor="provider-api-key">API key</Label>
                     <p className="mt-1 text-[11px] text-muted-foreground">
                       Stored as a local credential for{" "}
-                      <code className="rounded bg-background/80 px-1 py-0.5">
+                      <code className="rounded bg-muted px-1 py-0.5">
                         {selected?.api_key_env ?? "the generated provider key"}
                       </code>
                       . The secret is never shown again.
                     </p>
+                    <Input
+                      id="provider-api-key"
+                      name="api_key"
+                      type="password"
+                      value={form.api_key}
+                      onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+                      placeholder={providerApiKeyPlaceholder(selectedBinding)}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="mt-1.5"
+                    />
+                    {selectedBinding && (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        {selectedBinding.source.kind === "literal"
+                          ? "Current API key: [configured]"
+                          : <>Current source: {selectedBinding.source.kind}: {selectedBinding.source.value}. Enter an API key here to replace it with a local credential.</>}
+                      </p>
+                    )}
                   </div>
-                  <Input
-                    id="provider-api-key"
-                    name="api_key"
-                    type="password"
-                    value={form.api_key}
-                    onChange={(e) => setForm({ ...form, api_key: e.target.value })}
-                    placeholder={providerApiKeyPlaceholder(selectedBinding)}
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  {selectedBinding && (
-                    <p className="text-[11px] text-muted-foreground">
-                      {selectedBinding.source.kind === "literal"
-                        ? "Current API key: [configured]"
-                        : <>Current source: {selectedBinding.source.kind}: {selectedBinding.source.value}. Enter an API key here to replace it with a local credential.</>}
-                    </p>
-                  )}
                 </div>
-              </div>
-            </section>
-
-            <section className="space-y-2.5">
-              <SectionLabel>Protocols & endpoints</SectionLabel>
-              <fieldset>
-                <legend className="text-sm font-medium leading-none text-muted-foreground">Supported protocols</legend>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {PROTOCOLS.map((protocol) => (
-                    <label
-                      key={protocol}
-                      className={cn(
-                        "inline-flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 text-sm transition-colors",
-                        form.protocols.includes(protocol)
-                          ? "border-foreground/20 bg-foreground/5"
-                          : "border-border hover:bg-muted/50",
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        name="protocols"
-                        checked={form.protocols.includes(protocol)}
-                        onChange={(e) => setForm(toggleProtocol(form, protocol, e.target.checked))}
-                        className="accent-foreground"
-                      />
-                      <span>
-                        <span className="sr-only">{protocol}</span>
-                        <span aria-hidden="true">{PROTOCOL_LABELS[protocol] ?? protocol}</span>
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
-
-              {form.protocols.length > 0 && (
-                <fieldset className="space-y-2.5">
-                  <legend className="text-sm font-medium leading-none text-muted-foreground">Endpoint base URLs</legend>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    {form.protocols.map((protocol) => (
-                      <div key={protocol}>
-                        <Label htmlFor={`provider-endpoint-${protocol}`}>{protocol} endpoint base URL</Label>
-                        <Input
-                          id={`provider-endpoint-${protocol}`}
-                          name={`endpoint_${protocol}`}
-                          type="url"
-                          inputMode="url"
-                          value={endpointBaseURLForProtocol(form, protocol)}
-                          onChange={(e) => setForm({
-                            ...form,
-                            endpoint_base_urls: {
-                              ...form.endpoint_base_urls,
-                              [protocol]: e.target.value,
-                            },
-                          })}
-                          placeholder="https://api.example.test/v1"
-                          autoComplete="off"
-                          spellCheck={false}
-                          className="font-mono text-xs"
-                        />
-                        {endpointErrors[protocol] && (
-                          <p className="mt-1 text-[11px] text-destructive">{endpointErrors[protocol]}</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </fieldset>
-              )}
-            </section>
-
-            <section className="space-y-2.5">
-              <SectionLabel>Catalog</SectionLabel>
-              <div className="grid gap-3 md:grid-cols-2">
-                <div>
-                  <Label htmlFor="provider-manual-models">Manual models</Label>
-                  <Textarea
-                    id="provider-manual-models"
-                    name="manual_models"
-                    value={form.manual_models}
-                    onChange={(e) => setForm({ ...form, manual_models: e.target.value })}
-                    placeholder="mimo-v2.5-pro…"
-                    rows={3}
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="min-h-[72px] font-mono text-xs"
-                  />
-                  <p className="mt-1 text-[11px] text-muted-foreground">One model id per line. Empty window/max fields follow the models.dev cache.</p>
-                </div>
-                <div>
-                  <Label htmlFor="provider-default-model">Default model</Label>
-                  <Select
-                    id="provider-default-model"
-                    name="default_model"
-                    value={form.default_model}
-                    onChange={(e) => setForm({ ...form, default_model: e.target.value })}
-                  >
-                    <option value="">No default</option>
-                    {models.map((model) => <option key={model} value={model}>{model}</option>)}
-                  </Select>
-                  {models.length > 0 && (
-                    <div className="mt-3 space-y-2">
-                      {cacheRefreshedAt && (
-                        <p className="text-[11px] text-muted-foreground">
-                          Capability cache updated {cacheRefreshedAt}.
-                        </p>
-                      )}
-                      {models.map((model) => {
-                        const override = form.limits?.[model] ?? {};
-                        const hint = cacheHints[model];
-                        return (
-                          <div key={model} className="grid grid-cols-2 gap-2">
-                            <div className="col-span-2 text-[11px] font-mono text-muted-foreground">{model}</div>
+                <div className="border-t border-border px-4 py-3">
+                  <span className="text-xs font-medium text-muted-foreground">Protocols &amp; endpoints</span>
+                  <fieldset className="mt-2 space-y-2">
+                    <legend className="sr-only">Supported protocols</legend>
+                    {PROTOCOLS.map((protocol) => {
+                      const enabled = form.protocols.includes(protocol);
+                      return (
+                        <div key={protocol} className="flex items-start gap-3">
+                          <input
+                            type="checkbox"
+                            id={`provider-protocol-${protocol}`}
+                            name="protocols"
+                            checked={enabled}
+                            onChange={(e) => setForm(toggleProtocol(form, protocol, e.target.checked))}
+                            className="mt-2 flex-none accent-foreground"
+                          />
+                          <Label
+                            htmlFor={`provider-protocol-${protocol}`}
+                            className="mt-1.5 w-[160px] flex-none cursor-pointer"
+                          >
+                            <span className="sr-only">{protocol}</span>
+                            <span aria-hidden="true">{PROTOCOL_LABELS[protocol] ?? protocol}</span>
+                          </Label>
+                          <div className="min-w-0 flex-1">
+                            <Label htmlFor={`provider-endpoint-${protocol}`} className="sr-only">
+                              {protocol} endpoint base URL
+                            </Label>
                             <Input
-                              inputMode="numeric"
-                              placeholder={hint?.context_window ? String(hint.context_window) : "Context window"}
-                              value={override.context_window ?? ""}
+                              id={`provider-endpoint-${protocol}`}
+                              name={`endpoint_${protocol}`}
+                              type="url"
+                              inputMode="url"
+                              value={enabled ? endpointBaseURLForProtocol(form, protocol) : ""}
                               onChange={(e) => setForm({
                                 ...form,
-                                limits: { ...(form.limits ?? {}), [model]: { ...override, context_window: e.target.value } },
+                                endpoint_base_urls: {
+                                  ...form.endpoint_base_urls,
+                                  [protocol]: e.target.value,
+                                },
                               })}
-                              aria-label={`${model} context window`}
+                              placeholder="未配置"
+                              disabled={!enabled}
+                              autoComplete="off"
+                              spellCheck={false}
+                              className="font-mono text-xs"
                             />
-                            <Input
-                              inputMode="numeric"
-                              placeholder={hint?.max_output_tokens ? String(hint.max_output_tokens) : "Max output"}
-                              value={override.max_output_tokens ?? ""}
-                              onChange={(e) => setForm({
-                                ...form,
-                                limits: { ...(form.limits ?? {}), [model]: { ...override, max_output_tokens: e.target.value } },
-                              })}
-                              aria-label={`${model} max output tokens`}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {selected && (
-                    <div className="mt-3 space-y-2 text-sm">
-                      <div className="text-xs text-muted-foreground">
-                        Generated API key env:{" "}
-                        <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-                          {selected.api_key_env}
-                        </code>
-                      </div>
-                      {(selected.catalog?.refreshed ?? []).length > 0 && (
-                        <div>
-                          <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                            Refreshed catalog
-                          </p>
-                          <div className="flex flex-wrap gap-1">
-                            {(selected.catalog?.refreshed ?? []).map((model) => (
-                              <Badge key={model} variant="outline" size="sm" className="font-mono font-normal">
-                                {model}
-                              </Badge>
-                            ))}
+                            {enabled && endpointErrors[protocol] && (
+                              <p className="mt-1 text-[11px] text-destructive">{endpointErrors[protocol]}</p>
+                            )}
                           </div>
                         </div>
-                      )}
-                    </div>
-                  )}
+                      );
+                    })}
+                  </fieldset>
                 </div>
-              </div>
               </section>
+
+              <section className="rounded-lg border border-border bg-card shadow-sm">
+                <div className="flex items-center justify-between border-b border-border px-4 py-3">
+                  <span className="text-sm font-medium">Catalog</span>
+                  <div className="flex items-center gap-1.5">
+                    {selected && !creating && (
+                      <Button variant="outline" size="sm" onClick={() => refresh(selected)}>
+                        <RefreshCw className="h-3 w-3" /> Refresh models
+                      </Button>
+                    )}
+                    <Button variant="outline" size="sm" onClick={() => void refreshCapabilityCache()} disabled={cacheRefreshing}>
+                      <Zap className={`h-3 w-3 ${cacheRefreshing ? "animate-spin motion-reduce:animate-none" : ""}`} />
+                      Refresh capability cache
+                    </Button>
+                  </div>
+                </div>
+                <div className="grid gap-3 p-4 md:grid-cols-2">
+                  <div>
+                    <Label htmlFor="provider-manual-models">Manual models</Label>
+                    <Textarea
+                      id="provider-manual-models"
+                      name="manual_models"
+                      value={form.manual_models}
+                      onChange={(e) => setForm({ ...form, manual_models: e.target.value })}
+                      placeholder="mimo-v2.5-pro…"
+                      rows={3}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="min-h-[72px] font-mono text-xs"
+                    />
+                    <p className="mt-1 text-[11px] text-muted-foreground">One model id per line. Empty window/max fields follow the models.dev cache.</p>
+                  </div>
+                  <div>
+                    <Label htmlFor="provider-default-model">Default model</Label>
+                    <Select
+                      id="provider-default-model"
+                      name="default_model"
+                      value={form.default_model}
+                      onChange={(e) => setForm({ ...form, default_model: e.target.value })}
+                    >
+                      <option value="">No default</option>
+                      {models.map((model) => <option key={model} value={model}>{model}</option>)}
+                    </Select>
+                    {models.length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        {cacheRefreshedAt && (
+                          <p className="text-[11px] text-muted-foreground">
+                            Capability cache updated {cacheRefreshedAt}.
+                          </p>
+                        )}
+                        {models.map((model) => {
+                          const override = form.limits?.[model] ?? {};
+                          const hint = cacheHints[model];
+                          return (
+                            <div key={model} className="grid grid-cols-2 gap-2">
+                              <div className="col-span-2 text-[11px] font-mono text-muted-foreground">{model}</div>
+                              <Input
+                                inputMode="numeric"
+                                placeholder={hint?.context_window ? String(hint.context_window) : "Context window"}
+                                value={override.context_window ?? ""}
+                                onChange={(e) => setForm({
+                                  ...form,
+                                  limits: { ...(form.limits ?? {}), [model]: { ...override, context_window: e.target.value } },
+                                })}
+                                aria-label={`${model} context window`}
+                              />
+                              <Input
+                                inputMode="numeric"
+                                placeholder={hint?.max_output_tokens ? String(hint.max_output_tokens) : "Max output"}
+                                value={override.max_output_tokens ?? ""}
+                                onChange={(e) => setForm({
+                                  ...form,
+                                  limits: { ...(form.limits ?? {}), [model]: { ...override, max_output_tokens: e.target.value } },
+                                })}
+                                aria-label={`${model} max output tokens`}
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {selected && (
+                      <div className="mt-3 space-y-2 text-sm">
+                        <div className="text-xs text-muted-foreground">
+                          Generated API key env:{" "}
+                          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
+                            {selected.api_key_env}
+                          </code>
+                        </div>
+                        {(selected.catalog?.refreshed ?? []).length > 0 && (
+                          <div>
+                            <SectionLabel className="mb-1.5">Refreshed catalog</SectionLabel>
+                            <div className="flex flex-wrap gap-1">
+                              {(selected.catalog?.refreshed ?? []).map((model) => (
+                                <Badge key={model} variant="outline" size="sm" className="font-mono font-normal">
+                                  {model}
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              <div className="flex items-center justify-between">
+                <SaveActionButton
+                  label={creating ? "Create provider" : "Save provider"}
+                  pending={saving}
+                  saved={savedNotice}
+                  disabled={!canSubmit}
+                  onClick={() => void (creating ? create() : save())}
+                />
+                {selected && !creating && (
+                  <Button
+                    variant="outline"
+                    className="border-destructive/30 text-destructive hover:bg-destructive/5"
+                    onClick={() => setConfirmDelete(selected)}
+                  >
+                    <Trash2 className="h-4 w-4" /> Delete
+                  </Button>
+                )}
+              </div>
             </>
           )}
         </SettingsDetailPane>
@@ -764,36 +771,6 @@ export function ModelProvidersPage() {
         />
       )}
     </SettingsPageShell>
-  );
-}
-
-function SectionLabel({ children }: { children: ReactNode }) {
-  return (
-    <h4 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-      {children}
-    </h4>
-  );
-}
-
-function KeyStatusBadge({ binding }: { binding?: CredentialBinding }) {
-  if (!binding || binding.disabled) {
-    return (
-      <Badge variant="outline" size="sm" className="shrink-0 font-normal text-muted-foreground">
-        no key
-      </Badge>
-    );
-  }
-  if (binding.source.kind === "literal") {
-    return (
-      <Badge variant="success" size="sm" className="shrink-0 font-normal">
-        key set
-      </Badge>
-    );
-  }
-  return (
-    <Badge variant="info" size="sm" className="shrink-0 font-normal">
-      {binding.source.kind}
-    </Badge>
   );
 }
 

@@ -84,7 +84,8 @@ describe("SessionHomePage", () => {
 
     await screen.findByRole("option", { name: "MiMo" });
     await user.type(screen.getByLabelText("Initial input"), "Inspect the standalone target");
-    const mode = screen.getByLabelText("Blackboard Mode");
+    await user.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
+    const mode = screen.getByLabelText("Blackboard conclusions");
     expect(screen.getByRole("option", { name: "Disabled" })).toBeEnabled();
     await user.selectOptions(mode, "disabled");
     expect(screen.getByText(/does not receive Blackboard state or Blackboard access/i)).toBeInTheDocument();
@@ -128,8 +129,9 @@ describe("SessionHomePage", () => {
     expect(screen.queryByLabelText("Runtime profile")).not.toBeInTheDocument();
 
     await user.type(screen.getByLabelText("Initial input"), "Inspect the standalone target");
-    await user.selectOptions(screen.getByLabelText("Reasoning effort"), "xhigh");
-    await user.selectOptions(screen.getByLabelText("Blackboard Mode"), "assisted");
+await user.click(screen.getByRole("button", { name: "xhigh" }));
+    await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
+    await user.selectOptions(screen.getByLabelText("Blackboard conclusions"), "assisted");
     await user.click(screen.getByRole("button", { name: /create session/i }));
 
     await waitFor(() => {
@@ -287,7 +289,8 @@ describe("SessionHomePage", () => {
 
     await screen.findByRole("option", { name: "MiMo" });
     await user.type(await screen.findByRole("textbox", { name: /initial input/i }), "Inspect the standalone target");
-    await user.selectOptions(screen.getByRole("combobox", { name: /blackboard mode/i }), "assisted");
+await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
+    await user.selectOptions(screen.getByRole("combobox", { name: /blackboard conclusions/i }), "assisted");
     await user.click(screen.getByRole("button", { name: /create session/i }));
 
     await waitFor(() => {

@@ -4,16 +4,13 @@ import {
   Archive,
   BookOpen,
   ChevronRight,
-  CircleAlert,
-  CircleDot,
   Cpu,
   FolderKanban,
   KeyRound,
-  LoaderCircle,
   MoreHorizontal,
   Network,
   Plus,
-  WifiOff,
+  Search,
 } from "lucide-react";
 import {
   apiGet,
@@ -77,6 +74,8 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [sessionActionId, setSessionActionId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<Session | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const normalizedQuery = searchQuery.trim().toLowerCase();
   const isVisible = useDocumentVisibility();
   // Whether any tracked owner currently has a live, busy runtime. While true the
   // sidebar polls fast (2s) to surface runtime progress; once idle it backs off
@@ -208,10 +207,36 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
     [navigation],
   );
 
-  const visibleSessions = useMemo(
-    () => takeRecentWithCurrent(sessions, currentSessionId, isSessionBusy, sessionActivity),
-    [currentSessionId, sessions],
+  // The search box filters Sessions and Projects by name (case-insensitive)
+  // before the recent/current trimming so a match is never cut by the cap.
+  const filteredSessions = useMemo(
+    () =>
+      normalizedQuery
+        ? sessions.filter((session) => session.title.toLowerCase().includes(normalizedQuery))
+        : sessions,
+    [sessions, normalizedQuery],
   );
+
+  const visibleSessions = useMemo(
+    () => takeRecentWithCurrent(filteredSessions, currentSessionId, isSessionBusy, sessionActivity),
+    [currentSessionId, filteredSessions],
+  );
+
+  const visibleProjects = useMemo(
+    () =>
+      normalizedQuery
+        ? sortedProjects.filter((project) => project.name.toLowerCase().includes(normalizedQuery))
+        : sortedProjects,
+    [sortedProjects, normalizedQuery],
+  );
+
+  // Sessions sharing a title get a relative-time suffix so the rows stay
+  // distinguishable; counts cover every loaded Session, not just visible rows.
+  const sessionNameCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const session of sessions) counts.set(session.title, (counts.get(session.title) ?? 0) + 1);
+    return counts;
+  }, [sessions]);
 
   const toggleProject = (projectId: string, defaultOpen: boolean) => {
     setProjectDisclosure((previous) => {
@@ -259,6 +284,19 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
 
   return (
     <>
+      <div className="shrink-0 px-3 pt-3">
+        <div className="flex h-8 items-center gap-2 rounded-md border border-input bg-background px-2">
+          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <input
+            type="search"
+            aria-label="Filter sessions and projects"
+            placeholder="Filter…"
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+          />
+        </div>
+      </div>
       <nav aria-label="Primary routes" className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
         <section aria-labelledby="non-project-navigation" className="border-b border-sidebar-border/70 pb-3">
           <div className="mb-1 flex items-center gap-1">
@@ -273,6 +311,7 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
             >
               Non-project
             </NavLink>
+            <span className="shrink-0 px-1 text-xs tabular-nums text-muted-foreground">{filteredSessions.length}</span>
             <NavLink
               to="/sessions#new-session"
               aria-label="New session"
@@ -292,6 +331,8 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
               <SidebarError message={sessionError} />
             ) : sessions.length === 0 ? (
               <SidebarEmpty message="No open sessions" link={{ to: "/sessions#new-session", label: "New session" }} onNavigate={onNavigate} />
+            ) : visibleSessions.length === 0 ? (
+              <SidebarStatus label={`No sessions match "${searchQuery.trim()}"`} />
             ) : (
               <>
                 {visibleSessions.map((session) => (
@@ -300,6 +341,7 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
                     session={session}
                     current={session.id === currentSessionId}
                     busy={sessionActionId === session.id}
+                    duplicate={(sessionNameCounts.get(session.title) ?? 0) > 1}
                     onNavigate={onNavigate}
                     onRename={(session) => setRenameTarget(session)}
                     onArchive={handleSessionArchive}
@@ -327,6 +369,7 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
                 Projects
               </span>
             </NavItem>
+            <span className="shrink-0 px-1 text-xs tabular-nums text-muted-foreground">{visibleProjects.length}</span>
             <NavLink
               to="/?new=1"
               aria-label="New project"
@@ -346,9 +389,11 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
             <SidebarError message={projectError} />
           ) : sortedProjects.length === 0 ? (
             <SidebarEmpty message="No projects" link={{ to: "/?new=1", label: "New project" }} onNavigate={onNavigate} />
+          ) : visibleProjects.length === 0 ? (
+            <SidebarStatus label={`No projects match "${searchQuery.trim()}"`} />
           ) : (
             <div className="space-y-1">
-              {sortedProjects.map((project) => {
+              {visibleProjects.map((project) => {
                 const summary = navigation.find((entry) => entry.id === project.id);
                 const defaultOpen = project.id === currentProjectId;
                 const open = projectDisclosure[project.id] ?? readDisclosure(projectDisclosureKey(project.id), defaultOpen);
@@ -516,6 +561,7 @@ function SessionRow({
   session,
   current,
   busy,
+  duplicate,
   onNavigate,
   onRename,
   onArchive,
@@ -523,6 +569,7 @@ function SessionRow({
   session: Session;
   current: boolean;
   busy: boolean;
+  duplicate: boolean;
   onNavigate?: () => void;
   onRename: (session: Session) => void;
   onArchive: (session: Session) => Promise<void>;
@@ -540,6 +587,11 @@ function SessionRow({
           <>
             <RuntimeActivityIndicator activity={session.runtime_activity} failed={session.latest_continuation?.status === "failed"} />
             <span className="truncate">{session.title}</span>
+            {duplicate && (
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {formatRelativeTime(session.last_activity_at ?? session.updated_at)}
+              </span>
+            )}
             <span className="sr-only"> session conversation</span>
             <ActiveIndicator active={isActive || current} />
           </>
@@ -789,26 +841,31 @@ function SidebarEmpty({
 
 function RuntimeActivityIndicator({ activity, failed = false }: { activity?: RuntimeActivity; failed?: boolean }) {
   const state = runtimeActivityState(activity, failed);
-  const Icon = state.icon;
   return (
-    <span role="img" title={state.label} aria-label={state.label} className="inline-flex size-4 shrink-0 items-center justify-center text-muted-foreground">
-      <Icon className={cn("size-3.5", state.busy && "animate-pulse motion-reduce:animate-none")} aria-hidden="true" />
+    <span role="img" title={state.label} aria-label={state.label} className="inline-flex size-4 shrink-0 items-center justify-center">
+      <span
+        aria-hidden="true"
+        className={cn("size-1.5 rounded-full", state.dot, state.busy && "animate-pulse motion-reduce:animate-none")}
+      />
     </span>
   );
 }
 
+// Direction A status dots: a busy Runtime pulses green, a live-but-idle one is
+// blue, and offline/unknown/missing activity falls back to muted gray. Durable
+// failures keep a red dot so they never visually collapse into offline.
 function runtimeActivityState(activity?: RuntimeActivity, failed = false) {
-  if (failed) return { label: "Runtime failure", icon: CircleAlert, busy: false };
+  if (failed) return { label: "Runtime failure", dot: "bg-destructive", busy: false };
   if (activity?.liveness === "live" && activity.turn_activity === "busy") {
-    return { label: "Runtime busy", icon: LoaderCircle, busy: true };
+    return { label: "Runtime busy", dot: "bg-success", busy: true };
   }
-  if (activity?.liveness === "live") return { label: "Runtime live idle", icon: CircleDot, busy: false };
-  if (activity?.liveness === "offline") return { label: "Runtime offline", icon: WifiOff, busy: false };
+  if (activity?.liveness === "live") return { label: "Runtime live idle", dot: "bg-info", busy: false };
+  if (activity?.liveness === "offline") return { label: "Runtime offline", dot: "bg-muted-foreground/40", busy: false };
   if (activity?.liveness === "orphaned") {
-    return { label: "Runtime failure (orphaned)", icon: CircleAlert, busy: false };
+    return { label: "Runtime failure (orphaned)", dot: "bg-destructive", busy: false };
   }
-  if (activity?.liveness === "unknown") return { label: "Runtime unavailable (unknown)", icon: CircleAlert, busy: false };
-  return { label: "Runtime activity unavailable", icon: CircleDot, busy: false };
+  if (activity?.liveness === "unknown") return { label: "Runtime unavailable (unknown)", dot: "bg-muted-foreground/40", busy: false };
+  return { label: "Runtime activity unavailable", dot: "bg-muted-foreground/40", busy: false };
 }
 
 function isSessionBusy(session: Session) {
@@ -835,6 +892,35 @@ function navigationActivity(summary: WorkspaceProjectSummary) {
 
 function activityTime(...values: (string | undefined)[]) {
   return Math.max(...values.map((value) => (value ? Date.parse(value) : Number.NEGATIVE_INFINITY)));
+}
+
+const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+
+const RELATIVE_TIME_DIVISIONS: { amount: number; unit: Intl.RelativeTimeFormatUnit }[] = [
+  { amount: 60, unit: "second" },
+  { amount: 60, unit: "minute" },
+  { amount: 24, unit: "hour" },
+  { amount: 7, unit: "day" },
+  { amount: 4.34524, unit: "week" },
+  { amount: 12, unit: "month" },
+  { amount: Number.POSITIVE_INFINITY, unit: "year" },
+];
+
+// Compact "2 days ago"-style timestamp that disambiguates same-named Sessions
+// in the Sidebar. The repo's format helpers are all absolute, so this is the
+// one relative-time formatter.
+function formatRelativeTime(value: string | undefined) {
+  if (!value) return "";
+  const time = Date.parse(value);
+  if (Number.isNaN(time)) return "";
+  let delta = (time - Date.now()) / 1000;
+  for (const division of RELATIVE_TIME_DIVISIONS) {
+    if (Math.abs(delta) < division.amount) {
+      return relativeTimeFormatter.format(Math.round(delta), division.unit);
+    }
+    delta /= division.amount;
+  }
+  return "";
 }
 
 function takeRecentWithCurrent<T>(

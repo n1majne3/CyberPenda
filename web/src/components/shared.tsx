@@ -52,7 +52,7 @@ export function SettingsPageHeader({
   className,
 }: {
   title: string;
-  description: ReactNode;
+  description?: ReactNode;
   actions?: ReactNode;
   eyebrow?: string;
   className?: string;
@@ -71,10 +71,21 @@ export function SettingsPageHeader({
           </p>
         )}
         <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
-        <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{description}</p>
+        {description && (
+          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{description}</p>
+        )}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
     </div>
+  );
+}
+
+/** Uppercase tracking-wide section label used for section headers. */
+export function SectionLabel({ className, children, ...props }: HTMLAttributes<HTMLParagraphElement>) {
+  return (
+    <p className={cn("font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground", className)} {...props}>
+      {children}
+    </p>
   );
 }
 

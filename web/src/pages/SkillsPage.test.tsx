@@ -63,11 +63,10 @@ describe("SkillsPage", () => {
     expect(layout).toHaveClass("lg:min-h-0", "lg:flex-1");
     expect(await screen.findByTestId("skills-library-list")).toBeInTheDocument();
     expect(screen.getByTestId("skills-form-panel")).toHaveClass(
-      "rounded-lg",
-      "border",
-      "bg-card",
+      "flex",
       "min-w-0",
-      "overflow-hidden",
+      "flex-col",
+      "lg:overflow-y-auto",
     );
     expect(await screen.findByTestId("skill-card-recon-helper")).toBeInTheDocument();
     expect(screen.getByLabelText("Search skills")).toBeInTheDocument();
@@ -117,7 +116,7 @@ describe("SkillsPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Skills" })).toBeInTheDocument();
     expect(await screen.findByText("Recon Helper")).toBeInTheDocument();
-    expect(screen.getByText("@acme/recon-skill@1.2.3")).toBeInTheDocument();
+    expect(screen.getByText("npm")).toBeInTheDocument();
     expect(screen.queryByText("recon-api-key")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /edit Recon Helper/i }));
@@ -269,7 +268,7 @@ describe("SkillsPage", () => {
     expect(screen.getByText(/new Task or Session/i)).toBeInTheDocument();
   });
 
-  it("does not show source labels or source-prefixed ids for built-in skills", async () => {
+  it("strips source prefixes from built-in skill names, ids, and descriptions", async () => {
     const fetchMock = mockApi({
       "/api/runtime-profiles": {
         profiles: [
@@ -310,9 +309,10 @@ describe("SkillsPage", () => {
 
     renderPage();
 
-    expect(await screen.findByRole("heading", { name: "vulnerabilities-xss" })).toBeInTheDocument();
+    const builtinRow = await screen.findByTestId("skill-card-cyberstrikeai-vulnerabilities-xss");
+    expect(within(builtinRow).getAllByText("vulnerabilities-xss")).toHaveLength(2);
     expect(screen.getByText("XSS testing methodology")).toBeInTheDocument();
-    expect(screen.queryByText("builtin")).not.toBeInTheDocument();
+    expect(within(builtinRow).getByText("builtin")).toBeInTheDocument();
     expect(screen.queryByText(/cyberstrikeai/i)).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /edit vulnerabilities-xss/i }));
@@ -345,7 +345,7 @@ describe("SkillsPage", () => {
 
     renderPage();
 
-    expect(await screen.findByRole("heading", { name: "Library actions" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Upload / edit Skill" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Skill ID")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getAllByRole("button", { name: /new skill/i })[0]!);
@@ -376,7 +376,7 @@ describe("SkillsPage", () => {
 
     renderPage();
 
-    await screen.findByRole("heading", { name: "Library actions" });
+    await screen.findByRole("heading", { name: "Upload / edit Skill" });
     const archive = new File(["archive bytes"], "recon-helper.zip", { type: "application/zip" });
     await userEvent.upload(screen.getByLabelText("Skill bundle archive"), archive);
     await userEvent.click(screen.getByRole("button", { name: "Upload archive" }));

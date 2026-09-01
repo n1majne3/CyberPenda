@@ -1,16 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
-  Ban,
   KeyRound,
   LoaderCircle,
   Pencil,
   Plus,
   RefreshCw,
+  Search,
   Trash2,
   X,
 } from "lucide-react";
 import { apiGet, apiPut, apiDelete, type CredentialBinding, type ModelProvider, type RuntimeProfile } from "@/lib/api";
-import { Badge, Button, Input, Label, Select } from "@/components/ui";
+import { Badge, Button, Chip, Input, Label, Select } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   SettingsAlert,
@@ -20,12 +21,8 @@ import {
   SettingsPageShell,
 } from "@/components/shared";
 import {
-  SettingsChipFilter,
   SettingsDetailPane,
   SettingsListColumn,
-  SettingsSearchField,
-  SettingsSegmentedFilter,
-  SettingsStatSummary,
 } from "@/components/settingsLibrary";
 import { cn } from "@/lib/utils";
 
@@ -233,7 +230,6 @@ export function CredentialBindingsPage() {
         className="mb-4 shrink-0"
         title="Credential bindings"
         eyebrow="Configuration"
-        description="Global credential sources. Project overrides stay on project dashboards; model provider API keys usually live with Model providers."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={() => load()} aria-label="Refresh credentials">
@@ -250,51 +246,82 @@ export function CredentialBindingsPage() {
 
       <SettingsSplitLayout data-testid="credential-bindings-settings-layout" variant="management" fill>
         <SettingsListColumn data-testid="credential-bindings-settings-list">
-          <SettingsPanel className="gap-4 lg:shrink-0">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-              <div className="min-w-0">
-                <p className="text-sm font-medium">Credential library</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Bindings resolve at preflight for runtime profiles and model providers.
-                </p>
-              </div>
-              <SettingsStatSummary value={activeCount} unit="active" total={bindings.length} />
+          <div className="flex items-center justify-between lg:shrink-0">
+            <div>
+              <h2 className="text-base font-semibold">Credential library</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">Bindings 在 preflight 时解析，用于 runtime profiles 和 model providers。</p>
             </div>
+            <div className="text-right">
+              <span className="text-xl font-semibold">{activeCount}</span>
+              <span className="text-xs text-muted-foreground"> active · {bindings.length} total</span>
+            </div>
+          </div>
 
-            <div className="flex flex-col gap-3 border-t border-border pt-4">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <SettingsSearchField
-                  id="credentials-search"
-                  name="credentials_search"
-                  value={query}
-                  onChange={setQuery}
-                  placeholder="Search ref, source, provider, or profile…"
-                  aria-label="Search credentials"
-                />
-                <SettingsSegmentedFilter
-                  aria-label="Filter by status"
-                  value={statusFilter}
-                  onChange={setStatusFilter}
-                  options={[
-                    { id: "all", label: "All", count: bindings.length },
-                    { id: "active", label: "Active", count: activeCount },
-                    { id: "disabled", label: "Disabled", count: disabledCount },
-                  ]}
-                />
-              </div>
-
-              <SettingsChipFilter
-                aria-label="Filter by source kind"
-                value={sourceFilter}
-                onChange={setSourceFilter}
-                options={[
-                  { id: "all", label: "Any source" },
-                  { id: "env", label: "env" },
-                  { id: "literal", label: "literal" },
-                ]}
+          <div className="flex items-center gap-2 lg:shrink-0">
+            <div className="flex rounded-lg border border-input p-0.5" role="group" aria-label="Filter by status">
+              {(
+                [
+                  ["all", "All", bindings.length],
+                  ["active", "Active", activeCount],
+                  ["disabled", "Disabled", disabledCount],
+                ] as const
+              ).map(([id, label, count]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setStatusFilter(id)}
+                  aria-pressed={statusFilter === id}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-xs",
+                    statusFilter === id
+                      ? "bg-primary font-medium text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {label} {count}
+                </button>
+              ))}
+            </div>
+            <div className="flex rounded-lg border border-input p-0.5" role="group" aria-label="Filter by source kind">
+              {(
+                [
+                  ["all", "Any source"],
+                  ["env", "env"],
+                  ["literal", "literal"],
+                ] as const
+              ).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setSourceFilter(id)}
+                  aria-pressed={sourceFilter === id}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-xs",
+                    sourceFilter === id
+                      ? "bg-secondary font-medium"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="flex-1" />
+            <div className="flex h-8 w-[220px] items-center gap-2 rounded-md border border-input bg-background px-2">
+              <Search className="h-3.5 w-3.5 text-muted-foreground" />
+              <input
+                id="credentials-search"
+                name="credentials_search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search ref, source, provider, or profile…"
+                aria-label="Search credentials"
+                autoComplete="off"
+                spellCheck={false}
+                className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
               />
             </div>
-          </SettingsPanel>
+          </div>
 
           {loading ? (
             <SettingsPanel className="items-center justify-center py-12 text-center lg:min-h-0 lg:flex-1 lg:overflow-y-auto" role="status" aria-label="Loading credential bindings">
@@ -335,94 +362,89 @@ export function CredentialBindingsPage() {
               </Button>
             </SettingsPanel>
           ) : (
-            <SettingsPanel
-              className="flex flex-col gap-0 overflow-hidden p-0 lg:min-h-0 lg:flex-1"
+            <div
+              className="overflow-hidden rounded-lg border border-border bg-card shadow-sm lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain"
               data-testid="credentials-library-list"
             >
-              <div className="hidden border-b border-border bg-muted/30 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:grid sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_auto] sm:gap-3 lg:shrink-0">
-                <span>Reference</span>
-                <span>Source</span>
-                <span>Used by</span>
-                <span className="w-9 text-right"> </span>
-              </div>
-              <ul className="divide-y divide-border lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
-                {filteredBindings.map((binding) => {
-                  const provider = modelProviderForRef(binding.credential_ref);
-                  const usedByProfiles = profilesUsingRef(binding.credential_ref);
-                  const destinationEnv =
-                    binding.source.destination_env ||
-                    (binding.source.kind === "env" ? binding.source.value : "");
-                  const sourceDisplay = binding.disabled
-                    ? null
-                    : formatSourceDisplay(binding.source.kind, binding.source.value);
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                    <th className="px-4 py-2.5 font-medium">Reference</th>
+                    <th className="px-4 py-2.5 font-medium">Source</th>
+                    <th className="px-4 py-2.5 font-medium">Used by</th>
+                    <th className="w-[80px] px-4 py-2.5 font-medium"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {filteredBindings.map((binding) => {
+                    const provider = modelProviderForRef(binding.credential_ref);
+                    const usedByProfiles = profilesUsingRef(binding.credential_ref);
+                    const destinationEnv =
+                      binding.source.destination_env ||
+                      (binding.source.kind === "env" ? binding.source.value : "");
+                    const sourceDisplay = binding.disabled
+                      ? null
+                      : formatSourceDisplay(binding.source.kind, binding.source.value);
 
-                  return (
-                    <li
-                      key={binding.id}
-                      data-testid={`credential-row-${binding.id}`}
-                      className={cn(
-                        "px-4 py-3 transition-colors",
-                        binding.disabled && "opacity-75",
-                      )}
-                    >
-                      <div className="grid items-start gap-3 sm:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-center">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="truncate font-mono text-sm font-medium">
-                              {binding.credential_ref}
-                            </span>
-                            <Badge variant={binding.disabled ? "destructive" : "primary"} size="sm">
-                              {binding.scope}
-                            </Badge>
+                    return (
+                      <tr
+                        key={binding.id}
+                        data-testid={`credential-row-${binding.id}`}
+                        className={cn(
+                          "group transition-colors hover:bg-muted/30",
+                          binding.disabled && "opacity-75",
+                        )}
+                      >
+                        <td className="px-4 py-3">
+                          <div className="truncate font-mono font-medium">{binding.credential_ref}</div>
+                          <div className="mt-1 flex items-center gap-1">
+                            <Chip variant="neutral" className="h-4 text-[9px]">{binding.scope}</Chip>
                             {binding.disabled && (
-                              <Badge variant="destructive" size="sm">
-                                <Ban className="h-3 w-3" />
-                                disabled
-                              </Badge>
+                              <Chip variant="danger" className="h-4 text-[9px]">disabled</Chip>
                             )}
                           </div>
                           {provider && (
-                            <p className="mt-1 text-xs text-muted-foreground">
-                              Model provider · {provider.name}
-                            </p>
+                            <div className="mt-0.5 text-xs text-muted-foreground">
+                              Model provider ·{" "}
+                              <Link
+                                to={`/model-providers?selected=${provider.id}`}
+                                className="text-info hover:underline"
+                              >
+                                {provider.name}
+                              </Link>
+                            </div>
                           )}
-                        </div>
-
-                        <div className="min-w-0">
+                        </td>
+                        <td className="px-4 py-3">
                           {binding.disabled ? (
                             <span className="text-xs text-muted-foreground">Not resolved</span>
                           ) : (
-                            <div className="min-w-0">
+                            <>
                               {destinationEnv && (
-                                <p className="truncate font-mono text-[11px] font-medium" title={destinationEnv}>
+                                <div className="truncate font-mono text-xs" title={destinationEnv}>
                                   {destinationEnv}
-                                </p>
+                                </div>
                               )}
-                              <div className="mt-0.5 flex items-center gap-1">
-                                <Badge variant="outline" size="sm" className="font-normal">
-                                  {binding.source.kind}
-                                </Badge>
+                              <div className="text-xs text-muted-foreground">
+                                {binding.source.kind}
                                 {sourceDisplay && (
-                                  <span className="truncate font-mono text-[11px] text-muted-foreground" title={sourceDisplay}>
-                                    {sourceDisplay}
-                                  </span>
+                                  <> · <span className="font-mono">{sourceDisplay}</span></>
                                 )}
                               </div>
-                            </div>
+                            </>
                           )}
-                        </div>
-
-                        <div className="min-w-0">
+                        </td>
+                        <td className="px-4 py-3 text-muted-foreground">
                           {/* Classification first: a binding is either a Model
                               Provider key (managed on the Model providers page)
                               or a Global Environment Variable (injected into
                               every Runtime). Profile references are secondary. */}
                           {provider ? (
-                            <span className="text-xs font-medium text-muted-foreground">
+                            <span className="text-xs font-medium">
                               Provider key · {provider.name}
                             </span>
                           ) : (
-                            <span className="text-xs font-medium text-muted-foreground">
+                            <span className="text-xs font-medium">
                               Global env var
                             </span>
                           )}
@@ -440,39 +462,39 @@ export function CredentialBindingsPage() {
                               )}
                             </div>
                           )}
-                        </div>
-
-                        <div className="flex justify-end gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={`Edit ${binding.credential_ref} binding`}
-                            onClick={() => startEdit(binding)}
-                            className="text-muted-foreground hover:text-foreground"
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label={`Delete ${binding.credential_ref} binding`}
-                            onClick={() => setConfirmDelete({ id: binding.id, credentialRef: binding.credential_ref })}
-                            className="text-muted-foreground hover:text-destructive"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center justify-end gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`Edit ${binding.credential_ref} binding`}
+                              onClick={() => startEdit(binding)}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`Delete ${binding.credential_ref} binding`}
+                              onClick={() => setConfirmDelete({ id: binding.id, credentialRef: binding.credential_ref })}
+                              className="text-destructive"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
               {filteredBindings.length !== bindings.length && (
                 <div className="border-t border-border bg-muted/20 px-4 py-2 text-xs text-muted-foreground">
                   Showing {filteredBindings.length} of {bindings.length} bindings
                 </div>
               )}
-            </SettingsPanel>
+            </div>
           )}
         </SettingsListColumn>
 
@@ -589,20 +611,17 @@ export function CredentialBindingsPage() {
               </div>
             </SettingsDetailPane>
           ) : !creating ? (
-            <SettingsPanel data-testid="credential-binding-create-panel" className="gap-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
-              <div>
-                <h3 className="font-medium">Library actions</h3>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Reference an existing secret source without storing the value in the UI unless you choose literal.
-                </p>
-              </div>
-              <Button onClick={startCreate} className="w-full justify-start">
+            <div
+              data-testid="credential-binding-create-panel"
+              className="rounded-lg border border-border bg-card p-4 shadow-sm"
+            >
+              <h3 className="text-sm font-medium">Library actions</h3>
+              <p className="mt-1.5 text-xs text-muted-foreground">引用现有密钥源而不在 UI 中存储值，除非选择 literal。</p>
+              <Button onClick={startCreate} className="mt-3 w-full">
                 <Plus className="h-4 w-4" /> New binding
               </Button>
-              <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                Prefer model-provider API keys on the Model providers page when the secret is only for LLM auth.
-              </div>
-            </SettingsPanel>
+              <p className="mt-3 text-xs text-muted-foreground">优先在 Model providers 页面管理模型 provider API key，当密钥仅用于 LLM 认证时。</p>
+            </div>
           ) : (
             <SettingsDetailPane
               data-testid="credential-binding-create-panel"

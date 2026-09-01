@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BookOpen, CheckCircle2, ChevronRight, XCircle } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AlertTriangle, BookOpen, Bookmark, CheckCircle2, ChevronRight, Container, GitBranch, XCircle, type LucideIcon } from "lucide-react";
 import {
   apiGet,
   apiPost,
@@ -13,6 +13,8 @@ import {
   type Skill,
 } from "@/lib/api";
 import { Card, Label, Select } from "@/components/ui";
+import { SectionLabel } from "@/components/shared";
+import { cn } from "@/lib/utils";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "@/pages/runtimeProfileForm";
 import {
   canLaunch,
@@ -350,169 +352,205 @@ export function RuntimeLaunchControls({
   // UI value maps Docker/Podman (container engines) + Host; backend still uses runner=sandbox|host.
   const runnerSelectValue = form.runner === "host" ? "host" : containerCLI;
   const engineLabel = form.runner === "host" ? "host" : containerCLI;
+  const runnerSummary = form.runner === "host"
+    ? "Host"
+    : `${engineLabel === "podman" ? "Podman" : "Docker"} · ${sandboxNetwork === "host_proxy_only" ? "Host proxy only" : "Default bridge"} · VPN TUN ${sandboxVPNTun ? "开" : "关"}`;
+  const skillsSummary = skillsPreviewLoading
+    ? "Loading…"
+    : skillsPreviewError
+      ? "Error"
+      : `${enabledSkillsPreview.length} enabled`;
 
   return (
     <>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div>
-          <Label htmlFor="launch-runtime">Runtime</Label>
-          <Select id="launch-runtime" name="runtime" value={form.runtime} disabled={presetMode} onChange={(event) => updateRuntime(event.target.value)}>
-            {launchRuntimePlugins.map((plugin) => <option key={plugin.id} value={plugin.id}>{plugin.name}</option>)}
-          </Select>
+      <section className="rounded-lg border border-border bg-card shadow-sm">
+        <div className="border-b border-border px-4 py-3">
+          <span className="text-sm font-medium">Runtime 与模型</span>
         </div>
-        <div>
-          <Label htmlFor="launch-runner">Runner</Label>
-          <Select
-            id="launch-runner"
-            name="runner"
-            value={runnerSelectValue}
-            onChange={(event) => {
-              const value = event.target.value;
-              if (value === "host") {
-                setForm((current) => ({ ...current, runner: "host" }));
-              } else {
-                setForm((current) => ({ ...current, runner: "sandbox" }));
-                setContainerCLI(value === "podman" ? "podman" : "docker");
-                setHostActivated(false);
-              }
-              setPreflight(null);
-            }}
-          >
-            <option value="docker">Docker</option>
-            <option value="podman">Podman</option>
-            <option value="host">Host</option>
-          </Select>
-          {form.runner === "sandbox" && (
-            <p className="mt-1 text-xs text-muted-foreground">
-              Container engine <span className="font-mono">{engineLabel}</span> runs the isolated task workdir.
-            </p>
-          )}
-        </div>
-      </div>
-
-      {form.runner === "sandbox" && (
-        <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
           <div>
-            <Label htmlFor="launch-sandbox-network">{engineLabel === "podman" ? "Podman network" : "Docker network"}</Label>
-            <Select
-              id="launch-sandbox-network"
-              name="sandbox_network"
-              value={sandboxNetwork}
-              onChange={(event) => {
-                const next = event.target.value;
-                setSandboxNetwork(next);
-                // host_proxy_only drops NET_ADMIN after the firewall is installed,
-                // so it cannot host an in-container OpenVPN TUN client.
-                if (next === "host_proxy_only") setSandboxVPNTun(false);
-                setPreflight(null);
-              }}
-            >
-              <option value="">Default bridge</option>
-              <option value="host_proxy_only">Host proxy only</option>
+            <Label htmlFor="launch-runtime">Runtime</Label>
+            <Select id="launch-runtime" name="runtime" value={form.runtime} disabled={presetMode} onChange={(event) => updateRuntime(event.target.value)}>
+              {launchRuntimePlugins.map((plugin) => <option key={plugin.id} value={plugin.id}>{plugin.name}</option>)}
             </Select>
           </div>
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              id="launch-sandbox-vpn-tun"
-              name="sandbox_vpn_tun"
-              checked={sandboxVPNTun}
-              disabled={sandboxNetwork === "host_proxy_only"}
-              onChange={(event) => {
-                setSandboxVPNTun(event.target.checked);
-                setPreflight(null);
-              }}
-              className="mt-0.5 h-4 w-4 accent-primary"
-            />
-            <span>
-              <span className="font-medium">VPN TUN</span>
-              <span className="mt-0.5 block text-xs text-muted-foreground">
-                Mount <span className="font-mono">/dev/net/tun</span> and grant{" "}
-                <span className="font-mono">NET_ADMIN</span> in the{" "}
-                <span className="font-mono">{engineLabel}</span> container so OpenVPN can create{" "}
-                <span className="font-mono">tun0</span>. Unavailable with host proxy only.
-              </span>
-            </span>
-          </label>
+          <div>
+            <Label htmlFor="launch-model-provider">Model provider</Label>
+            <Select id="launch-model-provider" name="model_provider" value={form.modelProviderId} disabled={presetMode} onChange={(event) => updateModelProvider(event.target.value)}>
+              {compatibleProviders.length === 0
+                ? <option value="">No compatible providers</option>
+                : compatibleProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
+            </Select>
+          </div>
+          <div>
+            <Label htmlFor="launch-model">Model</Label>
+            <Select
+              id="launch-model"
+              name="model"
+              value={form.modelOverride}
+              onChange={(event) => { setForm((current) => ({ ...current, modelOverride: event.target.value })); setPreflight(null); }}
+              disabled={!presetMode && modelOptions.length === 0}
+            >
+              {modelOptions.length === 0 ? (
+                <option value="">{form.modelOverride || "Default model"}</option>
+              ) : (
+                <>
+                  {form.modelOverride && !modelOptions.includes(form.modelOverride) && <option value={form.modelOverride}>{form.modelOverride}</option>}
+                  {modelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
+                </>
+              )}
+            </Select>
+          </div>
+          <div>
+            <Label id="launch-reasoning-effort-label">Reasoning effort</Label>
+            <div role="group" aria-labelledby="launch-reasoning-effort-label" className="mt-1.5 flex rounded-lg border border-input p-0.5">
+              {REASONING_EFFORT_VALUES.map((effort) => (
+                <button
+                  key={effort}
+                  type="button"
+                  aria-pressed={displayReasoningEffort(form.reasoningEffort) === effort}
+                  onClick={() => { setForm((current) => ({ ...current, reasoningEffort: effort })); setPreflight(null); }}
+                  className={cn(
+                    "flex-1 rounded-md px-2 py-1 text-xs transition-colors",
+                    displayReasoningEffort(form.reasoningEffort) === effort
+                      ? "bg-primary font-medium text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {effort}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
-      )}
+      </section>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div>
-          <Label htmlFor="launch-model-provider">Model provider</Label>
-          <Select id="launch-model-provider" name="model_provider" value={form.modelProviderId} disabled={presetMode} onChange={(event) => updateModelProvider(event.target.value)}>
-            {compatibleProviders.length === 0
-              ? <option value="">No compatible providers</option>
-              : compatibleProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-          </Select>
-        </div>
-        <div>
-          <Label htmlFor="launch-model">Model</Label>
-          <Select
-            id="launch-model"
-            name="model"
-            value={form.modelOverride}
-            onChange={(event) => { setForm((current) => ({ ...current, modelOverride: event.target.value })); setPreflight(null); }}
-            disabled={modelOptions.length === 0}
-          >
-            {modelOptions.length === 0 ? (
-              <option value="">{form.modelOverride || "Default model"}</option>
-            ) : (
-              <>
-                {form.modelOverride && !modelOptions.includes(form.modelOverride) && <option value={form.modelOverride}>{form.modelOverride}</option>}
-                {modelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
-              </>
+<div>
+        <SectionLabel className="mb-2 px-0.5">高级配置</SectionLabel>
+        <div className="space-y-2">
+          <ConfigAccordion icon={Container} title="Runner 与网络" summary={runnerSummary}>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <Label htmlFor="launch-runner">Runner</Label>
+                <Select
+                  id="launch-runner"
+                  name="runner"
+                  value={runnerSelectValue}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (value === "host") {
+                      setForm((current) => ({ ...current, runner: "host" }));
+                    } else {
+                      setForm((current) => ({ ...current, runner: "sandbox" }));
+                      setContainerCLI(value === "podman" ? "podman" : "docker");
+                      setHostActivated(false);
+                    }
+                    setPreflight(null);
+                  }}
+                >
+                  <option value="docker">Docker</option>
+                  <option value="podman">Podman</option>
+                  <option value="host">Host</option>
+                </Select>
+                {form.runner === "sandbox" && (
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Container engine <span className="font-mono">{engineLabel}</span> runs the isolated task workdir.
+                  </p>
+                )}
+              </div>
+              {form.runner === "sandbox" && (
+                <div>
+                  <Label htmlFor="launch-sandbox-network">{engineLabel === "podman" ? "Podman network" : "Docker network"}</Label>
+                  <Select
+                    id="launch-sandbox-network"
+                    name="sandbox_network"
+                    value={sandboxNetwork}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      setSandboxNetwork(next);
+                      // host_proxy_only drops NET_ADMIN after the firewall is installed,
+                      // so it cannot host an in-container OpenVPN TUN client.
+                      if (next === "host_proxy_only") setSandboxVPNTun(false);
+                      setPreflight(null);
+                    }}
+                  >
+                    <option value="">Default bridge</option>
+                    <option value="host_proxy_only">Host proxy only</option>
+                  </Select>
+                </div>
+              )}
+            </div>
+            {form.runner === "sandbox" && (
+              <label className="mt-3 flex items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  id="launch-sandbox-vpn-tun"
+                  name="sandbox_vpn_tun"
+                  checked={sandboxVPNTun}
+                  disabled={sandboxNetwork === "host_proxy_only"}
+                  onChange={(event) => {
+                    setSandboxVPNTun(event.target.checked);
+                    setPreflight(null);
+                  }}
+                  className="mt-0.5 h-4 w-4 accent-primary"
+                />
+                <span>
+                  <span className="font-medium">VPN TUN</span>
+                  <span className="mt-0.5 block text-xs text-muted-foreground">
+                    Mount <span className="font-mono">/dev/net/tun</span> and grant{" "}
+                    <span className="font-mono">NET_ADMIN</span> in the{" "}
+                    <span className="font-mono">{engineLabel}</span> container so OpenVPN can create{" "}
+                    <span className="font-mono">tun0</span>. Unavailable with host proxy only.
+                  </span>
+                </span>
+              </label>
             )}
-          </Select>
-        </div>
-        <div>
-          <Label htmlFor="launch-reasoning-effort">Reasoning effort</Label>
-          <Select id="launch-reasoning-effort" name="reasoning_effort" value={displayReasoningEffort(form.reasoningEffort)} onChange={(event) => { setForm((current) => ({ ...current, reasoningEffort: event.target.value })); setPreflight(null); }}>
-            {REASONING_EFFORT_VALUES.map((effort) => <option key={effort} value={effort}>{effort}</option>)}
-          </Select>
-        </div>
-        <div>
-          <Label htmlFor="launch-blackboard-mode">Blackboard Mode</Label>
-          <Select id="launch-blackboard-mode" name="blackboard_conclusion_mode" value={blackboardConclusionMode} onChange={(event) => { setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode); setPreflight(null); }}>
-            <option value="interactive">Interactive</option>
-            <option value="assisted" disabled={!assistedConclusionSupported}>Assisted</option>
-            {allowDisabledBlackboardMode && <option value="disabled">Disabled</option>}
-          </Select>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {blackboardConclusionMode === "disabled"
-              ? "The Runtime does not receive Blackboard state or Blackboard access. All non-Blackboard launch context remains available."
-              : blackboardConclusionMode === "assisted"
-              ? "After tool-producing work, the Harness runs a bounded Conclude Turn and applies its validated Attempt result to the Blackboard."
-              : assistedConclusionSupported
-                ? "The operator decides when Runtime work is written to the Blackboard."
-                : `${assistedConclusionUnavailableReason} ${allowDisabledBlackboardMode ? "Interactive and Disabled launch remain available." : "Interactive launch remains available."}`}
-          </p>
+          </ConfigAccordion>
+
+          <ConfigAccordion icon={GitBranch} title="Blackboard conclusions" summary={blackboardConclusionMode === "assisted" ? "Assisted" : blackboardConclusionMode === "disabled" ? "Disabled" : "Interactive"}>
+            <Label htmlFor="launch-blackboard-conclusions">Blackboard conclusions</Label>
+            <Select id="launch-blackboard-conclusions" name="blackboard_conclusion_mode" value={blackboardConclusionMode} onChange={(event) => { setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode); setPreflight(null); }}>
+              <option value="interactive">Interactive</option>
+              <option value="assisted" disabled={!assistedConclusionSupported}>Assisted</option>
+              {allowDisabledBlackboardMode && <option value="disabled">Disabled</option>}
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {blackboardConclusionMode === "disabled"
+                ? "The Runtime does not receive Blackboard state or Blackboard access. All non-Blackboard launch context remains available."
+                : blackboardConclusionMode === "assisted"
+                  ? "After tool-producing work, the Harness runs a bounded Conclude Turn and applies its validated Attempt result to the Blackboard."
+                  : assistedConclusionSupported
+                    ? "The operator decides when Runtime work is written to the Blackboard."
+                    : `${assistedConclusionUnavailableReason} ${allowDisabledBlackboardMode ? "Interactive and Disabled launch remain available." : "Interactive launch remains available."}`}
+            </p>
+          </ConfigAccordion>
+
+          {controller.profiles.length > 0 && (
+            <ConfigAccordion
+              icon={Bookmark}
+              title="Use saved preset"
+              summary={presetMode ? (controller.profiles.find((profile) => profile.id === presetId)?.name ?? presetId) : "Direct configuration"}
+              open={presetOpen}
+              onOpenChange={setPresetOpen}
+            >
+              <div className="space-y-2">
+                <Label htmlFor="launch-preset">Runtime profile preset</Label>
+                <Select id="launch-preset" name="runtime_profile_preset" value={presetId} onChange={(event) => updatePreset(event.target.value)}>
+                  <option value="">Direct configuration</option>
+                  {runtimePresets.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                </Select>
+                <p className="text-xs text-muted-foreground">A Runtime Profile copies its full advanced configuration into this new {ownerLabel}. Later Profile edits do not change it.</p>
+              </div>
+            </ConfigAccordion>
+          )}
+
+          {canPreviewLaunchSkills(form, presetId) && (
+            <ConfigAccordion icon={BookOpen} title="Skills" summary={skillsSummary}>
+              <LaunchSkillsPreviewCard presetMode={presetMode} profileId={skillsProfileId} loading={skillsPreviewLoading} error={skillsPreviewError} skills={enabledSkillsPreview} ready={skillsPreview !== null} />
+            </ConfigAccordion>
+          )}
         </div>
       </div>
-
-      {controller.profiles.length > 0 && (
-        <Card className="border-border/70 bg-muted/10 p-3">
-          <button type="button" onClick={() => setPresetOpen((open) => !open)} aria-expanded={presetOpen} className="flex w-full items-center gap-2 rounded-md text-left text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50">
-            <ChevronRight className={`size-4 shrink-0 transition-transform ${presetOpen ? "rotate-90" : ""}`} />
-            Use Runtime Profile
-          </button>
-          {presetOpen && (
-            <div className="mt-3 space-y-2">
-              <Label htmlFor="launch-preset">Runtime Profile</Label>
-              <Select id="launch-preset" name="runtime_profile_preset" value={presetId} onChange={(event) => updatePreset(event.target.value)}>
-                <option value="">Direct configuration</option>
-                {runtimePresets.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
-              </Select>
-              <p className="text-xs text-muted-foreground">A Runtime Profile copies its full advanced configuration into this new {ownerLabel}. Later Profile edits do not change it.</p>
-            </div>
-          )}
-        </Card>
-      )}
-
-      {canPreviewLaunchSkills(form, presetId) && (
-        <LaunchSkillsPreviewCard presetMode={presetMode} profileId={skillsProfileId} loading={skillsPreviewLoading} error={skillsPreviewError} skills={enabledSkillsPreview} ready={skillsPreview !== null} />
-      )}
-
       {hostRunner && (
         <Card className="border-warning bg-warning/10 p-3 space-y-2">
           <div className="flex items-center gap-2 text-warning"><AlertTriangle className="h-4 w-4" /><span className="text-sm font-medium">HOST runner — runs on your machine</span></div>
@@ -531,6 +569,47 @@ export function RuntimeLaunchControls({
         </p>
       )}
     </>
+  );
+}
+
+function ConfigAccordion({
+  icon: Icon,
+  title,
+  summary,
+  children,
+  defaultOpen,
+  open,
+  onOpenChange,
+}: {
+  icon: LucideIcon;
+  title: string;
+  summary: string;
+  children: ReactNode;
+  defaultOpen?: boolean;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const [internalOpen, setInternalOpen] = useState(defaultOpen ?? false);
+  const isOpen = open ?? internalOpen;
+  return (
+    <div className="rounded-lg border border-border">
+      <button
+        type="button"
+        aria-expanded={isOpen}
+        onClick={() => {
+          const next = !isOpen;
+          if (open === undefined) setInternalOpen(next);
+          onOpenChange?.(next);
+        }}
+        className="flex w-full items-center gap-2 px-3 py-2.5 text-left"
+      >
+        <ChevronRight className={cn("h-4 w-4 text-muted-foreground transition-transform", isOpen && "rotate-90")} />
+        <Icon className="h-4 w-4 text-muted-foreground" />
+        <span className="text-sm font-medium">{title}</span>
+        <span className="ml-auto text-xs text-muted-foreground">{summary}</span>
+      </button>
+      {isOpen && <div className="border-t border-border px-4 py-3">{children}</div>}
+    </div>
   );
 }
 
@@ -708,14 +787,13 @@ function PreflightCard({ preflight }: { preflight: PreflightResult }) {
 
 function LaunchSkillsPreviewCard({ presetMode, profileId, loading, error, skills, ready }: { presetMode: boolean; profileId: string; loading: boolean; error: string | null; skills: Skill[]; ready: boolean }) {
   return (
-    <Card className="border-border/70 bg-muted/10 p-3">
-      <div className="mb-2 flex items-center gap-2"><BookOpen className="h-4 w-4 text-muted-foreground" /><p className="text-sm font-medium">Skills for this launch</p></div>
+    <div>
       <p className="mb-3 text-xs text-muted-foreground">{launchSkillsPreviewDetail(presetMode)}</p>
       {profileId && <p className="mb-3 font-mono text-[11px] text-muted-foreground truncate">Profile: {profileId}</p>}
       {loading && <p className="text-sm text-muted-foreground">Loading enabled skills…</p>}
       {error && <p className="text-sm text-destructive">{error}</p>}
       {!loading && !error && ready && skills.length === 0 && <p className="text-sm text-muted-foreground">{profileId ? "No skills enabled for this profile." : "No matching skills profile yet."}</p>}
       {!loading && !error && skills.length > 0 && <div className="max-h-60 space-y-2 overflow-y-auto overscroll-y-contain pr-1" aria-label={`${skills.length} enabled skills`}>{skills.map((skill) => <div key={skill.id} className="rounded-lg border border-border/60 bg-background/50 p-2 text-sm"><div className="font-medium">{skill.name || skill.id}</div><div className="font-mono text-xs text-muted-foreground">{skill.id}</div></div>)}</div>}
-    </Card>
+    </div>
   );
 }

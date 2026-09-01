@@ -739,4 +739,184 @@ describe("WorkspaceSidebar", () => {
     taskFetches = vi.mocked(fetch).mock.calls.filter((call) => String(call[0]).includes("/projects/project-other/tasks")).length;
     expect(taskFetches).toBe(1);
   });
+
+  it("filters sessions and projects by name with the sidebar search box", async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/workspace/navigation")) {
+          return response({
+            projects: [
+              navigationSummary("project-alpha", "Alpha project", "2026-08-01T00:00:00Z"),
+              navigationSummary("project-beta", "Beta project", "2026-08-01T00:00:00Z"),
+            ],
+          });
+        }
+        if (url === "/api/sessions?limit=5") {
+          return response({
+            sessions: [
+              session("session-1", "Deploy alpha", "2026-08-01T00:00:00Z"),
+              session("session-2", "Write docs", "2026-08-01T00:00:00Z"),
+            ],
+          });
+        }
+        return response({});
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const filter = await screen.findByRole("searchbox", { name: /filter sessions and projects/i });
+    expect(await screen.findByRole("link", { name: /deploy alpha session conversation/i })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /write docs session conversation/i })).toBeInTheDocument();
+
+    // Case-insensitive match across both Sessions and Projects.
+    await user.type(filter, "ALPHA");
+    expect(screen.getByRole("link", { name: /deploy alpha session conversation/i })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /write docs session conversation/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /alpha project project dashboard/i })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /beta project project dashboard/i })).not.toBeInTheDocument();
+
+    // A query with no matches keeps both groups mounted with an explicit status.
+    await user.clear(filter);
+    await user.type(filter, "zzz");
+    const nonProject = screen.getByRole("region", { name: /non-project/i });
+    expect(within(nonProject).getByText(/no sessions match/i)).toBeInTheDocument();
+    const projects = screen.getByRole("region", { name: /^projects$/i });
+    expect(within(projects).getByText(/no projects match/i)).toBeInTheDocument();
+  });
+
+  it("disambiguates sessions sharing a title with a relative-time suffix", async () => {
+    const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/workspace/navigation") return response({ projects: [] });
+        if (url === "/api/sessions?limit=5") {
+          return response({
+            sessions: [
+              session("session-1", "Duplicate", twoDaysAgo),
+              session("session-2", "Duplicate", fiveDaysAgo),
+              session("session-3", "Unique", twoDaysAgo),
+            ],
+          });
+        }
+        return response({});
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const nonProject = await screen.findByRole("region", { name: /non-project/i });
+    const duplicateLinks = await within(nonProject).findAllByRole("link", { name: /duplicate session conversation/i });
+    expect(duplicateLinks).toHaveLength(2);
+    // Recent-first ordering: the two-day-old duplicate ranks above the five-day one.
+    expect(duplicateLinks[0]).toHaveTextContent("2 days ago");
+    expect(duplicateLinks[1]).toHaveTextContent("5 days ago");
+    // A uniquely-named Session never gets the suffix.
+    const uniqueLink = within(nonProject).getByRole("link", { name: /unique session conversation/i });
+    expect(uniqueLink).not.toHaveTextContent(/ago/);
+  });
+
+  it("shows item counts on the Non-project and Projects group headers", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/workspace/navigation") {
+          return response({
+            projects: [
+              navigationSummary("project-1", "Project one", "2026-08-01T00:00:00Z"),
+              navigationSummary("project-2", "Project two", "2026-08-01T00:00:00Z"),
+              navigationSummary("project-3", "Project three", "2026-08-01T00:00:00Z"),
+            ],
+          });
+        }
+        if (url === "/api/sessions?limit=5") {
+          return response({
+            sessions: [
+              session("session-1", "Session one", "2026-08-01T00:00:00Z"),
+              session("session-2", "Session two", "2026-08-01T00:00:00Z"),
+            ],
+          });
+        }
+        return response({});
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const nonProjectLink = await screen.findByRole("link", { name: /non-project/i });
+    expect(nonProjectLink.parentElement).toHaveTextContent("Non-project2");
+    const projectsLink = screen.getByRole("link", { name: /^projects$/i });
+    expect(projectsLink.parentElement).toHaveTextContent("Projects3");
+  });
+
+  it("renders runtime activity as colored status dots", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/workspace/navigation") return response({ projects: [] });
+        if (url === "/api/sessions?limit=5") {
+          return response({
+            sessions: [
+              {
+                ...session("session-busy", "Busy session", "2026-08-01T00:00:00Z"),
+                runtime_activity: { liveness: "live", turn_activity: "busy" },
+              },
+              {
+                ...session("session-idle", "Idle session", "2026-07-31T00:00:00Z"),
+                runtime_activity: { liveness: "live", turn_activity: "idle" },
+              },
+              {
+                ...session("session-offline", "Offline session", "2026-07-30T00:00:00Z"),
+                runtime_activity: { liveness: "offline" },
+              },
+            ],
+          });
+        }
+        return response({});
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const nonProject = await screen.findByRole("region", { name: /non-project/i });
+    await within(nonProject).findByRole("link", { name: /busy session/i });
+    const busyDot = within(nonProject).getByRole("img", { name: "Runtime busy" }).firstElementChild;
+    expect(busyDot).toHaveClass("bg-success", "animate-pulse");
+    const idleDot = within(nonProject).getByRole("img", { name: "Runtime live idle" }).firstElementChild;
+    expect(idleDot).toHaveClass("bg-info");
+    const offlineDot = within(nonProject).getByRole("img", { name: "Runtime offline" }).firstElementChild;
+    expect(offlineDot).toHaveClass("bg-muted-foreground/40");
+  });
 });

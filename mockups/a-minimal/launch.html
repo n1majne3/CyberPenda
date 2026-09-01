@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Launch · Direction A · CyberPenda mockup</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      colors: {
+        border: "hsl(var(--border))", input: "hsl(var(--input))", ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))", foreground: "hsl(var(--foreground))",
+        primary: { DEFAULT: "hsl(var(--primary))", foreground: "hsl(var(--primary-foreground))" },
+        secondary: { DEFAULT: "hsl(var(--secondary))", foreground: "hsl(var(--secondary-foreground))" },
+        muted: { DEFAULT: "hsl(var(--muted))", foreground: "hsl(var(--muted-foreground))" },
+        accent: { DEFAULT: "hsl(var(--accent))", foreground: "hsl(var(--accent-foreground))" },
+        card: { DEFAULT: "hsl(var(--card))", foreground: "hsl(var(--card-foreground))" },
+        destructive: { DEFAULT: "hsl(var(--destructive))", foreground: "hsl(var(--destructive-foreground))" },
+        success: "hsl(var(--success))", info: "hsl(var(--info))", warning: "hsl(var(--warning))", signal: "hsl(var(--signal))",
+      },
+      borderRadius: { sm: "0.125rem", md: "0.25rem", lg: "var(--radius)", xl: "0.5rem" },
+      fontFamily: { sans: ["Geist", "sans-serif"], mono: ["Geist Mono", "monospace"] },
+      boxShadow: { sm: "var(--shadow-card)", md: "var(--shadow-md)", lg: "var(--shadow-lg)" },
+    } },
+  };
+</script>
+<link rel="stylesheet" href="../shared/mockup.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>window.MOCKUP = { active: null };</script>
+<script src="../shared/mockup.js"></script>
+</head>
+<body>
+<div class="flex h-screen overflow-hidden">
+  <div id="sidebar-slot"></div>
+
+  <main class="flex min-w-0 flex-1 flex-col">
+    <header class="flex-none border-b border-border px-8 py-5">
+      <div class="section-label">Non-project</div>
+      <h1 class="mt-1 text-[20px] font-semibold tracking-tight">New session</h1>
+    </header>
+
+    <div class="flex-1 overflow-y-auto">
+      <div class="mx-auto grid max-w-[1080px] grid-cols-1 gap-6 px-8 py-6 lg:grid-cols-[1fr_300px]">
+
+        <!-- ===== left column ===== -->
+        <div class="space-y-5">
+
+          <!-- Zone 1: goal -->
+          <section class="rounded-xl border border-border bg-card shadow-sm" data-note="目标输入提升为视觉主角：大输入区 + 附件拖拽整合进同一卡片。原来它与 Docker network 等高级项平铺同权重，首屏找不到入口">
+            <div class="p-4">
+              <label class="text-[13px] font-medium">你想探索什么？</label>
+              <textarea rows="4" placeholder="描述目标，例如：对 staging.example.com 做认证面枚举…" class="mt-2 w-full resize-none rounded-lg border border-input bg-background px-3.5 py-3 text-[14px] leading-relaxed outline-none placeholder:text-muted-foreground focus:border-ring"></textarea>
+              <div class="mt-3 flex items-center justify-between rounded-lg border border-dashed border-input bg-muted/30 px-3.5 py-2.5">
+                <div class="flex items-center gap-2.5 text-[12px] text-muted-foreground">
+                  <i data-lucide="paperclip" class="w-4 h-4"></i>
+                  <span>拖拽文件到这里，或 <span class="font-medium text-foreground underline underline-offset-2">浏览</span> · 最多 25 个文件，每个 100 MB</span>
+                </div>
+                <span class="text-[11px] text-muted-foreground">投影到 Session workdir</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- Zone 2: runtime & model -->
+          <section class="rounded-xl border border-border bg-card shadow-sm" data-note="90% 启动只需要这 4 个选择：Runtime / Model provider / Model / Reasoning effort，组成一张紧凑卡片，2×2 网格">
+            <div class="border-b border-border px-4 py-3">
+              <span class="text-[13px] font-medium">Runtime 与模型</span>
+            </div>
+            <div class="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
+              <div class="field">
+                <label>Runtime</label>
+                <button class="control mt-1.5"><span class="flex items-center gap-2"><i data-lucide="terminal" class="w-3.5 h-3.5 text-muted-foreground"></i>Claude Code</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+              </div>
+              <div class="field">
+                <label>Model provider</label>
+                <button class="control mt-1.5"><span>GLM</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+              </div>
+              <div class="field">
+                <label>Model</label>
+                <button class="control mt-1.5"><span class="font-mono">glm-5.2</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+              </div>
+              <div class="field">
+                <label>Reasoning effort</label>
+                <div class="mt-1.5 flex rounded-lg border border-input p-0.5" data-note="Reasoning effort 从下拉改为分段控件：5 个值全部可见、一键切换，省一次点击">
+                  <button class="flex-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:text-foreground">low</button>
+                  <button class="flex-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:text-foreground">medium</button>
+                  <button class="flex-1 rounded-md bg-primary px-2 py-1 text-[12px] font-medium text-primary-foreground">high</button>
+                  <button class="flex-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:text-foreground">xhigh</button>
+                  <button class="flex-1 rounded-md px-2 py-1 text-[12px] text-muted-foreground hover:text-foreground">max</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Zone 3: advanced -->
+          <section data-note="高级配置全部收进手风琴，每组标题右侧显示当前值摘要 — 不展开也能确认配置；默认折叠，首屏从 ~1800px 降到一屏内">
+            <div class="section-label mb-2 px-0.5">高级配置</div>
+
+            <div class="acc">
+              <button class="acc-head">
+                <i data-lucide="chevron-right" class="acc-chev w-4 h-4 text-muted-foreground"></i>
+                <i data-lucide="container" class="w-4 h-4 text-muted-foreground"></i>
+                <span class="acc-title">Runner 与网络</span>
+                <span class="acc-summary">Docker · Default bridge · VPN TUN 关</span>
+              </button>
+              <div class="acc-body">
+                <div class="grid grid-cols-2 gap-4">
+                  <div class="field">
+                    <label>Runner</label>
+                    <button class="control mt-1.5"><span>Docker</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+                    <p class="hint mt-1">容器引擎 docker 运行隔离的 task workdir。</p>
+                  </div>
+                  <div class="field">
+                    <label>Docker network</label>
+                    <button class="control mt-1.5"><span>Default bridge</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+                  </div>
+                </div>
+                <label class="mt-3 flex items-start gap-2 text-[12px]">
+                  <input type="checkbox" class="mt-0.5" />
+                  <span><span class="font-medium">VPN TUN</span><br /><span class="hint">挂载 /dev/net/tun 并授予 NET_ADMIN，使容器内 OpenVPN 可创建 tun0。仅 host proxy 时不可用。</span></span>
+                </label>
+              </div>
+            </div>
+
+            <div class="acc">
+              <button class="acc-head">
+                <i data-lucide="chevron-right" class="acc-chev w-4 h-4 text-muted-foreground"></i>
+                <i data-lucide="git-branch" class="w-4 h-4 text-muted-foreground"></i>
+                <span class="acc-title">Blackboard conclusions</span>
+                <span class="acc-summary">Interactive</span>
+              </button>
+              <div class="acc-body">
+                <div class="grid grid-cols-2 gap-3">
+                  <button class="rounded-lg border-2 border-primary bg-primary/[0.03] p-3 text-left">
+                    <div class="flex items-center gap-2 text-[13px] font-medium"><i data-lucide="user-check" class="w-4 h-4"></i>Interactive</div>
+                    <p class="mt-1 text-[12px] text-muted-foreground">由你决定何时把 Runtime 工作写入 Blackboard。</p>
+                  </button>
+                  <button class="rounded-lg border border-border p-3 text-left hover:border-ring">
+                    <div class="flex items-center gap-2 text-[13px] font-medium"><i data-lucide="sparkles" class="w-4 h-4"></i>Assisted</div>
+                    <p class="mt-1 text-[12px] text-muted-foreground">Harness 检测语义债务并自动派发 Conclude Turn。</p>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="acc">
+              <button class="acc-head">
+                <i data-lucide="chevron-right" class="acc-chev w-4 h-4 text-muted-foreground"></i>
+                <i data-lucide="bookmark" class="w-4 h-4 text-muted-foreground"></i>
+                <span class="acc-title">使用已保存的 preset</span>
+                <span class="acc-summary">未选择</span>
+              </button>
+              <div class="acc-body">
+                <button class="control"><span class="text-muted-foreground">选择 Runtime Profile Preset…</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+                <p class="hint mt-1.5">选择 preset 后 Runtime 与 Model provider 锁定为 preset 值，仍可单独覆盖模型。</p>
+              </div>
+            </div>
+
+            <div class="acc">
+              <button class="acc-head">
+                <i data-lucide="chevron-right" class="acc-chev w-4 h-4 text-muted-foreground"></i>
+                <i data-lucide="book-open" class="w-4 h-4 text-muted-foreground"></i>
+                <span class="acc-title">Skills</span>
+                <span class="acc-summary">121 个已启用</span>
+              </button>
+              <div class="acc-body">
+                <p class="hint mb-2">Skills 跟随 launch 解析出的 Runtime Profile。库内 Skills 默认启用，除非该 profile  opted out。</p>
+                <div class="flex flex-wrap gap-1.5">
+                  <span class="chip chip-neutral">api-security</span>
+                  <span class="chip chip-neutral">apk-reverse</span>
+                  <span class="chip chip-neutral">attack-chain</span>
+                  <span class="chip chip-neutral">binary-diff</span>
+                  <span class="chip chip-neutral">browser-automation</span>
+                  <span class="chip chip-neutral">+116</span>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- ===== right rail: summary ===== -->
+        <aside class="lg:sticky lg:top-6 h-fit" data-note="新增右侧粘性 Launch 摘要栏：关键选择实时汇总 + 主操作按钮始终可见 — 不再滚到 1800px 底部找启动按钮">
+          <div class="rounded-xl border border-border bg-card shadow-sm">
+            <div class="border-b border-border px-4 py-3"><span class="text-[13px] font-medium">Launch 摘要</span></div>
+            <dl class="space-y-2.5 px-4 py-3.5 text-[12px]">
+              <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Runtime</dt><dd class="font-medium">Claude Code</dd></div>
+              <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Model</dt><dd class="font-mono">GLM · glm-5.2</dd></div>
+              <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Effort</dt><dd class="font-medium">high</dd></div>
+              <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Runner</dt><dd class="font-medium">Docker</dd></div>
+              <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Blackboard</dt><dd class="font-medium">Interactive</dd></div>
+              <div class="flex justify-between gap-3"><dt class="text-muted-foreground">Skills</dt><dd class="font-medium">121 enabled</dd></div>
+            </dl>
+            <div class="border-t border-border p-3.5">
+              <button class="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-primary text-[13px] font-medium text-primary-foreground hover:opacity-90">
+                <i data-lucide="rocket" class="w-4 h-4"></i>Launch session
+              </button>
+              <p class="mt-2 text-center text-[11px] text-muted-foreground">启动前会自动运行 Preflight 检查</p>
+            </div>
+          </div>
+          <div class="mt-3 rounded-xl border border-dashed border-border p-3.5 text-[12px] text-muted-foreground" data-note="Preflight 预览入口前置：启动前即可看到将解析的 profile 与凭据就绪状态，减少启动后报错">
+            <div class="flex items-center gap-2 font-medium text-foreground"><i data-lucide="shield-check" class="w-4 h-4 text-success"></i>Preflight 预览</div>
+            <p class="mt-1">Profile 将解析为 <span class="font-mono">launch_resolve</span> · GLM_API_KEY <span class="text-success">已配置</span></p>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
