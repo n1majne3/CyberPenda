@@ -54,3 +54,5 @@ pentest 2.db-wal
 /scripts/cybergym-*-timeline.json
 /scripts/cybergym-*-investigation.md
 .playwright-mcp
+# Unrelated scratch work (hatch-pet), not part of this repo
+/work/hatch-pet/
