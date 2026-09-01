@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useEffect } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -499,7 +499,7 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
   });
 
   it("does not expose the removed promote operation", async () => {
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.includes("/api/runtime-profiles")) {
         return Promise.resolve(
