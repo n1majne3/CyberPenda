@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { CheckCircle2, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, Plus, Search, Trash2 } from "lucide-react";
 import { apiGet, apiPost, apiPatch, apiDelete, mergedConfigPreview, projectedConfig, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
 import { codexMultiAgentTOMLLines, enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
@@ -175,6 +175,7 @@ export function RuntimeProfilesPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [form, setForm] = useState<ProfileForm>(emptyForm);
   const [draft, setDraft] = useState<ProfileForm | null>(null);
+  const [profileQuery, setProfileQuery] = useState("");
 
   const selected = profiles.find((p) => p.id === selectedId) ?? null;
   const fallbackPlugins = useMemo(() => fallbackRuntimePlugins(), []);
@@ -197,6 +198,29 @@ export function RuntimeProfilesPage() {
     }
     return buckets;
   }, [profiles, providerIds]);
+
+  const normalizedProfileQuery = profileQuery.trim().toLowerCase();
+  const filteredGrouped = useMemo(() => {
+    if (!normalizedProfileQuery) return grouped;
+    const buckets = new Map<string, RuntimeProfile[]>();
+    for (const [provider, items] of grouped) {
+      buckets.set(
+        provider,
+        items.filter((profile) =>
+          [
+            profile.name,
+            pluginLabel(effectivePlugins, profile.provider),
+            profileListModelHint(profile.fields, modelProviders) ?? "",
+          ].some((value) => value.toLowerCase().includes(normalizedProfileQuery)),
+        ),
+      );
+    }
+    return buckets;
+  }, [grouped, normalizedProfileQuery, effectivePlugins, modelProviders]);
+  const visibleProfileCount = useMemo(
+    () => Array.from(filteredGrouped.values()).reduce((sum, items) => sum + items.length, 0),
+    [filteredGrouped],
+  );
 
   async function load() {
     try {
@@ -458,16 +482,31 @@ export function RuntimeProfilesPage() {
                 </p>
               </div>
               <div className="shrink-0 text-right tabular-nums">
-                <span className="text-lg font-semibold tracking-tight">{profiles.length}</span>
-                <span className="ml-1 text-[11px] text-muted-foreground">total</span>
+                <span className="text-lg font-semibold tracking-tight">
+                  {normalizedProfileQuery ? visibleProfileCount : profiles.length}
+                </span>
+                <span className="ml-1 text-[11px] text-muted-foreground">
+                  {normalizedProfileQuery ? `of ${profiles.length}` : "total"}
+                </span>
               </div>
+            </div>
+            <div className="flex h-8 items-center gap-2 rounded-md border border-input bg-background px-2">
+              <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <input
+                type="search"
+                aria-label="Filter runtime profiles"
+                placeholder="Search name, provider, model…"
+                value={profileQuery}
+                onChange={(event) => setProfileQuery(event.target.value)}
+                className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+              />
             </div>
           </SettingsPanel>
 
           <SettingsScrollPanel>
             <div className="space-y-3">
               {providerIds.map((provider) => {
-                const items = grouped.get(provider) ?? [];
+                const items = filteredGrouped.get(provider) ?? [];
                 if (items.length === 0) return null;
                 return (
                   <div key={provider}>
@@ -493,6 +532,11 @@ export function RuntimeProfilesPage() {
               })}
               {profiles.length === 0 && (
                 <p className="px-1 text-sm text-muted-foreground">No profiles yet. Add one to get started.</p>
+              )}
+              {profiles.length > 0 && visibleProfileCount === 0 && (
+                <p className="px-1 text-sm text-muted-foreground">
+                  No profiles match &quot;{profileQuery.trim()}&quot;.
+                </p>
               )}
             </div>
           </SettingsScrollPanel>
@@ -1127,9 +1171,15 @@ function ProfileEditor({
               <Chip variant="neutral">{plugin.id}</Chip>
               <Chip variant="neutral">{plugin.config_projection.primitive}</Chip>
               <Chip variant="neutral">{plugin.transcript.parser}</Chip>
-              {plugin.capabilities.sandbox && <Chip variant="signal">sandbox</Chip>}
-              {plugin.capabilities.host && <Chip variant="signal">host</Chip>}
-              {plugin.capabilities.mcp_config && <Chip variant="signal">mcp</Chip>}
+              {plugin.capabilities.sandbox && (
+                <Chip className="border-transparent bg-primary text-primary-foreground">sandbox</Chip>
+              )}
+              {plugin.capabilities.host && (
+                <Chip className="border-transparent bg-primary text-primary-foreground">host</Chip>
+              )}
+              {plugin.capabilities.mcp_config && (
+                <Chip className="border-transparent bg-primary text-primary-foreground">mcp</Chip>
+              )}
             </div>
           </div>
         )}

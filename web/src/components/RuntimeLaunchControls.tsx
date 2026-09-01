@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { AlertTriangle, BookOpen, Bookmark, CheckCircle2, ChevronRight, Container, GitBranch, XCircle, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Ban, BookOpen, Bookmark, CheckCircle2, ChevronRight, ChevronsUpDown, Container, GitBranch, Rocket, ShieldCheck, Sparkles, Terminal, UserCheck, XCircle, type LucideIcon } from "lucide-react";
 import {
   apiGet,
   apiPost,
   type BlackboardConclusionMode,
+  type CredentialBinding,
   type Health,
   type ModelProvider,
   type PreflightResult,
@@ -12,7 +13,7 @@ import {
   type RuntimeProfile,
   type Skill,
 } from "@/lib/api";
-import { Card, Label, Select } from "@/components/ui";
+import { Button, Card, Label, Select, type SelectProps } from "@/components/ui";
 import { SectionLabel } from "@/components/shared";
 import { cn } from "@/lib/utils";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "@/pages/runtimeProfileForm";
@@ -343,7 +344,7 @@ export function RuntimeLaunchControls({
     ? assistedConclusionUnavailableReason
     : launchUnavailableReason({
         input: initialInput,
-        inputLabel: ownerLabel === "task" ? "Task goal" : "initial input",
+        inputLabel: ownerLabel === "task" ? "Task goal" : "Session goal",
         form,
         presetMode,
         compatibleProviderCount: compatibleProviders.length,
@@ -359,7 +360,14 @@ export function RuntimeLaunchControls({
     ? "Loading…"
     : skillsPreviewError
       ? "Error"
-      : `${enabledSkillsPreview.length} enabled`;
+      : `${enabledSkillsPreview.length} 个已启用`;
+  const blackboardModeCards: { mode: BlackboardConclusionMode; icon: LucideIcon; title: string; description: string; disabled: boolean }[] = [
+    { mode: "interactive", icon: UserCheck, title: "Interactive", description: "由你决定何时把 Runtime 工作写入 Blackboard。", disabled: false },
+    { mode: "assisted", icon: Sparkles, title: "Assisted", description: "Harness 检测语义债务并自动派发 Conclude Turn。", disabled: !assistedConclusionSupported },
+    ...(allowDisabledBlackboardMode
+      ? [{ mode: "disabled" as const, icon: Ban, title: "Disabled", description: ownerLabel === "task" ? "此 Task 不写入 Blackboard。" : "此 Session 不写入 Blackboard。", disabled: false }]
+      : []),
+  ];
 
   return (
     <>
@@ -370,21 +378,21 @@ export function RuntimeLaunchControls({
         <div className="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
           <div>
             <Label htmlFor="launch-runtime">Runtime</Label>
-            <Select id="launch-runtime" name="runtime" value={form.runtime} disabled={presetMode} onChange={(event) => updateRuntime(event.target.value)}>
+            <ControlSelect leadingIcon={Terminal} id="launch-runtime" name="runtime" value={form.runtime} disabled={presetMode} onChange={(event) => updateRuntime(event.target.value)}>
               {launchRuntimePlugins.map((plugin) => <option key={plugin.id} value={plugin.id}>{plugin.name}</option>)}
-            </Select>
+            </ControlSelect>
           </div>
           <div>
             <Label htmlFor="launch-model-provider">Model provider</Label>
-            <Select id="launch-model-provider" name="model_provider" value={form.modelProviderId} disabled={presetMode} onChange={(event) => updateModelProvider(event.target.value)}>
+            <ControlSelect id="launch-model-provider" name="model_provider" value={form.modelProviderId} disabled={presetMode} onChange={(event) => updateModelProvider(event.target.value)}>
               {compatibleProviders.length === 0
                 ? <option value="">No compatible providers</option>
                 : compatibleProviders.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-            </Select>
+            </ControlSelect>
           </div>
           <div>
             <Label htmlFor="launch-model">Model</Label>
-            <Select
+            <ControlSelect
               id="launch-model"
               name="model"
               value={form.modelOverride}
@@ -399,7 +407,7 @@ export function RuntimeLaunchControls({
                   {modelOptions.map((model) => <option key={model} value={model}>{model}</option>)}
                 </>
               )}
-            </Select>
+            </ControlSelect>
           </div>
           <div>
             <Label id="launch-reasoning-effort-label">Reasoning effort</Label>
@@ -432,7 +440,7 @@ export function RuntimeLaunchControls({
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <Label htmlFor="launch-runner">Runner</Label>
-                <Select
+                <ControlSelect
                   id="launch-runner"
                   name="runner"
                   value={runnerSelectValue}
@@ -451,7 +459,7 @@ export function RuntimeLaunchControls({
                   <option value="docker">Docker</option>
                   <option value="podman">Podman</option>
                   <option value="host">Host</option>
-                </Select>
+                </ControlSelect>
                 {form.runner === "sandbox" && (
                   <p className="mt-1 text-xs text-muted-foreground">
                     Container engine <span className="font-mono">{engineLabel}</span> runs the isolated task workdir.
@@ -461,7 +469,7 @@ export function RuntimeLaunchControls({
               {form.runner === "sandbox" && (
                 <div>
                   <Label htmlFor="launch-sandbox-network">{engineLabel === "podman" ? "Podman network" : "Docker network"}</Label>
-                  <Select
+                  <ControlSelect
                     id="launch-sandbox-network"
                     name="sandbox_network"
                     value={sandboxNetwork}
@@ -476,7 +484,7 @@ export function RuntimeLaunchControls({
                   >
                     <option value="">Default bridge</option>
                     <option value="host_proxy_only">Host proxy only</option>
-                  </Select>
+                  </ControlSelect>
                 </div>
               )}
             </div>
@@ -508,13 +516,31 @@ export function RuntimeLaunchControls({
           </ConfigAccordion>
 
           <ConfigAccordion icon={GitBranch} title="Blackboard conclusions" summary={blackboardConclusionMode === "assisted" ? "Assisted" : blackboardConclusionMode === "disabled" ? "Disabled" : "Interactive"}>
-            <Label htmlFor="launch-blackboard-conclusions">Blackboard conclusions</Label>
-            <Select id="launch-blackboard-conclusions" name="blackboard_conclusion_mode" value={blackboardConclusionMode} onChange={(event) => { setBlackboardConclusionMode(event.target.value as BlackboardConclusionMode); setPreflight(null); }}>
-              <option value="interactive">Interactive</option>
-              <option value="assisted" disabled={!assistedConclusionSupported}>Assisted</option>
-              {allowDisabledBlackboardMode && <option value="disabled">Disabled</option>}
-            </Select>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <div role="radiogroup" aria-label="Blackboard conclusions" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {blackboardModeCards.map((card) => {
+                const CardIcon = card.icon;
+                const selected = blackboardConclusionMode === card.mode;
+                return (
+                  <button
+                    key={card.mode}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    disabled={card.disabled}
+                    onClick={() => { setBlackboardConclusionMode(card.mode); setPreflight(null); }}
+                    className={cn(
+                      "rounded-lg border-2 p-3 text-left transition-colors",
+                      selected ? "border-primary bg-primary/[0.03]" : "border-border hover:border-ring",
+                      card.disabled && "cursor-not-allowed opacity-50",
+                    )}
+                  >
+                    <div className="flex items-center gap-2 text-sm font-medium"><CardIcon className="h-4 w-4" />{card.title}</div>
+                    <p className="mt-1 text-xs text-muted-foreground">{card.description}</p>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
               {blackboardConclusionMode === "disabled"
                 ? "The Runtime does not receive Blackboard state or Blackboard access. All non-Blackboard launch context remains available."
                 : blackboardConclusionMode === "assisted"
@@ -528,17 +554,17 @@ export function RuntimeLaunchControls({
           {controller.profiles.length > 0 && (
             <ConfigAccordion
               icon={Bookmark}
-              title="Use saved preset"
-              summary={presetMode ? (controller.profiles.find((profile) => profile.id === presetId)?.name ?? presetId) : "Direct configuration"}
+              title="使用已保存的 Runtime Profile"
+              summary={presetMode ? (controller.profiles.find((profile) => profile.id === presetId)?.name ?? presetId) : "未选择"}
               open={presetOpen}
               onOpenChange={setPresetOpen}
             >
               <div className="space-y-2">
-                <Label htmlFor="launch-preset">Runtime profile preset</Label>
-                <Select id="launch-preset" name="runtime_profile_preset" value={presetId} onChange={(event) => updatePreset(event.target.value)}>
+                <Label htmlFor="launch-preset">Runtime Profile</Label>
+                <ControlSelect id="launch-preset" name="runtime_profile" value={presetId} onChange={(event) => updatePreset(event.target.value)}>
                   <option value="">Direct configuration</option>
                   {runtimePresets.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
-                </Select>
+                </ControlSelect>
                 <p className="text-xs text-muted-foreground">A Runtime Profile copies its full advanced configuration into this new {ownerLabel}. Later Profile edits do not change it.</p>
               </div>
             </ConfigAccordion>
@@ -569,6 +595,112 @@ export function RuntimeLaunchControls({
         </p>
       )}
     </>
+  );
+}
+
+function ControlSelect({ leadingIcon: LeadingIcon, className, children, ...props }: SelectProps & { leadingIcon?: LucideIcon }) {
+  return (
+    <div className="relative mt-1.5">
+      {LeadingIcon && <LeadingIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />}
+      <Select
+        {...props}
+        className={cn("h-[34px] appearance-none rounded-lg bg-card px-2.5 pr-8 text-[13px] shadow-none", LeadingIcon && "pl-8", className)}
+      >
+        {children}
+      </Select>
+      <ChevronsUpDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+    </div>
+  );
+}
+
+// Shared sticky launch-summary rail so the Task and Session launch surfaces
+// cannot drift: summary rows + primary launch button + preflight preview.
+export function LaunchSummaryRail({
+  controller,
+  disabled,
+  busy,
+  label,
+  busyLabel = "Launching…",
+  onClick,
+  submit = false,
+}: {
+  controller: RuntimeLaunchController;
+  disabled: boolean;
+  busy: boolean;
+  label: string;
+  busyLabel?: string;
+  onClick?: () => void;
+  submit?: boolean;
+}) {
+  const {
+    form,
+    presetId,
+    presetMode,
+    profiles,
+    plugins,
+    compatibleProviders,
+    containerCLI,
+    blackboardConclusionMode,
+    enabledSkillsPreview,
+  } = controller;
+  // Best-effort credential readiness preview: on failure, show the env name only.
+  const [bindings, setBindings] = useState<CredentialBinding[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ bindings: CredentialBinding[] }>("/api/credential-bindings")
+      .then((data) => {
+        if (!cancelled) setBindings(data.bindings ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const runtimeDisplay = plugins.find((plugin) => plugin.id === form.runtime)?.name ?? (form.runtime || "—");
+  const summaryProvider = compatibleProviders.find((provider) => provider.id === form.modelProviderId);
+  const modelDisplay = [summaryProvider?.name, form.modelOverride || "Default model"].filter(Boolean).join(" · ") || "—";
+  const runnerDisplay = form.runner === "host" ? "Host" : containerCLI === "podman" ? "Podman" : "Docker";
+  const blackboardDisplay = blackboardConclusionMode === "assisted" ? "Assisted" : blackboardConclusionMode === "disabled" ? "Disabled" : "Interactive";
+  const profileDisplay = presetMode ? `Runtime Profile: ${profiles.find((profile) => profile.id === presetId)?.name ?? presetId}` : "直接配置";
+  const apiKeyEnv = summaryProvider?.api_key_env ?? "";
+  const credentialConfigured = bindings !== null && bindings.some((binding) => binding.credential_ref === apiKeyEnv && !binding.disabled);
+
+  return (
+    <aside className="h-fit lg:sticky lg:top-6">
+      <div className="rounded-lg border border-border bg-card shadow-sm">
+        <div className="border-b border-border px-4 py-3"><span className="text-sm font-medium">Launch 摘要</span></div>
+        <dl className="space-y-2.5 px-4 py-3.5 text-xs">
+          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Runtime</dt><dd className="min-w-0 truncate font-medium">{runtimeDisplay}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Model</dt><dd className="min-w-0 truncate font-mono">{modelDisplay}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Effort</dt><dd className="font-medium">{displayReasoningEffort(form.reasoningEffort)}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Runner</dt><dd className="font-medium">{runnerDisplay}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Blackboard</dt><dd className="font-medium">{blackboardDisplay}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Skills</dt><dd className="font-medium">{enabledSkillsPreview.length} enabled</dd></div>
+        </dl>
+        <div className="border-t border-border p-3.5">
+          <Button type={submit ? "submit" : "button"} onClick={onClick} disabled={disabled} className="w-full">
+            <Rocket className="h-4 w-4" /> {busy ? busyLabel : label}
+          </Button>
+          <p className="mt-2 text-center text-xs text-muted-foreground">启动前会自动运行 Preflight 检查</p>
+        </div>
+      </div>
+      <div className="mt-3 rounded-lg border border-dashed border-border p-3.5 text-xs text-muted-foreground">
+        <div className="flex items-center gap-2 font-medium text-foreground"><ShieldCheck className="h-4 w-4 text-success" />Preflight 预览</div>
+        <p className="mt-1">
+          {profileDisplay}
+          {apiKeyEnv && (
+            <>
+              {" · "}
+              <span className="font-mono">{apiKeyEnv}</span>
+              {bindings !== null && (credentialConfigured
+                ? <span className="text-success"> 已配置</span>
+                : <span className="text-warning"> 未配置</span>)}
+            </>
+          )}
+        </p>
+      </div>
+    </aside>
   );
 }
 

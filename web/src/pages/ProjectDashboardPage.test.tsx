@@ -57,6 +57,7 @@ const tasks = {
       project_id: "project-1",
       goal: "Enumerate api.acme.example",
       status: "running",
+      runtime_activity: { liveness: "live", turn_activity: "busy" },
       runner: "pi",
       runtime_profile_id: "profile-1",
       run_controls: {},
@@ -142,7 +143,8 @@ describe("ProjectDashboardPage", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "Acme External" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /launch task/i })).toHaveClass("rounded-md", "bg-primary");
-    expect(screen.getByRole("link", { name: /open report/i })).toBeInTheDocument();
+    // Pentest projects get the mockup's outline Open report button in the footer.
+    expect(screen.getByRole("link", { name: /open report/i })).toHaveClass("border-border", "bg-background");
     expect(screen.getByRole("link", { name: "Blackboard" })).toHaveAttribute(
       "href",
       "/projects/project-1/blackboard",
@@ -171,7 +173,7 @@ describe("ProjectDashboardPage", () => {
     const tasksCard = screen.getByRole("link", { name: /view 3 tasks/i });
     expect(tasksCard).toHaveClass("rounded-lg", "border", "bg-card");
     expect(within(tasksCard).getByText("1 运行中")).toBeInTheDocument();
-    expect(within(tasksCard).getByText(/最近：Enumerate api\.acme\.example · 12m ago/)).toBeInTheDocument();
+    expect(within(tasksCard).getByText(/最近：Enumerate api\.acme\.example · .* ago/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 8 facts/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 1 finding/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 5 evidence items/i })).toBeInTheDocument();
@@ -179,10 +181,11 @@ describe("ProjectDashboardPage", () => {
     // Recent activity lists recent tasks with status text and relative time.
     const activity = screen.getByText("Recent activity").closest("section");
     expect(activity).not.toBeNull();
-    expect(activity!).toHaveTextContent("Enumerate api.acme.example — running");
-    expect(activity!).toHaveTextContent("12m ago");
-    expect(activity!).toHaveTextContent("Port scan 203.0.113.10 — completed");
-    expect(activity!).toHaveTextContent("2h ago");
+    expect(activity!).toHaveTextContent("Enumerate api.acme.example — 运行中");
+    expect(activity!).toHaveTextContent("12 minutes ago");
+    expect(activity!).toHaveTextContent("Port scan 203.0.113.10 — 已完成");
+    expect(activity!).toHaveTextContent("2 hours ago");
+    expect(activity!).toHaveTextContent("Fingerprint cdn.acme.example — 已停止");
     expect(within(activity!).getByRole("link", { name: "查看全部" })).toHaveAttribute(
       "href",
       "/projects/project-1/tasks",
@@ -200,7 +203,8 @@ describe("ProjectDashboardPage", () => {
       "/projects/project-1/blackboard",
     );
 
-    expect(screen.getByText("Pentest Project")).toBeInTheDocument();
+    // Project kind is a signal Chip with dot beside the title.
+    expect(screen.getByText("Pentest Project")).toHaveClass("border-signal/25", "bg-signal/10", "text-signal");
   });
 
   it("previews and confirms a blocker-free Project Kind Conversion", async () => {
@@ -231,5 +235,7 @@ describe("ProjectDashboardPage", () => {
     expect(await screen.findByText(/conversion is ready/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /confirm conversion/i }));
     expect(await screen.findByText("CTF Challenge Project")).toBeInTheDocument();
+    // The report route does not exist for CTF projects, so the footer button hides.
+    expect(screen.queryByRole("link", { name: /open report/i })).not.toBeInTheDocument();
   });
 });

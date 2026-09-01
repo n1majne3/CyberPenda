@@ -391,12 +391,14 @@ describe("WorkspaceSidebar", () => {
 
     const nonProject = await screen.findByRole("region", { name: /non-project/i });
     const sessionLinks = await within(nonProject).findAllByRole("link", { name: /session conversation/i });
-    expect(sessionLinks.map((link) => link.textContent?.trim())).toEqual([
-      "Busy session session conversation",
-      "Idle session 1 session conversation",
-      "Idle session 2 session conversation",
-      "Idle session 3 session conversation",
-      "Current session session conversation",
+    // Rows are two-line now (title + "time · state"): assert the title order,
+    // which is what this test is about, without pinning the relative-time text.
+    expect(sessionLinks.map((link) => link.textContent ?? "")).toEqual([
+      expect.stringContaining("Busy session"),
+      expect.stringContaining("Idle session 1"),
+      expect.stringContaining("Idle session 2"),
+      expect.stringContaining("Idle session 3"),
+      expect.stringContaining("Current session"),
     ]);
     expect(within(nonProject).getByRole("img", { name: "Runtime busy" })).toBeInTheDocument();
   });
@@ -794,7 +796,7 @@ describe("WorkspaceSidebar", () => {
     expect(within(projects).getByText(/no projects match/i)).toBeInTheDocument();
   });
 
-  it("disambiguates sessions sharing a title with a relative-time suffix", async () => {
+  it("shows a relative time · state second line on every session row, disambiguating shared titles", async () => {
     const twoDaysAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
     const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
     vi.stubGlobal(
@@ -826,12 +828,14 @@ describe("WorkspaceSidebar", () => {
     const nonProject = await screen.findByRole("region", { name: /non-project/i });
     const duplicateLinks = await within(nonProject).findAllByRole("link", { name: /duplicate session conversation/i });
     expect(duplicateLinks).toHaveLength(2);
-    // Recent-first ordering: the two-day-old duplicate ranks above the five-day one.
-    expect(duplicateLinks[0]).toHaveTextContent("2 days ago");
-    expect(duplicateLinks[1]).toHaveTextContent("5 days ago");
-    // A uniquely-named Session never gets the suffix.
+    // Every row carries the time · state line, so same-titled Sessions stay
+    // distinguishable. Recent-first ordering: the two-day-old duplicate ranks
+    // above the five-day one.
+    expect(duplicateLinks[0]).toHaveTextContent("2 days ago · 已停止");
+    expect(duplicateLinks[1]).toHaveTextContent("5 days ago · 已停止");
+    // The line is not conditional on duplicates: unique rows show it too.
     const uniqueLink = within(nonProject).getByRole("link", { name: /unique session conversation/i });
-    expect(uniqueLink).not.toHaveTextContent(/ago/);
+    expect(uniqueLink).toHaveTextContent("2 days ago · 已停止");
   });
 
   it("shows item counts on the Non-project and Projects group headers", async () => {
@@ -874,7 +878,7 @@ describe("WorkspaceSidebar", () => {
     expect(projectsLink.parentElement).toHaveTextContent("Projects3");
   });
 
-  it("renders runtime activity as colored status dots", async () => {
+  it("renders runtime activity as colored status dots with mockup state text", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -895,6 +899,15 @@ describe("WorkspaceSidebar", () => {
                 ...session("session-offline", "Offline session", "2026-07-30T00:00:00Z"),
                 runtime_activity: { liveness: "offline" },
               },
+              {
+                ...session("session-orphaned", "Orphaned session", "2026-07-29T00:00:00Z"),
+                runtime_activity: { liveness: "orphaned" },
+              },
+              {
+                ...session("session-failed", "Failed session", "2026-07-28T00:00:00Z"),
+                runtime_activity: { liveness: "offline" },
+                latest_continuation: { status: "failed" },
+              },
             ],
           });
         }
@@ -912,11 +925,25 @@ describe("WorkspaceSidebar", () => {
 
     const nonProject = await screen.findByRole("region", { name: /non-project/i });
     await within(nonProject).findByRole("link", { name: /busy session/i });
+
+    // Dot color per state (mockup stateDot mapping).
     const busyDot = within(nonProject).getByRole("img", { name: "Runtime busy" }).firstElementChild;
     expect(busyDot).toHaveClass("bg-success", "animate-pulse");
     const idleDot = within(nonProject).getByRole("img", { name: "Runtime live idle" }).firstElementChild;
     expect(idleDot).toHaveClass("bg-info");
     const offlineDot = within(nonProject).getByRole("img", { name: "Runtime offline" }).firstElementChild;
     expect(offlineDot).toHaveClass("bg-muted-foreground/40");
+    // Undetermined liveness is amber, never confused with a durable failure.
+    const orphanedDot = within(nonProject).getByRole("img", { name: "Runtime failure (orphaned)" }).firstElementChild;
+    expect(orphanedDot).toHaveClass("bg-warning");
+    const failedDot = within(nonProject).getByRole("img", { name: "Runtime failure" }).firstElementChild;
+    expect(failedDot).toHaveClass("bg-destructive");
+
+    // Visible second-line state text per row (mockup: time · state).
+    expect(within(nonProject).getByRole("link", { name: /busy session/i })).toHaveTextContent("· 运行中");
+    expect(within(nonProject).getByRole("link", { name: /idle session/i })).toHaveTextContent("· 空闲");
+    expect(within(nonProject).getByRole("link", { name: /offline session/i })).toHaveTextContent("· 已停止");
+    expect(within(nonProject).getByRole("link", { name: /orphaned session/i })).toHaveTextContent("· 状态未知");
+    expect(within(nonProject).getByRole("link", { name: /failed session/i })).toHaveTextContent("· 失败");
   });
 });

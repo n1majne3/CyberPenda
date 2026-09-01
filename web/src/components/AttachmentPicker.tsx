@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Paperclip, UploadCloud, X } from "lucide-react";
 import { Label } from "@/components/ui";
+import { cn } from "@/lib/utils";
 
 const MAX_ATTACHMENT_COUNT = 25;
 const MAX_ATTACHMENT_MB = 100;
@@ -52,12 +53,14 @@ export function AttachmentPicker({
   onFilesChange,
   onError,
   ownerLabel,
+  variant = "default",
 }: {
   id: string;
   files: File[];
   onFilesChange: (files: File[]) => void;
   onError?: (message: string | null) => void;
   ownerLabel: string;
+  variant?: "default" | "compact";
 }) {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -80,6 +83,81 @@ export function AttachmentPicker({
     onFilesChange(next);
   }
 
+  const fileInput = (
+    <input
+      ref={fileInputRef}
+      id={id}
+      type="file"
+      name="attachments"
+      multiple
+      className="hidden"
+      onChange={(event) => {
+        if (event.target.files && event.target.files.length > 0) addFiles(event.target.files);
+        event.target.value = "";
+      }}
+    />
+  );
+  const dropHandlers = {
+    onClick: () => fileInputRef.current?.click(),
+    onKeyDown: (event: React.KeyboardEvent) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        fileInputRef.current?.click();
+      }
+    },
+    onDragOver: (event: React.DragEvent) => {
+      event.preventDefault();
+      setDragOver(true);
+    },
+    onDragLeave: () => setDragOver(false),
+    onDrop: (event: React.DragEvent) => {
+      event.preventDefault();
+      setDragOver(false);
+      if (event.dataTransfer.files.length > 0) addFiles(event.dataTransfer.files);
+    },
+  };
+  const fileList = files.length > 0 && (
+    <ul className="mt-2 space-y-1">
+      {files.map((file, index) => (
+        <li key={`${file.name}-${file.size}`}>
+          <AttachmentFileRow
+            name={file.name}
+            size={file.size}
+            onRemove={() => onFilesChange(files.filter((_, position) => position !== index))}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+
+  if (variant === "compact") {
+    return (
+      <div>
+        <Label htmlFor={id} className="sr-only">Attachments</Label>
+        <div
+          data-testid="attachment-dropzone"
+          role="button"
+          tabIndex={0}
+          {...dropHandlers}
+          className={cn(
+            "flex cursor-pointer items-center justify-between gap-3 rounded-lg border border-dashed px-3.5 py-2.5 transition-colors",
+            dragOver ? "border-primary bg-primary/10" : "border-input bg-muted/30",
+          )}
+        >
+          <div className="flex min-w-0 items-center gap-2.5 text-xs text-muted-foreground">
+            <Paperclip className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>
+              拖拽文件到这里，或 <span className="font-medium text-foreground underline underline-offset-2">浏览</span> · 最多 {MAX_ATTACHMENT_COUNT} 个文件，每个 {MAX_ATTACHMENT_MB} MB
+            </span>
+          </div>
+          <span className="shrink-0 text-[11px] text-muted-foreground">投影到 {ownerLabel} workdir</span>
+          {fileInput}
+        </div>
+        {fileList}
+      </div>
+    );
+  }
+
   return (
     <div>
       <Label htmlFor={id}>Attachments</Label>
@@ -87,23 +165,7 @@ export function AttachmentPicker({
         data-testid="attachment-dropzone"
         role="button"
         tabIndex={0}
-        onClick={() => fileInputRef.current?.click()}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            fileInputRef.current?.click();
-          }
-        }}
-        onDragOver={(event) => {
-          event.preventDefault();
-          setDragOver(true);
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={(event) => {
-          event.preventDefault();
-          setDragOver(false);
-          if (event.dataTransfer.files.length > 0) addFiles(event.dataTransfer.files);
-        }}
+        {...dropHandlers}
         className={`mt-1 flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed p-4 text-sm transition-colors ${
           dragOver ? "border-primary bg-primary/10" : "border-border bg-background/50"
         }`}
@@ -113,32 +175,9 @@ export function AttachmentPicker({
         <span className="text-xs text-muted-foreground">
           Up to {MAX_ATTACHMENT_COUNT} files, {MAX_ATTACHMENT_MB} MB each. Projected into the {ownerLabel} workdir.
         </span>
-        <input
-          ref={fileInputRef}
-          id={id}
-          type="file"
-          name="attachments"
-          multiple
-          className="hidden"
-          onChange={(event) => {
-            if (event.target.files && event.target.files.length > 0) addFiles(event.target.files);
-            event.target.value = "";
-          }}
-        />
+        {fileInput}
       </div>
-      {files.length > 0 && (
-        <ul className="mt-2 space-y-1">
-          {files.map((file, index) => (
-            <li key={`${file.name}-${file.size}`}>
-              <AttachmentFileRow
-                name={file.name}
-                size={file.size}
-                onRemove={() => onFilesChange(files.filter((_, position) => position !== index))}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
+      {fileList}
     </div>
   );
 }
