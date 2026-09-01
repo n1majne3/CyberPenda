@@ -1,0 +1,181 @@
+/* ============================================================
+   CyberPenda UI mockups — shared tokens & base styles
+   Direction A reuses the exact production tokens from
+   web/src/index.css (light theme) so every suggestion maps
+   1:1 onto the existing design system.
+   ============================================================ */
+
+:root {
+  --background: 0 0% 100%;
+  --foreground: 0 0% 9%;
+  --card: 0 0% 100%;
+  --card-foreground: 0 0% 9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 0 0% 9%;
+  --primary: 0 0% 9%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 0 0% 96%;
+  --secondary-foreground: 0 0% 9%;
+  --muted: 0 0% 96%;
+  --muted-foreground: 0 0% 45%;
+  --accent: 0 0% 96%;
+  --accent-foreground: 0 0% 9%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 98%;
+  --success: 142 70% 36%;
+  --success-foreground: 0 0% 98%;
+  --info: 221 83% 53%;
+  --info-foreground: 0 0% 98%;
+  --warning: 38 92% 45%;
+  --warning-foreground: 0 0% 9%;
+  --signal: 187 42% 38%;
+  --border: 0 0% 90%;
+  --input: 0 0% 90%;
+  --ring: 0 0% 52%;
+  --sidebar: 0 0% 98%;
+  --sidebar-foreground: 0 0% 9%;
+  --sidebar-accent: 0 0% 94%;
+  --sidebar-accent-foreground: 0 0% 9%;
+  --sidebar-border: 0 0% 90%;
+  --radius: 0.375rem;
+  --shadow-card: 0 2px 2px hsl(0 0% 0% / 0.04);
+  --shadow-md: 0 1px 1px hsl(0 0% 0% / 0.02), 0 4px 8px -4px hsl(0 0% 0% / 0.04),
+    0 16px 24px -8px hsl(0 0% 0% / 0.06);
+  --shadow-lg: 0 1px 1px hsl(0 0% 0% / 0.02), 0 8px 16px -4px hsl(0 0% 0% / 0.04),
+    0 24px 32px -8px hsl(0 0% 0% / 0.06);
+}
+
+html { font-family: "Geist", system-ui, sans-serif; }
+body { background: hsl(var(--background)); color: hsl(var(--foreground)); }
+.font-mono, code, pre, kbd { font-family: "Geist Mono", ui-monospace, monospace; }
+
+/* Scrollbar — thin, neutral */
+* { scrollbar-width: thin; scrollbar-color: hsl(0 0% 80%) transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: hsl(0 0% 85%); border-radius: 4px; }
+
+/* ---------- shared components ---------- */
+
+/* Semantic status chip: dot + label, one per state family */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 22px; padding: 0 9px;
+  border-radius: 999px; border: 1px solid transparent;
+  font-size: 11px; font-weight: 500; line-height: 1; white-space: nowrap;
+}
+.chip .dot { width: 6px; height: 6px; border-radius: 999px; flex: none; }
+.chip-neutral { background: hsl(var(--secondary)); color: hsl(var(--secondary-foreground)); border-color: hsl(var(--border)); }
+.chip-neutral .dot { background: hsl(0 0% 55%); }
+.chip-success { background: hsl(var(--success) / 0.08); color: hsl(var(--success)); border-color: hsl(var(--success) / 0.25); }
+.chip-success .dot { background: hsl(var(--success)); }
+.chip-warning { background: hsl(var(--warning) / 0.10); color: hsl(28 90% 32%); border-color: hsl(var(--warning) / 0.35); }
+.chip-warning .dot { background: hsl(var(--warning)); }
+.chip-danger  { background: hsl(var(--destructive) / 0.07); color: hsl(var(--destructive)); border-color: hsl(var(--destructive) / 0.25); }
+.chip-danger .dot { background: hsl(var(--destructive)); }
+.chip-info    { background: hsl(var(--info) / 0.08); color: hsl(var(--info)); border-color: hsl(var(--info) / 0.25); }
+.chip-info .dot { background: hsl(var(--info)); }
+.chip-signal  { background: hsl(var(--signal) / 0.08); color: hsl(var(--signal)); border-color: hsl(var(--signal) / 0.30); }
+.chip-signal .dot { background: hsl(var(--signal)); }
+
+/* Live pulse for busy runtime dot */
+@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+.dot-live { animation: pulse-dot 1.6s ease-in-out infinite; }
+
+/* Section label — the small caps rhythm used across pages */
+.section-label {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: hsl(var(--muted-foreground));
+}
+
+/* Form field shell */
+.field label { font-size: 12px; font-weight: 500; color: hsl(var(--foreground)); }
+.field .hint { font-size: 11px; color: hsl(var(--muted-foreground)); }
+.control {
+  width: 100%; height: 34px; padding: 0 10px;
+  border: 1px solid hsl(var(--input)); border-radius: var(--radius);
+  background: hsl(var(--card)); font-size: 13px; color: hsl(var(--foreground));
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.control:hover { border-color: hsl(0 0% 75%); }
+
+/* Accordion (advanced settings) */
+.acc { border: 1px solid hsl(var(--border)); border-radius: calc(var(--radius) + 2px); background: hsl(var(--card)); overflow: hidden; }
+.acc + .acc { margin-top: 8px; }
+.acc-head {
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; cursor: pointer; user-select: none; text-align: left;
+}
+.acc-head:hover { background: hsl(var(--muted) / 0.5); }
+.acc-title { font-size: 13px; font-weight: 500; }
+.acc-summary { font-size: 12px; color: hsl(var(--muted-foreground)); margin-left: auto; text-align: right; }
+.acc-body { border-top: 1px solid hsl(var(--border)); padding: 14px; display: none; }
+.acc.open .acc-body { display: block; }
+.acc.open .acc-chev { transform: rotate(90deg); }
+.acc-chev { transition: transform 0.15s ease; flex: none; }
+
+/* Timeline (Direction A) */
+.turn { position: relative; padding-left: 28px; }
+.turn::before {
+  content: ""; position: absolute; left: 9px; top: 26px; bottom: 0;
+  width: 2px; background: hsl(var(--border)); border-radius: 2px;
+}
+.turn:last-child::before { display: none; }
+.turn-marker {
+  position: absolute; left: 0; top: 4px;
+  width: 20px; height: 20px; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+  background: hsl(var(--card)); border: 1px solid hsl(var(--border));
+  color: hsl(var(--muted-foreground));
+}
+.tool-row {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid hsl(var(--border)); border-radius: var(--radius);
+  background: hsl(var(--card)); padding: 6px 10px; font-size: 12px;
+}
+.tool-row:hover { background: hsl(var(--muted) / 0.4); }
+
+/* ---------- annotation layer ---------- */
+.note-badge {
+  position: absolute; z-index: 40;
+  width: 20px; height: 20px; border-radius: 999px;
+  background: hsl(var(--info)); color: hsl(var(--info-foreground));
+  font-size: 11px; font-weight: 600; font-style: normal;
+  display: none; align-items: center; justify-content: center;
+  box-shadow: 0 0 0 3px hsl(var(--info) / 0.25);
+  transform: translate(-50%, -50%); pointer-events: none;
+}
+body.notes-on .note-badge { display: flex; }
+body.notes-on [data-note] { outline: 1.5px dashed hsl(var(--info) / 0.55); outline-offset: 2px; }
+
+#note-panel {
+  position: fixed; right: 16px; bottom: 64px; z-index: 50;
+  width: 340px; max-height: 60vh; overflow: auto;
+  background: hsl(var(--popover)); border: 1px solid hsl(var(--border));
+  border-radius: 10px; box-shadow: var(--shadow-lg);
+  padding: 14px 16px; display: none;
+}
+body.notes-on #note-panel { display: block; }
+#note-panel li { display: flex; gap: 8px; font-size: 12px; line-height: 1.5; padding: 5px 0; }
+#note-panel li .n {
+  flex: none; width: 18px; height: 18px; border-radius: 999px;
+  background: hsl(var(--info)); color: hsl(var(--info-foreground));
+  font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center;
+  margin-top: 1px;
+}
+#notes-toggle {
+  position: fixed; right: 16px; bottom: 16px; z-index: 50;
+  height: 36px; padding: 0 14px; border-radius: 999px;
+  background: hsl(var(--primary)); color: hsl(var(--primary-foreground));
+  font-size: 12px; font-weight: 500;
+  display: flex; align-items: center; gap: 6px;
+  box-shadow: var(--shadow-md); cursor: pointer; border: none;
+}
+#notes-toggle:hover { opacity: 0.9; }
+
+/* Mockup banner — reminds viewer this is a static mock */
+.mock-banner {
+  position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%);
+  z-index: 30; font-size: 11px; color: hsl(var(--muted-foreground));
+  background: hsl(var(--popover) / 0.9); border: 1px solid hsl(var(--border));
+  border-radius: 999px; padding: 4px 12px; backdrop-filter: blur(4px);
+}

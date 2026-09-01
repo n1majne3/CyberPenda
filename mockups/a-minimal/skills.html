@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Skills · Direction A · CyberPenda mockup</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      colors: {
+        border: "hsl(var(--border))", input: "hsl(var(--input))", ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))", foreground: "hsl(var(--foreground))",
+        primary: { DEFAULT: "hsl(var(--primary))", foreground: "hsl(var(--primary-foreground))" },
+        secondary: { DEFAULT: "hsl(var(--secondary))", foreground: "hsl(var(--secondary-foreground))" },
+        muted: { DEFAULT: "hsl(var(--muted))", foreground: "hsl(var(--muted-foreground))" },
+        accent: { DEFAULT: "hsl(var(--accent))", foreground: "hsl(var(--accent-foreground))" },
+        card: { DEFAULT: "hsl(var(--card))", foreground: "hsl(var(--card-foreground))" },
+        destructive: { DEFAULT: "hsl(var(--destructive))", foreground: "hsl(var(--destructive-foreground))" },
+        success: "hsl(var(--success))", info: "hsl(var(--info))", warning: "hsl(var(--warning))", signal: "hsl(var(--signal))",
+      },
+      borderRadius: { sm: "0.125rem", md: "0.25rem", lg: "var(--radius)", xl: "0.5rem" },
+      fontFamily: { sans: ["Geist", "sans-serif"], mono: ["Geist Mono", "monospace"] },
+      boxShadow: { sm: "var(--shadow-card)", md: "var(--shadow-md)", lg: "var(--shadow-lg)" },
+    } },
+  };
+</script>
+<link rel="stylesheet" href="../shared/mockup.css" />
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+<script>window.MOCKUP = { active: "skills" };</script>
+<script src="../shared/mockup.js"></script>
+</head>
+<body>
+<div class="flex h-screen overflow-hidden">
+  <div id="sidebar-slot"></div>
+
+  <main class="flex min-w-0 flex-1 flex-col">
+    <header class="flex-none border-b border-border px-8 py-5">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="section-label">Library</div>
+          <h1 class="mt-1 text-[20px] font-semibold tracking-tight">Skills</h1>
+        </div>
+        <div class="flex items-center gap-2">
+          <button class="flex h-9 items-center gap-2 rounded-lg border border-border px-3 text-[13px] font-medium hover:bg-muted"><i data-lucide="refresh-cw" class="w-4 h-4"></i>Refresh</button>
+          <button class="flex h-9 items-center gap-2 rounded-lg bg-primary px-4 text-[13px] font-medium text-primary-foreground hover:opacity-90"><i data-lucide="plus" class="w-4 h-4"></i>New skill</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="flex-1 overflow-hidden">
+      <div class="flex h-full">
+
+        <!-- ===== main: skill list ===== -->
+        <section class="flex-1 overflow-y-auto px-8 py-6">
+          <div class="mx-auto max-w-[860px]">
+            <!-- profile selector -->
+            <div class="flex items-center justify-between rounded-xl border border-border bg-card p-4 shadow-sm" data-note="Runtime profile 选择器从普通下拉改为带说明的卡片：明确告知 opt-out 规则，减少误操作">
+              <div>
+                <label class="text-[12px] font-medium">Runtime profile view</label>
+                <p class="mt-0.5 text-[11px] text-muted-foreground">Skill opt-outs 应用于此 preset 启动的每个 task。</p>
+              </div>
+              <button class="control w-[200px]"><span>Smoke Pi (pi)</span><i data-lucide="chevrons-up-down" class="w-3.5 h-3.5 text-muted-foreground"></i></button>
+            </div>
+
+            <!-- stats + filters -->
+            <div class="mt-4 flex items-center justify-between" data-note="统计与过滤器合并为一行：启用/总数 + 分段过滤 + 搜索，替代现在分散的计数和按钮">
+              <div class="flex items-center gap-3">
+                <span class="text-[15px] font-semibold">121 <span class="text-[12px] font-normal text-muted-foreground">enabled · 121 total</span></span>
+              </div>
+              <div class="flex items-center gap-2">
+                <div class="flex rounded-lg border border-input p-0.5">
+                  <button class="rounded-md bg-primary px-2.5 py-1 text-[12px] font-medium text-primary-foreground">All 121</button>
+                  <button class="rounded-md px-2.5 py-1 text-[12px] text-muted-foreground hover:text-foreground">Enabled 121</button>
+                  <button class="rounded-md px-2.5 py-1 text-[12px] text-muted-foreground hover:text-foreground">Opted out 0</button>
+                </div>
+                <div class="flex items-center gap-2 rounded-md border border-input bg-background px-2 h-8 w-[200px]">
+                  <i data-lucide="search" class="w-3.5 h-3.5 text-muted-foreground"></i>
+                  <input placeholder="Search name, id, or source…" class="w-full bg-transparent text-[12px] outline-none placeholder:text-muted-foreground" />
+                </div>
+              </div>
+            </div>
+
+            <!-- skill table -->
+            <div class="mt-4 overflow-hidden rounded-xl border border-border bg-card shadow-sm" data-note="Skill 列表从卡片改为表格：列标题 + 行 hover + toggle 开关 + 操作按钮，信息密度更高，与 Credentials 页表格语言一致">
+              <table class="w-full text-[13px]">
+                <thead>
+                  <tr class="border-b border-border text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+                    <th class="px-4 py-2.5 font-medium">Skill</th>
+                    <th class="px-4 py-2.5 font-medium">Description</th>
+                    <th class="px-4 py-2.5 font-medium w-[70px]">Source</th>
+                    <th class="px-4 py-2.5 font-medium w-[60px]">Enabled</th>
+                    <th class="px-4 py-2.5 font-medium w-[70px]"></th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-border">
+                  <tr class="hover:bg-muted/30">
+                    <td class="px-4 py-2.5">
+                      <div class="font-medium">api-security</div>
+                      <div class="font-mono text-[11px] text-muted-foreground">api-security</div>
+                    </td>
+                    <td class="px-4 py-2.5 text-[12px] text-muted-foreground">Use for authorized security assessment…</td>
+                    <td class="px-4 py-2.5 text-[11px] text-muted-foreground">built-in</td>
+                    <td class="px-4 py-2.5">
+                      <button class="relative h-5 w-9 rounded-full bg-success transition-colors" data-note="Toggle 开关替代文字按钮：当前状态一目了然，点击切换">
+                        <span class="absolute right-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm"></span>
+                      </button>
+                    </td>
+                    <td class="px-4 py-2.5">
+                      <div class="flex items-center gap-0.5">
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted text-destructive"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="hover:bg-muted/30">
+                    <td class="px-4 py-2.5">
+                      <div class="font-medium">apk-reverse</div>
+                      <div class="font-mono text-[11px] text-muted-foreground">apk-reverse</div>
+                    </td>
+                    <td class="px-4 py-2.5 text-[12px] text-muted-foreground">在 CLI 环境下做 Android APK 逆向时使…</td>
+                    <td class="px-4 py-2.5 text-[11px] text-muted-foreground">built-in</td>
+                    <td class="px-4 py-2.5">
+                      <button class="relative h-5 w-9 rounded-full bg-success transition-colors">
+                        <span class="absolute right-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm"></span>
+                      </button>
+                    </td>
+                    <td class="px-4 py-2.5">
+                      <div class="flex items-center gap-0.5">
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted text-destructive"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="hover:bg-muted/30">
+                    <td class="px-4 py-2.5">
+                      <div class="font-medium">attack-chain</div>
+                      <div class="font-mono text-[11px] text-muted-foreground">attack-chain</div>
+                    </td>
+                    <td class="px-4 py-2.5 text-[12px] text-muted-foreground">Use for authorized multi-stage attack…</td>
+                    <td class="px-4 py-2.5 text-[11px] text-muted-foreground">built-in</td>
+                    <td class="px-4 py-2.5">
+                      <button class="relative h-5 w-9 rounded-full bg-success transition-colors">
+                        <span class="absolute right-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm"></span>
+                      </button>
+                    </td>
+                    <td class="px-4 py-2.5">
+                      <div class="flex items-center gap-0.5">
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted text-destructive"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="hover:bg-muted/30">
+                    <td class="px-4 py-2.5">
+                      <div class="font-medium">binary-diff</div>
+                      <div class="font-mono text-[11px] text-muted-foreground">binary-diff</div>
+                    </td>
+                    <td class="px-4 py-2.5 text-[12px] text-muted-foreground">—</td>
+                    <td class="px-4 py-2.5 text-[11px] text-muted-foreground">built-in</td>
+                    <td class="px-4 py-2.5">
+                      <button class="relative h-5 w-9 rounded-full bg-success transition-colors">
+                        <span class="absolute right-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm"></span>
+                      </button>
+                    </td>
+                    <td class="px-4 py-2.5">
+                      <div class="flex items-center gap-0.5">
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted text-destructive"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="hover:bg-muted/30">
+                    <td class="px-4 py-2.5">
+                      <div class="font-medium">browser-automation</div>
+                      <div class="font-mono text-[11px] text-muted-foreground">browser-automation</div>
+                    </td>
+                    <td class="px-4 py-2.5 text-[12px] text-muted-foreground">—</td>
+                    <td class="px-4 py-2.5 text-[11px] text-muted-foreground">built-in</td>
+                    <td class="px-4 py-2.5">
+                      <button class="relative h-5 w-9 rounded-full bg-success transition-colors">
+                        <span class="absolute right-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm"></span>
+                      </button>
+                    </td>
+                    <td class="px-4 py-2.5">
+                      <div class="flex items-center gap-0.5">
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted text-destructive"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="hover:bg-muted/30">
+                    <td class="px-4 py-2.5">
+                      <div class="font-medium">browser-extension-reverse</div>
+                      <div class="font-mono text-[11px] text-muted-foreground">browser-extension-reverse</div>
+                    </td>
+                    <td class="px-4 py-2.5 text-[12px] text-muted-foreground">Use for authorized reverse engineering …</td>
+                    <td class="px-4 py-2.5 text-[11px] text-muted-foreground">built-in</td>
+                    <td class="px-4 py-2.5">
+                      <button class="relative h-5 w-9 rounded-full bg-success transition-colors">
+                        <span class="absolute right-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm"></span>
+                      </button>
+                    </td>
+                    <td class="px-4 py-2.5">
+                      <div class="flex items-center gap-0.5">
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted text-destructive"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr class="hover:bg-muted/30">
+                    <td class="px-4 py-2.5">
+                      <div class="font-medium">cloud-k8s</div>
+                      <div class="font-mono text-[11px] text-muted-foreground">cloud-k8s</div>
+                    </td>
+                    <td class="px-4 py-2.5 text-[12px] text-muted-foreground">—</td>
+                    <td class="px-4 py-2.5 text-[11px] text-muted-foreground">built-in</td>
+                    <td class="px-4 py-2.5">
+                      <button class="relative h-5 w-9 rounded-full bg-success transition-colors">
+                        <span class="absolute right-0.5 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm"></span>
+                      </button>
+                    </td>
+                    <td class="px-4 py-2.5">
+                      <div class="flex items-center gap-0.5">
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"><i data-lucide="pencil" class="w-3.5 h-3.5"></i></button>
+                        <button class="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted text-destructive"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- ===== right: upload/edit panel ===== -->
+        <aside class="w-[320px] flex-none border-l border-border bg-card px-5 py-6 overflow-y-auto" data-note="上传/编辑面板从底部弹出改为右侧固定面板：与列表并排，编辑时上下文不丢失">
+          <div class="rounded-xl border border-border bg-card p-4 shadow-sm">
+            <div class="flex items-center justify-between">
+              <h3 class="text-[13px] font-medium">Upload / edit Skill</h3>
+              <button class="flex h-6 w-6 items-center justify-center rounded-md hover:bg-muted"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+            </div>
+            <p class="mt-1 text-[11px] text-muted-foreground">发布一个 canonical bundle 原子化。复用 Skill ID 会更新它。</p>
+
+            <div class="mt-4 space-y-3">
+              <div class="field">
+                <label>Skill ID</label>
+                <input class="control mt-1 font-mono text-[12px]" value="recon-helper…" />
+              </div>
+              <div class="field">
+                <label>Name</label>
+                <input class="control mt-1" value="Recon Helper…" />
+              </div>
+              <div class="field">
+                <label>Description</label>
+                <input class="control mt-1" value="" />
+              </div>
+              <div class="field">
+                <label>SKILL.md</label>
+                <textarea rows="4" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-[12px] outline-none focus:border-ring"># New Skill
+
+Describe when and how the runtime should use this skill.</textarea>
+              </div>
+              <div class="field">
+                <label>Additional files JSON</label>
+                <textarea rows="2" class="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 font-mono text-[12px] outline-none focus:border-ring">{}</textarea>
+              </div>
+              <div class="flex gap-2 pt-1">
+                <button class="flex h-8 flex-1 items-center justify-center gap-1.5 rounded-md bg-primary text-[12px] font-medium text-primary-foreground hover:opacity-90"><i data-lucide="upload" class="w-3.5 h-3.5"></i>Publish Skill</button>
+                <button class="flex h-8 items-center justify-center rounded-md border border-border px-3 text-[12px] font-medium hover:bg-muted">Cancel</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-4 rounded-xl border border-dashed border-border p-4" data-note="导入区域增加说明：结构化导入仅由 daemon 解析源，不接受原始 shell 命令，建立安全预期">
+            <div class="flex items-center gap-2 text-[13px] font-medium"><i data-lucide="download" class="w-4 h-4"></i>Import skill from URL or repo</div>
+            <p class="mt-1.5 text-[11px] text-muted-foreground">结构化导入仅由 daemon 解析源本身，从不接受原始 shell 命令。</p>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

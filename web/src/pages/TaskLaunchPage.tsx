@@ -6,6 +6,7 @@ import { RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/Ru
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Button, Card, CardHeader, CardTitle, Input, Label, Select, Textarea } from "@/components/ui";
 import { apiPost, apiPostForm } from "@/lib/api";
+import { displayReasoningEffort } from "@/pages/runtimeProfileForm";
 
 const REASON_TASK_GOAL = "Read the complete Runtime Blackboard Snapshot and prepare an approval-required proposal for next Task Goals, Exploration Objective changes, and a readiness judgment. Do not mutate Blackboard records directly.";
 
@@ -77,6 +78,11 @@ export function TaskLaunchPage() {
   const hostBlocked = launchControls.form.runner === "host" && !launchControls.hostActivated;
   const projectKind = launchControls.project?.kind === "ctf_challenge" ? "ctf_challenge" : "pentest";
   const taskTypeMatchesProject = reasonTask || (taskType !== "" && taskType === projectKind);
+  const runtimeDisplay = launchControls.plugins.find((plugin) => plugin.id === launchControls.form.runtime)?.name ?? (launchControls.form.runtime || "—");
+  const summaryProvider = launchControls.compatibleProviders.find((provider) => provider.id === launchControls.form.modelProviderId);
+  const modelDisplay = [summaryProvider?.name, launchControls.form.modelOverride || "Default model"].filter(Boolean).join(" · ") || "—";
+  const runnerDisplay = launchControls.form.runner === "host" ? "Host" : launchControls.containerCLI === "podman" ? "Podman" : "Docker";
+  const blackboardDisplay = launchControls.blackboardConclusionMode === "assisted" ? "Assisted" : launchControls.blackboardConclusionMode === "disabled" ? "Disabled" : "Interactive";
 
   return (
     <ProjectPageShell
@@ -85,75 +91,89 @@ export function TaskLaunchPage() {
           <Rocket className="h-5 w-5 text-signal" /> {reasonTask ? "Launch Reason Task" : "Launch task"}
         </h1>
       }
-      description={reasonTask
-        ? "Launch an operator-triggered planning Task. Its Blackboard changes require later approval."
-        : "Define a Task goal, choose a Runtime, and launch a Task-scoped persistent Runtime."}
-      bodyClassName="w-full max-w-3xl space-y-4"
+      bodyClassName="mx-auto grid w-full max-w-[1080px] grid-cols-1 gap-6 lg:grid-cols-[1fr_300px]"
     >
-      {!reasonTask && (
-        <div>
-          <Label htmlFor="task-type">Task type</Label>
-          <Select id="task-type" name="task_type" value={taskType} onChange={(event) => setTaskType(event.target.value)}>
-            <option value="" disabled>Select task type…</option>
-            <option value="pentest">Pentest</option>
-            <option value="ctf_challenge">CTF Challenge</option>
-          </Select>
-          <p className="mt-1 text-xs text-muted-foreground">The selected type becomes an immutable Task Type Snapshot.</p>
-          {taskType !== "" && !taskTypeMatchesProject && (
-            <p role="alert" className="mt-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
-              Task Type must match this Project&apos;s kind. <Link className="underline underline-offset-2" to={`/projects/${projectId}`}>Convert the Project first.</Link>
-            </p>
-          )}
-        </div>
-      )}
-      <div>
-        <Label htmlFor="goal">{reasonTask ? "Reason Task goal" : "Task goal"}</Label>
-        <Textarea
-          id="goal"
-          name="task_goal"
-          value={effectiveGoal}
-          onChange={(event) => setGoal(event.target.value)}
-          placeholder="Enumerate example.com and assess exposure…"
-          autoComplete="off"
-          readOnly={reasonTask}
-        />
-        {reasonTask && <p className="mt-1 text-xs text-muted-foreground">The daemon owns this planning goal. The Task can only submit an approval-required proposal.</p>}
+      <div className="space-y-5">
+        {!reasonTask && (
+          <div>
+            <Label htmlFor="task-type">Task type</Label>
+            <Select id="task-type" name="task_type" value={taskType} onChange={(event) => setTaskType(event.target.value)}>
+              <option value="" disabled>Select task type…</option>
+              <option value="pentest">Pentest</option>
+              <option value="ctf_challenge">CTF Challenge</option>
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">The selected type becomes an immutable Task Type Snapshot.</p>
+            {taskType !== "" && !taskTypeMatchesProject && (
+              <p role="alert" className="mt-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+                Task Type must match this Project&apos;s kind. <Link className="underline underline-offset-2" to={`/projects/${projectId}`}>Convert the Project first.</Link>
+              </p>
+            )}
+          </div>
+        )}
+        <section className="rounded-lg border border-border bg-card shadow-sm">
+          <div className="p-4">
+            <Label htmlFor="goal" className="text-sm font-medium">{reasonTask ? "Reason Task goal" : "你想探索什么？"}</Label>
+            <Textarea
+              id="goal"
+              name="task_goal"
+              rows={4}
+              value={effectiveGoal}
+              onChange={(event) => setGoal(event.target.value)}
+              placeholder="描述目标，例如：对 staging.example.com 做认证面枚举…"
+              autoComplete="off"
+              readOnly={reasonTask}
+              className="mt-2 w-full resize-none rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground focus:border-ring"
+            />
+            {reasonTask && <p className="mt-1 text-xs text-muted-foreground">The daemon owns this planning goal. The Task can only submit an approval-required proposal.</p>}
+            <div className="mt-3">
+              <AttachmentPicker
+                id="attachments"
+                files={attachments}
+                onFilesChange={setAttachments}
+                onError={launchControls.setError}
+                ownerLabel="task"
+              />
+            </div>
+          </div>
+        </section>
+
+        <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={effectiveGoal} allowDisabledBlackboardMode={!reasonTask} />
+
+        <Card as="section" className="border-border/70 bg-muted/10">
+          <CardHeader>
+            <CardTitle>Task Policy</CardTitle>
+          </CardHeader>
+          <p className="mb-3 text-xs text-muted-foreground">A value of 0 disables the limit. These values become the immutable Task Policy Snapshot.</p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <PolicyInput id="policy-max-attempts" label="Maximum attempts" value={policy.maxAttempts} onChange={(value) => setPolicy((current) => ({ ...current, maxAttempts: value }))} />
+            <PolicyInput id="policy-max-wrong" label="Maximum wrong submissions" value={policy.maxWrongSubmissions} onChange={(value) => setPolicy((current) => ({ ...current, maxWrongSubmissions: value }))} />
+            <PolicyInput id="policy-max-wall" label="Maximum wall time (seconds)" value={policy.maxWallTimeSeconds} onChange={(value) => setPolicy((current) => ({ ...current, maxWallTimeSeconds: value }))} />
+            <PolicyInput id="policy-max-consecutive" label="Maximum consecutive failures" value={policy.maxConsecutiveFailures} onChange={(value) => setPolicy((current) => ({ ...current, maxConsecutiveFailures: value }))} />
+            <PolicyInput id="policy-max-drawdown" label="Maximum rating drawdown" value={policy.maxRatingDrawdown} onChange={(value) => setPolicy((current) => ({ ...current, maxRatingDrawdown: value }))} />
+            <PolicyInput id="policy-max-no-progress" label="Maximum no-progress time (seconds)" value={policy.maxNoProgressSeconds} onChange={(value) => setPolicy((current) => ({ ...current, maxNoProgressSeconds: value }))} />
+          </div>
+        </Card>
       </div>
-      <AttachmentPicker
-        id="attachments"
-        files={attachments}
-        onFilesChange={setAttachments}
-        onError={launchControls.setError}
-        ownerLabel="task"
-      />
 
-      <RuntimeLaunchControls
-        controller={launchControls}
-        ownerLabel="task"
-        initialInput={effectiveGoal}
-        allowDisabledBlackboardMode={!reasonTask}
-      />
-
-      <Card as="section" className="border-border/70 bg-muted/10">
-        <CardHeader>
-          <CardTitle>Task Policy</CardTitle>
-        </CardHeader>
-        <p className="mb-3 text-xs text-muted-foreground">A value of 0 disables the limit. These values become the immutable Task Policy Snapshot.</p>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <PolicyInput id="policy-max-attempts" label="Maximum attempts" value={policy.maxAttempts} onChange={(value) => setPolicy((current) => ({ ...current, maxAttempts: value }))} />
-          <PolicyInput id="policy-max-wrong" label="Maximum wrong submissions" value={policy.maxWrongSubmissions} onChange={(value) => setPolicy((current) => ({ ...current, maxWrongSubmissions: value }))} />
-          <PolicyInput id="policy-max-wall" label="Maximum wall time (seconds)" value={policy.maxWallTimeSeconds} onChange={(value) => setPolicy((current) => ({ ...current, maxWallTimeSeconds: value }))} />
-          <PolicyInput id="policy-max-consecutive" label="Maximum consecutive failures" value={policy.maxConsecutiveFailures} onChange={(value) => setPolicy((current) => ({ ...current, maxConsecutiveFailures: value }))} />
-          <PolicyInput id="policy-max-drawdown" label="Maximum rating drawdown" value={policy.maxRatingDrawdown} onChange={(value) => setPolicy((current) => ({ ...current, maxRatingDrawdown: value }))} />
-          <PolicyInput id="policy-max-no-progress" label="Maximum no-progress time (seconds)" value={policy.maxNoProgressSeconds} onChange={(value) => setPolicy((current) => ({ ...current, maxNoProgressSeconds: value }))} />
+<aside className="lg:sticky lg:top-6 h-fit">
+        <div className="rounded-lg border border-border bg-card shadow-sm">
+          <div className="border-b border-border px-4 py-3"><span className="text-sm font-medium">Launch 摘要</span></div>
+          <dl className="space-y-2.5 px-4 py-3.5 text-xs">
+            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Runtime</dt><dd className="min-w-0 truncate font-medium">{runtimeDisplay}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Model</dt><dd className="min-w-0 truncate font-mono">{modelDisplay}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Effort</dt><dd className="font-medium">{displayReasoningEffort(launchControls.form.reasoningEffort)}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Runner</dt><dd className="font-medium">{runnerDisplay}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Blackboard</dt><dd className="font-medium">{blackboardDisplay}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Skills</dt><dd className="font-medium">{launchControls.enabledSkillsPreview.length} enabled</dd></div>
+          </dl>
+          <div className="border-t border-border p-3.5">
+            <Button onClick={launchTask} disabled={!taskTypeMatchesProject || !launchControls.launchReady(effectiveGoal) || launching || hostBlocked} className="w-full">
+              <Rocket className="h-4 w-4" /> {launching ? "Launching…" : reasonTask ? "Launch Reason Task" : "Launch"}
+            </Button>
+            <p className="mt-2 text-center text-xs text-muted-foreground">启动前会自动运行 Preflight 检查</p>
+          </div>
         </div>
-      </Card>
-
-      <div className="flex justify-end">
-        <Button onClick={launchTask} disabled={!taskTypeMatchesProject || !launchControls.launchReady(effectiveGoal) || launching || hostBlocked}>
-          <Rocket className="h-4 w-4" /> {launching ? "Launching…" : reasonTask ? "Launch Reason Task" : "Launch"}
-        </Button>
-      </div>
+      </aside>
     </ProjectPageShell>
   );
 }

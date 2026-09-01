@@ -131,6 +131,35 @@ export function Badge({ className, variant, size, ...props }: BadgeProps) {
   return <span className={cn(badgeVariants({ variant, size }), className)} {...props} />;
 }
 
+// ---- Chip -----------------------------------------------------------------
+const chipVariants = cva(
+  "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium",
+  {
+    variants: {
+      variant: {
+        neutral: "border-border bg-muted text-muted-foreground",
+        success: "border-success/25 bg-success/10 text-success",
+        info: "border-info/25 bg-info/10 text-info",
+        warning: "border-warning/25 bg-warning/10 text-warning",
+        danger: "border-destructive/25 bg-destructive/10 text-destructive",
+        signal: "border-signal/25 bg-signal/10 text-signal",
+      },
+    },
+    defaultVariants: { variant: "neutral" },
+  },
+);
+export interface ChipProps extends HTMLAttributes<HTMLSpanElement>, VariantProps<typeof chipVariants> {
+  dot?: boolean;
+}
+export function Chip({ className, variant, dot, children, ...props }: ChipProps) {
+  return (
+    <span className={cn(chipVariants({ variant }), className)} {...props}>
+      {dot && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+      {children}
+    </span>
+  );
+}
+
 const controlBaseClasses =
   "w-full rounded-md border bg-background text-sm text-foreground shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
 const controlToneVariants = {

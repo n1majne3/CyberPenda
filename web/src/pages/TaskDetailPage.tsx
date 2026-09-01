@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip, Brain } from "lucide-react";
+import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip, Brain, PlugZap } from "lucide-react";
 import { apiGet, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
@@ -1387,10 +1387,19 @@ function RuntimeOwnerComposer({
   attachmentInputRef?: RefObject<HTMLInputElement | null>;
   onAttachmentsChange?: (files: File[]) => void;
 }) {
+  // The runtime is offline but resumable when the only admitted send mode is
+  // resume: explain the state and its consequence instead of a bare badge.
+  const runtimeOffline = sendMode === "resume";
   return (
     <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none">
       <div className="mx-auto max-w-3xl space-y-2">
         {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
+        {runtimeOffline && (
+          <div className="flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-[hsl(28_90%_32%)]">
+            <PlugZap className="h-3.5 w-3.5 flex-none" />
+            <span>Runtime 当前离线。发送消息将恢复此 Session 并启动新的 Runtime。</span>
+          </div>
+        )}
         {steerState === "action_required" && (
           <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
             <span>{steerError || "Steering needs operator action."}</span>
@@ -1401,7 +1410,7 @@ function RuntimeOwnerComposer({
             )}
           </div>
         )}
-        <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm focus-within:border-ring">
+        <div className="overflow-hidden rounded-lg border border-input bg-card shadow-sm focus-within:border-ring">
           <Textarea
             aria-label={`${ownerLabel} message`}
             name="task_message"
@@ -1413,7 +1422,7 @@ function RuntimeOwnerComposer({
             autoComplete="off"
             className="max-h-40 min-h-[60px] resize-y rounded-none border-0 bg-transparent px-3 py-2.5 shadow-none focus-visible:border-transparent focus-visible:ring-0"
           />
-          <div className="flex flex-wrap items-center gap-1.5 border-t border-border px-2 py-1.5">
+          <div className="flex flex-wrap items-center gap-1.5 px-2 py-1.5">
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
               {onAttachmentsChange && (
                 <label className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -1429,6 +1438,7 @@ function RuntimeOwnerComposer({
                   />
                 </label>
               )}
+              {onAttachmentsChange && <span className="mx-1 h-4 w-px bg-border" />}
               <Select
                 size="sm"
                 className="h-7 min-w-0 w-auto max-w-full border-0 bg-transparent px-1.5 text-xs shadow-none focus-visible:ring-2 sm:max-w-[13rem]"
@@ -1469,9 +1479,11 @@ function RuntimeOwnerComposer({
                   <option key={effort} value={effort}>{effort}</option>
                 ))}
               </Select>
-              <Badge variant={sendMode === "unavailable" ? "warning" : "outline"} size="sm">
-                {providerSwitchRequested ? "switch provider" : conversationModeText(sendMode)}
-              </Badge>
+              {!runtimeOffline && (
+                <Badge variant={sendMode === "unavailable" ? "warning" : "outline"} size="sm">
+                  {providerSwitchRequested ? "switch provider" : conversationModeText(sendMode)}
+                </Badge>
+              )}
               {steerPendingState(steerState) && (
                 <Badge variant="warning" size="sm" data-testid="steer-pending-badge">
                   steering pending…
@@ -1484,6 +1496,7 @@ function RuntimeOwnerComposer({
               )}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1">
+              <span className="mr-1 hidden text-xs text-muted-foreground sm:inline">Enter 发送 · Shift+Enter 换行</span>
               {running && queueAvailable && sendMode !== "queue" && (
                 <Button
                   size="icon-xl"

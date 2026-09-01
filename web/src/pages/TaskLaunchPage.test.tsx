@@ -117,8 +117,9 @@ describe("TaskLaunchPage", () => {
 
     await screen.findByRole("option", { name: "MiMo" });
     await user.selectOptions(await screen.findByLabelText("Task type"), "pentest");
-    await user.type(screen.getByLabelText("Task goal"), "Inspect the target");
-    const mode = screen.getByLabelText("Blackboard Mode");
+    await user.type(screen.getByLabelText("你想探索什么？"), "Inspect the target");
+    await user.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
+    const mode = screen.getByLabelText("Blackboard conclusions");
     expect(screen.getByRole("option", { name: "Disabled" })).toBeEnabled();
     await user.selectOptions(mode, "disabled");
     expect(screen.getByText(/does not receive Blackboard state or Blackboard access/i)).toBeInTheDocument();
@@ -174,7 +175,8 @@ describe("TaskLaunchPage", () => {
     expect(await screen.findByRole("heading", { name: /Launch Reason Task/i })).toBeInTheDocument();
     expect(screen.queryByLabelText("Task type")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Reason Task goal")).toHaveAttribute("readonly");
-    expect(screen.getByLabelText("Blackboard Mode")).toHaveValue("interactive");
+    await userEvent.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
+    expect(screen.getByLabelText("Blackboard conclusions")).toHaveValue("interactive");
     expect(screen.queryByRole("option", { name: "Disabled" })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("button", { name: /Launch Reason Task/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /Launch Reason Task/i }));
@@ -278,11 +280,12 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByText(/must match this Project's kind/i)).toBeInTheDocument();
     await userEvent.selectOptions(taskType, "ctf_challenge");
 
-    const mode = await screen.findByLabelText("Blackboard Mode");
+await userEvent.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
+    const mode = await screen.findByLabelText("Blackboard conclusions");
     expect(mode).toHaveValue("interactive");
     await userEvent.selectOptions(mode, "assisted");
     expect(screen.getByText(/runs a bounded Conclude Turn and applies its validated Attempt result/i)).toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Run recon");
     await userEvent.clear(screen.getByLabelText("Maximum wrong submissions"));
     await userEvent.type(screen.getByLabelText("Maximum wrong submissions"), "3");
     await userEvent.clear(screen.getByLabelText("Maximum rating drawdown"));
@@ -396,11 +399,12 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    expect(await screen.findByLabelText("Blackboard Mode")).toHaveValue("interactive");
+await userEvent.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
+    expect(await screen.findByLabelText("Blackboard conclusions")).toHaveValue("interactive");
     expect(screen.getByRole("option", { name: "Assisted" })).toBeDisabled();
     expect(screen.getByText(/does not expose the complete persistent Turn, normalized Tool\/Turn event, and closed AttemptResult contract/i)).toBeInTheDocument();
     await selectPentestTaskType();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Run recon");
     await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
   });
 
@@ -485,9 +489,9 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    await userEvent.click(await screen.findByRole("button", { name: /use runtime profile/i }));
-    await userEvent.selectOptions(screen.getByLabelText("Runtime Profile"), "codex-preset");
-    expect(await screen.findByText("Skills for this launch")).toBeInTheDocument();
+await userEvent.click(await screen.findByRole("button", { name: /use saved preset/i }));
+    await userEvent.selectOptions(await screen.findByLabelText("Runtime profile preset"), "codex-preset");
+    await userEvent.click(await screen.findByRole("button", { name: /skills/i }));
     expect(await screen.findByText(/selected runtime profile/i)).toBeInTheDocument();
     expect(await screen.findByText("Recon Helper")).toBeInTheDocument();
     expect(within(screen.getByLabelText("1 enabled skills")).queryByText("Disabled")).not.toBeInTheDocument();
@@ -572,6 +576,7 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
+await userEvent.click(await screen.findByRole("button", { name: /skills/i }));
     expect(await screen.findByText(/globally default-enabled/i)).toBeInTheDocument();
     expect(await screen.findByText("Recon Helper")).toBeInTheDocument();
     expect(screen.queryByText(/^Profile:/)).not.toBeInTheDocument();
@@ -641,7 +646,7 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    expect(await screen.findByText("Skills for this launch")).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: /skills/i }));
     await new Promise((resolve) => window.setTimeout(resolve, 300));
     expect(fetchMock).not.toHaveBeenCalledWith(
       expect.stringContaining("/api/runtime-profiles/resolve-launch"),
@@ -724,8 +729,9 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    await userEvent.click(await screen.findByRole("button", { name: /use runtime profile/i }));
-    await userEvent.selectOptions(screen.getByLabelText("Runtime Profile"), "codex-preset");
+await userEvent.click(await screen.findByRole("button", { name: /use saved preset/i }));
+    await userEvent.selectOptions(await screen.findByLabelText("Runtime profile preset"), "codex-preset");
+    await userEvent.click(await screen.findByRole("button", { name: /skills/i }));
     expect(await screen.findByText("No skills enabled for this profile.")).toBeInTheDocument();
   });
 
@@ -809,16 +815,17 @@ describe("TaskLaunchPage", () => {
     renderPage();
 
     await screen.findByRole("option", { name: "MiMo" });
-    await userEvent.click(screen.getByRole("button", { name: /use runtime profile/i }));
-    expect(screen.getByLabelText("Runtime Profile")).toHaveValue("");
+    await userEvent.click(screen.getByRole("button", { name: /use saved preset/i }));
+    expect(screen.getByLabelText("Runtime profile preset")).toHaveValue("");
     expect(screen.getByLabelText("Runtime")).not.toBeDisabled();
     expect(screen.getByLabelText("Model provider")).not.toBeDisabled();
 
     await selectPentestTaskType();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
-    expect(await screen.findByText("Skills for this launch")).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: /skills/i }));
+    expect(await screen.findByText(/No matching skills profile yet\./i)).toBeInTheDocument();
     expect(fetchMock).not.toHaveBeenCalledWith(
       expect.stringContaining("/api/runtime-profiles/resolve-launch"),
       expect.objectContaining({ method: "POST" }),
@@ -911,11 +918,11 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    await userEvent.click(await screen.findByRole("button", { name: /use runtime profile/i }));
-    await userEvent.selectOptions(screen.getByLabelText("Runtime Profile"), "legacy-preset");
-    expect(screen.getByLabelText("Runtime Profile")).toHaveValue("legacy-preset");
+    await userEvent.click(await screen.findByRole("button", { name: /use saved preset/i }));
+    await userEvent.selectOptions(screen.getByLabelText("Runtime profile preset"), "legacy-preset");
+    expect(screen.getByLabelText("Runtime profile preset")).toHaveValue("legacy-preset");
     await selectPentestTaskType();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Run legacy recon");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Run legacy recon");
 
     const launchButton = screen.getByRole("button", { name: /launch/i });
     expect(launchButton).not.toBeDisabled();
@@ -1016,7 +1023,7 @@ describe("TaskLaunchPage", () => {
     renderPage();
 
     await selectPentestTaskType();
-    await userEvent.type(await screen.findByLabelText("Task goal"), "Run with extension");
+    await userEvent.type(await screen.findByLabelText("你想探索什么？"), "Run with extension");
     await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -1134,7 +1141,7 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
     await selectPentestTaskType();
-    await userEvent.type(await screen.findByLabelText("Task goal"), "Probe sandbox env");
+    await userEvent.type(await screen.findByLabelText("你想探索什么？"), "Probe sandbox env");
     await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -1254,14 +1261,14 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    const presetToggle = await screen.findByRole("button", { name: /use runtime profile/i });
+    const presetToggle = await screen.findByRole("button", { name: /use saved preset/i });
     expect(presetToggle).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(presetToggle);
     expect(presetToggle).toHaveAttribute("aria-expanded", "true");
-    await userEvent.selectOptions(screen.getByLabelText("Runtime Profile"), "");
+    await userEvent.selectOptions(screen.getByLabelText("Runtime profile preset"), "");
 
     await selectPentestTaskType();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     const preview = await screen.findByText("Model provider", { selector: "p" });
@@ -1369,7 +1376,7 @@ describe("TaskLaunchPage", () => {
     await screen.findByRole("option", { name: "mimo-v2-pro" });
     await userEvent.selectOptions(modelSelect, "mimo-v2-pro");
     await selectPentestTaskType();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     expect(await screen.findByText("Model provider", { selector: "p" })).toBeInTheDocument();
@@ -1457,7 +1464,7 @@ describe("TaskLaunchPage", () => {
     renderPage();
 
     await selectPentestTaskType();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Run recon");
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     expect(await screen.findByText("Codex multi-agent tools", { selector: "p" })).toBeInTheDocument();
@@ -1574,9 +1581,10 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
+    await userEvent.click(await screen.findByRole("button", { name: /runner/i }));
     await userEvent.selectOptions(await screen.findByLabelText("Docker network"), "host_proxy_only");
     await selectPentestTaskType();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Run recon");
     await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -1698,9 +1706,10 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
+    await userEvent.click(await screen.findByRole("button", { name: /runner/i }));
     await userEvent.click(await screen.findByRole("checkbox", { name: /vpn tun/i }));
     await selectPentestTaskType();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Connect OpenVPN");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Connect OpenVPN");
     await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -1772,11 +1781,12 @@ describe("TaskLaunchPage", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: /runner/i }));
     await userEvent.selectOptions(await screen.findByLabelText("Runner"), "podman");
     expect(screen.getByText(/Container engine/i)).toBeInTheDocument();
     expect(screen.getByLabelText("Podman network")).toBeInTheDocument();
     await selectPentestTaskType();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Use podman");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Use podman");
     await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
     await waitFor(() => {
@@ -1887,11 +1897,12 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
+    await userEvent.click(await screen.findByRole("button", { name: /runner/i }));
     await userEvent.selectOptions(await screen.findByLabelText("Runner"), "host");
     await userEvent.click(screen.getByLabelText(/explicitly activate the host runner/i));
     await userEvent.selectOptions(screen.getByLabelText("Runner"), "docker");
     await selectPentestTaskType();
-    await userEvent.type(screen.getByLabelText("Task goal"), "Run recon");
+    await userEvent.type(screen.getByLabelText("你想探索什么？"), "Run recon");
     await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
@@ -1959,8 +1970,8 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    await userEvent.click(await screen.findByRole("button", { name: /use runtime profile/i }));
-    const presetSelect = screen.getByLabelText("Runtime Profile");
+    await userEvent.click(await screen.findByRole("button", { name: /use saved preset/i }));
+    const presetSelect = screen.getByLabelText("Runtime profile preset");
     await userEvent.selectOptions(presetSelect, "codex-preset");
     expect(presetSelect).toHaveValue("codex-preset");
     expect(screen.getByLabelText("Runtime")).toBeDisabled();
@@ -2108,7 +2119,7 @@ describe("TaskLaunchPage", () => {
     renderPage();
 
     await selectPentestTaskType();
-    await userEvent.type(await screen.findByLabelText("Task goal"), "Run recon");
+    await userEvent.type(await screen.findByLabelText("你想探索什么？"), "Run recon");
     const file = new File(["secret-notes"], "notes.txt", { type: "text/plain" });
     await userEvent.upload(screen.getByLabelText("Attachments"), file);
     expect(screen.getByText("notes.txt")).toBeInTheDocument();

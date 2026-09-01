@@ -12,7 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { apiDelete, apiGet, apiPost, apiPostForm, apiPut, type RuntimeProfile, type Skill } from "@/lib/api";
-import { Badge, Button, Input, Label, Select, Textarea } from "@/components/ui";
+import { Button, Input, Label, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   SettingsAlert,
@@ -22,11 +22,9 @@ import {
   SettingsPageShell,
 } from "@/components/shared";
 import {
-  SettingsDetailPane,
   SettingsListColumn,
   SettingsSearchField,
   SettingsSegmentedFilter,
-  SettingsStatSummary,
 } from "@/components/settingsLibrary";
 import { cn } from "@/lib/utils";
 
@@ -290,7 +288,6 @@ export function SkillsPage() {
         className="mb-4 shrink-0"
         title="Skills"
         eyebrow="Library"
-        description="Global runtime-agnostic Skill bundles. Skills are default-on unless a profile opts out."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -313,69 +310,64 @@ export function SkillsPage() {
 
       <SettingsSplitLayout data-testid="skills-settings-layout" variant="management" fill>
         <SettingsListColumn data-testid="skills-settings-list">
-          <SettingsPanel className="gap-4 lg:shrink-0">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-              <div className="min-w-0 flex-1">
-                <Label htmlFor="skills-runtime-profile">Runtime profile view</Label>
-                <Select
-                  id="skills-runtime-profile"
-                  name="runtime_profile"
-                  value={profileId}
-                  onChange={(event) => setProfileId(event.target.value)}
-                  className="mt-1.5 max-w-md"
-                >
-                  {profiles.length === 0 && <option value="">All profiles</option>}
-                  {profiles.map((profile) => (
-                    <option key={profile.id} value={profile.id}>
-                      {profile.name} ({profile.provider})
-                    </option>
-                  ))}
-                </Select>
-                {selectedProfile && profileId && (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Skill opt-outs apply to this Runtime Profile when it is selected for a new Task or Session.
-                  </p>
-                )}
-              </div>
-              <div className="flex shrink-0 flex-col items-start gap-2 lg:items-end">
-                <SettingsStatSummary value={enabledCount} unit="enabled" total={skills.length} />
-                <div className="flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    aria-label="Enable all skills"
-                    disabled={!selectedProfile || optedOutCount === 0 || bulkUpdating || skillsLoading}
-                    onClick={() => {
-                      if (selectedProfile) void setAllSkillsOptOut(selectedProfile, false);
-                    }}
-                  >
-                    <CheckCheck className="h-3.5 w-3.5" /> Enable all
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    aria-label="Disable all skills"
-                    disabled={!selectedProfile || enabledCount === 0 || bulkUpdating || skillsLoading}
-                    onClick={() => {
-                      if (selectedProfile) setConfirmDisableAllProfile(selectedProfile);
-                    }}
-                    className="text-destructive hover:text-destructive"
-                  >
-                    <Ban className="h-3.5 w-3.5" /> Disable all
-                  </Button>
-                </div>
-              </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card p-4 shadow-sm lg:shrink-0">
+            <div className="min-w-0">
+              <Label htmlFor="skills-runtime-profile" className="text-xs font-medium">
+                Runtime profile view
+              </Label>
+              {selectedProfile && profileId && (
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Skill opt-outs apply to this Runtime Profile when it is selected for a new Task or Session.
+                </p>
+              )}
             </div>
+            <Select
+              id="skills-runtime-profile"
+              name="runtime_profile"
+              value={profileId}
+              onChange={(event) => setProfileId(event.target.value)}
+              className="w-[200px] flex-none"
+            >
+              {profiles.length === 0 && <option value="">All profiles</option>}
+              {profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {profile.name} ({profile.provider})
+                </option>
+              ))}
+            </Select>
+          </div>
 
-            <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-center">
-              <SettingsSearchField
-                id="skills-search"
-                name="skills_search"
-                value={query}
-                onChange={setQuery}
-                placeholder="Search name, id, or source…"
-                aria-label="Search skills"
-              />
+          <div className="flex flex-wrap items-center justify-between gap-2 lg:shrink-0">
+            <span className="text-base font-semibold">
+              {enabledCount}{" "}
+              <span className="text-xs font-normal text-muted-foreground">
+                enabled · {skills.length} total
+              </span>
+            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                aria-label="Enable all skills"
+                disabled={!selectedProfile || optedOutCount === 0 || bulkUpdating || skillsLoading}
+                onClick={() => {
+                  if (selectedProfile) void setAllSkillsOptOut(selectedProfile, false);
+                }}
+              >
+                <CheckCheck className="h-3.5 w-3.5" /> Enable all
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                aria-label="Disable all skills"
+                disabled={!selectedProfile || enabledCount === 0 || bulkUpdating || skillsLoading}
+                onClick={() => {
+                  if (selectedProfile) setConfirmDisableAllProfile(selectedProfile);
+                }}
+                className="text-destructive hover:text-destructive"
+              >
+                <Ban className="h-3.5 w-3.5" /> Disable all
+              </Button>
               <SettingsSegmentedFilter
                 aria-label="Filter by status"
                 value={statusFilter}
@@ -386,8 +378,17 @@ export function SkillsPage() {
                   { id: "opted_out", label: "Opted out", count: optedOutCount },
                 ]}
               />
+              <SettingsSearchField
+                id="skills-search"
+                name="skills_search"
+                value={query}
+                onChange={setQuery}
+                placeholder="Search name, id, or source…"
+                aria-label="Search skills"
+                className="w-[200px] flex-none"
+              />
             </div>
-          </SettingsPanel>
+          </div>
 
           {skillsLoading ? (
             <SettingsPanel className="items-center justify-center py-12 text-center lg:min-h-0 lg:flex-1 lg:overflow-y-auto" role="status" aria-label="Loading skills">
@@ -432,63 +433,42 @@ export function SkillsPage() {
               </Button>
             </SettingsPanel>
           ) : (
-            <SettingsPanel
-              className="flex flex-col gap-0 overflow-hidden p-0 lg:min-h-0 lg:flex-1"
+            <div
+              className="overflow-hidden rounded-lg border border-border bg-card shadow-sm lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain"
               data-testid="skills-library-list"
             >
-              <div className="hidden border-b border-border bg-muted/30 px-4 py-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:grid sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto_auto] sm:gap-3 lg:shrink-0">
-                <span>Skill</span>
-                <span>Source</span>
-                <span className="w-24 text-center">For profile</span>
-                <span className="w-[4.5rem] text-right">Actions</span>
-              </div>
-              <ul className="divide-y divide-border lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
-                {filteredSkills.map((skill) => {
-                  const name = displaySkillName(skill);
-                  const id = displaySkillId(skill);
-                  const description = displaySkillDescription(skill);
-                  const source = sourceLabel(skill);
-                  const selected = editingId === skill.id;
-                  return (
-                    <li
-                      key={skill.id}
-                      data-testid={`skill-card-${skill.id}`}
-                      className={cn(
-                        "rounded-none border-0 bg-transparent px-4 py-3 transition-colors",
-                        selected && "bg-accent/50",
-                        !skill.enabled && "opacity-80",
-                      )}
-                    >
-                      <div className="grid items-start gap-3 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_auto_auto] sm:items-center">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="truncate font-medium leading-tight">{name}</h3>
-                            <Badge variant={skill.enabled ? "success" : "outline"} size="sm">
-                              {skill.enabled ? "enabled" : "opted out"}
-                            </Badge>
-                          </div>
-                          <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">{id}</p>
-                          {description && (
-                            <p className="mt-1 line-clamp-2 text-sm text-muted-foreground sm:line-clamp-1">
-                              {description}
-                            </p>
-                          )}
-                        </div>
-
-                        <div className="min-w-0">
-                          {source ? (
-                            <Badge variant="outline" size="sm" className="max-w-full truncate font-normal">
-                              {source}
-                            </Badge>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">built-in</span>
-                          )}
-                        </div>
-
-                        <div className="flex w-full items-center justify-between gap-2 sm:w-24 sm:justify-center">
-                          <span className="text-xs text-muted-foreground sm:hidden">
-                            {selectedProfile ? selectedProfile.name : "Profile"}
-                          </span>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                    <th className="px-4 py-2.5 font-medium">Skill</th>
+                    <th className="px-4 py-2.5 font-medium">Description</th>
+                    <th className="px-4 py-2.5 font-medium w-[70px]">Source</th>
+                    <th className="px-4 py-2.5 font-medium w-[60px]">Enabled</th>
+                    <th className="px-4 py-2.5 font-medium w-[70px]"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {filteredSkills.map((skill) => {
+                    const name = displaySkillName(skill);
+                    const id = displaySkillId(skill);
+                    const description = displaySkillDescription(skill);
+                    const source = skill.source_provenance?.kind ?? "built-in";
+                    const selected = editingId === skill.id;
+                    return (
+                      <tr
+                        key={skill.id}
+                        data-testid={`skill-card-${skill.id}`}
+                        className={cn("hover:bg-muted/30", selected && "bg-accent/50")}
+                      >
+                        <td className="px-4 py-2.5">
+                          <div className="font-medium">{name}</div>
+                          <div className="font-mono text-xs text-muted-foreground">{id}</div>
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                          {description || "—"}
+                        </td>
+                        <td className="px-4 py-2.5 text-xs text-muted-foreground">{source}</td>
+                        <td className="px-4 py-2.5">
                           {selectedProfile ? (
                             <EnableSwitch
                               enabled={skill.enabled}
@@ -502,228 +482,204 @@ export function SkillsPage() {
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
-                        </div>
-
-                        <div className="flex w-full items-center justify-end gap-1 sm:w-[4.5rem]">
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => editSkill(skill)}
-                            aria-label={`Edit ${name}`}
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            onClick={() => setConfirmDeleteSkill(skill)}
-                            aria-label={`Delete ${name}`}
-                            className="text-muted-foreground hover:text-destructive"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
+                        </td>
+                        <td className="px-4 py-2.5">
+                          <div className="flex items-center gap-0.5">
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => editSkill(skill)}
+                              aria-label={`Edit ${name}`}
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => setConfirmDeleteSkill(skill)}
+                              aria-label={`Delete ${name}`}
+                              className="text-muted-foreground hover:text-destructive"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
               {filteredSkills.length !== skills.length && (
                 <div className="border-t border-border bg-muted/20 px-4 py-2 text-xs text-muted-foreground">
                   Showing {filteredSkills.length} of {skills.length} skills
                 </div>
               )}
-            </SettingsPanel>
+            </div>
           )}
         </SettingsListColumn>
 
-        <SettingsListColumn className="gap-4">
-          {formMode === "idle" ? (
-            <SettingsPanel data-testid="skills-form-panel" className="gap-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain">
-              <div>
-                <h3 className="font-medium">Library actions</h3>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Publish a canonical bundle or import a package. Reusing a Skill ID updates it.
-                </p>
-              </div>
-              <div className="space-y-3 rounded-md border border-border bg-muted/20 p-3">
-                <div>
-                  <Label htmlFor="skill-bundle-archive">Skill bundle archive</Label>
-                  <Input
-                    id="skill-bundle-archive"
-                    name="skill_bundle_archive"
-                    type="file"
-                    accept=".zip,.tar,.tar.gz,.tgz,application/zip,application/x-tar,application/gzip"
-                    onChange={(event) => setArchiveFile(event.target.files?.[0] ?? null)}
-                    className="mt-1.5"
-                  />
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Upload one .zip, .tar, .tar.gz, or .tgz bundle containing SKILL.md and optional scripts.
-                  </p>
-                </div>
+        <aside
+          data-testid="skills-form-panel"
+          className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain"
+        >
+          <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-medium">
+                {formMode === "edit" ? "Edit Skill" : "Upload / edit Skill"}
+              </h3>
+              {formMode !== "idle" && (
                 <Button
-                  variant="outline"
-                  onClick={importArchive}
-                  disabled={saving || !archiveFile}
-                  className="w-full"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={cancelForm}
+                  aria-label="Cancel skill form"
                 >
-                  <Download className="h-4 w-4" /> Upload archive
+                  <X className="h-3.5 w-3.5" />
                 </Button>
-              </div>
-              <div className="flex flex-col gap-2">
-                <Button onClick={startCreate} className="w-full justify-start">
-                  <Plus className="h-4 w-4" /> New skill
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full justify-start"
-                  onClick={() => setImportOpen((open) => !open)}
-                  aria-expanded={importOpen}
-                >
-                  <Download className="h-4 w-4" /> Import skill from URL or repo
-                </Button>
-              </div>
-              {importOpen && (
-                <ImportForm
-                  importPackage={importPackage}
-                  saving={saving}
-                  onPackageChange={setImportPackage}
-                  onImport={importSkill}
-                />
               )}
-            </SettingsPanel>
-          ) : (
-            <SettingsDetailPane
-              data-testid="skills-form-panel"
-              className="lg:flex-1"
-              header={
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="font-medium">
-                      {formMode === "edit" ? "Edit Skill" : "Upload / edit Skill"}
-                    </h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Publishes a canonical bundle atomically. Reusing a Skill ID updates it.
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              发布一个 canonical bundle 原子化。复用 Skill ID 会更新它。
+            </p>
+
+            {formMode === "idle" ? (
+              <div className="mt-4 space-y-3">
+                <div className="space-y-3 rounded-md border border-border bg-muted/20 p-3">
+                  <div>
+                    <Label htmlFor="skill-bundle-archive">Skill bundle archive</Label>
+                    <Input
+                      id="skill-bundle-archive"
+                      name="skill_bundle_archive"
+                      type="file"
+                      accept=".zip,.tar,.tar.gz,.tgz,application/zip,application/x-tar,application/gzip"
+                      onChange={(event) => setArchiveFile(event.target.files?.[0] ?? null)}
+                      className="mt-1.5"
+                    />
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Upload one .zip, .tar, .tar.gz, or .tgz bundle containing SKILL.md and optional scripts.
                     </p>
                   </div>
                   <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={cancelForm}
-                    aria-label="Cancel skill form"
+                    variant="outline"
+                    onClick={importArchive}
+                    disabled={saving || !archiveFile}
+                    className="w-full"
                   >
-                    <X className="h-4 w-4" />
+                    <Download className="h-4 w-4" /> Upload archive
                   </Button>
                 </div>
-              }
-              footer={
-                <>
-                  <Button onClick={publishSkill} disabled={saving || !form.id.trim() || !form.name.trim()}>
+                <Button onClick={startCreate} className="w-full justify-start">
+                  <Plus className="h-4 w-4" /> New skill
+                </Button>
+              </div>
+            ) : (
+              <>
+                <div className="mt-4 space-y-3">
+                  <div>
+                    <Label htmlFor="skill-id">Skill ID</Label>
+                    <Input
+                      id="skill-id"
+                      name="skill_id"
+                      value={form.id}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          id: e.target.value,
+                          storage_id: undefined,
+                          source_provenance: undefined,
+                        })
+                      }
+                      placeholder="recon-helper…"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="skill-name">Name</Label>
+                    <Input
+                      id="skill-name"
+                      name="skill_name"
+                      value={form.name}
+                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                      placeholder="Recon Helper…"
+                      autoComplete="off"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="skill-description">Description</Label>
+                    <Input
+                      id="skill-description"
+                      name="skill_description"
+                      value={form.description}
+                      onChange={(e) => setForm({ ...form, description: e.target.value })}
+                      autoComplete="off"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="skill-instruction">SKILL.md</Label>
+                    <Textarea
+                      id="skill-instruction"
+                      name="skill_instruction"
+                      value={form.instruction}
+                      onChange={(e) => setForm({ ...form, instruction: e.target.value })}
+                      autoComplete="off"
+                      spellCheck={false}
+                      size="lg"
+                      className="font-mono text-xs leading-relaxed"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="skill-extra-files">Additional files JSON</Label>
+                    <Textarea
+                      id="skill-extra-files"
+                      name="skill_extra_files"
+                      value={form.extra_files}
+                      onChange={(e) => setForm({ ...form, extra_files: e.target.value })}
+                      placeholder={'{"scripts/probe.sh":"#!/bin/sh\\n"}…'}
+                      autoComplete="off"
+                      spellCheck={false}
+                      className="font-mono text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="mt-4 flex gap-2">
+                  <Button
+                    onClick={publishSkill}
+                    disabled={saving || !form.id.trim() || !form.name.trim()}
+                    className="flex-1"
+                  >
                     Publish Skill
                   </Button>
                   <Button variant="outline" onClick={cancelForm} disabled={saving}>
                     Cancel
                   </Button>
-                </>
-              }
-              bodyClassName="space-y-3"
-            >
-              <div>
-                <Label htmlFor="skill-id">Skill ID</Label>
-                <Input
-                  id="skill-id"
-                  name="skill_id"
-                  value={form.id}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      id: e.target.value,
-                      storage_id: undefined,
-                      source_provenance: undefined,
-                    })
-                  }
-                  placeholder="recon-helper…"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-              <div>
-                <Label htmlFor="skill-name">Name</Label>
-                <Input
-                  id="skill-name"
-                  name="skill_name"
-                  value={form.name}
-                  onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  placeholder="Recon Helper…"
-                  autoComplete="off"
-                />
-              </div>
-              <div>
-                <Label htmlFor="skill-description">Description</Label>
-                <Input
-                  id="skill-description"
-                  name="skill_description"
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  autoComplete="off"
-                />
-              </div>
-              <div>
-                <Label htmlFor="skill-instruction">SKILL.md</Label>
-                <Textarea
-                  id="skill-instruction"
-                  name="skill_instruction"
-                  value={form.instruction}
-                  onChange={(e) => setForm({ ...form, instruction: e.target.value })}
-                  autoComplete="off"
-                  spellCheck={false}
-                  size="lg"
-                  className="font-mono text-xs leading-relaxed"
-                />
-              </div>
-              <div>
-                <Label htmlFor="skill-extra-files">Additional files JSON</Label>
-                <Textarea
-                  id="skill-extra-files"
-                  name="skill_extra_files"
-                  value={form.extra_files}
-                  onChange={(e) => setForm({ ...form, extra_files: e.target.value })}
-                  placeholder={'{"scripts/probe.sh":"#!/bin/sh\\n"}…'}
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono text-xs"
-                />
-              </div>
-            </SettingsDetailPane>
-          )}
-
-          {formMode !== "idle" && (
-            <SettingsPanel className="lg:shrink-0">
-              <button
-                type="button"
-                className="flex w-full items-center justify-between text-left"
-                onClick={() => setImportOpen((open) => !open)}
-                aria-expanded={importOpen}
-              >
-                <div>
-                  <h3 className="font-medium">Import skill from URL or repo</h3>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    Structured import only; the daemon resolves the source itself and never accepts raw shell commands.
-                  </p>
                 </div>
-                <Download className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", importOpen && "text-foreground")} />
-              </button>
-              {importOpen && (
-                <ImportForm
-                  importPackage={importPackage}
-                  saving={saving}
-                  onPackageChange={setImportPackage}
-                  onImport={importSkill}
-                />
-              )}
-            </SettingsPanel>
-          )}
-        </SettingsListColumn>
+              </>
+            )}
+          </div>
+
+          <div className="rounded-lg border border-dashed border-border p-4">
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 text-left text-sm font-medium"
+              onClick={() => setImportOpen((open) => !open)}
+              aria-expanded={importOpen}
+            >
+              <Download className="h-4 w-4" /> Import skill from URL or repo
+            </button>
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              结构化导入仅由 daemon 解析源本身，从不接受原始 shell 命令。
+            </p>
+            {importOpen && (
+              <ImportForm
+                importPackage={importPackage}
+                saving={saving}
+                onPackageChange={setImportPackage}
+                onImport={importSkill}
+              />
+            )}
+          </div>
+        </aside>
       </SettingsSplitLayout>
       <ConfirmDialog
         open={confirmDisableAllProfile !== null}
