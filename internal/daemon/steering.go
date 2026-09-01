@@ -468,7 +468,7 @@ func (server *Server) taskConclusionSettlementForID(taskID string) providerContr
 		if err != nil {
 			return false, err
 		}
-		if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeAssisted {
+		if found.RunControls.BlackboardMode != task.BlackboardModeWorkingGraph {
 			return true, nil
 		}
 		return server.taskConclusionSettlement(found)(ctx, wait)

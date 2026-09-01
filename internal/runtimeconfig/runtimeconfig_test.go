@@ -41,6 +41,11 @@ func TestResolveDirectLaunchCapturesOnlyDirectConfiguration(t *testing.T) {
 	if !reflect.DeepEqual(snapshot.EnabledSkillIDs, []string{"recon", "report"}) {
 		t.Fatalf("enabled skills = %#v", snapshot.EnabledSkillIDs)
 	}
+	snapshot.ModeSkillID = "cyberpenda-blackboard-working-graph"
+	cloned, err := runtimeconfig.CloneForTurn(snapshot, snapshot.TurnSelection, snapshot.ModelProvider)
+	if err != nil || cloned.ModeSkillID != snapshot.ModeSkillID {
+		t.Fatalf("Mode Skill snapshot was not preserved: %#v err=%v", cloned, err)
+	}
 	if got := snapshot.Settings["sandbox_image"]; got != "kali:latest" {
 		t.Fatalf("standard setting = %#v", got)
 	}

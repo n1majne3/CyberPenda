@@ -26,7 +26,6 @@ import (
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
-	"pentest/internal/reasontask"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeconfig"
@@ -39,6 +38,7 @@ import (
 	"pentest/internal/steering"
 	"pentest/internal/store"
 	"pentest/internal/task"
+	"pentest/internal/workinggraph"
 
 	"pentest/internal/daemon/webfs"
 )
@@ -103,7 +103,6 @@ type Server struct {
 	db                      *store.DB
 	projects                *project.Service
 	scopeExpansions         *scopeexpansion.Service
-	reasonTasks             *reasontask.Service
 	runtimePlugins          *runtimeplugin.Registry
 	runtimeExtensions       *runtimeextension.Registry
 	profiles                *runtimeprofile.Service
@@ -120,6 +119,8 @@ type Server struct {
 	sessionHarness          *runtime.SessionHarness
 	canonicalStore          string
 	blackboardV2            *blackboardv2.Service
+	workingGraph            *workinggraph.Service
+	workingGraphCompiler    *workinggraph.SemanticCompiler
 	challengeWorkflow       *challengeworkflow.Service
 	finishReadiness         *finishreadiness.Service
 	blackboardV2Continuity  *blackboardv2.ContinuityService
@@ -348,7 +349,8 @@ func NewServer(config Config) (*Server, error) {
 	server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.sessions.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
-	server.reasonTasks = reasontask.NewService(db, server.blackboardV2)
+	server.workingGraph = workinggraph.NewService(db)
+	server.workingGraphCompiler = workinggraph.NewSemanticCompiler(server.blackboardV2)
 	server.challengeWorkflow = challengeworkflow.NewService(db, server.projects, server.tasks, config.ChallengePlatforms, challengeworkflow.NewBlackboardRecorder(server.blackboardV2, server.tasks, runtimeRoot))
 	server.finishReadiness = finishreadiness.NewService(db, server.tasks)
 	server.tasks.SetContinuationReconciler(server.blackboardV2)
@@ -541,7 +543,7 @@ func (server *Server) reconcileInterruptedTasks(lifecycleProtectedTaskIDs []stri
 				server.logger.Printf("task reconcile: failed to load Task %s for terminal Continuation %s: %v", continuation.TaskID, continuation.ID, ownerErr)
 				continue
 			}
-			if owner.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+			if owner.RunControls.BlackboardMode == task.BlackboardModeDisabled {
 				continue
 			}
 			if reconcileErr := server.blackboardV2.ReconcileTerminalContinuation(context.Background(), continuation.ID, "daemon_restart"); reconcileErr != nil {
@@ -643,11 +645,9 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}
 	if server.authToken != "" && !server.publicPath(request) {
 		if !server.authorized(request) {
-			// Blackboard v2 and Reason proposal-create handlers own their narrower
-			// Continuation capability checks. Let only those exact transports classify
-			// a missing or invalid grant; every other API remains behind this middleware.
-			handlerOwnsCapability := server.blackboardV2 != nil &&
-				(isBlackboardV2HTTPTransport(request) || isReasonTaskProposalCreateHTTPTransport(request))
+			// Blackboard v2 handlers own their narrower Continuation capability
+			// checks. Every other API remains behind this middleware.
+			handlerOwnsCapability := server.blackboardV2 != nil && isBlackboardV2HTTPTransport(request)
 			if !handlerOwnsCapability {
 				writeError(response, http.StatusUnauthorized, "unauthorized")
 				return
@@ -893,11 +893,6 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/scope-expansions", server.handleProposeScopeExpansion)
 	server.mux.HandleFunc("POST /api/projects/{id}/scope-expansions/{expansion_id}/approve", server.handleApproveScopeExpansion)
 	server.mux.HandleFunc("POST /api/projects/{id}/scope-expansions/{expansion_id}/reject", server.handleRejectScopeExpansion)
-	server.mux.HandleFunc("POST /api/projects/{id}/reason-tasks", server.handleCreateReasonTask)
-	server.mux.HandleFunc("GET /api/projects/{id}/reason-task-proposals", server.handleListReasonTaskProposals)
-	server.mux.HandleFunc("POST /api/projects/{id}/reason-tasks/{task_id}/proposals", server.handleProposeReasonTaskChanges)
-	server.mux.HandleFunc("POST /api/projects/{id}/reason-task-proposals/{proposal_id}/approve", server.handleApproveReasonTaskProposal)
-	server.mux.HandleFunc("POST /api/projects/{id}/reason-task-proposals/{proposal_id}/reject", server.handleRejectReasonTaskProposal)
 	server.mux.HandleFunc("GET /api/projects/{id}", server.handleGetProject)
 	server.mux.HandleFunc("PATCH /api/projects/{id}", server.handleUpdateProject)
 	server.mux.HandleFunc("POST /api/projects/{id}/kind-conversion/preview", server.handlePreviewProjectKindConversion)

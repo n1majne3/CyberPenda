@@ -466,7 +466,7 @@ func seedConclusionRecoveryReceipt(t *testing.T, root string) conclusionRecovery
 	created, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: projectRecord.ID,
 		Type:      task.TypePentest, Goal: "recover conclusion", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph},
 	})
 	if err != nil {
 		t.Fatal(err)

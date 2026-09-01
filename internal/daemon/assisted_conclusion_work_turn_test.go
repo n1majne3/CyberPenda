@@ -40,7 +40,7 @@ func TestAssistedConclusionNonSettlingWorkTurnBecomesNonRetryableTerminal(t *tes
 			return &conflictingWorkTurnSession{FakeProviderSession: fake}
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{

@@ -11,6 +11,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/preflight"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeextension"
@@ -485,6 +486,32 @@ func TestRunFailsWhenEnabledSkillBundleIsMissing(t *testing.T) {
 	}
 	if !checkFailed(result, "skills") {
 		t.Fatalf("expected skills check to fail, got %#v", result.Checks)
+	}
+}
+
+func TestRunShowsModeSkillSeparatelyAndRejectsIncompatibleUserSkill(t *testing.T) {
+	svc := newTestServices(t)
+	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
+	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).
+		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry())
+	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skills.Publish(context.Background(), skill.PublishRequest{
+		Metadata: skill.Metadata{ID: "disabled-only", Name: "Disabled Only"},
+		Files:    map[string]string{"SKILL.md": "---\nname: disabled-only\nblackboard_modes: [disabled]\n---\n# Disabled only\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID, ProjectID: "p1", BlackboardMode: modeskill.ModeWorkingGraph,
+	})
+	if result.ModeSkill == nil || result.ModeSkill.ID != "cyberpenda-blackboard-working-graph" {
+		t.Fatalf("Mode Skill preview = %#v", result.ModeSkill)
+	}
+	if !checkFailed(result, "skills") {
+		t.Fatalf("incompatible Skill did not fail Preflight: %#v", result.Checks)
 	}
 }
 

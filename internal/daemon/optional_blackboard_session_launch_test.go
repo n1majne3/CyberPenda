@@ -61,7 +61,7 @@ func newOptionalBlackboardSessionFixture(t *testing.T) optionalBlackboardSession
 		t.Fatalf("create Runtime Profile: %v", err)
 	}
 	input := sessionRuntimeInput{RuntimeProfileID: profile.ID, Runner: "host", HostActivated: true}
-	prepared, err := server.prepareSessionRuntime(t.Context(), session.BlackboardConclusionModeInteractive, input, nil)
+	prepared, err := server.prepareSessionRuntime(t.Context(), session.BlackboardModeInteractive, input, nil)
 	if err != nil {
 		t.Fatalf("prepare Session Runtime: %v", err)
 	}

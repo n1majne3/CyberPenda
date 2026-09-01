@@ -1190,9 +1190,6 @@ func NewCodexProviderSession(config CodexProviderSessionConfig) *CodexProviderSe
 		},
 	}
 	capabilities := providerCapabilities(config.Capabilities)
-	if !capabilities.PersistentSession || !capabilities.SendTurn {
-		capabilities.AssistedConclusion = false
-	}
 	return &CodexProviderSession{
 		providerSessionAdapter: newProviderSessionAdapter("codex", config.Transport, threadID, config.ActiveTurnID, capabilities, methods),
 		assisted:               newCodexAssistedSession(),
@@ -1221,9 +1218,6 @@ func NewClaudeCodeProviderSession(config ClaudeCodeProviderSessionConfig) *Claud
 		params: claudeCodeParams, turnID: func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") }, sessionID: identitySession,
 	}
 	capabilities := providerCapabilities(config.Capabilities)
-	if !capabilities.PersistentSession || !capabilities.SendTurn {
-		capabilities.AssistedConclusion = false
-	}
 	return &ClaudeCodeProviderSession{
 		providerSessionAdapter: newProviderSessionAdapter("claude_code", config.Transport, config.SessionID, config.ActiveTurnID, capabilities, methods),
 		assisted:               newClaudeAssistedSession(),

@@ -27,7 +27,7 @@ func TestAssistedSessionRestartReplaysAPreSendReceiptWithProvenRuntimeOwnership(
 	}
 	t.Cleanup(func() { _ = server.Close() })
 	found, err := server.sessions.Create(session.CreateRequest{
-		Input: "recover Session conclusion", BlackboardConclusionMode: session.BlackboardConclusionModeAssisted,
+		Input: "recover Session conclusion", BlackboardMode: session.BlackboardModeWorkingGraph,
 	})
 	if err != nil {
 		t.Fatalf("create Session: %v", err)
@@ -76,7 +76,7 @@ func TestRetrySessionConclusionBindsProvenLiveReplacementRuntime(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Close() })
 	found, err := server.sessions.Create(session.CreateRequest{
-		Input: "retry Session conclusion", BlackboardConclusionMode: session.BlackboardConclusionModeAssisted,
+		Input: "retry Session conclusion", BlackboardMode: session.BlackboardModeWorkingGraph,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +219,7 @@ func TestSessionInitialRuntimeRetryRemainsInitialAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	found, err := server.sessions.Create(session.CreateRequest{
-		Input: "restart initial Session conclusion", BlackboardConclusionMode: session.BlackboardConclusionModeAssisted,
+		Input: "restart initial Session conclusion", BlackboardMode: session.BlackboardModeWorkingGraph,
 	})
 	if err != nil {
 		t.Fatal(err)

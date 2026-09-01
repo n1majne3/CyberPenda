@@ -138,6 +138,35 @@ func TestTaskLaunchWithoutBlackboardKeepsOrdinaryOwnerContext(t *testing.T) {
 	}
 }
 
+func TestWorkingGraphTaskLaunchProjectsContinuationScopedMailboxEnv(t *testing.T) {
+	fixture := newOptionalBlackboardTaskFixture(t)
+	plan, err := fixture.server.buildTaskLaunchPlanForBlackboardProjection(
+		fixture.created, fixture.created.Goal, "", "", "high", runner.BlackboardProjectionRequired,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, bound, err := fixture.server.prepareTaskContinuationLaunch(fixture.created, plan, fixture.created.Goal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch, ok := runtime.CommandAdapterLaunch(bound.Adapter)
+	if !ok {
+		t.Fatalf("adapter = %T", bound.Adapter)
+	}
+	if launch.Env["PENTEST_CONTINUATION_ID"] != continuation.ID ||
+		launch.Env["PENTEST_BLACKBOARD_MODE"] != "working_graph" ||
+		launch.Env["PENTEST_INTERFACE_TOKEN"] == "" || launch.Env["PENTEST_API_URL"] == "" {
+		t.Fatalf("Working Graph launch env = %#v", launch.Env)
+	}
+	wantOutbox := filepath.ToSlash(filepath.Join("graph", "outbox", continuation.ID))
+	if launch.Env["PENTEST_WORKING_GRAPH_ROOT"] != "." ||
+		launch.Env["PENTEST_WORKING_GRAPH_OUTBOX"] != wantOutbox ||
+		launch.Env["PENTEST_WORKING_GRAPH_RECEIPTS"] != filepath.ToSlash(filepath.Join("graph", "receipts", continuation.ID)) {
+		t.Fatalf("Working Graph mailbox env = %#v", launch.Env)
+	}
+}
+
 func TestTaskLaunchWithoutBlackboardCreatesOrdinaryContinuation(t *testing.T) {
 	fixture := newOptionalBlackboardTaskFixture(t)
 	plan := fixture.omittedPlan(t, fixture.created.Goal)

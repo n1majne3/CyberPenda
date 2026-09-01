@@ -4,7 +4,6 @@ import (
 	"net/http"
 
 	"pentest/internal/runtimeplugin"
-	"pentest/internal/runtimeprofile"
 )
 
 func (server *Server) handleListRuntimePlugins(response http.ResponseWriter, request *http.Request) {
@@ -38,6 +37,5 @@ func (server *Server) handleGetRuntimePlugin(response http.ResponseWriter, reque
 }
 
 func (server *Server) effectiveRuntimePlugin(plugin runtimeplugin.Plugin) runtimeplugin.Plugin {
-	plugin.Capabilities.AssistedConclusion = server.supportsAssistedConclusion(runtimeprofile.Provider(plugin.ID))
 	return plugin
 }

@@ -17,6 +17,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeplugin"
@@ -85,6 +86,7 @@ type Result struct {
 	Pass              bool                      `json:"pass"`
 	Checks            []Check                   `json:"checks"`
 	Skills            []SkillPreview            `json:"skills,omitempty"`
+	ModeSkill         *SkillPreview             `json:"mode_skill,omitempty"`
 	RuntimeExtensions []RuntimeExtensionPreview `json:"runtime_extensions,omitempty"`
 	ModelProvider     *ModelProviderPreview     `json:"model_provider,omitempty"`
 	CodexMultiAgent   *CodexMultiAgentPreview   `json:"codex_multi_agent,omitempty"`
@@ -118,6 +120,7 @@ type Request struct {
 	// CapturedSkillIDs is non-nil for an existing Runtime Owner. Resume checks
 	// exactly this immutable set and ignores later defaults and Profile Opt-Outs.
 	CapturedSkillIDs []string
+	BlackboardMode   modeskill.Mode
 	// ProjectKind and ScopeCapabilities are explicit operator-owned state used
 	// only to validate Runtime Extension Requirements.
 	ProjectKind       string
@@ -203,6 +206,15 @@ func (s *Service) WithHermesACPProbe(probe func(binary string) error) *Service {
 // Run executes all preflight checks for a launch request.
 func (s *Service) Run(ctx context.Context, request Request) Result {
 	result := Result{Pass: true}
+	if request.BlackboardMode != "" {
+		spec, err := modeskill.Resolve(request.BlackboardMode)
+		if err != nil {
+			result.add(Check{Name: "mode_skill", Status: CheckFail, Detail: err.Error()})
+		} else {
+			result.ModeSkill = &SkillPreview{ID: spec.ID, Name: spec.Name}
+			result.add(Check{Name: "mode_skill", Status: CheckPass, Detail: spec.ID})
+		}
+	}
 
 	// Check 1: a source-neutral Runtime configuration is loadable.
 	var profile runtimeprofile.Profile
@@ -278,7 +290,7 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 				}
 				result.Skills = append(result.Skills, preview)
 			}
-			if bundleErr := validateEnabledSkillBundles(bundles); bundleErr != nil {
+			if bundleErr := validateEnabledSkillBundles(bundles, request.BlackboardMode); bundleErr != nil {
 				result.add(Check{
 					Name:   "skills",
 					Status: CheckFail,
@@ -600,7 +612,7 @@ func runtimepluginForProfile(profile runtimeprofile.Profile, registry *runtimepl
 	return runtimeplugin.MustBuiltinRegistry().Get(string(profile.Provider))
 }
 
-func validateEnabledSkillBundles(bundles []skill.Bundle) error {
+func validateEnabledSkillBundles(bundles []skill.Bundle, mode modeskill.Mode) error {
 	for _, bundle := range bundles {
 		meta := skill.Metadata{
 			ID:   skill.DisplayID(bundle.ID, bundle.Source),
@@ -608,6 +620,11 @@ func validateEnabledSkillBundles(bundles []skill.Bundle) error {
 		}
 		if err := skill.ValidateBundle(bundle.Path, meta); err != nil {
 			return err
+		}
+		if mode != "" {
+			if err := modeskill.ValidateBundleCompatibility(mode, bundle); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

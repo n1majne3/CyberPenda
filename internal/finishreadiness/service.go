@@ -55,7 +55,7 @@ func (service *Service) Evaluate(ctx context.Context, projectID, taskID string) 
 	if found.ProjectID != projectID {
 		return Readiness{}, task.ErrNotFound
 	}
-	blackboardDisabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
+	blackboardDisabled := found.RunControls.BlackboardMode == task.BlackboardModeDisabled
 	readiness := Readiness{Blockers: []Blocker{}}
 	queries := []struct {
 		code, message, link, query string

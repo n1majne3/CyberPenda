@@ -157,24 +157,11 @@ func containsTrustedHermesConfig(raw []byte, trustedNames map[string]struct{}) (
 }
 
 func omittedProjectionTrustedMCPNames(profile runtimeprofile.Profile) map[string]struct{} {
-	names := map[string]struct{}{}
-	reservedNameDeclaredExternal := false
-	for _, server := range profile.Fields.MCPServers {
-		name := strings.ToLower(strings.TrimSpace(server.Name))
-		if name == "" {
-			continue
-		}
-		if name == trustedMCPServerName && server.Mode == runtimeprofile.MCPServerExternal {
-			reservedNameDeclaredExternal = true
-		}
-		if server.Mode == runtimeprofile.MCPServerTrusted {
-			names[name] = struct{}{}
-		}
-	}
-	if _, declaredTrusted := names[trustedMCPServerName]; !declaredTrusted && !reservedNameDeclaredExternal {
-		names[trustedMCPServerName] = struct{}{}
-	}
-	return names
+	_ = profile
+	// The daemon no longer injects a built-in Blackboard MCP server. Every
+	// configured MCP entry is user-owned external configuration and is not a
+	// stale Blackboard projection merely because Blackboard Mode is disabled.
+	return map[string]struct{}{}
 }
 
 func isOmittedProjectionTrustedMCPName(name string, trustedNames map[string]struct{}) bool {

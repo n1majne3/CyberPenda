@@ -955,7 +955,125 @@ func migrations() []migration {
 		newMigration(67, "operator_disabled_output_origins", migration67SQL, migration67Up),
 		newMigration(68, "operator_evidence_request_sources", migration68SQL, migration68Up),
 		newMigration(69, "owner_local_runtime_configuration_snapshots", migration69SQL, migration69Up),
+		newMigration(70, "working_graph_blackboard_modes", migration70SQL, migration70Up),
+		newMigration(71, "continuation_grant_access", migration71SQL, migration71Up),
+		newMigration(72, "working_graph_intents", migration72SQL, migration72Up),
 	}
+}
+
+const migration72SQL = `
+CREATE TABLE IF NOT EXISTS working_graph_intents (
+ id TEXT PRIMARY KEY,
+ owner_kind TEXT NOT NULL CHECK (owner_kind IN ('task','session')),
+ owner_id TEXT NOT NULL,
+ continuation_id TEXT NOT NULL,
+ intent_id TEXT NOT NULL,
+ sequence INTEGER NOT NULL CHECK (sequence >= 1),
+ request_hash TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK (kind IN ('semantic_changes','attempt_result','checkpoint_attempt','retain_evidence')),
+ state TEXT NOT NULL CHECK (state IN ('pending','applying','retry_pending','applied','noop','action_required','superseded')),
+ replacement_of TEXT NOT NULL DEFAULT '',
+ source_facts_json TEXT NOT NULL DEFAULT '[]',
+ result_json TEXT NOT NULL DEFAULT '{}',
+ error_json TEXT NOT NULL DEFAULT '{}',
+ retry_count INTEGER NOT NULL DEFAULT 0 CHECK (retry_count >= 0),
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL,
+ UNIQUE (owner_kind, owner_id, intent_id),
+ UNIQUE (owner_kind, owner_id, continuation_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_working_graph_intents_settlement
+ ON working_graph_intents(owner_kind,owner_id,continuation_id,state,sequence);
+`
+
+func migration72Up(tx *sql.Tx) error { return execStatements(tx, migration72SQL) }
+
+const migration71SQL = `
+ALTER TABLE blackboard_continuation_grants
+	ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'full' CHECK (access_mode IN ('full', 'read_only'));
+ALTER TABLE session_continuation_interface_grants
+	ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'full' CHECK (access_mode IN ('full', 'read_only'));
+`
+
+func migration71Up(tx *sql.Tx) error {
+	for _, item := range []struct {
+		table string
+		sql   string
+	}{
+		{table: "blackboard_continuation_grants", sql: `ALTER TABLE blackboard_continuation_grants ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'full' CHECK (access_mode IN ('full', 'read_only'))`},
+		{table: "session_continuation_interface_grants", sql: `ALTER TABLE session_continuation_interface_grants ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'full' CHECK (access_mode IN ('full', 'read_only'))`},
+	} {
+		present, err := storeTableHasColumn(tx, item.table, "access_mode")
+		if err != nil {
+			return err
+		}
+		if present {
+			continue
+		}
+		if _, err := tx.Exec(item.sql); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+const migration70SQL = `
+Rename the Session Blackboard Mode column to blackboard_mode.
+Map historical assisted values to working_graph.
+Migrate Task Run Controls from blackboard_conclusion_mode to blackboard_mode.
+`
+
+func migration70Up(tx *sql.Tx) error {
+	hasLegacy, err := storeTableHasColumn(tx, "sessions", "blackboard_conclusion_mode")
+	if err != nil {
+		return err
+	}
+	hasCurrent, err := storeTableHasColumn(tx, "sessions", "blackboard_mode")
+	if err != nil {
+		return err
+	}
+	if hasLegacy == hasCurrent {
+		return fmt.Errorf("sessions must contain exactly one Blackboard Mode column (legacy=%t current=%t)", hasLegacy, hasCurrent)
+	}
+	if hasLegacy {
+		if _, err := tx.Exec(`ALTER TABLE sessions RENAME COLUMN blackboard_conclusion_mode TO blackboard_mode`); err != nil {
+			return fmt.Errorf("rename Session Blackboard Mode column: %w", err)
+		}
+	}
+
+	var schemaSQL string
+	if err := tx.QueryRow(`SELECT sql FROM sqlite_schema WHERE type='table' AND name='sessions'`).Scan(&schemaSQL); err != nil {
+		return fmt.Errorf("read renamed sessions schema: %w", err)
+	}
+	updatedSQL := schemaSQL
+	updatedSQL = strings.Replace(updatedSQL, "DEFAULT 'interactive'", "DEFAULT 'disabled'", 1)
+	updatedSQL = strings.Replace(updatedSQL, "'assisted'", "'working_graph'", 1)
+	if !strings.Contains(updatedSQL, "blackboard_mode") ||
+		!strings.Contains(updatedSQL, "DEFAULT 'disabled'") || !strings.Contains(updatedSQL, "'working_graph'") {
+		return fmt.Errorf("renamed sessions Blackboard Mode constraint has an unexpected shape")
+	}
+	if updatedSQL != schemaSQL {
+		if err := replaceTableSchemaSQL(tx, "sessions", schemaSQL, updatedSQL); err != nil {
+			return fmt.Errorf("replace sessions Blackboard Mode constraint: %w", err)
+		}
+	}
+
+	if _, err := tx.Exec(`UPDATE sessions SET blackboard_mode='working_graph' WHERE blackboard_mode='assisted'`); err != nil {
+		return fmt.Errorf("migrate Session assisted Blackboard Modes: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE tasks SET run_controls_json =
+		json_remove(
+			json_set(run_controls_json, '$.blackboard_mode',
+				CASE COALESCE(json_extract(run_controls_json, '$.blackboard_conclusion_mode'), json_extract(run_controls_json, '$.blackboard_mode'))
+					WHEN 'interactive' THEN 'interactive'
+					WHEN 'assisted' THEN 'working_graph'
+					WHEN 'disabled' THEN 'disabled'
+					ELSE 'working_graph'
+				END),
+			'$.blackboard_conclusion_mode')`); err != nil {
+		return fmt.Errorf("migrate Task Blackboard Mode Run Controls: %w", err)
+	}
+	return nil
 }
 
 const migration69SQL = `runtime configuration snapshot v1; remove automatic Runtime Profiles and runtime_profiles.kind`
@@ -1748,17 +1866,25 @@ CHECK (blackboard_conclusion_mode IN ('interactive', 'assisted', 'disabled'));
 func migration66Up(tx *sql.Tx) error {
 	const oldConstraint = "CHECK (blackboard_conclusion_mode IN ('interactive', 'assisted'))"
 	const newConstraint = "CHECK (blackboard_conclusion_mode IN ('interactive', 'assisted', 'disabled'))"
+	const currentOldConstraint = "CHECK (blackboard_mode IN ('interactive', 'working_graph'))"
+	const currentNewConstraint = "CHECK (blackboard_mode IN ('interactive', 'working_graph', 'disabled'))"
 
 	var schemaSQL string
 	if err := tx.QueryRow(`SELECT sql FROM sqlite_schema WHERE type='table' AND name='sessions'`).Scan(&schemaSQL); err != nil {
 		return fmt.Errorf("read sessions schema: %w", err)
 	}
-	if strings.Contains(schemaSQL, newConstraint) {
+	if strings.Contains(schemaSQL, newConstraint) || strings.Contains(schemaSQL, currentNewConstraint) {
 		return nil
 	}
-	if !strings.Contains(schemaSQL, oldConstraint) {
+	updatedSQL := strings.Replace(schemaSQL, oldConstraint, newConstraint, 1)
+	updatedSQL = strings.Replace(updatedSQL, currentOldConstraint, currentNewConstraint, 1)
+	if updatedSQL == schemaSQL {
 		return fmt.Errorf("sessions Blackboard Mode constraint has an unexpected shape")
 	}
+	return replaceTableSchemaSQL(tx, "sessions", schemaSQL, updatedSQL)
+}
+
+func replaceTableSchemaSQL(tx *sql.Tx, table, schemaSQL, updatedSQL string) error {
 	var schemaVersion int
 	if err := tx.QueryRow(`PRAGMA schema_version`).Scan(&schemaVersion); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
@@ -1772,8 +1898,7 @@ func migration66Up(tx *sql.Tx) error {
 			_, _ = tx.Exec(`PRAGMA writable_schema=OFF`)
 		}
 	}()
-	updatedSQL := strings.Replace(schemaSQL, oldConstraint, newConstraint, 1)
-	result, err := tx.Exec(`UPDATE sqlite_schema SET sql=? WHERE type='table' AND name='sessions' AND sql=?`, updatedSQL, schemaSQL)
+	result, err := tx.Exec(`UPDATE sqlite_schema SET sql=? WHERE type='table' AND name=? AND sql=?`, updatedSQL, table, schemaSQL)
 	if err != nil {
 		return fmt.Errorf("extend sessions Blackboard Mode constraint: %w", err)
 	}
@@ -2934,7 +3059,7 @@ func migration48Up(tx *sql.Tx) error {
 			_ = rows.Close()
 			return err
 		}
-		if name == "blackboard_conclusion_mode" {
+		if name == "blackboard_conclusion_mode" || name == "blackboard_mode" {
 			hasMode = true
 		}
 	}

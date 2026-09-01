@@ -24,6 +24,24 @@ func newGlobalEnvTestService(t *testing.T) *credential.Service {
 	return credential.NewService(storeDB)
 }
 
+func TestLaunchProcessEnvProjectsOwnerNeutralCLIGrantOnlyInProcessEnv(t *testing.T) {
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-cli-env", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := runner.LaunchProcessEnv(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex}, false, runner.RuntimeOwnerContext{
+		Owner:          owner.NewTaskContract("task-cli-env", "project-1", layout.Workdir),
+		APIURL:         "http://127.0.0.1:8787/api",
+		InterfaceToken: "continuation-secret",
+		BlackboardMode: "working_graph",
+	})
+	if env["PENTEST_API_URL"] != "http://127.0.0.1:8787/api" ||
+		env["PENTEST_INTERFACE_TOKEN"] != "continuation-secret" ||
+		env["PENTEST_BLACKBOARD_MODE"] != "working_graph" {
+		t.Fatalf("CLI authority env = %#v", env)
+	}
+}
+
 func TestModelProviderKeyDoesNotSkipProfileCredentialRefs(t *testing.T) {
 	creds := newGlobalEnvTestService(t)
 	t.Setenv("HOSTED_MODEL_API_KEY", "model-secret")

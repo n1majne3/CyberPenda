@@ -562,7 +562,7 @@ func (service *Service) prepare(projectID, taskID, platform, operationID string)
 	if taskValue.Type != task.TypeCTFChallenge {
 		return task.Task{}, nil, ErrTaskType
 	}
-	if taskValue.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+	if taskValue.RunControls.BlackboardMode == task.BlackboardModeDisabled {
 		return task.Task{}, nil, ErrBlackboardDisabled
 	}
 	adapter := service.platforms[platform]

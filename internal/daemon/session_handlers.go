@@ -16,23 +16,23 @@ import (
 )
 
 type createSessionInput struct {
-	Input                    string                           `json:"input"`
-	InitialInput             string                           `json:"initial_input"`
-	Message                  string                           `json:"message"`
-	Directive                string                           `json:"directive"`
-	RuntimeProfileID         string                           `json:"runtime_profile_id"`
-	RuntimePluginID          string                           `json:"runtime_plugin_id"`
-	Provider                 string                           `json:"provider"`
-	RuntimeProvider          string                           `json:"runtime_provider"`
-	ModelProviderID          string                           `json:"model_provider_id"`
-	Model                    string                           `json:"model"`
-	ModelOverride            string                           `json:"model_override"`
-	ReasoningEffort          string                           `json:"reasoning_effort"`
-	Runner                   string                           `json:"runner"`
-	HostActivated            bool                             `json:"host_activated"`
-	RuntimeConfig            map[string]any                   `json:"runtime_config"`
-	BlackboardConclusionMode session.BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
-	RunControls              session.RunControls              `json:"run_controls"`
+	Input            string                 `json:"input"`
+	InitialInput     string                 `json:"initial_input"`
+	Message          string                 `json:"message"`
+	Directive        string                 `json:"directive"`
+	RuntimeProfileID string                 `json:"runtime_profile_id"`
+	RuntimePluginID  string                 `json:"runtime_plugin_id"`
+	Provider         string                 `json:"provider"`
+	RuntimeProvider  string                 `json:"runtime_provider"`
+	ModelProviderID  string                 `json:"model_provider_id"`
+	Model            string                 `json:"model"`
+	ModelOverride    string                 `json:"model_override"`
+	ReasoningEffort  string                 `json:"reasoning_effort"`
+	Runner           string                 `json:"runner"`
+	HostActivated    bool                   `json:"host_activated"`
+	RuntimeConfig    map[string]any         `json:"runtime_config"`
+	BlackboardMode   session.BlackboardMode `json:"blackboard_mode"`
+	RunControls      session.RunControls    `json:"run_controls"`
 }
 
 var errInvalidSessionBody = errors.New("invalid request body")
@@ -63,8 +63,18 @@ func parseCreateSessionRequest(request *http.Request) (createSessionInput, []upl
 	if strings.HasPrefix(request.Header.Get("Content-Type"), "multipart/form-data") {
 		return parseMultipartCreateSessionRequest(request)
 	}
+	raw, err := io.ReadAll(request.Body)
+	if err != nil {
+		return createSessionInput{}, nil, errInvalidSessionBody
+	}
+	if err := rejectLegacyBlackboardModeField(raw); err != nil {
+		if errors.Is(err, errLegacyBlackboardModeField) {
+			return createSessionInput{}, nil, err
+		}
+		return createSessionInput{}, nil, errInvalidSessionBody
+	}
 	var input createSessionInput
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+	if err := json.Unmarshal(raw, &input); err != nil {
 		return createSessionInput{}, nil, errInvalidSessionBody
 	}
 	return input, nil, nil
@@ -77,10 +87,19 @@ func parseMultipartCreateSessionRequest(request *http.Request) (createSessionInp
 	payload := strings.TrimSpace(request.FormValue("payload"))
 	var input createSessionInput
 	if payload != "" {
+		if err := rejectLegacyBlackboardModeField([]byte(payload)); err != nil {
+			if errors.Is(err, errLegacyBlackboardModeField) {
+				return createSessionInput{}, nil, err
+			}
+			return createSessionInput{}, nil, errInvalidSessionBody
+		}
 		if err := json.Unmarshal([]byte(payload), &input); err != nil {
 			return createSessionInput{}, nil, errInvalidSessionBody
 		}
 	} else {
+		if request.FormValue("blackboard_conclusion_mode") != "" {
+			return createSessionInput{}, nil, errLegacyBlackboardModeField
+		}
 		input.Input = request.FormValue("input")
 		input.InitialInput = request.FormValue("initial_input")
 		input.Message = request.FormValue("message")
@@ -94,7 +113,7 @@ func parseMultipartCreateSessionRequest(request *http.Request) (createSessionInp
 		input.ReasoningEffort = request.FormValue("reasoning_effort")
 		input.Runner = request.FormValue("runner")
 		input.HostActivated = strings.EqualFold(request.FormValue("host_activated"), "true")
-		input.BlackboardConclusionMode = session.BlackboardConclusionMode(request.FormValue("blackboard_conclusion_mode"))
+		input.BlackboardMode = session.BlackboardMode(request.FormValue("blackboard_mode"))
 	}
 	var headers []*multipart.FileHeader
 	if request.MultipartForm != nil {
@@ -133,9 +152,9 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 	for _, upload := range uploads {
 		attachments = append(attachments, session.Attachment{Name: upload.filename, Size: upload.size, Open: upload.open})
 	}
-	mode := input.BlackboardConclusionMode
+	mode := input.BlackboardMode
 	if mode == "" {
-		mode = input.RunControls.BlackboardConclusionMode
+		mode = input.RunControls.BlackboardMode
 	}
 	runtimeInput := sessionRuntimeInputFromCreate(input)
 	prepared, err := server.prepareSessionRuntime(request.Context(), mode, runtimeInput, nil)
@@ -144,7 +163,7 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 		return
 	}
 	created, err := server.sessions.Create(session.CreateRequest{
-		Input: input.value(), Attachments: attachments, BlackboardConclusionMode: mode,
+		Input: input.value(), Attachments: attachments, BlackboardMode: mode,
 		InitialRuntime: &session.CreateContinuationRequest{
 			RuntimeProfileID: prepared.Profile.ID, RuntimeProvider: string(prepared.Profile.Provider),
 			Runner: prepared.Runner, RuntimeConfig: prepared.RuntimeConfig,
@@ -155,7 +174,7 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 		return
 	}
 	initialLaunch := resolveOwnerBlackboardRuntimeLaunch(
-		input.value(), created.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeDisabled,
+		input.value(), created.RunControls.BlackboardMode == session.BlackboardModeDisabled,
 	)
 	if _, launchErr := server.startPreparedSessionRuntimeForBlackboardProjection(
 		request.Context(), created, initialLaunch.goal, runtimeInput, nil, prepared, nil, initialLaunch.projection,
@@ -338,7 +357,7 @@ func writeSessionError(response http.ResponseWriter, err error) {
 		writeError(response, http.StatusBadRequest, "runtime_profile_locked")
 	case errors.Is(err, session.ErrNotFound):
 		writeError(response, http.StatusNotFound, session.ErrNotFound.Error())
-	case errors.Is(err, session.ErrMissingInput), errors.Is(err, session.ErrMissingTitle), errors.Is(err, session.ErrInvalidLifecycle), errors.Is(err, session.ErrInvalidAttachment), errors.Is(err, session.ErrInvalidRunner), errors.Is(err, session.ErrMissingRuntimeProfile), errors.Is(err, session.ErrInvalidBlackboardConclusionMode):
+	case errors.Is(err, session.ErrMissingInput), errors.Is(err, session.ErrMissingTitle), errors.Is(err, session.ErrInvalidLifecycle), errors.Is(err, session.ErrInvalidAttachment), errors.Is(err, session.ErrInvalidRunner), errors.Is(err, session.ErrMissingRuntimeProfile), errors.Is(err, session.ErrInvalidBlackboardMode):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, session.ErrContinuationNotFound):
 		writeError(response, http.StatusNotFound, err.Error())

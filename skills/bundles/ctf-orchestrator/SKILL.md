@@ -1,6 +1,7 @@
 ---
 name: ctf-orchestrator
 description: Orchestrate a timed multi-target offensive/CTF session with a Decide/Execute + knowledge-graph architecture. Use whenever the user wants to 跑分/开一轮/重跑 an attack-defense benchmark (e.g. TsecBench or similar), a timed CTF competition, multi-target pentest with parallel agents, or says things like 开始跑分/最大化得分/跑满槽位. Covers preflight, graph protocol, agent dispatch, budgets, retry policy, endgame.
+blackboard_modes: [disabled]
 ---
 
 # 攻防编排器（Decide/Execute + FGS 图）

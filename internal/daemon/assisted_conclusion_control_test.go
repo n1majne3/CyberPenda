@@ -43,7 +43,7 @@ func TestOperatorMessageWaitsUntilAssistedConclusionSettles(t *testing.T) {
 			return steering
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -129,7 +129,7 @@ func TestStopPreemptsActiveAssistedConcludeTurn(t *testing.T) {
 			return blocking
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -174,7 +174,7 @@ func TestStopPreemptsActiveAssistedConcludeTurn(t *testing.T) {
 
 func TestTaskFinishDrainsPendingAssistedConclusionBeforeCompleting(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -227,7 +227,7 @@ func TestTaskFinishDrainsPendingAssistedConclusionBeforeCompleting(t *testing.T)
 
 func TestTaskFinishRejectsActionRequiredAssistedConclusionAndLeavesStopAvailable(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{

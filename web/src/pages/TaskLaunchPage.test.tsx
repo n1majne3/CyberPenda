@@ -131,7 +131,7 @@ describe("TaskLaunchPage", () => {
       );
       expect(call).toBeDefined();
       const body = JSON.parse(String(call?.[1]?.body ?? "{}"));
-      expect(body.run_controls?.blackboard_conclusion_mode).toBe("disabled");
+      expect(body.run_controls?.blackboard_mode).toBe("disabled");
     });
   });
 
@@ -229,9 +229,9 @@ describe("TaskLaunchPage", () => {
       }
       if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
-          run_controls?: { blackboard_conclusion_mode?: string };
+          run_controls?: { blackboard_mode?: string };
         };
-        expect(body.run_controls?.blackboard_conclusion_mode).toBe("assisted");
+        expect(body.run_controls?.blackboard_mode).toBe("working_graph");
         return Promise.resolve(new Response(JSON.stringify({ pass: true, checks: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -240,10 +240,10 @@ describe("TaskLaunchPage", () => {
       if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
           type?: string;
-          run_controls?: { blackboard_conclusion_mode?: string; policy?: { max_wrong_submissions?: number; max_rating_drawdown?: number } };
+          run_controls?: { blackboard_mode?: string; policy?: { max_wrong_submissions?: number; max_rating_drawdown?: number } };
         };
         expect(body.type).toBe("ctf_challenge");
-        expect(body.run_controls?.blackboard_conclusion_mode).toBe("assisted");
+        expect(body.run_controls?.blackboard_mode).toBe("working_graph");
         expect(body.run_controls?.policy).toMatchObject({ max_wrong_submissions: 3, max_rating_drawdown: 50 });
         return Promise.resolve(new Response(JSON.stringify({ id: "task-1" }), {
           status: 201,

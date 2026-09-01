@@ -114,6 +114,15 @@ func (s GrantStatus) IsWriteable() bool { return s == GrantStatusOpen }
 // revocation rejects every use.
 func (s GrantStatus) IsReadable() bool { return s != GrantStatusRevoked }
 
+// GrantAccess is the maximum Blackboard authority carried by one Continuation
+// Interface Grant. Lifecycle state can further reduce this authority.
+type GrantAccess string
+
+const (
+	GrantAccessFull     GrantAccess = "full"
+	GrantAccessReadOnly GrantAccess = "read_only"
+)
+
 // Grant is the stored Continuation Interface Grant. It never carries the
 // plaintext bearer token, only its SHA-256 hash.
 type Grant struct {
@@ -124,6 +133,7 @@ type Grant struct {
 	RuntimeProfileID       string         `json:"runtime_profile_id"`
 	RuntimePluginID        string         `json:"runtime_plugin_id"`
 	Runner                 string         `json:"runner"`
+	Access                 GrantAccess    `json:"access"`
 	// ActorID is server-derived as runtime:<runtime_plugin_id>:<continuation_id>
 	// and is never accepted from a Runtime request.
 	ActorID    string `json:"actor_id"`
@@ -152,6 +162,12 @@ func (g Grant) Status() GrantStatus {
 	}
 }
 
+// AllowsWrite reports whether this grant currently admits a new Blackboard
+// mutation. Read-only access never admits writes or write replay.
+func (g Grant) AllowsWrite() bool {
+	return g.Access == GrantAccessFull && g.Status().IsWriteable()
+}
+
 // IssueGrantRequest carries the trusted, server-bound context for a new
 // Continuation Interface Grant. The daemon assembles these fields during
 // Continuation pinning; a Runtime request never
@@ -164,6 +180,7 @@ type IssueGrantRequest struct {
 	RuntimeProfileID       string
 	RuntimePluginID        string
 	Runner                 string
+	Access                 GrantAccess
 }
 
 // IssueSessionGrantRequest carries the server-derived Session launch binding.
@@ -175,6 +192,7 @@ type IssueSessionGrantRequest struct {
 	RuntimeProfileID       string
 	RuntimePluginID        string
 	Runner                 string
+	Access                 GrantAccess
 }
 
 // GrantStore owns Continuation Interface Grant persistence and trusted context
@@ -246,19 +264,23 @@ func (s *GrantStore) IssueSession(ctx context.Context, req IssueSessionGrantRequ
 	if err != nil {
 		return "", Grant{}, fmt.Errorf("generate Session grant token: %w", err)
 	}
+	access, err := normalizeGrantAccess(req.Access)
+	if err != nil {
+		return "", Grant{}, err
+	}
 	grant := Grant{
 		ID: s.ids.NextID(), Owner: owner.NewSessionContract(req.SessionID, ""), ContinuationID: req.ContinuationID,
 		RuntimeConfigVersionID: req.RuntimeConfigVersionID, RuntimeProfileID: req.RuntimeProfileID,
-		RuntimePluginID: req.RuntimePluginID, Runner: req.Runner,
+		RuntimePluginID: req.RuntimePluginID, Runner: req.Runner, Access: access,
 		ActorID:   runtimeActorID(req.RuntimePluginID, req.ContinuationID),
 		TokenHash: hashToken(plaintext), IssuedAt: s.clock.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO session_continuation_interface_grants
 		(grant_id, token_hash, session_id, continuation_id, runtime_config_version_id,
-		 runtime_profile_id, runtime_plugin_id, runner, actor_id, issued_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 runtime_profile_id, runtime_plugin_id, runner, actor_id, access_mode, issued_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		grant.ID, grant.TokenHash, grant.Owner.SessionID, grant.ContinuationID, grant.RuntimeConfigVersionID,
-		grant.RuntimeProfileID, grant.RuntimePluginID, grant.Runner, grant.ActorID, grant.IssuedAt); err != nil {
+		grant.RuntimeProfileID, grant.RuntimePluginID, grant.Runner, grant.ActorID, grant.Access, grant.IssuedAt); err != nil {
 		return "", Grant{}, fmt.Errorf("insert Session continuation grant: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -284,21 +306,25 @@ func (s *GrantStore) issueTx(ctx context.Context, tx *sql.Tx, req IssueGrantRequ
 	if err != nil {
 		return "", Grant{}, fmt.Errorf("generate grant token: %w", err)
 	}
+	access, err := normalizeGrantAccess(req.Access)
+	if err != nil {
+		return "", Grant{}, err
+	}
 	grant := Grant{
 		ID: s.ids.NextID(), Owner: owner.NewTaskContract(req.TaskID, req.ProjectID, ""),
 		ContinuationID: req.ContinuationID, RuntimeConfigVersionID: req.RuntimeConfigVersionID,
 		RuntimeProfileID: req.RuntimeProfileID, RuntimePluginID: req.RuntimePluginID,
-		Runner: req.Runner, ActorID: runtimeActorID(req.RuntimePluginID, req.ContinuationID),
+		Runner: req.Runner, Access: access, ActorID: runtimeActorID(req.RuntimePluginID, req.ContinuationID),
 		TokenHash: hashToken(plaintext), IssuedAt: s.clock.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO blackboard_continuation_grants
 		 (grant_id, token_hash, project_id, task_id, continuation_id, runtime_config_version_id,
-		  runtime_profile_id, runtime_plugin_id, runner, actor_id, issued_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  runtime_profile_id, runtime_plugin_id, runner, actor_id, access_mode, issued_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		grant.ID, grant.TokenHash, grant.Owner.ProjectID, grant.Owner.TaskID, grant.ContinuationID,
 		grant.RuntimeConfigVersionID, grant.RuntimeProfileID, grant.RuntimePluginID,
-		grant.Runner, grant.ActorID, grant.IssuedAt,
+		grant.Runner, grant.ActorID, grant.Access, grant.IssuedAt,
 	); err != nil {
 		return "", Grant{}, fmt.Errorf("insert continuation grant: %w", err)
 	}
@@ -309,11 +335,11 @@ func (s *GrantStore) issueTx(ctx context.Context, tx *sql.Tx, req IssueGrantRequ
 // is shared by Resolve, Get, and setLifecycleTimestamp so the SELECT and
 // scanGrant order cannot drift apart.
 const grantSelectColumns = `grant_id, project_id, task_id, '' AS session_id, continuation_id, runtime_config_version_id,
-runtime_profile_id, runtime_plugin_id, runner, actor_id, token_hash,
+runtime_profile_id, runtime_plugin_id, runner, actor_id, token_hash, access_mode,
 issued_at, finished_at, revoked_at, terminal_at`
 
 const sessionGrantSelectColumns = `grant_id, '' AS project_id, '' AS task_id, session_id, continuation_id, runtime_config_version_id,
-runtime_profile_id, runtime_plugin_id, runner, actor_id, token_hash,
+runtime_profile_id, runtime_plugin_id, runner, actor_id, token_hash, access_mode,
 issued_at, finished_at, revoked_at, terminal_at`
 
 // queryGrant runs `SELECT <columns> FROM blackboard_continuation_grants WHERE
@@ -492,6 +518,9 @@ func (s *GrantStore) setLifecycleTimestamp(ctx context.Context, grantID, column 
 // validateIssueRequest rejects incomplete bound context before touching the
 // database. Every field is part of trusted provenance and is server-derived.
 func validateIssueRequest(req IssueGrantRequest) error {
+	if _, err := normalizeGrantAccess(req.Access); err != nil {
+		return err
+	}
 	missing := []string{}
 	if req.ProjectID == "" {
 		missing = append(missing, "project_id")
@@ -518,6 +547,9 @@ func validateIssueRequest(req IssueGrantRequest) error {
 }
 
 func validateSessionIssueRequest(req IssueSessionGrantRequest) error {
+	if _, err := normalizeGrantAccess(req.Access); err != nil {
+		return err
+	}
 	missing := []string{}
 	if req.SessionID == "" {
 		missing = append(missing, "session_id")
@@ -600,6 +632,17 @@ func runtimeActorID(pluginID, continuationID string) string {
 	return "runtime:" + pluginID + ":" + continuationID
 }
 
+func normalizeGrantAccess(access GrantAccess) (GrantAccess, error) {
+	switch access {
+	case "", GrantAccessFull:
+		return GrantAccessFull, nil
+	case GrantAccessReadOnly:
+		return GrantAccessReadOnly, nil
+	default:
+		return "", ValidationError(ErrCodeInvalidRequest, "grant access must be full or read_only", "context.access")
+	}
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }
@@ -609,7 +652,7 @@ func scanGrant(row scanner) (Grant, error) {
 	var projectID, taskID, sessionID, configVersionID string
 	err := row.Scan(
 		&g.ID, &projectID, &taskID, &sessionID, &g.ContinuationID, &configVersionID,
-		&g.RuntimeProfileID, &g.RuntimePluginID, &g.Runner, &g.ActorID, &g.TokenHash,
+		&g.RuntimeProfileID, &g.RuntimePluginID, &g.Runner, &g.ActorID, &g.TokenHash, &g.Access,
 		&g.IssuedAt, &g.FinishedAt, &g.RevokedAt, &g.TerminalAt,
 	)
 	if err != nil {

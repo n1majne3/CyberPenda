@@ -22,6 +22,9 @@ func (server *Server) sessionBlackboardConclusionSettlement(sessionID string, al
 			if err != nil {
 				return false, err
 			}
+			if found.RunControls.BlackboardMode == session.BlackboardModeWorkingGraph {
+				return server.settleSessionWorkingGraph(ctx, found, allowActionRequired)
+			}
 			receipt, err := server.sessions.LatestBlackboardConclusion(sessionID)
 			if err != nil {
 				return false, err
@@ -29,7 +32,7 @@ func (server *Server) sessionBlackboardConclusionSettlement(sessionID string, al
 			if receipt == nil {
 				return true, nil
 			}
-			switch receipt.View(found.RunControls.BlackboardConclusionMode).State {
+			switch receipt.View(found.RunControls.BlackboardMode).State {
 			case session.BlackboardConclusionStateClean:
 				return true, nil
 			case session.BlackboardConclusionStateActionRequired:
@@ -59,7 +62,7 @@ func (server *Server) waitForSessionAssistedConclusionSettlement(ctx context.Con
 
 func (server *Server) observeSessionProviderSession(sessionID, continuationID, providerID string, lineage runtime.ProviderSessionTurnLineage, observation runtime.ProviderSessionObservation) {
 	found, err := server.sessions.Get(sessionID)
-	if err != nil || found.RunControls.BlackboardConclusionMode != session.BlackboardConclusionModeAssisted {
+	if err != nil || found.RunControls.BlackboardMode != session.BlackboardModeWorkingGraph {
 		return
 	}
 	observeAssistedConclusion(server.blackboardConclusions, sessionID, continuationID, providerID, lineage, observation, assistedConclusionObservationHooks{

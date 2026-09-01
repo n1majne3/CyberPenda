@@ -254,39 +254,39 @@ func TestCreateRejectsUnsupportedRunner(t *testing.T) {
 	}
 }
 
-func TestCreateDefaultsAndPersistsBlackboardConclusionMode(t *testing.T) {
+func TestCreateDefaultsToWorkingGraphAndPersistsBlackboardMode(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 
-	interactive, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox})
+	workingGraph, err := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if interactive.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeInteractive ||
-		interactive.BlackboardConclusion.Mode != task.BlackboardConclusionModeInteractive ||
-		interactive.BlackboardConclusion.State != task.BlackboardConclusionStateClean {
-		t.Fatalf("interactive Task = %#v", interactive)
+	if workingGraph.RunControls.BlackboardMode != task.BlackboardModeWorkingGraph ||
+		workingGraph.BlackboardConclusion.Mode != task.BlackboardModeWorkingGraph ||
+		workingGraph.BlackboardConclusion.State != task.BlackboardConclusionStateClean {
+		t.Fatalf("working-graph Task = %#v", workingGraph)
 	}
-	fetched, err := svc.Get(interactive.ID)
+	fetched, err := svc.Get(workingGraph.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fetched.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeInteractive {
-		t.Fatalf("persisted mode = %q", fetched.RunControls.BlackboardConclusionMode)
+	if fetched.RunControls.BlackboardMode != task.BlackboardModeWorkingGraph {
+		t.Fatalf("persisted mode = %q", fetched.RunControls.BlackboardMode)
 	}
 
-	assisted, err := svc.Create(task.CreateRequest{
+	interactive, err := svc.Create(task.CreateRequest{
 		ProjectID: proj.ID,
-		Type:      task.TypePentest, Goal: "inspect with help", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+		Type:      task.TypePentest, Goal: "inspect interactively", Runner: task.RunnerSandbox,
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeInteractive},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if assisted.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeAssisted || assisted.BlackboardConclusion.Mode != task.BlackboardConclusionModeAssisted {
-		t.Fatalf("assisted Task = %#v", assisted)
+	if interactive.RunControls.BlackboardMode != task.BlackboardModeInteractive || interactive.BlackboardConclusion.Mode != task.BlackboardModeInteractive {
+		t.Fatalf("interactive Task = %#v", interactive)
 	}
 }
 
@@ -299,13 +299,13 @@ func TestCreatePersistsDisabledBlackboardMode(t *testing.T) {
 	created, err := svc.Create(task.CreateRequest{
 		ProjectID: proj.ID,
 		Type:      task.TypePentest, Goal: "inspect without Blackboard", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeDisabled},
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeDisabled},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled ||
-		created.BlackboardConclusion.Mode != task.BlackboardConclusionModeDisabled {
+	if created.RunControls.BlackboardMode != task.BlackboardModeDisabled ||
+		created.BlackboardConclusion.Mode != task.BlackboardModeDisabled {
 		t.Fatalf("disabled Task = %#v", created)
 	}
 
@@ -313,13 +313,13 @@ func TestCreatePersistsDisabledBlackboardMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled ||
-		reloaded.BlackboardConclusion.Mode != task.BlackboardConclusionModeDisabled {
+	if reloaded.RunControls.BlackboardMode != task.BlackboardModeDisabled ||
+		reloaded.BlackboardConclusion.Mode != task.BlackboardModeDisabled {
 		t.Fatalf("reloaded disabled Task = %#v", reloaded)
 	}
 }
 
-func TestGetNormalizesMissingStoredBlackboardModeToInteractive(t *testing.T) {
+func TestGetNormalizesMissingStoredBlackboardModeToWorkingGraph(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
@@ -338,13 +338,13 @@ func TestGetNormalizesMissingStoredBlackboardModeToInteractive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeInteractive ||
-		reloaded.BlackboardConclusion.Mode != task.BlackboardConclusionModeInteractive {
+	if reloaded.RunControls.BlackboardMode != task.BlackboardModeWorkingGraph ||
+		reloaded.BlackboardConclusion.Mode != task.BlackboardModeWorkingGraph {
 		t.Fatalf("normalized legacy Task = %#v", reloaded)
 	}
 }
 
-func TestCreateRejectsInvalidBlackboardConclusionMode(t *testing.T) {
+func TestCreateRejectsInvalidBlackboardMode(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
@@ -353,9 +353,9 @@ func TestCreateRejectsInvalidBlackboardConclusionMode(t *testing.T) {
 	_, err := svc.Create(task.CreateRequest{
 		ProjectID: proj.ID,
 		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: "automatic"},
+		RunControls: task.RunControls{BlackboardMode: "automatic"},
 	})
-	if !errors.Is(err, task.ErrInvalidBlackboardConclusionMode) {
+	if !errors.Is(err, task.ErrInvalidBlackboardMode) {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -368,7 +368,7 @@ func TestRecordBlackboardConclusionCheckpointPersistsPendingDebtIdempotently(t *
 	created, err := svc.Create(task.CreateRequest{
 		ProjectID: proj.ID,
 		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +430,7 @@ func TestRecordBlackboardConclusionCheckpointRejectsContinuationOwnedByAnotherTa
 		created, err := svc.Create(task.CreateRequest{
 			ProjectID: proj.ID,
 			Type:      task.TypePentest, Goal: goal, Runner: task.RunnerSandbox,
-			RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+			RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph},
 		})
 		if err != nil {
 			t.Fatalf("create Task: %v", err)
@@ -472,7 +472,7 @@ func TestRecoveryDispatchIsCreatedInsteadOfRebindingInFlightObligation(t *testin
 	created, err := svc.Create(task.CreateRequest{
 		ProjectID: proj.ID,
 		Type:      task.TypePentest, Goal: "recover receipt", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -571,7 +571,7 @@ func TestRecoveryDispatchLeavesTerminalObligationAlone(t *testing.T) {
 	created, err := svc.Create(task.CreateRequest{
 		ProjectID: proj.ID,
 		Type:      task.TypePentest, Goal: "no recovery terminal", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -613,7 +613,7 @@ func TestRecordBlackboardConclusionCheckpointRejectsInvalidWatermarks(t *testing
 	created, err := svc.Create(task.CreateRequest{
 		ProjectID: proj.ID,
 		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -640,7 +640,7 @@ func TestRecordBlackboardConclusionCheckpointPersistsCleanWatermarks(t *testing.
 	created, err := svc.Create(task.CreateRequest{
 		ProjectID: proj.ID,
 		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -657,7 +657,7 @@ func TestRecordBlackboardConclusionCheckpointPersistsCleanWatermarks(t *testing.
 	if !inserted || first.InternalState != task.BlackboardConclusionReceiptClean || first.SourceWorkWatermark != 2 || first.SemanticPersistenceWatermark != 2 {
 		t.Fatalf("clean receipt = %#v, inserted=%v", first, inserted)
 	}
-	view := first.View(task.BlackboardConclusionModeAssisted)
+	view := first.View(task.BlackboardModeWorkingGraph)
 	if view.State != task.BlackboardConclusionStateClean || view.SourceWorkWatermark != 2 || view.SemanticPersistenceWatermark != 2 {
 		t.Fatalf("clean view = %#v", view)
 	}
@@ -694,7 +694,7 @@ func TestBlackboardConclusionReceiptAdvancesDurablyAndIdempotently(t *testing.T)
 	created, err := svc.Create(task.CreateRequest{
 		ProjectID: proj.ID,
 		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -708,7 +708,7 @@ func TestBlackboardConclusionReceiptAdvancesDurablyAndIdempotently(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view := receipt.View(task.BlackboardConclusionModeAssisted); view.State != task.BlackboardConclusionStatePending || view.SourceTurnID != "turn-1" || view.AppliedRevision != nil {
+	if view := receipt.View(task.BlackboardModeWorkingGraph); view.State != task.BlackboardConclusionStatePending || view.SourceTurnID != "turn-1" || view.AppliedRevision != nil {
 		t.Fatalf("pending view = %#v", view)
 	}
 
@@ -771,7 +771,7 @@ func TestBlackboardConclusionReceiptAdvancesDurablyAndIdempotently(t *testing.T)
 	if !won || applied.InternalState != task.BlackboardConclusionReceiptApplied || applied.AppliedRevision == nil || *applied.AppliedRevision != 11 {
 		t.Fatalf("applied = %#v, won=%v", applied, won)
 	}
-	if view := applied.View(task.BlackboardConclusionModeAssisted); view.State != task.BlackboardConclusionStateClean || view.AppliedRevision == nil || *view.AppliedRevision != 11 {
+	if view := applied.View(task.BlackboardModeWorkingGraph); view.State != task.BlackboardConclusionStateClean || view.AppliedRevision == nil || *view.AppliedRevision != 11 {
 		t.Fatalf("applied view = %#v", view)
 	}
 	if replay, replayWon, replayErr := svc.MarkBlackboardConclusionApplied(dispatched.DispatchRequestID, 11); replayErr != nil || replayWon || replay.ID != receipt.ID {
@@ -803,7 +803,7 @@ func TestBlackboardConclusionInvalidResultRepairsOnceThenRequiresOperatorRetry(t
 	created, err := svc.Create(task.CreateRequest{
 		ProjectID: proj.ID,
 		Type:      task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted},
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -859,7 +859,7 @@ func TestBlackboardConclusionInvalidResultRepairsOnceThenRequiresOperatorRetry(t
 		action.ValidationReason != "invalid_key_format" || action.ValidationFieldPath != "attempt.key" {
 		t.Fatalf("action required = %#v, changed=%v", action, changed)
 	}
-	view := action.ViewAt(task.BlackboardConclusionModeAssisted, now)
+	view := action.ViewAt(task.BlackboardModeWorkingGraph, now)
 	if view.State != task.BlackboardConclusionStateActionRequired || view.ErrorCode != task.BlackboardConclusionErrorRepairExhausted || view.RetryAvailable ||
 		view.ValidationReason != "invalid_key_format" || view.ValidationFieldPath != "attempt.key" || !strings.Contains(view.ValidationExpected, "attempt: prefix") {
 		t.Fatalf("cooldown view = %#v", view)
@@ -903,7 +903,7 @@ func TestBlackboardConclusionForbiddenControlToolUseRequiresAction(t *testing.T)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-1", "session-1", "turn-1",
 		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
@@ -925,7 +925,7 @@ func TestBlackboardConclusionVersionConflictRegeneratesOnceThenRequiresAction(t 
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	selection := task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1", ReasoningEffort: "high"}
 	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-1", "session-1", "turn-1",
@@ -978,7 +978,7 @@ func TestBlackboardConclusionVersionConflictRegeneratesOnceThenRequiresAction(t 
 		action.NextEligibleAt == nil || !action.NextEligibleAt.Equal(now.Add(2*time.Minute)) {
 		t.Fatalf("second version conflict = %#v, changed=%v, err=%v", action, changed, err)
 	}
-	view := action.ViewAt(task.BlackboardConclusionModeAssisted, now.Add(time.Minute))
+	view := action.ViewAt(task.BlackboardModeWorkingGraph, now.Add(time.Minute))
 	if view.State != task.BlackboardConclusionStateActionRequired ||
 		view.ErrorCode != task.BlackboardConclusionErrorVersionConflict || view.RetryAvailable {
 		t.Fatalf("version conflict action view = %#v", view)
@@ -992,7 +992,7 @@ func TestBlackboardConclusionVersionRegenerationFailsClosed(t *testing.T) {
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	makeValidated := func(turn string, base int) task.BlackboardConclusionReceipt {
 		receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-"+turn, "session-1", turn,
@@ -1092,7 +1092,7 @@ func TestValidatedBlackboardConclusionsReturnsDurableApplyIntentsInOrder(t *test
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	makeValidated := func(turn string, base int, canonical []byte) task.BlackboardConclusionReceipt {
 		receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-"+turn, "session-1", turn,
@@ -1136,7 +1136,7 @@ func TestBlackboardConclusionRetryRemembersEveryOperatorIdempotencyKey(t *testin
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-1", "session-1", "turn-1",
 		task.TurnSelection{ModelProviderID: "provider-1", Model: "model-1"}, task.SemanticDebtWatermarks{SourceWork: 1})
@@ -1172,7 +1172,7 @@ func TestRetryLatestBlackboardConclusionIsAtomicAndTaskIdempotentAcrossReceipts(
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
 	makeActionRequired := func(sourceTurnID string) task.BlackboardConclusionReceipt {
@@ -1230,7 +1230,7 @@ func TestBlackboardConclusionRecoveryDispatchFailureRequiresActionIdempotently(t
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	_, _ = svc.UpdateStatus(created.ID, task.StatusRunning)
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
@@ -1275,7 +1275,7 @@ func TestBlackboardConclusionRecoveryOverridesVersionConflictAndPreservesBudget(
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)
 	receipt, _, _ := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID, "work-request-version-recovery",
@@ -1308,7 +1308,7 @@ func TestVersionSyncRecoveryPreservesCanonicalResultUntilOperatorRetryStartsNewG
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	continuation, _ = svc.UpdateContinuationRuntimeMetadata(continuation.ID, "", "session-1", "")
 	_, _ = svc.UpdateContinuationStatus(continuation.ID, task.StatusRunning)
@@ -1349,7 +1349,7 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	continuation, _ = svc.UpdateContinuationRuntimeMetadata(continuation.ID, "", "session-1", "")
 	_, _ = svc.UpdateContinuationStatus(continuation.ID, task.StatusRunning)
@@ -1368,7 +1368,7 @@ func TestPendingBlackboardConclusionRecoveryProjectsActionRequiredWithoutExtendi
 	if err != nil || !changed || action.AutomaticTurnCount != 0 || action.DispatchRequestID != "" {
 		t.Fatalf("pending recovery action = %#v, changed=%v, err=%v", action, changed, err)
 	}
-	view := action.ViewAt(task.BlackboardConclusionModeAssisted, now)
+	view := action.ViewAt(task.BlackboardModeWorkingGraph, now)
 	if view.State != task.BlackboardConclusionStateActionRequired || view.ErrorCode != task.BlackboardConclusionErrorRuntimeRecoveryRequired ||
 		view.RetryAvailable || view.NextEligibleAt == nil || !view.NextEligibleAt.Equal(now.Add(5*time.Minute)) {
 		t.Fatalf("pending recovery view = %#v", view)
@@ -1425,7 +1425,7 @@ func TestRetryLatestBlackboardConclusionFailsClosedWhenDispatchFailureAppearsBef
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	receipt, _, err := svc.RecordBlackboardConclusionCheckpoint(created.ID, continuation.ID,
 		"work-request-race", "session-dead", "turn-race",
@@ -1466,7 +1466,7 @@ func TestRecoveryCandidatesIncludeInitialDispatchWithoutMutatingIt(t *testing.T)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
 	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID,
 		Type: task.TypePentest, Goal: "inspect", Runner: task.RunnerSandbox,
-		RunControls: task.RunControls{BlackboardConclusionMode: task.BlackboardConclusionModeAssisted}})
+		RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	_, _ = svc.UpdateStatus(created.ID, task.StatusRunning)
 	continuation, _ := svc.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
 	now := time.Date(2026, 7, 27, 10, 0, 0, 0, time.UTC)

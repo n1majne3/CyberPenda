@@ -135,7 +135,7 @@ type RuntimeControls struct {
 // Session Runtime Continuations. Sessions expose the same Blackboard Mode
 // vocabulary as Tasks without acquiring a Project identity or Project scope.
 type RunControls struct {
-	BlackboardConclusionMode BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
+	BlackboardMode BlackboardMode `json:"blackboard_mode"`
 	// ContainerCLI is docker or podman for Session sandbox launches. Empty
 	// means the daemon default (-container-cli / PENTEST_CONTAINER_CLI).
 	ContainerCLI string `json:"container_cli,omitempty"`
@@ -145,14 +145,13 @@ type RunControls struct {
 	SandboxVPNTun bool `json:"sandbox_vpn_tun,omitempty"`
 }
 
-// BlackboardConclusionMode is the persisted compatibility representation of
-// the Runtime Owner's immutable Blackboard Mode.
-type BlackboardConclusionMode string
+// BlackboardMode is the Runtime Owner's immutable Blackboard Mode.
+type BlackboardMode string
 
 const (
-	BlackboardConclusionModeInteractive BlackboardConclusionMode = "interactive"
-	BlackboardConclusionModeAssisted    BlackboardConclusionMode = "assisted"
-	BlackboardConclusionModeDisabled    BlackboardConclusionMode = "disabled"
+	BlackboardModeInteractive  BlackboardMode = "interactive"
+	BlackboardModeWorkingGraph BlackboardMode = "working_graph"
+	BlackboardModeDisabled     BlackboardMode = "disabled"
 )
 
 // BlackboardConclusionState is the compact owner-local semantic-debt view.
@@ -247,7 +246,7 @@ const (
 // assisted Work Runtime Turn checkpoint and any conclusion progress it
 // triggered. Result bytes and provider correlation remain private.
 type BlackboardConclusion struct {
-	Mode                         BlackboardConclusionMode      `json:"mode"`
+	Mode                         BlackboardMode                `json:"mode"`
 	State                        BlackboardConclusionState     `json:"state"`
 	SourceTurnID                 string                        `json:"source_turn_id,omitempty"`
 	SourceWorkWatermark          int                           `json:"source_work_watermark"`
@@ -387,32 +386,32 @@ func (event Event) AttachmentReference() (AttachmentReference, bool) {
 
 // CreateRequest is the initial Session input and optional initial attachments.
 type CreateRequest struct {
-	Input                    string
-	Attachments              []Attachment
-	BlackboardConclusionMode BlackboardConclusionMode
-	InitialRuntime           *CreateContinuationRequest
+	Input          string
+	Attachments    []Attachment
+	BlackboardMode BlackboardMode
+	InitialRuntime *CreateContinuationRequest
 }
 
 var (
 	// ErrNotFound deliberately has no owner details so cross-owner lookups do
 	// not reveal whether another aggregate exists.
-	ErrNotFound                        = errors.New("session not found")
-	ErrMissingInput                    = errors.New("session initial input is required")
-	ErrMissingTitle                    = errors.New("session title is required")
-	ErrInvalidLifecycle                = errors.New("invalid session lifecycle")
-	ErrInvalidLimit                    = errors.New("session list limit must not be negative")
-	ErrAlreadyArchived                 = errors.New("session is already archived")
-	ErrNotArchived                     = errors.New("session is not archived")
-	ErrOpenSession                     = errors.New("open session cannot be deleted")
-	ErrInvalidAttachment               = errors.New("invalid session attachment")
-	ErrInvalidWorkdir                  = errors.New("session workdir is outside the managed root")
-	ErrSessionNotOpen                  = errors.New("session is not open")
-	ErrActiveContinuation              = errors.New("session already has an active continuation")
-	ErrInvalidRunner                   = errors.New("runner must be sandbox or host")
-	ErrContinuationNotFound            = errors.New("session continuation not found")
-	ErrContinuationStatusConflict      = errors.New("session continuation status conflicts with its terminal state")
-	ErrMissingRuntimeProfile           = errors.New("session runtime profile is required")
-	ErrInvalidBlackboardConclusionMode = errors.New("Session Blackboard Mode must be interactive, assisted, or disabled")
+	ErrNotFound                   = errors.New("session not found")
+	ErrMissingInput               = errors.New("session initial input is required")
+	ErrMissingTitle               = errors.New("session title is required")
+	ErrInvalidLifecycle           = errors.New("invalid session lifecycle")
+	ErrInvalidLimit               = errors.New("session list limit must not be negative")
+	ErrAlreadyArchived            = errors.New("session is already archived")
+	ErrNotArchived                = errors.New("session is not archived")
+	ErrOpenSession                = errors.New("open session cannot be deleted")
+	ErrInvalidAttachment          = errors.New("invalid session attachment")
+	ErrInvalidWorkdir             = errors.New("session workdir is outside the managed root")
+	ErrSessionNotOpen             = errors.New("session is not open")
+	ErrActiveContinuation         = errors.New("session already has an active continuation")
+	ErrInvalidRunner              = errors.New("runner must be sandbox or host")
+	ErrContinuationNotFound       = errors.New("session continuation not found")
+	ErrContinuationStatusConflict = errors.New("session continuation status conflicts with its terminal state")
+	ErrMissingRuntimeProfile      = errors.New("session runtime profile is required")
+	ErrInvalidBlackboardMode      = errors.New("Session Blackboard Mode must be interactive, working_graph, or disabled")
 )
 
 // Service implements Session persistence and lifecycle rules against SQLite.
@@ -532,7 +531,7 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 	if len(req.Attachments) > MaxAttachmentCount {
 		return Session{}, fmt.Errorf("%w: too many attachments (max %d)", ErrInvalidAttachment, MaxAttachmentCount)
 	}
-	mode, err := normalizeBlackboardConclusionMode(req.BlackboardConclusionMode)
+	mode, err := normalizeBlackboardMode(req.BlackboardMode)
 	if err != nil {
 		return Session{}, err
 	}
@@ -573,7 +572,7 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 	now := time.Now().UTC()
 	created := Session{
 		ID: id, Title: title, Lifecycle: LifecycleOpen, Workdir: workdir,
-		RunControls:          RunControls{BlackboardConclusionMode: mode},
+		RunControls:          RunControls{BlackboardMode: mode},
 		BlackboardConclusion: BlackboardConclusion{Mode: mode, State: BlackboardConclusionStateClean},
 		CreatedAt:            now, UpdatedAt: now, LastActivityAt: now,
 	}
@@ -582,9 +581,9 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 		return Session{}, fmt.Errorf("begin Session create: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`INSERT INTO sessions (id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at) VALUES (?,?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO sessions (id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at) VALUES (?,?,?,?,?,?,?,?)`,
 		created.ID, created.Title, string(created.Lifecycle), created.Workdir,
-		string(created.RunControls.BlackboardConclusionMode),
+		string(created.RunControls.BlackboardMode),
 		formatTime(created.CreatedAt), formatTime(created.UpdatedAt), formatTime(created.LastActivityAt)); err != nil {
 		return Session{}, fmt.Errorf("store Session: %w", err)
 	}
@@ -639,7 +638,7 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 
 // Get loads one Session by its own durable identity.
 func (s *Service) Get(id string) (Session, error) {
-	return scanSession(s.db.QueryRow(`SELECT id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at FROM sessions WHERE id=?`, id))
+	return scanSession(s.db.QueryRow(`SELECT id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at FROM sessions WHERE id=?`, id))
 }
 
 // List returns Sessions for one lifecycle in most-recent-activity order.
@@ -657,7 +656,7 @@ func (s *Service) ListLimited(lifecycle Lifecycle, limit int) ([]Session, error)
 	if limit < 0 {
 		return nil, ErrInvalidLimit
 	}
-	query := `SELECT id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at FROM sessions WHERE lifecycle=? ORDER BY last_activity_at DESC, created_at DESC, id ASC`
+	query := `SELECT id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at FROM sessions WHERE lifecycle=? ORDER BY last_activity_at DESC, created_at DESC, id ASC`
 	args := []any{string(lifecycle)}
 	if limit > 0 {
 		query += ` LIMIT ?`
@@ -1955,16 +1954,18 @@ func normalizeLifecycle(value Lifecycle) (Lifecycle, error) {
 	return value, nil
 }
 
-func normalizeBlackboardConclusionMode(value BlackboardConclusionMode) (BlackboardConclusionMode, error) {
+func normalizeBlackboardMode(value BlackboardMode) (BlackboardMode, error) {
 	switch value {
-	case "", BlackboardConclusionModeInteractive:
-		return BlackboardConclusionModeInteractive, nil
-	case BlackboardConclusionModeAssisted:
-		return BlackboardConclusionModeAssisted, nil
-	case BlackboardConclusionModeDisabled:
-		return BlackboardConclusionModeDisabled, nil
+	case "":
+		return BlackboardModeDisabled, nil
+	case BlackboardModeDisabled:
+		return BlackboardModeDisabled, nil
+	case BlackboardModeWorkingGraph:
+		return BlackboardModeWorkingGraph, nil
+	case BlackboardModeInteractive:
+		return BlackboardModeInteractive, nil
 	default:
-		return "", ErrInvalidBlackboardConclusionMode
+		return "", ErrInvalidBlackboardMode
 	}
 }
 
@@ -1980,12 +1981,12 @@ func scanSession(row scanner) (Session, error) {
 		return Session{}, err
 	}
 	found.Lifecycle = Lifecycle(lifecycle)
-	normalizedMode, err := normalizeBlackboardConclusionMode(BlackboardConclusionMode(mode))
+	normalizedMode, err := normalizeBlackboardMode(BlackboardMode(mode))
 	if err != nil {
 		return Session{}, err
 	}
-	found.RunControls.BlackboardConclusionMode = normalizedMode
-	found.BlackboardConclusion.Mode = found.RunControls.BlackboardConclusionMode
+	found.RunControls.BlackboardMode = normalizedMode
+	found.BlackboardConclusion.Mode = found.RunControls.BlackboardMode
 	found.BlackboardConclusion.State = BlackboardConclusionStateClean
 	if found.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
 		return Session{}, fmt.Errorf("parse Session created_at: %w", err)

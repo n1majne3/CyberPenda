@@ -40,7 +40,7 @@ func TestDisabledBlackboardModeInitialOwnerLaunchesOmitBlackboardAuthority(t *te
 			"runner":"host",
 			"run_controls":{
 				"host_activated":true,
-				"blackboard_conclusion_mode":"disabled",
+				"blackboard_mode":"disabled",
 				"policy":{"max_wall_time_seconds":300}
 			}
 		}`))
@@ -54,7 +54,7 @@ func TestDisabledBlackboardModeInitialOwnerLaunchesOmitBlackboardAuthority(t *te
 		if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
 			t.Fatalf("decode disabled Task: %v", err)
 		}
-		if created.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled ||
+		if created.RunControls.BlackboardMode != task.BlackboardModeDisabled ||
 			created.RunControls.Policy.MaxWallTimeSeconds != 300 ||
 			len(created.ScopeSnapshot.Domains) != 1 || created.ScopeSnapshot.Domains[0] != "example.test" {
 			t.Fatalf("disabled Task lost immutable mode or ordinary context: %#v", created)
@@ -69,7 +69,7 @@ func TestDisabledBlackboardModeInitialOwnerLaunchesOmitBlackboardAuthority(t *te
 			"runtime_profile_id":"`+profileID+`",
 			"runner":"host",
 			"host_activated":true,
-			"run_controls":{"blackboard_conclusion_mode":"disabled"}
+			"run_controls":{"blackboard_mode":"disabled"}
 		}`))
 		request.Header.Set("Content-Type", "application/json")
 		response := httptest.NewRecorder()
@@ -81,8 +81,8 @@ func TestDisabledBlackboardModeInitialOwnerLaunchesOmitBlackboardAuthority(t *te
 		if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
 			t.Fatalf("decode disabled Session: %v", err)
 		}
-		if created.RunControls.BlackboardConclusionMode != session.BlackboardConclusionModeDisabled {
-			t.Fatalf("disabled Session mode = %q", created.RunControls.BlackboardConclusionMode)
+		if created.RunControls.BlackboardMode != session.BlackboardModeDisabled {
+			t.Fatalf("disabled Session mode = %q", created.RunControls.BlackboardMode)
 		}
 		assertDisabledSessionLaunch(t, server, factory, created)
 	})
@@ -96,7 +96,7 @@ func TestBlackboardModeHTTPDefaultsAndValidationApplyToBothOwnerTypes(t *testing
 		decodeMode func(*testing.T, *httptest.ResponseRecorder) string
 	}{
 		{
-			name:   "Project Task defaults to Interactive",
+			name:   "Project Task defaults to Working Graph",
 			target: func(projectID string) string { return "/api/projects/" + projectID + "/tasks" },
 			body: func(profileID string) string {
 				return `{"type":"pentest","goal":"default Task mode","runtime_profile_id":"` + profileID + `","runner":"host","run_controls":{"host_activated":true}}`
@@ -106,11 +106,11 @@ func TestBlackboardModeHTTPDefaultsAndValidationApplyToBothOwnerTypes(t *testing
 				if err := json.NewDecoder(response.Body).Decode(&found); err != nil {
 					t.Fatal(err)
 				}
-				return string(found.RunControls.BlackboardConclusionMode)
+				return string(found.RunControls.BlackboardMode)
 			},
 		},
 		{
-			name:   "Non-Project Session defaults to Interactive",
+			name:   "Non-Project Session defaults to Disabled",
 			target: func(string) string { return "/api/sessions" },
 			body: func(profileID string) string {
 				return `{"input":"default Session mode","runtime_profile_id":"` + profileID + `","runner":"host","host_activated":true}`
@@ -120,7 +120,7 @@ func TestBlackboardModeHTTPDefaultsAndValidationApplyToBothOwnerTypes(t *testing
 				if err := json.NewDecoder(response.Body).Decode(&found); err != nil {
 					t.Fatal(err)
 				}
-				return string(found.RunControls.BlackboardConclusionMode)
+				return string(found.RunControls.BlackboardMode)
 			},
 		},
 	}
@@ -134,7 +134,11 @@ func TestBlackboardModeHTTPDefaultsAndValidationApplyToBothOwnerTypes(t *testing
 			if response.Code != http.StatusCreated {
 				t.Fatalf("create owner status = %d body %s", response.Code, response.Body.String())
 			}
-			if mode := test.decodeMode(t, response); mode != "interactive" {
+			want := "working_graph"
+			if test.name == "Non-Project Session defaults to Disabled" {
+				want = "disabled"
+			}
+			if mode := test.decodeMode(t, response); mode != want {
 				t.Fatalf("default Blackboard Mode = %q", mode)
 			}
 		})
@@ -149,14 +153,14 @@ func TestBlackboardModeHTTPDefaultsAndValidationApplyToBothOwnerTypes(t *testing
 			name:   "Project Task rejects unknown mode",
 			target: func(projectID string) string { return "/api/projects/" + projectID + "/tasks" },
 			body: func(profileID string) string {
-				return `{"type":"pentest","goal":"invalid Task mode","runtime_profile_id":"` + profileID + `","runner":"host","run_controls":{"host_activated":true,"blackboard_conclusion_mode":"automatic"}}`
+				return `{"type":"pentest","goal":"invalid Task mode","runtime_profile_id":"` + profileID + `","runner":"host","run_controls":{"host_activated":true,"blackboard_mode":"automatic"}}`
 			},
 		},
 		{
 			name:   "Non-Project Session rejects unknown mode",
 			target: func(string) string { return "/api/sessions" },
 			body: func(profileID string) string {
-				return `{"input":"invalid Session mode","runtime_profile_id":"` + profileID + `","runner":"host","host_activated":true,"run_controls":{"blackboard_conclusion_mode":"automatic"}}`
+				return `{"input":"invalid Session mode","runtime_profile_id":"` + profileID + `","runner":"host","host_activated":true,"run_controls":{"blackboard_mode":"automatic"}}`
 			},
 		},
 	}
@@ -183,7 +187,7 @@ func TestDisabledTaskHTTPResumePreservesOmittedBlackboardProjection(t *testing.T
 		"goal":"inspect replacement behavior",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"host",
-		"run_controls":{"host_activated":true,"blackboard_conclusion_mode":"disabled"}
+		"run_controls":{"host_activated":true,"blackboard_mode":"disabled"}
 	}`))
 	create.Header.Set("Content-Type", "application/json")
 	createdResponse := httptest.NewRecorder()
@@ -238,7 +242,7 @@ func TestDisabledTaskHTTPResumePreservesOmittedBlackboardProjection(t *testing.T
 	if err := json.NewDecoder(resumedResponse.Body).Decode(&resumed); err != nil {
 		t.Fatal(err)
 	}
-	if resumed.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+	if resumed.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 		t.Fatalf("resume response lost Disabled mode: %#v", resumed)
 	}
 	resumed = waitForDisabledTaskPublicContinuation(t, server, projectID, created.ID, 2)
@@ -252,7 +256,7 @@ func TestDisabledSessionHTTPReplacementPreservesOmittedBlackboardProjection(t *t
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"host",
 		"host_activated":true,
-		"run_controls":{"blackboard_conclusion_mode":"disabled"}
+		"run_controls":{"blackboard_mode":"disabled"}
 	}`))
 	create.Header.Set("Content-Type", "application/json")
 	createdResponse := httptest.NewRecorder()
@@ -306,7 +310,7 @@ func TestDisabledSessionHTTPReplacementPreservesOmittedBlackboardProjection(t *t
 	if err := json.NewDecoder(replacedResponse.Body).Decode(&replaced); err != nil {
 		t.Fatal(err)
 	}
-	if replaced.RunControls.BlackboardConclusionMode != session.BlackboardConclusionModeDisabled {
+	if replaced.RunControls.BlackboardMode != session.BlackboardModeDisabled {
 		t.Fatalf("replacement response lost Disabled mode: %#v", replaced)
 	}
 	replaced = waitForDisabledSessionPublicContinuation(t, server, created.ID, 2)
@@ -320,7 +324,7 @@ func TestDisabledTaskHTTPSteerCreatesOrdinaryContinuationWithoutBlackboard(t *te
 		"goal":"inspect ordinary continuation behavior",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"host",
-		"run_controls":{"host_activated":true,"blackboard_conclusion_mode":"disabled"}
+		"run_controls":{"host_activated":true,"blackboard_mode":"disabled"}
 	}`))
 	create.Header.Set("Content-Type", "application/json")
 	createdResponse := httptest.NewRecorder()
@@ -366,7 +370,7 @@ func TestDisabledSessionHTTPSteerCreatesOrdinaryContinuationWithoutBlackboard(t 
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"host",
 		"host_activated":true,
-		"run_controls":{"blackboard_conclusion_mode":"disabled"}
+		"run_controls":{"blackboard_mode":"disabled"}
 	}`))
 	create.Header.Set("Content-Type", "application/json")
 	createdResponse := httptest.NewRecorder()
@@ -412,7 +416,7 @@ func TestDisabledTaskHTTPFinishIgnoresOnlyBlackboardReconciliationDebt(t *testin
 		"goal":"finish disabled work",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"host",
-		"run_controls":{"host_activated":true,"blackboard_conclusion_mode":"disabled"}
+		"run_controls":{"host_activated":true,"blackboard_mode":"disabled"}
 	}`))
 	create.Header.Set("Content-Type", "application/json")
 	createdResponse := httptest.NewRecorder()
@@ -472,7 +476,7 @@ func TestDisabledTaskHTTPFinishIgnoresOnlyBlackboardReconciliationDebt(t *testin
 	if err := json.NewDecoder(finishedResponse.Body).Decode(&finished); err != nil {
 		t.Fatal(err)
 	}
-	if finished.Status != task.StatusCompleted || finished.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+	if finished.Status != task.StatusCompleted || finished.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 		t.Fatalf("finished Disabled Task = %#v", finished)
 	}
 	if !provider.SessionClosed() {
@@ -535,7 +539,7 @@ func TestDisabledTaskHTTPResumeAfterDaemonRecoveryIgnoresLegacyBlackboardReconci
 	restarted := openDisabledBlackboardHTTPServer(t, root, recoveryFactory)
 	t.Cleanup(func() { _ = restarted.Close() })
 	interrupted := waitForDisabledTaskPublicStatus(t, restarted, projectID, created.ID, task.StatusInterrupted)
-	if interrupted.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+	if interrupted.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 		t.Fatalf("recovered Task lost Disabled mode: %#v", interrupted)
 	}
 
@@ -550,7 +554,7 @@ func TestDisabledTaskHTTPResumeAfterDaemonRecoveryIgnoresLegacyBlackboardReconci
 	if err := json.NewDecoder(response.Body).Decode(&resumed); err != nil {
 		t.Fatal(err)
 	}
-	if resumed.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+	if resumed.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 		t.Fatalf("resume response lost Disabled mode: %#v", resumed)
 	}
 	resumed = waitForDisabledTaskPublicContinuation(t, restarted, projectID, created.ID, 2)
@@ -633,7 +637,7 @@ func createDisabledTaskHTTP(t *testing.T, server *Server, projectID, profileID, 
 		"goal":`+quoteJSON(goal)+`,
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"host",
-		"run_controls":{"host_activated":true,"blackboard_conclusion_mode":"disabled"}
+		"run_controls":{"host_activated":true,"blackboard_mode":"disabled"}
 	}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -712,8 +716,8 @@ func assertDisabledTaskLaunch(t *testing.T, server *Server, factory *recordingPr
 
 	var detail task.Task
 	getDisabledOwnerHTTP(t, server, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID, &detail)
-	if detail.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled ||
-		detail.BlackboardConclusion.Mode != task.BlackboardConclusionModeDisabled ||
+	if detail.RunControls.BlackboardMode != task.BlackboardModeDisabled ||
+		detail.BlackboardConclusion.Mode != task.BlackboardModeDisabled ||
 		detail.BlackboardConclusion.State != task.BlackboardConclusionStateClean ||
 		detail.Goal != created.Goal || detail.LatestContinuation == nil ||
 		detail.LatestContinuation.ID != launch.Continuation.ID ||
@@ -758,8 +762,8 @@ func assertDisabledSessionLaunch(t *testing.T, server *Server, factory *recordin
 
 	var detail session.Session
 	getDisabledOwnerHTTP(t, server, "/api/sessions/"+created.ID, &detail)
-	if detail.RunControls.BlackboardConclusionMode != session.BlackboardConclusionModeDisabled ||
-		detail.BlackboardConclusion.Mode != session.BlackboardConclusionModeDisabled ||
+	if detail.RunControls.BlackboardMode != session.BlackboardModeDisabled ||
+		detail.BlackboardConclusion.Mode != session.BlackboardModeDisabled ||
 		detail.BlackboardConclusion.State != session.BlackboardConclusionStateClean ||
 		detail.LatestContinuation == nil || detail.LatestContinuation.ID != launch.Continuation.ID ||
 		detail.LatestContinuation.RuntimeConfigID == "" {
@@ -868,8 +872,8 @@ func assertNoBlackboardLaunchMaterial(t *testing.T, launch ProviderSessionLaunch
 
 func assertDisabledTaskPublicContinuation(t *testing.T, detail task.Task, number int, status task.Status) {
 	t.Helper()
-	if detail.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled ||
-		detail.BlackboardConclusion.Mode != task.BlackboardConclusionModeDisabled ||
+	if detail.RunControls.BlackboardMode != task.BlackboardModeDisabled ||
+		detail.BlackboardConclusion.Mode != task.BlackboardModeDisabled ||
 		detail.BlackboardConclusion.State != task.BlackboardConclusionStateClean ||
 		detail.LatestContinuation == nil || detail.LatestContinuation.Number != number ||
 		detail.LatestContinuation.Status != status ||
@@ -880,8 +884,8 @@ func assertDisabledTaskPublicContinuation(t *testing.T, detail task.Task, number
 
 func assertDisabledSessionPublicContinuation(t *testing.T, detail session.Session, number int, status session.RuntimeStatus) {
 	t.Helper()
-	if detail.RunControls.BlackboardConclusionMode != session.BlackboardConclusionModeDisabled ||
-		detail.BlackboardConclusion.Mode != session.BlackboardConclusionModeDisabled ||
+	if detail.RunControls.BlackboardMode != session.BlackboardModeDisabled ||
+		detail.BlackboardConclusion.Mode != session.BlackboardModeDisabled ||
 		detail.BlackboardConclusion.State != session.BlackboardConclusionStateClean ||
 		detail.LatestContinuation == nil || detail.LatestContinuation.Number != number ||
 		detail.LatestContinuation.Status != status {

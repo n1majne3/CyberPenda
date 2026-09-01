@@ -159,14 +159,8 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 // Non-Project Session. The same provider event contract is used, but the
 // durable owner and current continuation are Session identities.
 func (server *Server) BindSessionProviderSession(sessionID string, providerSession runtime.ProviderSession) error {
-	found, err := server.sessions.Get(sessionID)
-	if err != nil {
+	if _, err := server.sessions.Get(sessionID); err != nil {
 		return err
-	}
-	if found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeAssisted {
-		if err := validateAssistedConclusionProviderSession(providerSession); err != nil {
-			return err
-		}
 	}
 	if err := server.sessionProviderSessions.bind(sessionID, providerSession); err != nil {
 		return err

@@ -62,11 +62,11 @@ type BlackboardConclusionReceipt struct {
 
 // View projects internal coordinator progress into the compact Session API
 // vocabulary. A never-settled Work Turn is terminal and cannot be retried.
-func (receipt BlackboardConclusionReceipt) View(mode BlackboardConclusionMode) BlackboardConclusion {
+func (receipt BlackboardConclusionReceipt) View(mode BlackboardMode) BlackboardConclusion {
 	return receipt.ViewAt(mode, time.Now().UTC())
 }
 
-func (receipt BlackboardConclusionReceipt) ViewAt(mode BlackboardConclusionMode, now time.Time) BlackboardConclusion {
+func (receipt BlackboardConclusionReceipt) ViewAt(mode BlackboardMode, now time.Time) BlackboardConclusion {
 	view := BlackboardConclusion{
 		Mode: mode, SourceTurnID: receipt.SourceTurnID,
 		SourceWorkWatermark:          receipt.SourceWorkWatermark,
@@ -254,7 +254,7 @@ func (s *Service) RecordBlackboardConclusionCheckpoint(sessionID, continuationID
 	if err != nil {
 		return BlackboardConclusionReceipt{}, false, err
 	}
-	if found.RunControls.BlackboardConclusionMode != BlackboardConclusionModeAssisted {
+	if found.RunControls.BlackboardMode != BlackboardModeWorkingGraph {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	rec, created, err := s.conclusions().RecordBlackboardConclusionCheckpoint(sessionID, continuationID, sourceRequestID, sourceSessionID, sourceTurnID,

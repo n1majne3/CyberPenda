@@ -27,13 +27,13 @@ func (server *Server) resolveBlackboardFinishIntentPolicy(sessionOwner bool, own
 	hasTurn := false
 	if sessionOwner {
 		found, err := server.sessions.Get(ownerID)
-		if err == nil && found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeAssisted {
+		if err == nil && found.RunControls.BlackboardMode == session.BlackboardModeWorkingGraph {
 			assisted = true
 			provenance, observed, hasTurn = server.blackboardConclusions.ActiveWorkTurn(ownerID, continuationID)
 		}
 	} else {
 		found, err := server.tasks.Get(ownerID)
-		if err == nil && found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
+		if err == nil && found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
 			assisted = true
 			provenance, observed, hasTurn = server.blackboardConclusions.ActiveWorkTurn(ownerID, continuationID)
 		}

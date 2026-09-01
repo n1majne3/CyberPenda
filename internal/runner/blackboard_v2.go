@@ -118,8 +118,7 @@ func BlackboardV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) 
 	clean := make(map[string]string, len(env))
 	for key, value := range env {
 		switch key {
-		case "PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_CONTINUATION_ID",
-			"PENTEST_MCP_URL", "PENTEST_API_URL", "PENTEST_AUTH_TOKEN", "PENTEST_INTERFACE_TOKEN",
+		case "PENTEST_MCP_URL", "PENTEST_AUTH_TOKEN",
 			"PENTEST_DISABLE_TRUSTED_MCP":
 			continue
 		}
@@ -142,17 +141,6 @@ func BlackboardV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) 
 func BlackboardV2SupportsProvider(provider runtimeprofile.Provider) bool {
 	switch provider {
 	case runtimeprofile.ProviderFake, runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes:
-		return true
-	default:
-		return false
-	}
-}
-
-// BlackboardV2UsesTrustedMCP reports whether the provider receives the trusted
-// MCP Project Interface for v2 writes (Claude and Pi). Codex remains networkless.
-func BlackboardV2UsesTrustedMCP(provider runtimeprofile.Provider) bool {
-	switch provider {
-	case runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes:
 		return true
 	default:
 		return false

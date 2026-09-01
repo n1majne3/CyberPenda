@@ -32,7 +32,7 @@ const task = {
   runner: "sandbox",
   runtime_profile_id: "demo-profile",
   run_controls: {
-    blackboard_conclusion_mode: "assisted",
+    blackboard_mode: "working_graph",
     sandbox_network: "restricted",
     notes: "Read-only Demo data",
   },

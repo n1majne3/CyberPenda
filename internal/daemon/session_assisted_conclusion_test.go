@@ -22,7 +22,7 @@ func TestAssistedSessionWorkTurnConcludesOnlySessionBlackboard(t *testing.T) {
 		"input":"Inspect the standalone target",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"assisted"}
+		"run_controls":{"blackboard_mode":"working_graph"}
 	}`))
 	createRequest.Header.Set("Content-Type", "application/json")
 	createResponse := httptest.NewRecorder()
@@ -34,7 +34,7 @@ func TestAssistedSessionWorkTurnConcludesOnlySessionBlackboard(t *testing.T) {
 	if err := json.NewDecoder(createResponse.Body).Decode(&created); err != nil {
 		t.Fatalf("decode created Session: %v", err)
 	}
-	if created.RunControls.BlackboardConclusionMode != session.BlackboardConclusionModeAssisted {
+	if created.RunControls.BlackboardMode != session.BlackboardModeWorkingGraph {
 		t.Fatalf("created Session run controls = %#v", created.RunControls)
 	}
 	waitForAssistedProviderRequests(t, provider, 1)
@@ -102,7 +102,7 @@ func TestAssistedSessionStopSettlesPendingConclusionRecovery(t *testing.T) {
 		"input":"Stop after exploratory work",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"assisted"}
+		"run_controls":{"blackboard_mode":"working_graph"}
 	}`))
 	createRequest.Header.Set("Content-Type", "application/json")
 	createResponse := httptest.NewRecorder()
@@ -148,7 +148,7 @@ func TestAssistedSessionMessageWaitsForPendingConclusionSettlement(t *testing.T)
 		"input":"Wait for the semantic Session boundary",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"assisted"}
+		"run_controls":{"blackboard_mode":"working_graph"}
 	}`))
 	createRequest.Header.Set("Content-Type", "application/json")
 	createResponse := httptest.NewRecorder()
@@ -217,7 +217,7 @@ func TestAssistedSessionRegeneratesAfterConcurrentSessionBlackboardAdvance(t *te
 		"input":"Reconcile a changing Session Blackboard",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"assisted"}
+		"run_controls":{"blackboard_mode":"working_graph"}
 	}`))
 	createRequest.Header.Set("Content-Type", "application/json")
 	createResponse := httptest.NewRecorder()
@@ -289,7 +289,7 @@ func TestAssistedSessionInvalidConclusionUsesOneBoundedRepair(t *testing.T) {
 		"input":"Bound invalid Session conclusions",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"assisted"}
+		"run_controls":{"blackboard_mode":"working_graph"}
 	}`))
 	createRequest.Header.Set("Content-Type", "application/json")
 	createResponse := httptest.NewRecorder()
@@ -422,7 +422,7 @@ func createAssistedConclusionSession(t *testing.T, server *Server, profileID, in
 		"input":"`+input+`",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"assisted"}
+		"run_controls":{"blackboard_mode":"working_graph"}
 	}`))
 	createRequest.Header.Set("Content-Type", "application/json")
 	createResponse := httptest.NewRecorder()

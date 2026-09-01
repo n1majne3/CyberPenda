@@ -117,7 +117,7 @@ describe("SessionDetailPage", () => {
         id: "session-disabled",
         title: "Inspect without Blackboard",
         lifecycle: "open",
-        run_controls: { blackboard_conclusion_mode: "disabled" },
+        run_controls: { blackboard_mode: "disabled" },
         blackboard_conclusion: {
           mode: "disabled",
           state: "action_required",
@@ -528,8 +528,8 @@ describe("SessionDetailPage", () => {
         id: "session-retry",
         title: "Needs recovery",
         lifecycle: "open",
-        run_controls: { blackboard_conclusion_mode: "assisted" },
-        blackboard_conclusion: { mode: "assisted", state: "pending", retry_available: false },
+        run_controls: { blackboard_mode: "working_graph" },
+        blackboard_conclusion: { mode: "working_graph", state: "pending", retry_available: false },
         created_at: "2026-08-01T01:00:00Z",
         updated_at: "2026-08-01T01:00:00Z",
         last_activity_at: "2026-08-01T01:00:00Z",
@@ -538,9 +538,9 @@ describe("SessionDetailPage", () => {
         id: "session-retry",
         title: "Needs recovery",
         lifecycle: "open",
-        run_controls: { blackboard_conclusion_mode: "assisted" },
+        run_controls: { blackboard_mode: "working_graph" },
         blackboard_conclusion: {
-          mode: "assisted",
+          mode: "working_graph",
           state: "action_required",
           error_code: "semantic_conclusion_repair_exhausted",
           retry_available: true,
@@ -560,7 +560,7 @@ describe("SessionDetailPage", () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent("assisted");
+    expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent("working_graph");
     expect(screen.getByRole("alert")).toHaveTextContent("semantic_conclusion_repair_exhausted");
     await user.click(screen.getByRole("button", { name: /retry blackboard conclusion/i }));
 

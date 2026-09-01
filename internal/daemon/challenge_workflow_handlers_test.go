@@ -63,7 +63,7 @@ func TestChallengeWorkflowHTTPAndFinishReadiness(t *testing.T) {
 		ProjectID: proj.ID, Type: task.TypeCTFChallenge, Goal: "keep Challenge output operator-only",
 		Runner: task.RunnerHost,
 		RunControls: task.RunControls{
-			HostActivated: true, BlackboardConclusionMode: task.BlackboardConclusionModeDisabled,
+			HostActivated: true, BlackboardMode: task.BlackboardModeDisabled,
 		},
 	})
 	if err != nil {

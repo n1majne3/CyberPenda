@@ -62,7 +62,7 @@ func TestStopCancelsTaskScopedNativeSteerWithoutAutoFinish(t *testing.T) {
 			return native
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 
 	steer := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{"request_id":"cancel-me","message":"continue"}`))
 	steer.Header.Set("Content-Type", "application/json")
@@ -105,7 +105,7 @@ func TestStopCancelsTaskScopedPermissionResponse(t *testing.T) {
 			return permission
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	if _, err := server.tasks.AppendEvent(created.ID, task.EventKindLifecycle, task.EventPayload{
 		"phase": "provider_permission_requested", "request_id": "provider-permission-request",
 		"permission_request_id": "perm-cancel", "session_id": permission.SessionID(),

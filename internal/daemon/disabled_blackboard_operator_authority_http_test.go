@@ -31,7 +31,7 @@ const disabledOutputOperatorToken = "disabled-output-operator-token"
 func TestDefaultLoopbackGeneratedOperatorRetainsSelectedDisabledAttachment(t *testing.T) {
 	fixture := newDisabledOutputAuthorityFixture(t, "")
 	contents := []byte("operator-selected proof\n")
-	created := createDisabledOutputTask(t, fixture, task.BlackboardConclusionModeDisabled, "selected-output.txt", contents)
+	created := createDisabledOutputTask(t, fixture, task.BlackboardModeDisabled, "selected-output.txt", contents)
 	before := readDisabledOutputTask(t, fixture, created.ID)
 	base := "/api/v2/projects/" + fixture.projectID
 	workBatch := `{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:disabled-review","type":"objective","record":{"status":"open","objective":"Review selected Disabled Task output"}},{"op":"create","key":"attempt:disabled-review","type":"attempt","record":{"status":"open","summary":"Operator reviews selected Disabled Task output"}},{"op":"relate","from":"attempt:disabled-review","relation":"tests","to":"objective:disabled-review"}]}`
@@ -57,7 +57,7 @@ func TestDefaultLoopbackGeneratedOperatorRetainsSelectedDisabledAttachment(t *te
 	}
 
 	after := readDisabledOutputTask(t, fixture, created.ID)
-	if after.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled ||
+	if after.RunControls.BlackboardMode != task.BlackboardModeDisabled ||
 		before.LatestContinuation == nil || after.LatestContinuation == nil ||
 		before.LatestContinuation.ID != after.LatestContinuation.ID {
 		t.Fatalf("operator retain changed Disabled Task mode or Continuation: before=%#v after=%#v", before, after)
@@ -75,13 +75,13 @@ func TestDefaultLoopbackGeneratedOperatorRetainsSelectedDisabledAttachment(t *te
 
 func TestDisabledRuntimeBlackboardRequestUsesOrdinaryNoGrantAuthorization(t *testing.T) {
 	fixture := newDisabledOutputAuthorityFixture(t, disabledOutputOperatorToken)
-	created := createDisabledOutputTask(t, fixture, task.BlackboardConclusionModeDisabled, "", nil)
+	created := createDisabledOutputTask(t, fixture, task.BlackboardModeDisabled, "", nil)
 	assertDisabledNoGrantBoundaries(t, fixture, created.ID, "configured")
 }
 
 func TestDefaultLoopbackRejectsTokenlessDisabledRuntimeBlackboardAuthority(t *testing.T) {
 	fixture := newDisabledOutputAuthorityFixture(t, "")
-	created := createDisabledOutputTask(t, fixture, task.BlackboardConclusionModeDisabled, "", nil)
+	created := createDisabledOutputTask(t, fixture, task.BlackboardModeDisabled, "", nil)
 	assertDisabledNoGrantBoundaries(t, fixture, created.ID, "default-loopback")
 
 	response := disabledOutputRequest(
@@ -98,10 +98,10 @@ func TestConfiguredOperatorTokenIsNotExposedAsGeneratedAccessURL(t *testing.T) {
 	}
 }
 
-func TestInteractiveAndAssistedContinuationGrantsKeepOrdinaryBlackboardAuthority(t *testing.T) {
-	for _, mode := range []task.BlackboardConclusionMode{
-		task.BlackboardConclusionModeInteractive,
-		task.BlackboardConclusionModeAssisted,
+func TestInteractiveGrantIsFullAndWorkingGraphGrantIsReadOnly(t *testing.T) {
+	for _, mode := range []task.BlackboardMode{
+		task.BlackboardModeInteractive,
+		task.BlackboardModeWorkingGraph,
 	} {
 		t.Run(string(mode), func(t *testing.T) {
 			fixture := newDisabledOutputAuthorityFixture(t, "")
@@ -110,12 +110,19 @@ func TestInteractiveAndAssistedContinuationGrantsKeepOrdinaryBlackboardAuthority
 			if found.LatestContinuation == nil {
 				t.Fatalf("%s Task public detail omitted its Continuation", mode)
 			}
+			access := projectinterface.GrantAccessFull
+			wantWriteStatus := http.StatusOK
+			if mode == task.BlackboardModeWorkingGraph {
+				access = projectinterface.GrantAccessReadOnly
+				wantWriteStatus = http.StatusForbidden
+			}
 			grantToken, _, err := fixture.server.projectInterfaceGrants.Issue(context.Background(), projectinterface.IssueGrantRequest{
 				ProjectID: fixture.projectID, TaskID: created.ID, ContinuationID: found.LatestContinuation.ID,
 				RuntimeConfigVersionID: found.LatestContinuation.RuntimeConfigVersionID,
 				RuntimeProfileID:       fixture.profileID,
 				RuntimePluginID:        string(runtimeprofile.ProviderCodex),
 				Runner:                 string(created.Runner),
+				Access:                 access,
 			})
 			if err != nil {
 				t.Fatalf("issue %s setup Continuation grant: %v", mode, err)
@@ -126,8 +133,21 @@ func TestInteractiveAndAssistedContinuationGrantsKeepOrdinaryBlackboardAuthority
 				fixture, http.MethodPost, "/api/v2/projects/"+fixture.projectID+"/blackboard/changes",
 				grantToken, "", "runtime-"+string(mode)+"-change", body,
 			)
-			if response.Code != http.StatusOK {
+			if response.Code != wantWriteStatus {
 				t.Fatalf("%s Runtime grant status = %d body=%s", mode, response.Code, response.Body.String())
+			}
+			if mode == task.BlackboardModeWorkingGraph {
+				if !strings.Contains(response.Body.String(), "authority_denied") {
+					t.Fatalf("Working Graph write denial = %s", response.Body.String())
+				}
+				read := disabledOutputRequest(
+					fixture, http.MethodGet, "/api/v2/projects/"+fixture.projectID+"/blackboard/snapshot",
+					grantToken, "", "", "",
+				)
+				if read.Code != http.StatusOK {
+					t.Fatalf("Working Graph read status = %d body=%s", read.Code, read.Body.String())
+				}
+				return
 			}
 
 			var detail blackboardv2.CurrentDetail
@@ -173,7 +193,7 @@ func TestDisabledOutputEntersReportsAndDashboardOnlyAfterOperatorReconciliation(
 	fixture := newDisabledOutputAuthorityFixture(t, disabledOutputOperatorToken)
 	const unreviewed = "UNREVIEWED_DISABLED_RUNTIME_CONCLUSION"
 	created := createDisabledOutputTask(
-		t, fixture, task.BlackboardConclusionModeDisabled, "state.txt", []byte(unreviewed+"\n"),
+		t, fixture, task.BlackboardModeDisabled, "state.txt", []byte(unreviewed+"\n"),
 	)
 	// Setup one legacy/raw Runtime output entry. Report and Dashboard assertions
 	// below use only public responses.
@@ -228,7 +248,7 @@ func TestDisabledOutputEntersReportsAndDashboardOnlyAfterOperatorReconciliation(
 func TestDisabledEvidenceRetentionEnforcesOperatorProvenanceReplayAndConfinement(t *testing.T) {
 	fixture := newDisabledOutputAuthorityFixture(t, "")
 	created := createDisabledOutputTask(
-		t, fixture, task.BlackboardConclusionModeDisabled, "proof.txt", []byte("confined proof\n"),
+		t, fixture, task.BlackboardModeDisabled, "proof.txt", []byte("confined proof\n"),
 	)
 	base := "/api/v2/projects/" + fixture.projectID
 	workBatch := `{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:retention-controls","type":"objective","record":{"status":"open","objective":"Review retained output controls"}},{"op":"create","key":"attempt:retention-controls","type":"attempt","record":{"status":"open","summary":"Operator A reviews selected output"}},{"op":"relate","from":"attempt:retention-controls","relation":"tests","to":"objective:retention-controls"}]}`
@@ -277,7 +297,7 @@ func TestDisabledEvidenceReplayAfterReplacementKeepsOriginalSourceContinuation(t
 	const sourcePath = "replacement-proof.txt"
 	originalContents := []byte("proof from original Continuation\n")
 	created := createDisabledOutputTask(
-		t, fixture, task.BlackboardConclusionModeDisabled, sourcePath, originalContents,
+		t, fixture, task.BlackboardModeDisabled, sourcePath, originalContents,
 	)
 	original := readDisabledOutputTask(t, fixture, created.ID)
 	if original.LatestContinuation == nil {
@@ -333,7 +353,7 @@ func TestDisabledEvidenceRetryAfterPreReservationFailureDoesNotReadReplacementWo
 	fixture := newDisabledOutputAuthorityFixture(t, "")
 	const sourcePath = "failed-before-reservation.txt"
 	created := createDisabledOutputTask(
-		t, fixture, task.BlackboardConclusionModeDisabled, sourcePath, []byte("original bytes\n"),
+		t, fixture, task.BlackboardModeDisabled, sourcePath, []byte("original bytes\n"),
 	)
 	base := "/api/v2/projects/" + fixture.projectID
 	workBatch := `{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:failed-retain","type":"objective","record":{"status":"open","objective":"Review safely bound output"}},{"op":"create","key":"attempt:failed-retain","type":"attempt","record":{"status":"open","summary":"Operator reviews bound Disabled output"}},{"op":"relate","from":"attempt:failed-retain","relation":"tests","to":"objective:failed-retain"}]}`
@@ -474,7 +494,7 @@ func newDisabledOutputAuthorityFixture(t *testing.T, authToken string) disabledO
 func createDisabledOutputTask(
 	t *testing.T,
 	fixture disabledOutputAuthorityFixture,
-	mode task.BlackboardConclusionMode,
+	mode task.BlackboardMode,
 	attachmentName string,
 	attachmentContents []byte,
 ) task.Task {
@@ -483,7 +503,7 @@ func createDisabledOutputTask(
 		"type": "pentest", "goal": "produce selected operator evidence",
 		"runtime_profile_id": fixture.profileID, "runner": "host",
 		"run_controls": map[string]any{
-			"host_activated": true, "blackboard_conclusion_mode": mode,
+			"host_activated": true, "blackboard_mode": mode,
 		},
 	})
 	if err != nil {

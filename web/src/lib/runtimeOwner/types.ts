@@ -1,5 +1,5 @@
 import type {
-  BlackboardConclusionMode,
+  BlackboardMode,
   BlackboardConclusionView,
   FinishReadiness,
   RuntimeActivity,
@@ -34,7 +34,7 @@ export type RuntimeOwnerView = {
   runner: string;
   runtimeProfileID: string;
   runtimeConfiguration?: RuntimeConfigurationSummary;
-  blackboardConclusionMode?: BlackboardConclusionMode;
+  blackboardMode?: BlackboardMode;
   blackboardConclusion?: BlackboardConclusionView;
   runtimeControls?: RuntimeControls;
   runtimeActivity?: RuntimeActivity;

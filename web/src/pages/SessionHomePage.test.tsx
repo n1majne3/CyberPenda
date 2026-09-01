@@ -103,7 +103,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "high",
             runner: "sandbox",
-            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "disabled" },
+            run_controls: { container_cli: "docker", blackboard_mode: "disabled" },
           }),
         }),
       );
@@ -150,7 +150,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "xhigh",
             runner: "sandbox",
-            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "assisted" },
+            run_controls: { container_cli: "docker", blackboard_mode: "working_graph" },
           }),
         }),
       );
@@ -249,7 +249,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "high",
             runner: "sandbox",
-            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "interactive" },
+            run_controls: { container_cli: "docker", blackboard_mode: "interactive" },
           }),
         }),
       );
@@ -305,7 +305,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "high",
             runner: "sandbox",
-            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "assisted" },
+            run_controls: { container_cli: "docker", blackboard_mode: "working_graph" },
           }),
         }),
       );

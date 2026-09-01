@@ -68,10 +68,6 @@ _Avoid_: full Task inventory, request-count-only optimization
 The user's natural-language objective for a **Task**.
 _Avoid_: raw prompt only, plan step
 
-**Reason Task**:
-An operator-triggered planning **Task** that reads the complete **Runtime Blackboard Snapshot** and prepares an approval-required proposal for next **Task Goals**, **Exploration Objective** changes, and a readiness judgment.
-_Avoid_: daemon scheduler, autonomous Blackboard mutation, hidden skill prompt
-
 **Task Launch**:
 The creation or continuation of a **Task** from **Run Controls**, resolved runtime configuration, selected **Runner**, **Scope Snapshot**, and startup checks.
 _Avoid_: runtime projection, task adapter build, launch plumbing
@@ -512,13 +508,9 @@ _Avoid_: locked key, forbidden setting
 Structured runtime interface configuration that defines available project-facing MCP servers for a **Runtime Profile**.
 _Avoid_: raw JSON blob, unvalidated tool config
 
-**Trusted MCP Server**:
-An MCP server allowed to act as a **Project Interface** for project state, memory, evidence, or reporting.
-_Avoid_: arbitrary MCP server, external tool server
-
 **External MCP Server**:
-A user-added MCP server that is available to a **Runtime** but is not trusted as a **Project Interface** by default.
-_Avoid_: trusted project interface, built-in server
+A user-added MCP server that is available to a **Runtime**. CyberPenda does not inject a built-in Blackboard MCP server and does not grant Blackboard authority through MCP configuration.
+_Avoid_: built-in Blackboard server, implicit Project Interface authority
 
 **Profile Config Import**:
 An advanced action that parses an edited runtime config back into structured **Runtime Profile** fields, mapping what structured fields express and storing the remainder in the **Custom Config File**. It refuses **Managed Config Key** changes and secret-shaped values.
@@ -609,8 +601,24 @@ The project-local memory that stores durable semantic records and relationships 
 _Avoid_: chat history, notes database
 
 **Blackboard Mode**:
-A **Run Controls** choice of `interactive`, `assisted`, or `disabled`. Interactive mode leaves conclusion coordination to the operator and Runtime. Assisted mode allows the Harness to detect and settle bounded semantic debt. Disabled mode fully disconnects the Runtime Owner from Blackboard context and authority and leaves trace state to the Runtime's own files.
+A **Run Controls** choice of `interactive`, `working_graph`, or `disabled`. Interactive mode gives the Runtime a full CLI Blackboard grant. Working Graph mode gives the Runtime read-only CLI Blackboard access and a continuation-scoped file graph for write intents. Disabled mode gives the Runtime no Blackboard context or authority.
 _Avoid_: Blackboard Conclusion Mode, autonomous Task completion, transcript parsing mode, Blackboard write permission
+
+**Mode Skill**:
+The single system Skill projected for one Blackboard Mode. It is separate from user-selected Skills. Exactly one of the interactive, Working Graph, or disabled Mode Skills is present in a Runtime launch.
+_Avoid_: ordinary Skill toggle, mixed-mode instructions, Runtime Profile capability
+
+**Working Graph**:
+The Harness-defined file graph used in `working_graph` mode. It contains `state.md`, fact and data directories, goals, steps, a continuation-scoped Outbox, and continuation-scoped Receipts. It is Runtime working state, while the Blackboard remains the durable semantic source of truth.
+_Avoid_: Assisted Blackboard, transcript parser, direct Blackboard storage
+
+**Working Graph Intent**:
+A bounded Runtime request written atomically to the current Continuation Outbox. It contains a semantic operation without Blackboard versions or idempotency keys. The Harness claims it, resolves authority and versions, applies it through the Blackboard service, and writes a Receipt.
+_Avoid_: direct database command, provider tool result, lifecycle instruction
+
+**Working Graph Receipt**:
+The continuation-scoped file projection of a durable Working Graph Intent state. States include `pending`, `applying`, `retry_pending`, `applied`, `noop`, `action_required`, and `superseded`. An `action_required` Receipt blocks later Intents in sequence order.
+_Avoid_: model acknowledgement, transient stdout, Blackboard record
 
 **Agent-Managed Trace**:
 Optional files that a Runtime chooses and maintains in its ordinary workdir when **Blackboard Mode** is disabled. CyberPenda may remind the Runtime that file tracing is available, but it does not define, parse, or migrate a trace file.
@@ -1113,23 +1121,22 @@ _Avoid_: transcript, export, source of truth
 - A direct **Launch Selection** does not receive **MCP Configuration**, **Custom Config File**, **Runtime Extension Enablement**, or **Skill Opt-Out** from any matching or default **Runtime Profile**.
 - A direct Runtime Owner is displayed by its **Runtime Plugin**, **Model Provider**, and model rather than a synthetic Profile name; an explicit Profile name is shown only when that Owner selected a **Runtime Profile** at creation.
 - **Save as Runtime Profile** requires a user-supplied name and explicit confirmation; CyberPenda never suggests, triggers, or completes it automatically.
-- Task, Reason Task, Session, Resume, Steering, and Runtime Turn model-selection paths never create or reuse a **Launch-Resolved Runtime Profile**.
+- Task, Session, Resume, Steering, and Runtime Turn model-selection paths never create or reuse a **Launch-Resolved Runtime Profile**.
 - **Launch-Resolved Runtime Profile Migration** preserves every referenced legacy setting, including Runtime Plugin, Model Provider, model, Reasoning Effort, Custom Arguments, Sandbox image, Runner, and other structured configuration.
 - **Launch-Resolved Runtime Profile Migration** removes every legacy Profile only after migrated history, Resume, and replacement Runtime Continuation behavior pass integrity checks; it does not retain hidden Profile tombstones.
 - A **Runtime Profile** uses structured fields as source of truth for **Generated Runtime Config**.
 - **Generated Runtime Config** previews the resolved non-secret **Model Runtime Projection**, including the runtime-specific model URL, protocol, model, generated API key environment variable name, and runtime-specific projection target.
 - A **Runtime Plugin** describes which structured fields a **Runtime Profile** exposes.
 - A **Runtime Profile** manages **MCP Configuration** as structured entries with raw preview or import as compatibility support.
-- **MCP Configuration** may include **Trusted MCP Servers** and **External MCP Servers**.
+- **MCP Configuration** contains user-configured **External MCP Servers** only; CyberPenda does not inject a built-in Blackboard MCP server.
 - An **External MCP Server** does not receive project write authority by default.
 - An **External MCP Server** follows the same **Runner** and **Sandbox** environment as its **Runtime**.
 - **External MCP Server** output enters the **Blackboard** only when a **Runtime** writes it through a trusted **Project Interface**.
 - A **Profile Config Import** updates a **Runtime Profile** only when the edited config can be parsed into structured fields.
 - A **Project** has zero or more **Tasks**.
 - A **Task** starts from one **Task Goal** plus **Run Controls**.
-- Project **Task** and Non-Project **Session** Run Controls support the same `interactive`, `assisted`, and `disabled` **Blackboard Mode** values.
-- A **Reason Task** is the exception: it requires the complete **Runtime Blackboard Snapshot** and cannot use `disabled` Blackboard Mode; its existing Blackboard-enabled launch behavior remains unchanged.
-- New Tasks and Sessions default to `interactive` Blackboard Mode; a missing stored value also resolves to `interactive`, and existing explicit values remain unchanged.
+- Project **Task** and Non-Project **Session** Run Controls support the same `interactive`, `working_graph`, and `disabled` **Blackboard Mode** values.
+- New Tasks default to `working_graph`. New Sessions default to `disabled`.
 - A Runtime Owner captures one immutable Blackboard Mode at creation, and every later Resume and Runtime Continuation inherits it.
 - A Runtime Owner in `disabled` Blackboard Mode receives no Blackboard context or authority and creates no Blackboard conclusion or reconciliation obligations.
 - A disabled Runtime receives a concise reminder to use a state file at its initial launch and at each replacement Runtime launch, but not on ordinary Runtime Turns; the reminder does not explain file lifecycle or handoff limits.
@@ -1141,7 +1148,6 @@ _Avoid_: transcript, export, source of truth
 - The operator may explicitly retain a disabled Runtime's file or attachment as an **Evidence Artifact** or submit it for **Reconciliation** without exposing the resulting Blackboard state to that Runtime.
 - A **Report** does not infer conclusions from a disabled Runtime's Transcript or workdir files; only Blackboard state created through explicit operator retention or Reconciliation becomes Report input.
 - **Finish Readiness** for a Runtime Owner in disabled Blackboard Mode ignores Blackboard conclusion, Current Work, Finish Intent, and reconciliation blockers while retaining non-Blackboard lifecycle and policy checks.
-- A **Reason Task** is operator-triggered and returns a proposal for approval; it does not directly create, retire, or resolve Blackboard records.
 - A **Task** may pursue one primary **Exploration Objective** while producing multiple **Project Facts**, **Findings**, or **Evidence Artifacts**.
 - A **Task** receives one **Runtime Configuration Snapshot** through **Launch Configuration Resolution** and chooses one **Runner**.
 - A **Task** has one **Runtime Harness** that controls runtime lifecycle for that task.

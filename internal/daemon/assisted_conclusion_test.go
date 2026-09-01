@@ -33,7 +33,7 @@ func TestAssistedWorkTurnWithTerminalToolResultBecomesPending(t *testing.T) {
 		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"assisted"}
+		"run_controls":{"blackboard_mode":"working_graph"}
 	}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -68,10 +68,10 @@ func TestAssistedWorkTurnWithTerminalToolResultBecomesPending(t *testing.T) {
 
 	waitForAssistedProviderRequests(t, session, 2)
 	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateConcluding)
-	if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeAssisted {
-		t.Fatalf("stored conclusion mode = %q, want assisted", found.RunControls.BlackboardConclusionMode)
+	if found.RunControls.BlackboardMode != task.BlackboardModeWorkingGraph {
+		t.Fatalf("stored conclusion mode = %q, want assisted", found.RunControls.BlackboardMode)
 	}
-	if found.BlackboardConclusion.Mode != task.BlackboardConclusionModeAssisted || found.BlackboardConclusion.SourceTurnID != "work-turn-1" {
+	if found.BlackboardConclusion.Mode != task.BlackboardModeWorkingGraph || found.BlackboardConclusion.SourceTurnID != "work-turn-1" {
 		t.Fatalf("Blackboard conclusion view = %#v", found.BlackboardConclusion)
 	}
 	if found.Status != task.StatusRunning || found.RuntimeActivity.Liveness != "live" || found.RuntimeActivity.TurnActivity != "busy" {
@@ -169,7 +169,7 @@ func TestAssistedConclusionRejectsSeparatorAliasOfHistoricalAttempt(t *testing.T
 		t.Fatal(err)
 	}
 
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -205,7 +205,7 @@ func TestAssistedConclusionRejectsSeparatorAliasOfHistoricalAttempt(t *testing.T
 
 func TestAssistedWorkTurnDispatchesControlTurnAndAppliesClosedResult(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	sourceContinuation, err := server.tasks.LatestContinuation(created.ID)
@@ -341,7 +341,7 @@ func TestAssistedWorkTurnDispatchesControlTurnAndAppliesClosedResult(t *testing.
 
 func TestAssistedConclusionRegeneratesOnceAfterConcurrentContinuationAdvancesProject(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -424,7 +424,7 @@ func TestAssistedConclusionRegeneratesOnceAfterConcurrentContinuationAdvancesPro
 
 func TestAssistedConclusionSecondProjectRevisionConflictRequiresAction(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -462,7 +462,7 @@ func TestAssistedConclusionQueuesRegeneratedResultBeforeSendTurnReturns(t *testi
 			return &eagerVersionRegenerationSession{FakeProviderSession: fake, raw: []byte(regenerated)}
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -488,7 +488,7 @@ func TestAssistedConclusionQueuesRegeneratedResultBeforeSendTurnReturns(t *testi
 
 func TestAssistedConclusionIgnoresOtherProjectRevisionProgress(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -519,7 +519,7 @@ func TestAssistedConclusionIgnoresOtherProjectRevisionProgress(t *testing.T) {
 func TestAssistedConclusionStartupReplaysCommittedValidatedApplyWithoutProviderTurn(t *testing.T) {
 	root := t.TempDir()
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -588,7 +588,7 @@ func TestAssistedConclusionStartupReplaysCommittedValidatedApplyWithoutProviderT
 
 func TestAssistedConclusionReplaysValidatedIntentOnceAfterCommittedPublicationError(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -625,7 +625,7 @@ func TestAssistedConclusionReplaysValidatedIntentOnceAfterCommittedPublicationEr
 func TestAssistedConclusionStartupFailsClosedWhenValidatedBaseAdvancedWithoutLiveSession(t *testing.T) {
 	root := t.TempDir()
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -684,7 +684,7 @@ func TestAssistedConclusionStartupFailsClosedWhenValidatedBaseAdvancedWithoutLiv
 func TestAssistedConclusionSynchronizationFilesystemFailureSurvivesRestart(t *testing.T) {
 	root := t.TempDir()
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{
@@ -755,7 +755,7 @@ func TestAssistedConclusionSynchronizationFilesystemFailureSurvivesRestart(t *te
 
 func TestAssistedConclusionIncompatibleSemanticResultRequiresActionWithoutRegeneration(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	seed, err := server.blackboardV2.Apply(context.Background(), projectID, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-incompatible-objective",
 		Changes: []blackboardv2.Change{{
@@ -788,7 +788,7 @@ func TestAssistedConclusionIncompatibleSemanticResultRequiresActionWithoutRegene
 
 func TestAssistedConclusionRecordVersionMismatchRequiresActionWithoutOverwrite(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	continuation, err := server.tasks.LatestContinuation(created.ID)
 	if err != nil || continuation == nil {
 		t.Fatalf("load source Continuation: %#v, %v", continuation, err)
@@ -851,7 +851,7 @@ func TestAssistedConclusionQueuesResultEmittedBeforeSendTurnReturns(t *testing.T
 			return &eagerAttemptResultSession{FakeProviderSession: fake, raw: raw}
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	for _, observation := range []runtime.ProviderSessionObservation{
 		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
@@ -878,7 +878,7 @@ func TestAssistedConclusionQueuesInvalidResultEmittedBeforeSendTurnReturns(t *te
 			}
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	for _, observation := range []runtime.ProviderSessionObservation{
 		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
@@ -902,7 +902,7 @@ func TestAssistedConclusionQueuesForbiddenToolUseEmittedBeforeSendTurnReturns(t 
 			return &eagerControlToolSession{FakeProviderSession: fake}
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	for _, observation := range []runtime.ProviderSessionObservation{
 		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
@@ -920,7 +920,7 @@ func TestAssistedConclusionQueuesForbiddenToolUseEmittedBeforeSendTurnReturns(t 
 
 func TestAssistedConclusionWaitsForBusyTaskControlWithoutLosingDispatch(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	if !server.acquireProviderTaskControl(created.ID) {
 		t.Fatal("acquire competing provider task control")
@@ -943,7 +943,7 @@ func TestAssistedConclusionWaitsForBusyTaskControlWithoutLosingDispatch(t *testi
 
 func TestAssistedConclusionWaitsForBusyTaskControlWithoutLosingResult(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	for _, observation := range []runtime.ProviderSessionObservation{
 		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
@@ -1082,7 +1082,7 @@ func TestAssistedLaunchRejectsProviderWithoutConclusionObservations(t *testing.T
 		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"assisted"}
+		"run_controls":{"blackboard_mode":"working_graph"}
 	}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -1129,7 +1129,7 @@ func TestAssistedLaunchRejectsSessionThatCannotEmitConclusionObservations(t *tes
 		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"assisted"}
+		"run_controls":{"blackboard_mode":"working_graph"}
 	}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -1142,13 +1142,13 @@ func TestAssistedLaunchRejectsSessionThatCannotEmitConclusionObservations(t *tes
 	}
 }
 
-func TestTaskLaunchRejectsUnknownBlackboardConclusionMode(t *testing.T) {
+func TestTaskLaunchRejectsUnknownBlackboardMode(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
 		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"automatic"}
+		"run_controls":{"blackboard_mode":"automatic"}
 	}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -1164,7 +1164,7 @@ func TestTaskLaunchRejectsUnknownBlackboardConclusionMode(t *testing.T) {
 
 func TestAssistedWorkTurnWithoutToolResultStaysClean(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{
 		Kind:           runtime.ProviderSessionObservationTurnCompleted,
@@ -1196,7 +1196,7 @@ func TestInteractiveWorkTurnWithToolResultStaysClean(t *testing.T) {
 		}
 	}
 	found := waitForBlackboardConclusionState(t, server, projectID, created.ID, task.BlackboardConclusionStateClean)
-	if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeInteractive || found.BlackboardConclusion.Mode != task.BlackboardConclusionModeInteractive {
+	if found.RunControls.BlackboardMode != task.BlackboardModeInteractive || found.BlackboardConclusion.Mode != task.BlackboardModeInteractive {
 		t.Fatalf("interactive conclusion view = %#v", found.BlackboardConclusion)
 	}
 	for _, event := range assistedTaskEvents(t, server, projectID, created.ID) {
@@ -1223,15 +1223,15 @@ func TestTaskLaunchWithoutConclusionModeDefaultsToInteractive(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if created.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeInteractive ||
-		created.BlackboardConclusion != (task.BlackboardConclusion{Mode: task.BlackboardConclusionModeInteractive, State: task.BlackboardConclusionStateClean}) {
+	if created.RunControls.BlackboardMode != task.BlackboardModeInteractive ||
+		created.BlackboardConclusion != (task.BlackboardConclusion{Mode: task.BlackboardModeInteractive, State: task.BlackboardConclusionStateClean}) {
 		t.Fatalf("legacy Task conclusion defaults = %#v / %#v", created.RunControls, created.BlackboardConclusion)
 	}
 }
 
 func TestDuplicateAssistedTurnCompletionCreatesOnePendingMarker(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	for replay := 0; replay < 2; replay++ {
 		if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -1262,7 +1262,7 @@ func TestDuplicateAssistedTurnCompletionCreatesOnePendingMarker(t *testing.T) {
 func TestUncertainBlackboardConclusionRequiresActionAfterDaemonRestart(t *testing.T) {
 	root := t.TempDir()
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	for _, observation := range []runtime.ProviderSessionObservation{
 		{Kind: runtime.ProviderSessionObservationToolResult, ProviderTurnID: "work-turn-1", ToolCallID: "tool-1", ToolName: "shell", Status: "succeeded"},
@@ -1311,7 +1311,7 @@ func TestRecoveryGenerationAwaitingResultBecomesActionRequiredAfterRestart(t *te
 		t.Run(generation, func(t *testing.T) {
 			root := t.TempDir()
 			server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
-			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 			waitForAssistedProviderRequests(t, session, 1)
 			workRequest := session.LastRequests()[0]
 			if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -1377,7 +1377,7 @@ func TestRecoveryGenerationAwaitingResultBecomesActionRequiredAfterRestart(t *te
 func TestCleanBlackboardConclusionCheckpointSurvivesDaemonRestart(t *testing.T) {
 	root := t.TempDir()
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	requestID := session.LastRequests()[0].RequestID
 	for index, observation := range []runtime.ProviderSessionObservation{
@@ -1424,7 +1424,7 @@ func TestCleanBlackboardConclusionCheckpointSurvivesDaemonRestart(t *testing.T) 
 
 func TestAssistedConclusionIgnoresControlTurnsAndTrustedBlackboardTools(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	// Recording the request precedes completion of the asynchronous launch
@@ -1512,7 +1512,7 @@ func TestAssistedConclusionTracksSemanticPersistenceInToolResultOrder(t *testing
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 			waitForAssistedProviderRequests(t, session, 1)
 			requestID := session.LastRequests()[0].RequestID
 			for index, result := range test.results {
@@ -1557,7 +1557,7 @@ func TestAssistedConclusionSchedulesOnlyAtCompletedWorkTurnBoundary(t *testing.T
 	for _, terminalStatus := range []string{"failed", "interrupted"} {
 		t.Run(terminalStatus, func(t *testing.T) {
 			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 			waitForAssistedProviderRequests(t, session, 1)
 			requestID := session.LastRequests()[0].RequestID
 			if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -1604,7 +1604,7 @@ func TestAssistedConclusionTrustsOnlyTheCanonicalProjectInterfaceToolIdentity(t 
 	for _, tool := range trusted {
 		t.Run(tool.name, func(t *testing.T) {
 			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 			waitForAssistedProviderRequests(t, session, 1)
 			requestID := session.LastRequests()[0].RequestID
 			if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -1633,7 +1633,7 @@ func TestAssistedConclusionTrustsOnlyTheCanonicalProjectInterfaceToolIdentity(t 
 	} {
 		t.Run(toolName, func(t *testing.T) {
 			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 			waitForAssistedProviderRequests(t, session, 1)
 			requestID := session.LastRequests()[0].RequestID
 			if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -1661,7 +1661,7 @@ func TestAssistedConclusionTrustsOnlyTheCanonicalProjectInterfaceToolIdentity(t 
 // the bounded observation boundary and can never advance semantic persistence.
 func TestAssistedConclusionFabricatedCanonicalIdentityIsRejected(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	launchConclusionTask(t, server, projectID, profileID, "assisted")
+	launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	requestID := session.LastRequests()[0].RequestID
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -1679,7 +1679,7 @@ func TestAssistedConclusionFabricatedCanonicalIdentityIsRejected(t *testing.T) {
 
 func TestAssistedConclusionPromptsOnceAfterManyResultsAndCompletedBoundary(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	requestID := session.LastRequests()[0].RequestID
 	for index := 0; index < 100; index++ {
@@ -1716,7 +1716,7 @@ func TestAssistedConclusionPromptsOnceAfterManyResultsAndCompletedBoundary(t *te
 
 func TestAssistedConclusionInvalidResultDispatchesOneBoundedRepairTurn(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 
@@ -1766,7 +1766,7 @@ func TestAssistedConclusionInvalidResultDispatchesOneBoundedRepairTurn(t *testin
 
 func TestAssistedConclusionSecondInvalidResultRequiresActionWithoutAnotherTurn(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -1826,7 +1826,7 @@ func TestAssistedConclusionSecondInvalidResultRequiresActionWithoutAnotherTurn(t
 
 func TestAssistedConclusionControlToolResultRequiresActionWithoutRecursion(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -1877,7 +1877,7 @@ func TestAssistedConclusionControlToolResultRequiresActionWithoutRecursion(t *te
 
 func TestAssistedConclusionControlTurnCannotUseTrustedBlackboardTool(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -2152,7 +2152,7 @@ func TestAssistedConclusionRepairDispatchFailureBecomesActionRequired(t *testing
 			return &failingConclusionDispatchSession{FakeProviderSession: fake, requestKind: "repair"}
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -2190,7 +2190,7 @@ func TestAssistedConclusionRetryDispatchFailureBecomesActionRequired(t *testing.
 			return &failingConclusionDispatchSession{FakeProviderSession: fake, requestKind: "retry"}
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -2229,7 +2229,7 @@ func TestAssistedConclusionRetryDispatchFailureBecomesActionRequired(t *testing.
 
 func TestAssistedConclusionRetryIsIdempotentAndValidResultRecovers(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -2337,7 +2337,7 @@ func launchConclusionTask(t *testing.T, server *Server, projectID, profileID, mo
 		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":"`+profileID+`",
 		"runner":"sandbox",
-		"run_controls":{"blackboard_conclusion_mode":"`+mode+`"}
+		"run_controls":{"blackboard_mode":"`+mode+`"}
 	}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
@@ -2414,7 +2414,7 @@ func (factory *assistedConclusionSessionFactory) SupportsAssistedConclusion(prov
 func prepareAssistedConclusionAwaiting(t *testing.T) (*Server, string, task.Task, *runtime.FakeProviderSession) {
 	t.Helper()
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{

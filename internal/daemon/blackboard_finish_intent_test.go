@@ -60,7 +60,7 @@ func emitTaskWorkToolResult(t *testing.T, server *Server, session *runtime.FakeP
 // state is non-clean while the intent is unsettled.
 func TestAssistedFinishIntentRecordsIntentAndKeepsContinuationWritable(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, t.TempDir(), true, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	cont, err := server.tasks.ActiveContinuation(created.ID)
@@ -96,7 +96,7 @@ func TestAssistedFinishIntentRecordsIntentAndKeepsContinuationWritable(t *testin
 // new finish call is required before the Blackboard can close.
 func TestAssistedFinishIntentInvalidatedByLaterSameTurnSourceWork(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, t.TempDir(), true, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	cont, err := server.tasks.ActiveContinuation(created.ID)
@@ -128,7 +128,7 @@ func TestAssistedFinishIntentInvalidatedByLaterSameTurnSourceWork(t *testing.T) 
 // when the Work Turn settles with a valid intent and covered semantic debt.
 func TestAssistedFinishIntentSettlesAtWorkTurnClose(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, t.TempDir(), true, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	cont, err := server.tasks.ActiveContinuation(created.ID)
 	if err != nil || cont == nil {
@@ -155,7 +155,7 @@ func TestAssistedFinishIntentSettlesAtWorkTurnClose(t *testing.T) {
 // is pending (a recorded-but-unsettled intent).
 func TestAssistedFinishIntentKeepsStatusNonCleanWhilePending(t *testing.T) {
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, t.TempDir(), true, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	cont, err := server.tasks.ActiveContinuation(created.ID)
@@ -246,7 +246,7 @@ func launchAssistedSession(t *testing.T, server *Server, profileID string) sessi
 	createRequest := httptest.NewRequest(http.MethodPost, "/api/sessions", jsonBody(map[string]any{
 		"input": "Inspect the standalone target",
 		"run_controls": map[string]any{
-			"blackboard_conclusion_mode": "assisted",
+			"blackboard_mode": "working_graph",
 		},
 		"runtime_profile_id": profileID,
 		"runner":             "sandbox",
@@ -406,7 +406,7 @@ func TestAssistedSessionFinishIntentKeepsStatusNonCleanWhilePending(t *testing.T
 func TestAssistedTaskFinishIntentSurvivesDaemonRestart(t *testing.T) {
 	root := t.TempDir()
 	server, projectID, profileID, session := newAssistedConclusionFixtureAt(t, root, true, true)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	cont, err := server.tasks.ActiveContinuation(created.ID)

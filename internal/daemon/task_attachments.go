@@ -69,8 +69,18 @@ func parseCreateTaskRequest(request *http.Request) (createTaskInput, []uploadedA
 	if strings.HasPrefix(request.Header.Get("Content-Type"), "multipart/form-data") {
 		return parseMultipartCreateTaskRequest(request)
 	}
+	raw, err := io.ReadAll(request.Body)
+	if err != nil {
+		return createTaskInput{}, nil, errInvalidTaskBody
+	}
+	if err := rejectLegacyBlackboardModeField(raw); err != nil {
+		if errors.Is(err, errLegacyBlackboardModeField) {
+			return createTaskInput{}, nil, err
+		}
+		return createTaskInput{}, nil, errInvalidTaskBody
+	}
 	var input createTaskInput
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+	if err := json.Unmarshal(raw, &input); err != nil {
 		return createTaskInput{}, nil, errInvalidTaskBody
 	}
 	return input, nil, nil
@@ -84,6 +94,12 @@ func parseMultipartCreateTaskRequest(request *http.Request) (createTaskInput, []
 	}
 	payload := strings.TrimSpace(request.FormValue("payload"))
 	if payload == "" {
+		return createTaskInput{}, nil, errInvalidTaskBody
+	}
+	if err := rejectLegacyBlackboardModeField([]byte(payload)); err != nil {
+		if errors.Is(err, errLegacyBlackboardModeField) {
+			return createTaskInput{}, nil, err
+		}
 		return createTaskInput{}, nil, errInvalidTaskBody
 	}
 	var input createTaskInput

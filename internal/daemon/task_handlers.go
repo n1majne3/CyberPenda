@@ -22,11 +22,11 @@ import (
 	"pentest/internal/finishreadiness"
 
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
-	"pentest/internal/reasontask"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeconfig"
@@ -37,6 +37,7 @@ import (
 	"pentest/internal/task"
 	"pentest/internal/timeline"
 	"pentest/internal/transcript"
+	"pentest/internal/workinggraph"
 )
 
 var (
@@ -79,14 +80,6 @@ func (input taskContinuationSelectionInput) selectedModel() string {
 }
 
 func (server *Server) handleCreateTask(response http.ResponseWriter, request *http.Request) {
-	server.handleCreateTaskWithPurpose(response, request, false)
-}
-
-func (server *Server) handleCreateReasonTask(response http.ResponseWriter, request *http.Request) {
-	server.handleCreateTaskWithPurpose(response, request, true)
-}
-
-func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, request *http.Request, reasonTask bool) {
 	projectID := request.PathValue("id")
 	if !server.requireProject(response, projectID) {
 		return
@@ -103,13 +96,7 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 	if input.RunControls.Extras == nil && input.Extras != nil {
 		input.RunControls.Extras = input.Extras
 	}
-	if reasonTask && input.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
-		writeError(response, http.StatusBadRequest, "Reason Task Blackboard Mode cannot be disabled")
-		return
-	}
-	if reasonTask {
-		input.Goal = reasontask.LaunchGoal
-	} else if input.Type != task.TypePentest && input.Type != task.TypeCTFChallenge {
+	if input.Type != task.TypePentest && input.Type != task.TypeCTFChallenge {
 		writeTaskError(response, task.ErrInvalidTaskType)
 		return
 	}
@@ -121,9 +108,6 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 	}
 	input.RuntimeProfileID = defaulted.runtimeProfileID
 	input.Runner = defaulted.runner
-	if reasonTask {
-		input.Type = task.Type(defaulted.project.Kind)
-	}
 	launchModel := strings.TrimSpace(input.Model)
 	if launchModel == "" {
 		launchModel = strings.TrimSpace(input.ModelOverride)
@@ -140,13 +124,12 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
-	if input.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
-		if !server.supportsAssistedConclusion(resolvedConfiguration.Profile.Provider) {
-			writeError(response, http.StatusBadRequest, errAssistedConclusionUnsupported.Error())
-			return
-		}
+	modeSkill, err := modeskill.Resolve(modeskill.Mode(input.RunControls.BlackboardMode))
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return
 	}
-
+	resolvedConfiguration.Snapshot.ModeSkillID = modeSkill.ID
 	launchModelOverride := launchModel
 	launchReasoningEffort, err := normalizeLaunchReasoningEffort(input.ReasoningEffort)
 	if err != nil {
@@ -166,6 +149,7 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 		SandboxVPNTun:       input.RunControls.SandboxVPNTun,
 		SandboxNetwork:      input.RunControls.SandboxNetwork,
 		RuntimeRoot:         server.runtimeRoot,
+		BlackboardMode:      modeskill.Mode(input.RunControls.BlackboardMode),
 	})
 	server.logPreflightCustomArgConflict(input.RuntimeProfileID, preflightResult)
 	if !preflightResult.Pass {
@@ -199,13 +183,6 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 		writeTaskError(response, err)
 		return
 	}
-	if reasonTask {
-		if err := server.reasonTasks.Register(projectID, created.ID); err != nil {
-			writeError(response, http.StatusInternalServerError, "register Reason Task")
-			return
-		}
-	}
-
 	// The stored Task goal stays exactly as typed; only the launch goal handed
 	// to the runtime carries the appended attachment paths.
 	launchGoal, resolvedAttachments, err := launchGoalWithAttachments(created.Goal, created.Runner, server.runtimeRoot, created.ID, attachments)
@@ -215,7 +192,7 @@ func (server *Server) handleCreateTaskWithPurpose(response http.ResponseWriter, 
 	}
 
 	initialLaunch := resolveOwnerBlackboardRuntimeLaunch(
-		launchGoal, created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled,
+		launchGoal, created.RunControls.BlackboardMode == task.BlackboardModeDisabled,
 	)
 	plan, err := server.buildTaskLaunchPlanForBlackboardProjection(
 		created, initialLaunch.goal, launchModelOverride, "", launchReasoningEffort, initialLaunch.projection,
@@ -281,6 +258,8 @@ type taskLaunchPlan struct {
 type continuationLaunchBinding struct {
 	V2Header       *blackboardv2.LaunchHeader
 	InterfaceToken string
+	ContinuationID string
+	WorkingGraph   *workinggraph.Projection
 }
 
 func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchPlan, goal string) error {
@@ -339,9 +318,6 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		})
 		if factoryErr == nil {
 			factoryErr = validateProviderSessionBinding(binding)
-		}
-		if factoryErr == nil && created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
-			factoryErr = validateAssistedConclusionBinding(binding)
 		}
 		if factoryErr != nil {
 			redactedErr := newProviderSessionFactoryError(factoryErr, plan.MaterializedCredentials)
@@ -510,10 +486,10 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 	plan.ValidatedLayout = &layout
 	var boundPlan taskLaunchPlan
 	var launchHeader blackboardv2.LaunchHeader
-	usesTrustedMCP := runner.BlackboardV2UsesTrustedMCP(provider)
 	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: created.ProjectID, TaskID: created.ID, RuntimeProfileID: created.RuntimeProfileID,
 		RuntimeProvider: string(provider), Runner: created.Runner, RuntimeConfig: plan.CapturedRuntimeConfig,
+		GrantAccess:      blackboardGrantAccessForMode(created.RunControls.BlackboardMode),
 		SteeringEventIDs: plan.BlackboardV2SteeringEventIDs,
 		NativeSessionID:  plan.NativeResumeSessionID, NativeSessionPath: plan.NativeResumeSessionPath,
 		Precommit: func(projection blackboardv2.ContinuationLaunchProjection) error {
@@ -538,15 +514,23 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 			mergeFixedAtLaunchRuntimeConfig(plan.CapturedRuntimeConfig, boundPlan.CapturedRuntimeConfig)
 			return nil
 		},
-		BindGrant: func(plaintextGrant string) error {
-			if !usesTrustedMCP || strings.TrimSpace(plaintextGrant) == "" {
+		BindGrant: func(plaintextGrant string, continuation task.TaskContinuation) error {
+			if strings.TrimSpace(plaintextGrant) == "" {
 				return nil
 			}
-			binding := &continuationLaunchBinding{V2Header: &launchHeader, InterfaceToken: plaintextGrant}
+			binding := &continuationLaunchBinding{V2Header: &launchHeader, InterfaceToken: plaintextGrant, ContinuationID: continuation.ID}
+			if created.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
+				projection, prepareErr := workinggraph.NewService().Prepare(context.Background(), workinggraph.OwnerContext{
+					Owner: created.OwnerContract(layout.Workdir), ContinuationID: continuation.ID, Workdir: layout.Workdir,
+				})
+				if prepareErr != nil {
+					return prepareErr
+				}
+				binding.WorkingGraph = &projection
+			}
 			var err error
 			boundPlan, err = server.buildTaskLaunchPlanWithBinding(created, goal, plan.LaunchModelOverride, plan.NativeResumeSessionID, plan.LaunchReasoningEffort, binding, &plan)
 			if err != nil {
-				scrubBlackboardV2GrantBearingProjection(layout, provider)
 				return err
 			}
 			// BindGrant runs after the config version is stored; still keep the
@@ -554,16 +538,18 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 			mergeFixedAtLaunchRuntimeConfig(plan.CapturedRuntimeConfig, boundPlan.CapturedRuntimeConfig)
 			return nil
 		},
-		UnbindGrant: func() {
-			if usesTrustedMCP {
-				scrubBlackboardV2GrantBearingProjection(layout, provider)
-			}
-		},
 	})
 	if err != nil {
 		return task.TaskContinuation{}, taskLaunchPlan{}, err
 	}
 	return launch.Continuation, boundPlan, nil
+}
+
+func blackboardGrantAccessForMode(mode task.BlackboardMode) projectinterface.GrantAccess {
+	if mode == task.BlackboardModeWorkingGraph {
+		return projectinterface.GrantAccessReadOnly
+	}
+	return projectinterface.GrantAccessFull
 }
 
 // mergeFixedAtLaunchRuntimeConfig copies only non-secret fixed-at-launch fields
@@ -696,7 +682,7 @@ func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, la
 
 func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string) (taskLaunchPlan, error) {
 	launch := resolveOwnerBlackboardRuntimeLaunch(
-		goal, created.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled,
+		goal, created.RunControls.BlackboardMode == task.BlackboardModeDisabled,
 	)
 	return server.buildTaskLaunchPlanForBlackboardProjection(
 		created, launch.goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, launch.projection,
@@ -889,18 +875,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	// MCP calls cannot authenticate — the denial happens at the daemon, never
 	// through leaked authority.
 	authToken := ""
-	projectionProfile := profile
 	if v2 {
-		if profile.Provider == runtimeprofile.ProviderCodex {
-			// Codex v2 stays networkless for Project Interface writes.
-			projectionProfile = codexV2ProjectionProfile(profile)
-		} else if runner.BlackboardV2UsesTrustedMCP(profile.Provider) {
-			// Claude/Pi use the Continuation grant, never the operator token.
-			if binding != nil {
-				authToken = binding.InterfaceToken
-			}
-		} else {
-			return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is unsupported for provider %q", profile.Provider)
+		if binding != nil {
+			authToken = strings.TrimSpace(binding.InterfaceToken)
 		}
 	}
 	projectionRequest := runner.ProjectionRequest{
@@ -918,14 +895,15 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		ModelSnapshot:               capturedModelSnapshot,
 		LaunchModelOverride:         launchModelOverride,
 		SkillBundles:                skillBundles,
+		BlackboardMode:              modeskill.Mode(created.RunControls.BlackboardMode),
 		CapabilityCache:             server.capabilityCache,
 		BlackboardProjection:        blackboardProjection,
 	}
 	var projection runner.ConfigProjection
 	if v2 {
-		projection, err = runner.ProjectBlackboardV2RuntimeConfig(layout, projectionProfile, projectionRequest)
+		projection, err = runner.ProjectBlackboardV2RuntimeConfig(layout, profile, projectionRequest)
 	} else {
-		projection, err = runner.ProjectRuntimeConfig(layout, projectionProfile, projectionRequest)
+		projection, err = runner.ProjectRuntimeConfig(layout, profile, projectionRequest)
 	}
 	if err != nil {
 		return taskLaunchPlan{}, err
@@ -985,7 +963,22 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault
 	sandboxImage := ""
-	launchCtx := runner.RuntimeOwnerContext{Owner: created.OwnerContract(layout.Workdir), Sandbox: sandbox}
+	launchCtx := runner.RuntimeOwnerContext{
+		Owner: created.OwnerContract(layout.Workdir), Sandbox: sandbox,
+		BlackboardMode: string(created.RunControls.BlackboardMode),
+	}
+	if binding != nil {
+		launchCtx.ContinuationID = binding.ContinuationID
+		if binding.WorkingGraph != nil {
+			launchCtx.WorkingGraphRoot = binding.WorkingGraph.Root
+			launchCtx.WorkingGraphOutbox = binding.WorkingGraph.Outbox
+			launchCtx.WorkingGraphReceipts = binding.WorkingGraph.Receipts
+		}
+	}
+	if v2 && authToken != "" {
+		launchCtx.InterfaceToken = authToken
+		launchCtx.APIURL = runner.APIEndpointURL(server.listenAddr, sandbox)
+	}
 	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
 		Owner:                       created.OwnerContract(layout.Workdir),
 		ScopeSnapshot:               created.ScopeSnapshot,
@@ -1000,6 +993,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot:               projection.ModelSnapshot,
 		SkillBundles:                skillBundles,
+		BlackboardMode:              modeskill.Mode(created.RunControls.BlackboardMode),
 		BlackboardProjection:        blackboardProjection,
 	})
 	if err != nil {
@@ -1192,17 +1186,6 @@ func blackboardV2HostRelativePath(workdir, path string) string {
 		return path
 	}
 	return filepath.ToSlash(relative)
-}
-
-func codexV2ProjectionProfile(profile runtimeprofile.Profile) runtimeprofile.Profile {
-	projected := profile
-	projected.Fields.MCPServers = nil
-	projected.Fields.Env = make(map[string]string, len(profile.Fields.Env)+1)
-	for key, value := range profile.Fields.Env {
-		projected.Fields.Env[key] = value
-	}
-	projected.Fields.Env["PENTEST_DISABLE_TRUSTED_MCP"] = "true"
-	return projected
 }
 
 func (server *Server) capturedTaskRuntimeConfig(created task.Task, profile runtimeprofile.Profile, modelSnapshot any, launchModelOverride string, launchReasoningEffort string) (map[string]any, error) {
@@ -1965,7 +1948,7 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 				return
 			}
 		}
-		if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+		if found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 			if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
 				writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
 				return
@@ -1990,7 +1973,7 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 		writeError(response, http.StatusConflict, "provider session did not close")
 		return
 	}
-	if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+	if found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 		if err := server.markStoppedBlackboardConclusionsRecoveryRequired(taskID); err != nil {
 			writeError(response, http.StatusInternalServerError, "record stopped Blackboard conclusion recovery")
 			return
@@ -2078,8 +2061,8 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusNotFound, "task not found")
 		return
 	}
-	blackboardDisabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
-	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted {
+	blackboardDisabled := found.RunControls.BlackboardMode == task.BlackboardModeDisabled
+	if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
 		if err := server.acquireTaskControlAfterAssistedSettlement(request.Context(), found, false, false); err != nil {
 			if errors.Is(err, errSemanticConclusionActionRequired) {
 				writeError(response, http.StatusConflict, "semantic_conclusion_action_required")
@@ -2229,6 +2212,10 @@ func (server *Server) waitForAssistedConclusionDrain(ctx context.Context, found 
 }
 
 func (server *Server) waitForAssistedConclusionSettlement(ctx context.Context, found task.Task, allowActionRequired bool) error {
+	if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
+		_, err := server.settleTaskWorkingGraph(ctx, found, allowActionRequired)
+		return err
+	}
 	for {
 		receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
 		if err != nil {
@@ -2237,7 +2224,7 @@ func (server *Server) waitForAssistedConclusionSettlement(ctx context.Context, f
 		if receipt == nil {
 			return nil
 		}
-		switch receipt.View(found.RunControls.BlackboardConclusionMode).State {
+		switch receipt.View(found.RunControls.BlackboardMode).State {
 		case task.BlackboardConclusionStateClean:
 			return nil
 		case task.BlackboardConclusionStateActionRequired:
@@ -2261,6 +2248,24 @@ func (server *Server) waitForAssistedConclusionSettlement(ctx context.Context, f
 // became pending between the optimistic drain and acquisition, it releases
 // control so the Harness coordinator can run, drains again, and retries.
 func (server *Server) acquireTaskControlAfterAssistedSettlement(ctx context.Context, found task.Task, allowActionRequired, providerControl bool) error {
+	if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
+		acquired := server.acquireTaskControl(found.ID)
+		if providerControl {
+			acquired = server.acquireProviderTaskControl(found.ID)
+		}
+		if !acquired {
+			return errTaskControlOperationActive
+		}
+		if _, err := server.settleTaskWorkingGraph(ctx, found, allowActionRequired); err != nil {
+			if providerControl {
+				server.releaseProviderTaskControl(found.ID)
+			} else {
+				server.releaseTaskControl(found.ID)
+			}
+			return err
+		}
+		return nil
+	}
 	waitedForConclusion := false
 	for {
 		before, err := server.tasks.LatestBlackboardConclusion(found.ID)
@@ -2268,7 +2273,7 @@ func (server *Server) acquireTaskControlAfterAssistedSettlement(ctx context.Cont
 			return err
 		}
 		if before != nil {
-			switch before.View(found.RunControls.BlackboardConclusionMode).State {
+			switch before.View(found.RunControls.BlackboardMode).State {
 			case task.BlackboardConclusionStatePending, task.BlackboardConclusionStateConcluding:
 				waitedForConclusion = true
 			}
@@ -2288,7 +2293,7 @@ func (server *Server) acquireTaskControlAfterAssistedSettlement(ctx context.Cont
 				return err
 			}
 			if receipt != nil {
-				state := receipt.View(found.RunControls.BlackboardConclusionMode).State
+				state := receipt.View(found.RunControls.BlackboardMode).State
 				if state == task.BlackboardConclusionStatePending || state == task.BlackboardConclusionStateConcluding {
 					waitedForConclusion = true
 					continue
@@ -2319,7 +2324,7 @@ func (server *Server) acquireTaskControlAfterAssistedSettlement(ctx context.Cont
 		if receipt == nil {
 			return nil
 		}
-		switch receipt.View(found.RunControls.BlackboardConclusionMode).State {
+		switch receipt.View(found.RunControls.BlackboardMode).State {
 		case task.BlackboardConclusionStateClean:
 			return nil
 		case task.BlackboardConclusionStateActionRequired:
@@ -2732,7 +2737,7 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 		return task.Task{}, "", taskLaunchPlan{}, err
 	}
 	var steeringEventIDs []string
-	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+	if found.RunControls.BlackboardMode == task.BlackboardModeDisabled {
 		resumedMessage, steeringEventIDs, err = server.taskResumeContextWithoutBlackboard(found)
 	} else if server.canonicalStore == store.CanonicalStoreBlackboardV2 && server.isBlackboardV2Task(found) {
 		resumedMessage, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
@@ -2787,7 +2792,7 @@ func (server *Server) prepareFreshResumeContinuation(found task.Task) (task.Task
 
 	resumeGoal := ""
 	var steeringEventIDs []string
-	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+	if found.RunControls.BlackboardMode == task.BlackboardModeDisabled {
 		resumeGoal, steeringEventIDs, err = server.taskResumeContextWithoutBlackboard(found)
 	} else if server.canonicalStore == store.CanonicalStoreBlackboardV2 && runner.BlackboardV2SupportsProvider(effectiveProfile.Provider) {
 		resumeGoal, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
@@ -2817,7 +2822,7 @@ func (server *Server) resumeTurnSelectionOverrides(found task.Task) (modelOverri
 }
 
 func (server *Server) buildResumeGoal(found task.Task) (string, error) {
-	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+	if found.RunControls.BlackboardMode == task.BlackboardModeDisabled {
 		goal, _, err := server.taskResumeContextWithoutBlackboard(found)
 		return goal, err
 	}
@@ -3317,6 +3322,9 @@ type nativeSteerOperationFunc func(context.Context, runtime.ProviderSessionReque
 // pending can yield control to its own coordinator.
 func (server *Server) taskConclusionSettlement(found task.Task) providerControlSettlement {
 	return func(ctx context.Context, wait bool) (bool, error) {
+		if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
+			return server.settleTaskWorkingGraph(ctx, found, true)
+		}
 		for {
 			receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
 			if err != nil {
@@ -3325,7 +3333,7 @@ func (server *Server) taskConclusionSettlement(found task.Task) providerControlS
 			if receipt == nil {
 				return true, nil
 			}
-			switch receipt.View(found.RunControls.BlackboardConclusionMode).State {
+			switch receipt.View(found.RunControls.BlackboardMode).State {
 			case task.BlackboardConclusionStateClean:
 				return true, nil
 			case task.BlackboardConclusionStateActionRequired:
@@ -3563,7 +3571,10 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 	if err != nil {
 		return fmt.Errorf("load Task for replacement continuation: %w", err)
 	}
-	disabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
+	if _, err := server.settleTaskWorkingGraph(context.Background(), found, true); err != nil {
+		return fmt.Errorf("settle old Working Graph: %w", err)
+	}
+	disabled := found.RunControls.BlackboardMode == task.BlackboardModeDisabled
 	var next task.TaskContinuation
 	if disabled {
 		next, err = server.tasks.CreateReplacementContinuationWithoutBlackboard(old)
@@ -3637,7 +3648,7 @@ func (server *Server) createWritableContinuationForLiveSession(found task.Task, 
 	if previous == nil {
 		return nil, errNoContinuationToContinue
 	}
-	disabled := found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled
+	disabled := found.RunControls.BlackboardMode == task.BlackboardModeDisabled
 	var next task.TaskContinuation
 	if disabled {
 		next, err = server.tasks.CreateReplacementContinuationWithoutBlackboard(*previous)
@@ -4214,7 +4225,7 @@ func (server *Server) requireProject(response http.ResponseWriter, projectID str
 
 func writeTaskError(response http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidTaskType), errors.Is(err, task.ErrInvalidBlackboardConclusionMode), errors.Is(err, task.ErrInvalidTaskPolicy), errors.Is(err, task.ErrSandboxVPNTunHostProxyConflict), errors.Is(err, task.ErrInvalidContainerCLI):
+	case errors.Is(err, task.ErrMissingGoal), errors.Is(err, task.ErrUnsupportedRunner), errors.Is(err, task.ErrInvalidTaskType), errors.Is(err, task.ErrInvalidBlackboardMode), errors.Is(err, task.ErrInvalidTaskPolicy), errors.Is(err, task.ErrSandboxVPNTunHostProxyConflict), errors.Is(err, task.ErrInvalidContainerCLI):
 		writeError(response, http.StatusBadRequest, err.Error())
 	case errors.Is(err, task.ErrTaskTypeProjectKindMismatch):
 		writeError(response, http.StatusConflict, err.Error())

@@ -182,9 +182,6 @@ func TestBuiltinPluginsDeclareIndependentProviderSessionCapabilities(t *testing.
 		!fake.Capabilities.ResumeSession {
 		t.Fatalf("fake provider-session capabilities = %#v", fake.Capabilities)
 	}
-	if !fake.Capabilities.AssistedConclusion {
-		t.Fatal("fake must advertise assisted conclusion observations")
-	}
 
 	for _, id := range []string{"claude_code", "codex", "hermes", "pi"} {
 		t.Run(id, func(t *testing.T) {
@@ -203,20 +200,7 @@ func TestBuiltinPluginsDeclareIndependentProviderSessionCapabilities(t *testing.
 			if id != "pi" && id != "codex" && plugin.Capabilities.InTurnSteer {
 				t.Fatal("provider lacks a verified direct in-turn steer transport")
 			}
-			if plugin.Capabilities.AssistedConclusion {
-				t.Fatal("production provider must not advertise assisted conclusions before adapter conformance")
-			}
 		})
-	}
-}
-
-func TestCapabilitiesJSONIncludesAssistedConclusion(t *testing.T) {
-	raw, err := json.Marshal(runtimeplugin.Capabilities{AssistedConclusion: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(raw) == "" || !json.Valid(raw) || !reflect.DeepEqual(raw, []byte(`{"sandbox":false,"host":false,"mcp_config":false,"streaming_transcript":false,"resume":false,"persistent_session":false,"send_turn":false,"interrupt_turn":false,"interrupt_then_replace":false,"in_turn_steer":false,"permission_response":false,"resume_session":false,"assisted_conclusion":true}`)) {
-		t.Fatalf("capabilities JSON = %s", raw)
 	}
 }
 

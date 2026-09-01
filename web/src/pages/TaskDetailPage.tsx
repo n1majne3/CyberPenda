@@ -1624,7 +1624,7 @@ function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
 }
 
 function runtimeOwnerBlackboardMode(owner: RuntimeOwnerView) {
-  return owner.blackboardConclusionMode ?? owner.blackboardConclusion?.mode ?? "interactive";
+  return owner.blackboardMode ?? owner.blackboardConclusion?.mode ?? "interactive";
 }
 
 const blackboardConclusionErrorCopy: Record<string, string> = {

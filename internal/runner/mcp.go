@@ -10,25 +10,24 @@ import (
 
 	"pentest/internal/owner"
 	"pentest/internal/project"
-	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 )
-
-// trustedMCPServerName is the one registered identity of the trusted Blackboard
-// v2 Project Interface (ADR 0014). Runtime observations classify tools against
-// this same registration, so the name must not drift here.
-const trustedMCPServerName = runtime.TrustedProjectInterfaceServerName
 
 // RuntimeOwnerContext carries one validated owner binding into launch
 // projection. Mixed Task/Session identities cannot be represented.
 type RuntimeOwnerContext struct {
-	Owner          owner.Contract
-	MCPURL         string
-	APIURL         string
-	InterfaceToken string
-	Provider       runtimeprofile.Provider
-	Sandbox        bool
-	ScopeSnapshot  project.Scope
+	Owner                owner.Contract
+	MCPURL               string
+	APIURL               string
+	InterfaceToken       string
+	BlackboardMode       string
+	ContinuationID       string
+	WorkingGraphRoot     string
+	WorkingGraphOutbox   string
+	WorkingGraphReceipts string
+	Provider             runtimeprofile.Provider
+	Sandbox              bool
+	ScopeSnapshot        project.Scope
 }
 
 func taskContextFromProjection(req ProjectionRequest, provider runtimeprofile.Provider, mcpURL string) RuntimeOwnerContext {
@@ -80,56 +79,10 @@ func splitListenHostPort(addr string) (host, port string) {
 	return addr, "8787"
 }
 
-func trustedMCPDisabled(profile runtimeprofile.Profile) bool {
-	value := strings.TrimSpace(profile.Fields.Env["PENTEST_DISABLE_TRUSTED_MCP"])
-	return strings.EqualFold(value, "1") || strings.EqualFold(value, "true") || strings.EqualFold(value, "yes")
-}
-
-func collectMCPServers(profile runtimeprofile.Profile, req ProjectionRequest) ([]runtimeprofile.MCPServer, error) {
-	servers := append([]runtimeprofile.MCPServer{}, profile.Fields.MCPServers...)
-	if req.BlackboardProjection == BlackboardProjectionOmitted {
-		external := make([]runtimeprofile.MCPServer, 0, len(servers))
-		for _, server := range servers {
-			if server.Mode != runtimeprofile.MCPServerTrusted {
-				external = append(external, server)
-			}
-		}
-		return external, nil
-	}
-	if trustedMCPDisabled(profile) {
-		return servers, nil
-	}
-	// The generated trusted server identity is always "pentest". When trusted MCP
-	// is enabled, that daemon-owned entry is authoritative: replace any profile
-	// trusted "pentest" with the current Continuation grant URL, reject an
-	// external server using the reserved name, and always inject even when
-	// another custom server happens to share the daemon base URL.
-	trustedURL := MCPEndpointURL(req.DaemonAddr, req.Sandbox)
-	if token := strings.TrimSpace(req.AuthToken); token != "" {
-		// The runtime MCP transports cannot always attach per-request headers,
-		// so the daemon accepts the token as a query parameter. Embedding it in
-		// the trusted server URL authenticates every runtime without per-runtime
-		// header plumbing.
-		trustedURL = trustedURL + "?token=" + token
-	}
-	kept := make([]runtimeprofile.MCPServer, 0, len(servers))
-	for _, server := range servers {
-		name := strings.TrimSpace(server.Name)
-		if !strings.EqualFold(name, trustedMCPServerName) {
-			kept = append(kept, server)
-			continue
-		}
-		if server.Mode == runtimeprofile.MCPServerTrusted {
-			// Drop the stale profile entry; the generated URL below wins.
-			continue
-		}
-		return nil, fmt.Errorf("MCP server name %q is reserved for the trusted Project Interface", trustedMCPServerName)
-	}
-	return append([]runtimeprofile.MCPServer{{
-		Name: trustedMCPServerName,
-		Mode: runtimeprofile.MCPServerTrusted,
-		URL:  trustedURL,
-	}}, kept...), nil
+func collectMCPServers(profile runtimeprofile.Profile, _ ProjectionRequest) ([]runtimeprofile.MCPServer, error) {
+	// Blackboard access is CLI + Mode Skill only. MCP servers in a Runtime
+	// Profile are external user configuration and are projected unchanged.
+	return append([]runtimeprofile.MCPServer{}, profile.Fields.MCPServers...), nil
 }
 
 func writeProjectionContextFiles(layout Layout, req ProjectionRequest, provider runtimeprofile.Provider, mcpURL string) error {
@@ -144,20 +97,6 @@ func writeProjectionContextFiles(layout Layout, req ProjectionRequest, provider 
 		return fmt.Errorf("prepare task Scope directory: %w", err)
 	}
 	return writeTaskScopeFile(dir, req.ScopeSnapshot)
-}
-
-func claudeTrustedMCPAllowedTools(servers []runtimeprofile.MCPServer) []string {
-	for _, server := range servers {
-		if strings.TrimSpace(server.Name) != trustedMCPServerName || server.Mode != runtimeprofile.MCPServerTrusted {
-			continue
-		}
-		allowed := make([]string, 0, len(runtime.TrustedProjectInterfaceOperations()))
-		for _, op := range runtime.TrustedProjectInterfaceOperations() {
-			allowed = append(allowed, runtime.TrustedProjectInterfaceToolName(op))
-		}
-		return allowed
-	}
-	return nil
 }
 
 func writeTaskContextFiles(layout Layout, ctx RuntimeOwnerContext) error {

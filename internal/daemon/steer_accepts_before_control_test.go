@@ -67,7 +67,7 @@ func newBlockedControlFixtureAt(t *testing.T, root string) (*Server, string, tas
 			return blocked
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, fake, 1)
 	work := fake.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{

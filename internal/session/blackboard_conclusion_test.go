@@ -19,11 +19,11 @@ func TestSessionBlackboardConclusionRestartRecoveryAndRetryAreOwnerScoped(t *tes
 	defer func() { _ = db.Close() }()
 
 	service := NewService(db, filepath.Join(root, "sessions"))
-	first, err := service.Create(CreateRequest{Input: "First Session", BlackboardConclusionMode: BlackboardConclusionModeAssisted})
+	first, err := service.Create(CreateRequest{Input: "First Session", BlackboardMode: BlackboardModeWorkingGraph})
 	if err != nil {
 		t.Fatalf("create first Session: %v", err)
 	}
-	second, err := service.Create(CreateRequest{Input: "Second Session", BlackboardConclusionMode: BlackboardConclusionModeAssisted})
+	second, err := service.Create(CreateRequest{Input: "Second Session", BlackboardMode: BlackboardModeWorkingGraph})
 	if err != nil {
 		t.Fatalf("create second Session: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestSessionRuntimeRetryPersistsInitialDispatchKindForRestart(t *testing.T) 
 	defer func() { _ = db.Close() }()
 	service := NewService(db, filepath.Join(root, "sessions"))
 	found, err := service.Create(CreateRequest{
-		Input: "Retry undispatched conclusion", BlackboardConclusionMode: BlackboardConclusionModeAssisted,
+		Input: "Retry undispatched conclusion", BlackboardMode: BlackboardModeWorkingGraph,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestSessionBlackboardConclusionRecoveryReplayIsCompareAndSet(t *testing.T) 
 	defer func() { _ = db.Close() }()
 
 	service := NewService(db, filepath.Join(root, "sessions"))
-	found, err := service.Create(CreateRequest{Input: "Recovery replay", BlackboardConclusionMode: BlackboardConclusionModeAssisted})
+	found, err := service.Create(CreateRequest{Input: "Recovery replay", BlackboardMode: BlackboardModeWorkingGraph})
 	if err != nil {
 		t.Fatalf("create Session: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestSessionConclusionRecoveryCreatesNewDispatchAndRejectsLateResult(t *test
 	defer func() { _ = db.Close() }()
 
 	service := NewService(db, filepath.Join(root, "sessions"))
-	found, err := service.Create(CreateRequest{Input: "Recovery dispatch", BlackboardConclusionMode: BlackboardConclusionModeAssisted})
+	found, err := service.Create(CreateRequest{Input: "Recovery dispatch", BlackboardMode: BlackboardModeWorkingGraph})
 	if err != nil {
 		t.Fatalf("create Session: %v", err)
 	}

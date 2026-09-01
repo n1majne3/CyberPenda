@@ -16,6 +16,7 @@ import (
 
 	"pentest/internal/adapters"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/preflight"
 	"pentest/internal/projectinterface"
@@ -29,6 +30,7 @@ import (
 	"pentest/internal/task"
 	"pentest/internal/timeline"
 	"pentest/internal/transcript"
+	"pentest/internal/workinggraph"
 )
 
 // sessionRuntimeInput is deliberately smaller than Task launch input. A
@@ -266,6 +268,10 @@ func (server *Server) buildSessionRuntimePlan(found session.Session, goal string
 }
 
 func (server *Server) buildSessionRuntimePlanForBlackboardProjection(found session.Session, goal string, input sessionRuntimeInput, profile runtimeprofile.Profile, run session.Runner, interfaceToken, nativeResumeSessionID string, blackboardProjection runner.BlackboardProjection) (sessionRuntimePlan, error) {
+	return server.buildSessionRuntimePlanForOwnerContext(found, goal, input, profile, run, interfaceToken, nativeResumeSessionID, blackboardProjection, "", nil)
+}
+
+func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Session, goal string, input sessionRuntimeInput, profile runtimeprofile.Profile, run session.Runner, interfaceToken, nativeResumeSessionID string, blackboardProjection runner.BlackboardProjection, continuationID string, graph *workinggraph.Projection) (sessionRuntimePlan, error) {
 	launchGoal, err := server.sessionLaunchGoal(found, goal, run)
 	if err != nil {
 		return sessionRuntimePlan{}, err
@@ -325,6 +331,7 @@ func (server *Server) buildSessionRuntimePlanForBlackboardProjection(found sessi
 		Credentials: server.creds, ModelProviders: server.modelProviders,
 		GlobalModelProviderSnapshot: globalSnapshot, ModelSnapshot: modelSnapshot,
 		BlackboardProjection: blackboardProjection,
+		BlackboardMode:       modeskill.Mode(found.RunControls.BlackboardMode),
 	})
 	if err != nil {
 		return sessionRuntimePlan{}, err
@@ -348,6 +355,7 @@ func (server *Server) buildSessionRuntimePlanForBlackboardProjection(found sessi
 		ModelProviders: server.modelProviders, GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot: modelSnapshot, RuntimePlugins: server.runtimePlugins,
 		RuntimeExtensions: server.runtimeExtensions, SkillBundles: skillBundles,
+		BlackboardMode:       modeskill.Mode(found.RunControls.BlackboardMode),
 		LaunchModelOverride:  selection.Model,
 		Sandbox:              run == session.RunnerSandbox,
 		CapabilityCache:      server.capabilityCache,
@@ -386,12 +394,25 @@ func (server *Server) buildSessionRuntimePlanForBlackboardProjection(found sessi
 	} else {
 		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.Model)
 	}
-	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, run == session.RunnerSandbox, runner.RuntimeOwnerContext{Owner: found.OwnerContract()}, runner.ProjectionRequest{
+	launchCtx := runner.RuntimeOwnerContext{
+		Owner: found.OwnerContract(), BlackboardMode: string(found.RunControls.BlackboardMode), ContinuationID: continuationID,
+	}
+	if graph != nil {
+		launchCtx.WorkingGraphRoot = graph.Root
+		launchCtx.WorkingGraphOutbox = graph.Outbox
+		launchCtx.WorkingGraphReceipts = graph.Receipts
+	}
+	if blackboardProjection != runner.BlackboardProjectionOmitted && strings.TrimSpace(interfaceToken) != "" {
+		launchCtx.InterfaceToken = interfaceToken
+		launchCtx.APIURL = runner.APIEndpointURL(server.listenAddr, run == session.RunnerSandbox)
+	}
+	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, run == session.RunnerSandbox, launchCtx, runner.ProjectionRequest{
 		Owner: found.OwnerContract(), DaemonAddr: server.listenAddr, AuthToken: interfaceToken,
 		Credentials: server.creds, MaterializedCredentials: materialized,
 		ModelProviders: server.modelProviders, GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot: projection.ModelSnapshot, RuntimePlugins: server.runtimePlugins,
 		RuntimeExtensions: server.runtimeExtensions, SkillBundles: skillBundles,
+		BlackboardMode:       modeskill.Mode(found.RunControls.BlackboardMode),
 		Sandbox:              run == session.RunnerSandbox,
 		BlackboardProjection: blackboardProjection,
 	})
@@ -499,14 +520,10 @@ type sessionRuntimePreparation struct {
 	RuntimeConfig map[string]any
 }
 
-func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.BlackboardConclusionMode, input sessionRuntimeInput, previous *session.Continuation) (sessionRuntimePreparation, error) {
+func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.BlackboardMode, input sessionRuntimeInput, previous *session.Continuation) (sessionRuntimePreparation, error) {
 	profile, err := server.resolveSessionRuntimeProfile(input, previous)
 	if err != nil {
 		return sessionRuntimePreparation{}, err
-	}
-	if mode == session.BlackboardConclusionModeAssisted &&
-		(server.providerSessionFactory == nil || !server.supportsAssistedConclusion(profile.Provider)) {
-		return sessionRuntimePreparation{}, errAssistedConclusionUnsupported
 	}
 	run, err := resolveSessionRunner(input, profile, previous)
 	if err != nil {
@@ -525,6 +542,7 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 		priorSnapshot = &captured
 	}
 	preflightRequest := preflightRequestForSession(server, profile, input, run, input.selectedModel())
+	preflightRequest.BlackboardMode = modeskill.Mode(mode)
 	if priorSnapshot != nil && (strings.TrimSpace(input.ModelProviderID) == "" || strings.TrimSpace(input.ModelProviderID) == priorSnapshot.TurnSelection.ModelProviderID) {
 		captured := priorSnapshot.ModelProvider
 		captured.Model = firstNonBlank(input.selectedModel(), priorSnapshot.TurnSelection.Model, captured.Model)
@@ -565,6 +583,11 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 	if err != nil {
 		return sessionRuntimePreparation{}, err
 	}
+	modeSkill, err := modeskill.Resolve(modeskill.Mode(mode))
+	if err != nil {
+		return sessionRuntimePreparation{}, err
+	}
+	runtimeConfig["mode_skill_id"] = modeSkill.ID
 	return sessionRuntimePreparation{
 		Profile: profile, Runner: run, RuntimeConfig: runtimeConfig,
 	}, nil
@@ -579,7 +602,7 @@ func (server *Server) startSessionRuntimeWithConversationInput(ctx context.Conte
 	if err != nil {
 		return session.Continuation{}, err
 	}
-	prepared, err := server.prepareSessionRuntime(ctx, found.RunControls.BlackboardConclusionMode, input, previous)
+	prepared, err := server.prepareSessionRuntime(ctx, found.RunControls.BlackboardMode, input, previous)
 	if err != nil {
 		server.recordSessionLaunchDiagnostic(found.ID, "launch_selection_failed", err)
 		return session.Continuation{}, err
@@ -594,7 +617,7 @@ func (err sessionConversationInputCommitError) Unwrap() error { return err.cause
 
 func (server *Server) startPreparedSessionRuntime(ctx context.Context, found session.Session, goal string, input sessionRuntimeInput, previous *session.Continuation, prepared sessionRuntimePreparation, conversationInput *session.ConversationInput) (session.Continuation, error) {
 	launch := resolveOwnerBlackboardRuntimeLaunch(
-		goal, found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeDisabled,
+		goal, found.RunControls.BlackboardMode == session.BlackboardModeDisabled,
 	)
 	return server.startPreparedSessionRuntimeForBlackboardProjection(
 		ctx, found, launch.goal, input, previous, prepared, conversationInput, launch.projection,
@@ -643,13 +666,25 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 			RuntimeConfigVersionID: continuation.RuntimeConfigID,
 			RuntimeProfileID:       continuation.RuntimeProfileID,
 			RuntimePluginID:        string(profile.Provider), Runner: string(run),
+			Access: blackboardGrantAccessForSessionMode(found.RunControls.BlackboardMode),
 		})
 		if grantErr != nil {
 			server.failSessionProviderLaunch(found.ID, continuation.ID, grantErr)
 			return continuation, grantErr
 		}
 	}
-	plan, err := server.buildSessionRuntimePlanForBlackboardProjection(found, goal, input, profile, run, interfaceToken, continuation.NativeSessionID, blackboardProjection)
+	var graphProjection *workinggraph.Projection
+	if found.RunControls.BlackboardMode == session.BlackboardModeWorkingGraph {
+		preparedGraph, prepareErr := workinggraph.NewService().Prepare(ctx, workinggraph.OwnerContext{
+			Owner: found.OwnerContract(), ContinuationID: continuation.ID, Workdir: found.Workdir,
+		})
+		if prepareErr != nil {
+			server.failSessionProviderLaunch(found.ID, continuation.ID, prepareErr)
+			return continuation, prepareErr
+		}
+		graphProjection = &preparedGraph
+	}
+	plan, err := server.buildSessionRuntimePlanForOwnerContext(found, goal, input, profile, run, interfaceToken, continuation.NativeSessionID, blackboardProjection, continuation.ID, graphProjection)
 	if err != nil {
 		server.failSessionProviderLaunch(found.ID, continuation.ID, err)
 		return continuation, err
@@ -663,9 +698,6 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 		})
 		if factoryErr == nil {
 			factoryErr = validateProviderSessionBinding(binding)
-		}
-		if factoryErr == nil && found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeAssisted {
-			factoryErr = validateAssistedConclusionBinding(binding)
 		}
 		if factoryErr != nil {
 			server.failSessionProviderLaunch(found.ID, continuation.ID, factoryErr)
@@ -699,6 +731,13 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 		}
 	}()
 	return continuation, nil
+}
+
+func blackboardGrantAccessForSessionMode(mode session.BlackboardMode) projectinterface.GrantAccess {
+	if mode == session.BlackboardModeWorkingGraph {
+		return projectinterface.GrantAccessReadOnly
+	}
+	return projectinterface.GrantAccessFull
 }
 
 func (server *Server) handleSessionPreflight(response http.ResponseWriter, request *http.Request) {
@@ -794,6 +833,13 @@ func (server *Server) stopSessionRuntime(sessionID string) error {
 	}
 	if server.sessionHarness != nil && !server.sessionHarness.StopAndWait(sessionID, time.Until(deadline)) {
 		return fmt.Errorf("Session Runtime did not stop in time")
+	}
+	found, err := server.sessions.Get(sessionID)
+	if err != nil {
+		return err
+	}
+	if _, err := server.settleSessionWorkingGraph(stopContext, found, true); err != nil {
+		return fmt.Errorf("settle Session Working Graph: %w", err)
 	}
 	active, err = server.sessions.ActiveContinuation(sessionID)
 	if err != nil {
@@ -926,14 +972,14 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 			found.RuntimeConfiguration = &summary
 		}
 	}
-	found.BlackboardConclusion.Mode = found.RunControls.BlackboardConclusionMode
+	found.BlackboardConclusion.Mode = found.RunControls.BlackboardMode
 	found.BlackboardConclusion.State = session.BlackboardConclusionStateClean
 	if receipt, receiptErr := server.sessions.LatestBlackboardConclusion(found.ID); receiptErr == nil && receipt != nil {
-		found.BlackboardConclusion = receipt.View(found.RunControls.BlackboardConclusionMode)
+		found.BlackboardConclusion = receipt.View(found.RunControls.BlackboardMode)
 	}
 	// A recorded-but-unsettled Blackboard Finish Intent keeps the Session public
 	// conclusion state non-clean (ADR 0022, criterion 4).
-	if found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeAssisted &&
+	if found.RunControls.BlackboardMode == session.BlackboardModeWorkingGraph &&
 		found.BlackboardConclusion.State == session.BlackboardConclusionStateClean &&
 		server.hasUnsettledSessionFinishIntent(found.ID) {
 		found.BlackboardConclusion.State = session.BlackboardConclusionStatePending
@@ -1451,7 +1497,10 @@ func (server *Server) advanceSessionRuntimeContinuation(ctx context.Context, ses
 	if err != nil {
 		return fmt.Errorf("load Session for replacement continuation: %w", err)
 	}
-	disabled := found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeDisabled
+	if _, err := server.settleSessionWorkingGraph(ctx, found, true); err != nil {
+		return fmt.Errorf("settle old Session Working Graph: %w", err)
+	}
+	disabled := found.RunControls.BlackboardMode == session.BlackboardModeDisabled
 	old, err := server.sessions.Continuation(currentID)
 	if err != nil {
 		return fmt.Errorf("load Session continuation: %w", err)

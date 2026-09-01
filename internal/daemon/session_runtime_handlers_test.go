@@ -131,7 +131,7 @@ func TestPrepareSessionResumeUsesCapturedModelProviderSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prepared, err := server.prepareSessionRuntime(context.Background(), session.BlackboardConclusionModeInteractive, sessionRuntimeInput{HostActivated: true}, previous)
+	prepared, err := server.prepareSessionRuntime(context.Background(), session.BlackboardModeInteractive, sessionRuntimeInput{HostActivated: true}, previous)
 	if err != nil {
 		t.Fatalf("prepare Session Resume: %v", err)
 	}
@@ -863,7 +863,7 @@ func TestResolveSessionRuntimeProfileHonorsNewModelProviderAfterPreviousContinua
 		t.Fatalf("model override = %q, want MiniMax-M3", resolved.Fields.ModelOverride)
 	}
 
-	if _, err := server.prepareSessionRuntime(t.Context(), session.BlackboardConclusionModeInteractive, sessionRuntimeInput{
+	if _, err := server.prepareSessionRuntime(t.Context(), session.BlackboardModeInteractive, sessionRuntimeInput{
 		ModelProviderID: hub.ID,
 		Model:           "MiniMax-M3",
 	}, previous); err != nil {

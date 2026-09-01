@@ -36,7 +36,7 @@ func TestAssistedConclusionFailedControlTerminalRequiresRuntimeRecovery(t *testi
 	for _, status := range []string{"failed", "interrupted"} {
 		t.Run(status, func(t *testing.T) {
 			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 			waitForAssistedProviderRequests(t, session, 1)
 			work := session.LastRequests()[0]
 			if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -82,7 +82,7 @@ func TestStopInterruptedControlTerminalRecordsRuntimeRecoveryRequired(t *testing
 			return interrupting
 		},
 	)
-	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	work := session.LastRequests()[0]
 	if err := session.EmitObservation(runtime.ProviderSessionObservation{
@@ -128,7 +128,7 @@ func TestFailedWorkTurnWithNonBlackboardResultsSurfacesDurableAttention(t *testi
 	for _, status := range []string{"failed", "interrupted"} {
 		t.Run(status, func(t *testing.T) {
 			server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-			created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+			created := launchConclusionTask(t, server, projectID, profileID, "working_graph")
 			waitForAssistedProviderRequests(t, session, 1)
 			work := session.LastRequests()[0]
 			if err := session.EmitObservation(runtime.ProviderSessionObservation{

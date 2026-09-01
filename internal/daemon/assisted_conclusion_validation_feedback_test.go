@@ -30,7 +30,7 @@ const validRepairResult = `{
 func prepareInvalidConcludeTurn(t *testing.T, invalid []byte) (server *Server, projectID string, created task.Task, session *runtime.FakeProviderSession, conclude requestSnapshot) {
 	t.Helper()
 	server, projectID, profileID, session := newAssistedConclusionFixture(t, true)
-	created = launchConclusionTask(t, server, projectID, profileID, "assisted")
+	created = launchConclusionTask(t, server, projectID, profileID, "working_graph")
 	waitForAssistedProviderRequests(t, session, 1)
 	workRequest := session.LastRequests()[0]
 	for _, observation := range []runtime.ProviderSessionObservation{

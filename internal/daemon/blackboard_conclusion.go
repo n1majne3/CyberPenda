@@ -19,7 +19,7 @@ const blackboardConclusionRetryCooldown time.Duration = 0
 
 func (server *Server) observeProviderSession(taskID, continuationID, sessionID string, lineage runtime.ProviderSessionTurnLineage, observation runtime.ProviderSessionObservation) {
 	found, err := server.tasks.Get(taskID)
-	if err != nil || found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeAssisted {
+	if err != nil || found.RunControls.BlackboardMode != task.BlackboardModeWorkingGraph {
 		return
 	}
 	observeAssistedConclusion(server.blackboardConclusions, taskID, continuationID, sessionID, lineage, observation, assistedConclusionObservationHooks{
@@ -701,7 +701,7 @@ func (server *Server) sendBlackboardConclusionTurn(ctx context.Context, receipt 
 
 func (server *Server) attachBlackboardConclusion(found task.Task) (task.Task, error) {
 	view := task.BlackboardConclusion{
-		Mode:  found.RunControls.BlackboardConclusionMode,
+		Mode:  found.RunControls.BlackboardMode,
 		State: task.BlackboardConclusionStateClean,
 	}
 	receipt, err := server.tasks.LatestBlackboardConclusion(found.ID)
@@ -709,12 +709,12 @@ func (server *Server) attachBlackboardConclusion(found task.Task) (task.Task, er
 		return task.Task{}, err
 	}
 	if receipt != nil {
-		view = receipt.View(found.RunControls.BlackboardConclusionMode)
+		view = receipt.View(found.RunControls.BlackboardMode)
 	}
 	// A recorded-but-unsettled Blackboard Finish Intent keeps the public
 	// conclusion state non-clean: the Continuation has not actually closed while
 	// the Work Runtime Turn can still produce work (ADR 0022, criterion 4).
-	if found.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeAssisted && view.State == task.BlackboardConclusionStateClean {
+	if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph && view.State == task.BlackboardConclusionStateClean {
 		if server.hasUnsettledTaskFinishIntent(found.ID) {
 			view.State = task.BlackboardConclusionStatePending
 		}

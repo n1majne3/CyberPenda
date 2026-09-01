@@ -55,10 +55,10 @@ type RunControls struct {
 	SandboxVPNTun bool `json:"sandbox_vpn_tun,omitempty"`
 	// ContainerCLI selects docker or podman for this Task's sandbox launch.
 	// Empty means the daemon default (-container-cli / PENTEST_CONTAINER_CLI).
-	ContainerCLI             string                   `json:"container_cli,omitempty"`
-	Notes                    string                   `json:"notes,omitempty"`
-	Extras                   map[string]string        `json:"extras,omitempty"`
-	BlackboardConclusionMode BlackboardConclusionMode `json:"blackboard_conclusion_mode"`
+	ContainerCLI   string            `json:"container_cli,omitempty"`
+	Notes          string            `json:"notes,omitempty"`
+	Extras         map[string]string `json:"extras,omitempty"`
+	BlackboardMode BlackboardMode    `json:"blackboard_mode"`
 	// Policy is the immutable Task Policy Snapshot captured at Task creation.
 	// A zero value disables that limit.
 	Policy TaskPolicy `json:"policy"`
@@ -126,26 +126,25 @@ func (policy TaskPolicy) validate() error {
 	return nil
 }
 
-// BlackboardConclusionMode is the persisted compatibility representation of
-// the Runtime Owner's immutable Blackboard Mode.
-type BlackboardConclusionMode string
+// BlackboardMode is the Runtime Owner's immutable Blackboard Mode.
+type BlackboardMode string
 
 const (
-	BlackboardConclusionModeInteractive BlackboardConclusionMode = "interactive"
-	BlackboardConclusionModeAssisted    BlackboardConclusionMode = "assisted"
-	BlackboardConclusionModeDisabled    BlackboardConclusionMode = "disabled"
+	BlackboardModeInteractive  BlackboardMode = "interactive"
+	BlackboardModeWorkingGraph BlackboardMode = "working_graph"
+	BlackboardModeDisabled     BlackboardMode = "disabled"
 )
 
-func normalizeBlackboardConclusionMode(mode BlackboardConclusionMode) (BlackboardConclusionMode, error) {
+func normalizeBlackboardMode(mode BlackboardMode) (BlackboardMode, error) {
 	switch mode {
-	case "", BlackboardConclusionModeInteractive:
-		return BlackboardConclusionModeInteractive, nil
-	case BlackboardConclusionModeAssisted:
-		return BlackboardConclusionModeAssisted, nil
-	case BlackboardConclusionModeDisabled:
-		return BlackboardConclusionModeDisabled, nil
+	case "", BlackboardModeWorkingGraph:
+		return BlackboardModeWorkingGraph, nil
+	case BlackboardModeDisabled:
+		return BlackboardModeDisabled, nil
+	case BlackboardModeInteractive:
+		return BlackboardModeInteractive, nil
 	default:
-		return "", ErrInvalidBlackboardConclusionMode
+		return "", ErrInvalidBlackboardMode
 	}
 }
 
@@ -188,7 +187,7 @@ const (
 // BlackboardConclusion is the compact Task read view for the latest assisted
 // Work Turn checkpoint and any conclusion progress it triggered.
 type BlackboardConclusion struct {
-	Mode                         BlackboardConclusionMode      `json:"mode"`
+	Mode                         BlackboardMode                `json:"mode"`
 	State                        BlackboardConclusionState     `json:"state"`
 	SourceTurnID                 string                        `json:"source_turn_id,omitempty"`
 	SourceWorkWatermark          int                           `json:"source_work_watermark"`
@@ -357,11 +356,11 @@ type BlackboardConclusionReceipt struct {
 
 // View projects internal coordinator progress into the compact Task API
 // vocabulary. Canonical result bytes and dispatch idempotency stay private.
-func (receipt BlackboardConclusionReceipt) View(mode BlackboardConclusionMode) BlackboardConclusion {
+func (receipt BlackboardConclusionReceipt) View(mode BlackboardMode) BlackboardConclusion {
 	return receipt.ViewAt(mode, time.Now().UTC())
 }
 
-func (receipt BlackboardConclusionReceipt) ViewAt(mode BlackboardConclusionMode, now time.Time) BlackboardConclusion {
+func (receipt BlackboardConclusionReceipt) ViewAt(mode BlackboardMode, now time.Time) BlackboardConclusion {
 	view := BlackboardConclusion{
 		Mode: mode, SourceTurnID: receipt.SourceTurnID,
 		SourceWorkWatermark:          receipt.SourceWorkWatermark,
@@ -596,7 +595,7 @@ var ErrInvalidTaskType = errors.New("Task Type must be pentest or ctf_challenge"
 
 var ErrTaskTypeProjectKindMismatch = errors.New("Task Type must match the current Project Kind")
 
-var ErrInvalidBlackboardConclusionMode = errors.New("Blackboard Mode must be interactive, assisted, or disabled")
+var ErrInvalidBlackboardMode = errors.New("Blackboard Mode must be interactive, working_graph, or disabled")
 
 var ErrInvalidTaskPolicy = errors.New("Task Policy limits must be zero or positive")
 
@@ -693,11 +692,11 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	if req.Runner != RunnerSandbox && req.Runner != RunnerHost {
 		return Task{}, ErrUnsupportedRunner
 	}
-	mode, err := normalizeBlackboardConclusionMode(req.RunControls.BlackboardConclusionMode)
+	mode, err := normalizeBlackboardMode(req.RunControls.BlackboardMode)
 	if err != nil {
 		return Task{}, err
 	}
-	req.RunControls.BlackboardConclusionMode = mode
+	req.RunControls.BlackboardMode = mode
 	if err := req.RunControls.validate(); err != nil {
 		return Task{}, err
 	}
@@ -965,11 +964,11 @@ func scanTask(row scanner) (Task, error) {
 	if err := json.Unmarshal([]byte(runControlsJSON), &found.RunControls); err != nil {
 		return Task{}, fmt.Errorf("decode run controls: %w", err)
 	}
-	mode, err := normalizeBlackboardConclusionMode(found.RunControls.BlackboardConclusionMode)
+	mode, err := normalizeBlackboardMode(found.RunControls.BlackboardMode)
 	if err != nil {
 		return Task{}, err
 	}
-	found.RunControls.BlackboardConclusionMode = mode
+	found.RunControls.BlackboardMode = mode
 	found.BlackboardConclusion = BlackboardConclusion{Mode: mode, State: BlackboardConclusionStateClean}
 	if err := json.Unmarshal([]byte(scopeJSON), &found.ScopeSnapshot); err != nil {
 		return Task{}, fmt.Errorf("decode scope snapshot: %w", err)
@@ -1420,7 +1419,7 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	if err := json.Unmarshal([]byte(runControlsJSON), &runControls); err != nil {
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("decode launch task Run Controls: %w", err)
 	}
-	blackboardDisabled := runControls.BlackboardConclusionMode == BlackboardConclusionModeDisabled
+	blackboardDisabled := runControls.BlackboardMode == BlackboardModeDisabled
 	if projectID != req.ProjectID {
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("launch task does not belong to project")
 	}
@@ -1929,7 +1928,7 @@ func (s *Service) notifyTerminalContinuation(found TaskContinuation, reason stri
 		if err != nil {
 			return found, fmt.Errorf("load terminal Continuation Task: %w", err)
 		}
-		if owner.RunControls.BlackboardConclusionMode != BlackboardConclusionModeDisabled {
+		if owner.RunControls.BlackboardMode != BlackboardModeDisabled {
 			if err := s.reconciler.ReconcileTerminalContinuation(context.Background(), found.ID, reason); err != nil {
 				return found, fmt.Errorf("reconcile terminal Continuation: %w", err)
 			}

@@ -269,7 +269,7 @@ describe("TaskDetailPage", () => {
   it("shows assisted pending Blackboard conclusion state in the Task header", async () => {
     stubTaskDetailApi({
       blackboard_conclusion: {
-        mode: "assisted",
+        mode: "working_graph",
         state: "pending",
         source_turn_id: "turn-7",
       },
@@ -285,7 +285,7 @@ describe("TaskDetailPage", () => {
   it("shows Disabled mode and hides Task Blackboard surfaces", async () => {
     stubTaskDetailApi({
       status: "running",
-      run_controls: { blackboard_conclusion_mode: "disabled" },
+      run_controls: { blackboard_mode: "disabled" },
       blackboard_conclusion: {
         mode: "disabled",
         state: "action_required",
@@ -336,7 +336,7 @@ describe("TaskDetailPage", () => {
   it("shows an assisted Conclude Turn in the Task header", async () => {
 	stubTaskDetailApi({
 	  blackboard_conclusion: {
-		mode: "assisted",
+		mode: "working_graph",
 		state: "concluding",
 		source_turn_id: "turn-7",
 	  },
@@ -348,7 +348,7 @@ describe("TaskDetailPage", () => {
 
   it("shows the applied Blackboard revision in the Task header", async () => {
 	stubTaskDetailApi({
-	  blackboard_conclusion: { mode: "assisted", state: "clean", source_turn_id: "turn-7", applied_revision: 9 },
+	  blackboard_conclusion: { mode: "working_graph", state: "clean", source_turn_id: "turn-7", applied_revision: 9 },
 	});
 	renderPage();
 	const badge = await screen.findByTestId("blackboard-conclusion-state");
@@ -361,7 +361,7 @@ describe("TaskDetailPage", () => {
     const { fetchMock } = stubTaskDetailApi({
       status: "running",
       blackboard_conclusion: {
-        mode: "assisted",
+        mode: "working_graph",
         state: "action_required",
         source_turn_id: "turn-7",
         error_code: "semantic_conclusion_invalid_result",
@@ -395,7 +395,7 @@ describe("TaskDetailPage", () => {
     stubTaskDetailApi({
       status: "running",
       blackboard_conclusion: {
-        mode: "assisted",
+        mode: "working_graph",
         state: "action_required",
         error_code: "semantic_conclusion_repair_exhausted",
         validation_reason: "invalid_key_format",
@@ -418,7 +418,7 @@ describe("TaskDetailPage", () => {
     stubTaskDetailApi({
       status: "running",
       blackboard_conclusion: {
-        mode: "assisted",
+        mode: "working_graph",
         state: "action_required",
         error_code: "conclude_tool_use_forbidden",
       },
