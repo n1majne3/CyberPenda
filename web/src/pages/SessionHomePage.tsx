@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Archive, ArchiveRestore, FilePlus2, MessageSquareText, Pencil, Plus, Trash2 } from "lucide-react";
-import { RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
+import { Archive, ArchiveRestore, MessageSquareText, Pencil, Trash2 } from "lucide-react";
+import { LaunchSummaryRail, RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
 import { AttachmentPicker } from "@/components/AttachmentPicker";
 import {
   archiveSession,
@@ -13,9 +13,9 @@ import {
   type Session,
 } from "@/lib/api";
 import { formatCompactDateTime } from "@/lib/format";
-import { LoadingState, PageContainer, RichEmptyState, SettingsAlert } from "@/components/shared";
+import { LoadingState, PageContainer, RichEmptyState, SectionLabel, SettingsAlert } from "@/components/shared";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Textarea } from "@/components/ui";
+import { Badge, Button, Card, Input, Label, Textarea } from "@/components/ui";
 
 export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" }) {
   const archivedView = view === "archived";
@@ -134,75 +134,65 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
 
   return (
     <PageContainer className="mx-auto max-w-6xl space-y-8">
-      <header className="max-w-3xl">
-        <p className="mb-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">Workspace</p>
-        <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight sm:text-3xl">
-          <MessageSquareText className="size-6 text-signal" aria-hidden="true" />
-          {archivedView ? "Archived Sessions" : "Non-Project Sessions"}
-        </h1>
-        <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          Durable exploratory conversations with their own Events and managed Workdir.
-        </p>
+      <header className="flex items-end justify-between gap-3">
+        <div>
+          <SectionLabel>Non-project</SectionLabel>
+          <h1 id="new-session-heading" className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl">
+            {archivedView ? "Archived Sessions" : "New session"}
+          </h1>
+        </div>
+        <Link
+          to={archivedView ? "/sessions" : "/sessions/archived"}
+          className="inline-flex w-fit shrink-0 items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <Archive className="size-4" aria-hidden="true" />
+          {archivedView ? "Back to open Sessions" : "Archived Sessions"}
+        </Link>
       </header>
 
-      <Link
-        to={archivedView ? "/sessions" : "/sessions/archived"}
-        className="inline-flex w-fit items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <Archive className="size-4" aria-hidden="true" />
-        {archivedView ? "Back to open Sessions" : "Archived Sessions"}
-      </Link>
-
-      <div role="note" className="rounded-lg border border-info/20 bg-info/5 px-4 py-3 text-sm text-foreground">
-        <p className="font-medium">Non-Project Mode</p>
-        <p className="mt-1 text-muted-foreground">
-          This is Non-Project Mode. Sessions have no Project Scope; this statement is informational and does not
-          restrict Runtime execution.
-        </p>
-      </div>
-
-      {!archivedView && <Card as="section" id="new-session" aria-labelledby="new-session-heading" className="gap-5">
-        <div>
-          <CardTitle id="new-session-heading" className="flex items-center gap-2">
-            <Plus className="size-4 text-signal" aria-hidden="true" />
-            New session
-          </CardTitle>
-          <CardDescription className="mt-1">
-            The first non-empty line becomes the initial title. You can rename it later without changing the input.
-          </CardDescription>
-        </div>
-        <form className="grid gap-4" onSubmit={submit}>
-          <div>
-            <Label htmlFor="session-initial-input">Initial input</Label>
-            <Textarea
-              id="session-initial-input"
-              name="input"
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder="Describe what you want to explore…"
-              className="mt-1"
-              rows={4}
-            />
+      {!archivedView && (
+        <form
+          id="new-session"
+          aria-labelledby="new-session-heading"
+          onSubmit={submit}
+          className="mx-auto grid w-full max-w-[1080px] grid-cols-1 gap-6 lg:grid-cols-[1fr_300px]"
+        >
+          <div className="space-y-5">
+            <section className="rounded-lg border border-border bg-card shadow-sm">
+              <div className="p-4">
+                <Label htmlFor="session-initial-input" className="text-sm font-medium">What do you want to explore?</Label>
+                <Textarea
+                  id="session-initial-input"
+                  name="input"
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder="Describe the goal, for example: enumerate the authenticated surface of staging.example.com…"
+                  rows={4}
+                  className="mt-2 w-full resize-none rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground focus:border-ring"
+                />
+                <div className="mt-3">
+                  <AttachmentPicker
+                    id="session-attachments"
+                    variant="compact"
+                    files={attachments}
+                    onFilesChange={setAttachments}
+                    onError={launchControls.setError}
+                    ownerLabel="Session"
+                  />
+                </div>
+              </div>
+            </section>
+            <RuntimeLaunchControls controller={launchControls} ownerLabel="session" initialInput={draft} />
           </div>
-          <AttachmentPicker
-            id="session-attachments"
-            files={attachments}
-            onFilesChange={setAttachments}
-            onError={launchControls.setError}
-            ownerLabel="Session"
+          <LaunchSummaryRail
+            controller={launchControls}
+            disabled={creating || !launchControls.launchReady(draft) || (launchControls.form.runner === "host" && !launchControls.hostActivated)}
+            busy={creating}
+            label="Launch session"
+            submit
           />
-          <RuntimeLaunchControls controller={launchControls} ownerLabel="session" initialInput={draft} />
-          <div className="flex justify-end">
-            <Button
-              type="submit"
-              disabled={creating || !launchControls.launchReady(draft) || (launchControls.form.runner === "host" && !launchControls.hostActivated)}
-            >
-              <FilePlus2 className="size-4" aria-hidden="true" />
-              {creating ? "Creating…" : "Create session"}
-            </Button>
-          </div>
         </form>
-      </Card>}
+      )}
 
       {error && <SettingsAlert>{error}</SettingsAlert>}
 

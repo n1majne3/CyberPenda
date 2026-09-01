@@ -233,20 +233,33 @@ describe("TaskDetailPage", () => {
     expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["Conversation", "Timeline"]);
     expect(tabs[0]).toHaveAttribute("aria-pressed", "true");
     expect(tabs[1]).toHaveAttribute("aria-pressed", "false");
+    expect(tabs[0]?.querySelector("svg")).toBeNull();
+    expect(tabs[1]?.querySelector("svg")).toBeNull();
     expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
     expect(screen.getByTestId("conversation-workspace")).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Task message" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Continuation model provider")).toHaveClass("appearance-none");
+    expect(screen.getByLabelText("Continuation model")).toHaveClass("appearance-none");
+    expect(screen.getByLabelText("Continuation reasoning effort")).toHaveClass("appearance-none");
     expect(screen.getByTestId("task-workspace")).toHaveClass("overflow-visible", "md:overflow-hidden");
     expect(screen.getByTestId("task-composer")).toHaveClass("fixed", "inset-x-0", "bottom-0", "md:static");
+    expect(screen.getByTestId("task-session-header").parentElement?.parentElement).toHaveClass("mx-auto", "max-w-6xl");
     expect(screen.getByTestId("conversation-workspace")).toHaveClass("pb-44", "md:pb-5");
+    expect(screen.getByLabelText("Continuation reasoning effort").parentElement).toHaveClass("w-[5.25rem]", "shrink-0");
+    expect(screen.queryByText(/Shift\+Enter for a new line/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId("composer-send").querySelector(".lucide-arrow-up")).not.toBeNull();
     expect(screen.queryByText("Timeline opened first")).not.toBeInTheDocument();
   });
 
-  it("does not draw an outer frame around the Runtime Owner Workspace", async () => {
+  it("frames the Runtime Owner Workspace as one continuous card", async () => {
     stubTaskDetailApi();
 
     renderPage();
 
+    expect(await screen.findByTestId("task-session-header")).toHaveClass("border", "bg-card");
+    expect(screen.getByRole("button", { name: "Conversation" }).parentElement).toHaveClass("border-x");
+    expect(await screen.findByTestId("task-workspace")).toHaveClass("rounded-b-xl", "border");
+    expect(screen.getByTestId("task-composer")).not.toHaveClass("border-t");
     expect(await screen.findByTestId("task-session-header")).not.toHaveClass("border-b");
     expect(screen.getByRole("button", { name: "Conversation" }).parentElement).not.toHaveClass("border-b");
     expect(await screen.findByTestId("task-workspace")).not.toHaveClass("border-x", "border-b");
@@ -434,14 +447,15 @@ describe("TaskDetailPage", () => {
     expect(searches.at(-1)).toBe("?view=timeline");
   });
 
-  it("uses shared Geist radii for conversation message surfaces", async () => {
+  it("renders assistant messages with the Direction A signal accent", async () => {
     stubTaskDetailApi();
 
     renderPage("/projects/project-1/tasks/task-1?view=conversation");
 
     expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
     const message = screen.getByTestId("transcript-message-bubble");
-    expect(message).toHaveClass("rounded-lg");
+    expect(message).toHaveClass("border-l-2", "border-signal/40");
+    expect(message).not.toHaveClass("rounded-lg");
   });
 
   it("renders safe Claude runtime text as a visible assistant message", async () => {
@@ -462,7 +476,7 @@ describe("TaskDetailPage", () => {
     expect(await screen.findByText("Inspecting the scoreboard now.")).toBeInTheDocument();
     const assistantMessage = screen.getByTestId("transcript-message-bubble");
     expect(assistantMessage).toBeInTheDocument();
-    expect(assistantMessage.previousElementSibling).toBeNull();
+    expect(assistantMessage.previousElementSibling).toHaveAttribute("data-testid", "transcript-turn-header");
     expect(screen.queryByText(/"type":"assistant"/)).not.toBeInTheDocument();
   });
 
@@ -504,13 +518,12 @@ describe("TaskDetailPage", () => {
 
     expect(await screen.findByText("I will inspect the target now.")).toBeInTheDocument();
     expect(screen.getByText("Bash · curl http://localhost:3000")).toBeInTheDocument();
-    expect(screen.getByText(/Result · HTTP\/1\.1 200 OK/)).toBeInTheDocument();
     expect(screen.getAllByText(/HTTP\/1\.1 200 OK/)).toHaveLength(2);
     expect(screen.queryByText(/"type":"assistant"/)).not.toBeInTheDocument();
     expect(screen.queryByText(/"type":"user"/)).not.toBeInTheDocument();
     const toolRows = screen.getAllByTestId("transcript-tool-row");
-    expect(toolRows).toHaveLength(2);
-    expect(toolRows[0]).toHaveClass("border-b");
+    expect(toolRows).toHaveLength(1);
+    expect(toolRows[0]).not.toHaveAttribute("open");
     expect(toolRows[0]).not.toHaveClass("rounded-md");
     expect(toolRows[0]).not.toHaveClass("bg-card/60");
     const resultBody = screen.getAllByText(/HTTP\/1\.1 200 OK/).find((element) => element.tagName === "PRE");
@@ -640,16 +653,18 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     const rows = await screen.findAllByTestId("transcript-row");
-    // First row has no top spacing; user-turn starts get the roomier mt-4;
-    // everything inside an agent turn (assistant message, tool call, tool
-    // result, follow-up assistant message) stays tight at mt-1.
+    // The call/result pair is one compressed row. New user turns get breathing
+    // room; every row inside the Runtime turn stays tight.
+    expect(rows).toHaveLength(5);
     expect(rows[0]).not.toHaveClass("mt-1");
     expect(rows[0]).not.toHaveClass("mt-4");
-    expect(rows[1]).toHaveClass("mt-1"); // user turn start → agent turn begins tight
-    expect(rows[2]).toHaveClass("mt-1"); // tool call still in the same agent turn
-    expect(rows[3]).toHaveClass("mt-1"); // tool result still in the same agent turn
-    expect(rows[4]).toHaveClass("mt-1"); // assistant summary still tight
-    expect(rows[5]).toHaveClass("mt-4"); // new user turn gets breathing room
+    expect(rows[1]).toHaveClass("mt-1");
+    expect(rows[2]).toHaveClass("mt-1");
+    expect(rows[3]).toHaveClass("mt-1");
+    expect(rows[4]).toHaveClass("mt-4");
+    expect(screen.getAllByTestId("transcript-turn-header").map((header) => header.textContent)).toEqual(
+      expect.arrayContaining([expect.stringContaining("You"), expect.stringContaining("Codex")]),
+    );
   });
 
   it("renders tool call arguments as labeled fields rather than a raw JSON envelope", async () => {
@@ -690,7 +705,7 @@ describe("TaskDetailPage", () => {
     expect(searches.at(-1)).toBe("?focus=1");
     expect(screen.queryByRole("navigation", { name: "Project sections" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Exit focus view" })).toBeInTheDocument();
-    expect(screen.getByTestId("task-session-header")).toHaveClass("h-12");
+    expect(screen.getByTestId("task-session-header")).toHaveClass("py-2");
     expect(screen.getByTestId("task-detail-shell")).toHaveClass("h-[calc(100dvh-3.5rem)]", "md:h-dvh");
   });
 
@@ -768,16 +783,19 @@ describe("TaskDetailPage", () => {
     }
   });
 
-  it("shows the latest continuation summary when present", async () => {
+  it("shows the compact continuation summary when present", async () => {
     stubTaskDetailApi();
 
     renderPage();
 
-    expect(await screen.findByText("continuation #1")).toBeInTheDocument();
-    expect(screen.getByText("runtime: codex")).toBeInTheDocument();
-    expect(screen.getByText("continuation status: completed")).toBeInTheDocument();
-    expect(screen.getByText("native session: captured")).toBeInTheDocument();
-    expect(screen.getByText("same runtime only")).toBeInTheDocument();
+    const summary = await screen.findByTestId("continuation-summary");
+    expect(summary).toHaveTextContent("continuation #1");
+    expect(summary).toHaveTextContent("runtime codex");
+    expect(summary).toHaveTextContent("runner docker");
+    expect(summary).not.toHaveTextContent("continuation status");
+    expect(summary).not.toHaveTextContent("native session");
+    expect(summary).toHaveAttribute("title", expect.stringContaining("status: completed"));
+    expect(summary).toHaveAttribute("title", expect.stringContaining("native session: captured"));
   });
 
   it("shows the prior terminal continuation next to the current writable one", async () => {
@@ -806,9 +824,9 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     expect(await screen.findByText("continuation #1")).toBeInTheDocument();
-    expect(screen.getByText("continuation status: running")).toBeInTheDocument();
-    const prior = screen.getByTestId("prior-terminal-continuation");
-    expect(prior).toHaveTextContent("prior terminal: #2 (completed)");
+    const summary = screen.getByTestId("continuation-summary");
+    expect(summary).not.toHaveTextContent("continuation status");
+    expect(summary).toHaveAttribute("title", expect.stringContaining("prior terminal: #2 (completed)"));
   });
 
   it("does not repeat the same continuation as its own prior terminal", async () => {
@@ -836,9 +854,10 @@ describe("TaskDetailPage", () => {
 
     renderPage();
 
-    expect(await screen.findByText("continuation #2")).toBeInTheDocument();
-    expect(screen.getByText("continuation status: running")).toBeInTheDocument();
-    expect(screen.queryByTestId("prior-terminal-continuation")).not.toBeInTheDocument();
+    const summary = await screen.findByTestId("continuation-summary");
+    expect(summary).toHaveTextContent("continuation #2");
+    expect(summary).not.toHaveTextContent("continuation status");
+    expect(summary).toHaveAttribute("title", expect.not.stringContaining("prior terminal"));
   });
 
   it("shows pending and failed Harness Steering states in the composer", async () => {
@@ -910,20 +929,16 @@ describe("TaskDetailPage", () => {
     });
   });
 
-  it("lets the continuation summary shrink instead of overflowing the header", async () => {
+  it("keeps the compact continuation summary bounded below the title row", async () => {
     stubTaskDetailApi();
 
     renderPage();
 
     expect(await screen.findByText("continuation #1")).toBeInTheDocument();
-    // The summary must be able to shrink (min-w-0) and clip rather than push
-    // the title to zero width and spill past the header border.
     const summary = screen.getByTestId("continuation-summary");
     expect(summary).toHaveClass("min-w-0", "overflow-hidden", "whitespace-nowrap");
-    // Status badges stay intact and are never compressed into wrapping text.
-    const blackboardBadge = screen.getByTestId("blackboard-conclusion-state");
-    expect(blackboardBadge).toHaveClass("min-w-0", "shrink");
-    expect(blackboardBadge.firstElementChild).toHaveClass("truncate", "whitespace-nowrap");
+    const blackboardChip = screen.getByTestId("blackboard-conclusion-state");
+    expect(blackboardChip).toHaveClass("min-w-0", "shrink");
   });
 
   it("shows native resume and queue steering controls", async () => {
@@ -1549,8 +1564,8 @@ describe("TaskDetailPage", () => {
 
     renderPage();
 
-    expect(await screen.findByTestId("runtime-activity")).toHaveTextContent(/runtime live · busy/i);
-    expect(screen.getByText("running")).toBeInTheDocument();
+    expect(await screen.findByTestId("runtime-activity")).toHaveTextContent(/Runtime busy/i);
+    expect(screen.getByText("Running")).toBeInTheDocument();
   });
 
   it("offers Finish Task only when controls.finish_available is true", async () => {
@@ -1797,16 +1812,16 @@ describe("TaskDetailPage", () => {
 
     // Newer generation wins with idle; later stale busy must not overwrite.
     latest.resolve(taskPayload("live", "idle"));
-    expect(await screen.findByTestId("runtime-activity")).toHaveTextContent(/runtime live · idle/i);
+    expect(await screen.findByTestId("runtime-activity")).toHaveTextContent(/Runtime idle/i);
 
     if (stale !== latest && !stale.signal?.aborted) {
       stale.resolve(taskPayload("live", "busy"));
       await waitFor(() =>
-        expect(screen.getByTestId("runtime-activity")).toHaveTextContent(/runtime live · idle/i),
+        expect(screen.getByTestId("runtime-activity")).toHaveTextContent(/Runtime idle/i),
       );
     } else if (stale !== latest) {
-      // Aborted stale request rejects; UI must remain on the latest idle value.
-      expect(screen.getByTestId("runtime-activity")).toHaveTextContent(/runtime live · idle/i);
+      // Aborted stale request rejects; UI must remain on the latest idle state.
+      expect(screen.getByTestId("runtime-activity")).toHaveTextContent(/Runtime idle/i);
     }
   });
 

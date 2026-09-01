@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { CheckCircle2, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, Plus, Search, Trash2 } from "lucide-react";
 import { apiGet, apiPost, apiPatch, apiDelete, mergedConfigPreview, projectedConfig, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
 import { codexMultiAgentTOMLLines, enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
@@ -175,6 +175,7 @@ export function RuntimeProfilesPage() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [form, setForm] = useState<ProfileForm>(emptyForm);
   const [draft, setDraft] = useState<ProfileForm | null>(null);
+  const [profileQuery, setProfileQuery] = useState("");
 
   const selected = profiles.find((p) => p.id === selectedId) ?? null;
   const fallbackPlugins = useMemo(() => fallbackRuntimePlugins(), []);
@@ -197,6 +198,29 @@ export function RuntimeProfilesPage() {
     }
     return buckets;
   }, [profiles, providerIds]);
+
+  const normalizedProfileQuery = profileQuery.trim().toLowerCase();
+  const filteredGrouped = useMemo(() => {
+    if (!normalizedProfileQuery) return grouped;
+    const buckets = new Map<string, RuntimeProfile[]>();
+    for (const [provider, items] of grouped) {
+      buckets.set(
+        provider,
+        items.filter((profile) =>
+          [
+            profile.name,
+            pluginLabel(effectivePlugins, profile.provider),
+            profileListModelHint(profile.fields, modelProviders) ?? "",
+          ].some((value) => value.toLowerCase().includes(normalizedProfileQuery)),
+        ),
+      );
+    }
+    return buckets;
+  }, [grouped, normalizedProfileQuery, effectivePlugins, modelProviders]);
+  const visibleProfileCount = useMemo(
+    () => Array.from(filteredGrouped.values()).reduce((sum, items) => sum + items.length, 0),
+    [filteredGrouped],
+  );
 
   async function load() {
     try {
@@ -422,9 +446,10 @@ export function RuntimeProfilesPage() {
   }
 
   return (
-    <SettingsPageShell>
-      <SettingsPageHeader
-        className="mb-4 shrink-0"
+    <SettingsPageShell data-testid="runtime-profiles-page" className="mx-auto max-w-6xl gap-0 p-0 lg:overflow-hidden lg:p-0">
+      <header className="flex-none border-b border-border px-6 py-5 lg:px-8">
+        <SettingsPageHeader
+          className="mb-0"
         title="Runtime profiles"
         eyebrow="Configuration"
         actions={
@@ -441,33 +466,40 @@ export function RuntimeProfilesPage() {
           </Button>
         }
       />
-      <div className="mb-3 shrink-0 rounded-lg border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
-        Runtime Profiles are user-created advanced configurations for MCP, Skills, extensions, and Runtime settings. Direct launches do not create Profiles.
-      </div>
+      </header>
 
-      {error && <SettingsAlert className="mb-3 shrink-0">{error}</SettingsAlert>}
+      {error && <SettingsAlert className="mx-4 my-3 shrink-0 lg:mx-6">{error}</SettingsAlert>}
 
-      <SettingsSplitLayout data-testid="runtime-profiles-settings-layout" fill>
-        <SettingsListColumn data-testid="runtime-profiles-settings-list">
-          <SettingsPanel className="gap-3 p-3 lg:shrink-0">
+      <SettingsSplitLayout
+        data-testid="runtime-profiles-settings-layout"
+        className="gap-0 lg:grid-cols-[320px_minmax(0,1fr)]"
+        fill
+      >
+        <SettingsListColumn className="gap-0 border-r border-border bg-card" data-testid="runtime-profiles-settings-list">
+          <SettingsPanel className="gap-2 rounded-none border-0 border-b border-border p-4 shadow-none lg:shrink-0">
             <div className="flex items-center justify-between gap-2">
-              <div>
-                <p className="text-sm font-medium">Profiles</p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  Select a user-created Runtime Profile
-                </p>
-              </div>
-              <div className="shrink-0 text-right tabular-nums">
-                <span className="text-lg font-semibold tracking-tight">{profiles.length}</span>
-                <span className="ml-1 text-[11px] text-muted-foreground">total</span>
-              </div>
+              <p className="text-[13px] font-medium">Profiles</p>
+              <p className="text-[11px] text-muted-foreground tabular-nums">
+                {normalizedProfileQuery ? `${visibleProfileCount} of ${profiles.length}` : `${profiles.length} total`}
+              </p>
+            </div>
+            <div className="flex h-8 items-center gap-2 rounded-md border border-input bg-background px-2">
+              <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <input
+                type="search"
+                aria-label="Filter runtime profiles"
+                placeholder="Search name, provider, model…"
+                value={profileQuery}
+                onChange={(event) => setProfileQuery(event.target.value)}
+                className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+              />
             </div>
           </SettingsPanel>
 
-          <SettingsScrollPanel>
+          <SettingsScrollPanel className="rounded-none border-0 shadow-none">
             <div className="space-y-3">
               {providerIds.map((provider) => {
-                const items = grouped.get(provider) ?? [];
+                const items = filteredGrouped.get(provider) ?? [];
                 if (items.length === 0) return null;
                 return (
                   <div key={provider}>
@@ -494,6 +526,11 @@ export function RuntimeProfilesPage() {
               {profiles.length === 0 && (
                 <p className="px-1 text-sm text-muted-foreground">No profiles yet. Add one to get started.</p>
               )}
+              {profiles.length > 0 && visibleProfileCount === 0 && (
+                <p className="px-1 text-sm text-muted-foreground">
+                  No profiles match &quot;{profileQuery.trim()}&quot;.
+                </p>
+              )}
             </div>
           </SettingsScrollPanel>
         </SettingsListColumn>
@@ -501,7 +538,8 @@ export function RuntimeProfilesPage() {
         {creating ? (
           <SettingsDetailPane
             data-testid="runtime-profiles-settings-detail"
-            bodyClassName="px-6"
+            className="rounded-none border-0 shadow-none"
+            bodyClassName="px-6 py-5"
             header={
               <div className="min-w-0">
                 <h3 className="font-medium">New profile</h3>
@@ -537,7 +575,8 @@ export function RuntimeProfilesPage() {
         ) : selected && draft ? (
           <SettingsDetailPane
             data-testid="runtime-profiles-settings-detail"
-            bodyClassName="px-6"
+            className="rounded-none border-0 shadow-none"
+            bodyClassName="px-6 py-5"
             header={
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
@@ -615,7 +654,7 @@ export function RuntimeProfilesPage() {
         ) : (
           <SettingsDetailPane
             data-testid="runtime-profiles-settings-detail"
-            empty
+            className="rounded-none border-0 shadow-none"
             emptyContent="Select a profile or create a new one."
           />
         )}
@@ -941,7 +980,7 @@ function ProfileEditor({
       {title && <h3 className="font-medium">{title}</h3>}
       <section className="rounded-lg border border-border bg-card shadow-sm">
         <div className="border-b border-border px-4 py-3">
-          <span className="text-sm font-medium">基本与模型</span>
+          <span className="text-sm font-medium">Basics and model</span>
         </div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
         <div>
@@ -1127,16 +1166,22 @@ function ProfileEditor({
               <Chip variant="neutral">{plugin.id}</Chip>
               <Chip variant="neutral">{plugin.config_projection.primitive}</Chip>
               <Chip variant="neutral">{plugin.transcript.parser}</Chip>
-              {plugin.capabilities.sandbox && <Chip variant="signal">sandbox</Chip>}
-              {plugin.capabilities.host && <Chip variant="signal">host</Chip>}
-              {plugin.capabilities.mcp_config && <Chip variant="signal">mcp</Chip>}
+              {plugin.capabilities.sandbox && (
+                <Chip className="border-transparent bg-primary text-primary-foreground">sandbox</Chip>
+              )}
+              {plugin.capabilities.host && (
+                <Chip className="border-transparent bg-primary text-primary-foreground">host</Chip>
+              )}
+              {plugin.capabilities.mcp_config && (
+                <Chip className="border-transparent bg-primary text-primary-foreground">mcp</Chip>
+              )}
             </div>
           </div>
         )}
       </section>
       <section className="rounded-lg border border-border bg-card shadow-sm">
         <div className="border-b border-border px-4 py-3">
-          <span className="text-sm font-medium">环境与高级</span>
+          <span className="text-sm font-medium">Environment and advanced</span>
         </div>
         <div className="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
         {has("custom_args") && <div className="col-span-2">
@@ -1442,7 +1487,7 @@ function ProfileEditor({
       </section>
       {form.provider === "claude_code" && form.endpoint.includes("bigmodel.cn") && (
         <div className="space-y-1 rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
-          <p className="font-medium text-foreground">智谱 GLM runtime notes</p>
+          <p className="font-medium text-foreground">Zhipu GLM runtime notes</p>
           <p>Endpoint: use <code className="text-[11px]">https://open.bigmodel.cn/api/anthropic</code> (not Minimax).</p>
           <p>Launch adds <code className="text-[11px]">--strict-mcp-config --mcp-config workdir/.mcp.json</code>; smoke may need <code className="text-[11px]">--permission-mode bypassPermissions</code> in custom args.</p>
           <p>Third-party APIs may not expose local MCP tools in the model tool list — allow JSON-RPC fallback to PENTEST_MCP_URL.</p>

@@ -36,7 +36,7 @@ function sourceFiles(dir: string): string[] {
 describe("icon source policy", () => {
   it("uses lucide icons instead of inline svg/emoji/image icons", () => {
     const violations = sourceFiles(srcRoot).flatMap((file) => {
-      const rel = relative(srcRoot, file);
+      const rel = relative(srcRoot, file).replaceAll("\\", "/");
       if (rel === "components/Logo.tsx") return [];
 
       const source = readFileSync(file, "utf8");

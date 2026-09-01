@@ -97,7 +97,7 @@ export function SettingsPageShell({
   return (
     <PageContainer
       className={cn(
-        "flex w-full max-w-6xl flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden",
+        "mx-auto flex w-full max-w-6xl flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden",
         className,
       )}
       {...props}

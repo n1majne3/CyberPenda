@@ -186,10 +186,12 @@ describe("RuntimeProfilesPage", () => {
     renderPage();
 
     const layout = await screen.findByTestId("runtime-profiles-settings-layout");
+    expect(screen.getByTestId("runtime-profiles-page")).toHaveClass("mx-auto", "max-w-6xl");
     expect(layout).toHaveClass(
       "grid",
       "min-w-0",
-      "lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
+      "gap-0",
+      "lg:grid-cols-[320px_minmax(0,1fr)]",
       "lg:min-h-0",
       "lg:flex-1",
     );
@@ -199,11 +201,13 @@ describe("RuntimeProfilesPage", () => {
       "lg:min-h-0",
       "lg:overflow-hidden",
     );
+    expect(screen.getByTestId("runtime-profiles-settings-list")).toHaveClass("border-r", "bg-card");
     expect(screen.getByTestId("runtime-profiles-settings-detail")).toHaveClass(
       "min-w-0",
       "lg:min-h-0",
       "lg:overflow-hidden",
     );
+    expect(screen.getByTestId("runtime-profiles-settings-detail")).toHaveClass("rounded-none", "border-0", "shadow-none");
 
     const profileButton = await screen.findByRole("button", { name: /Codex Layout/i });
     expect(profileButton).toHaveAttribute("aria-current", "true");

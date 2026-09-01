@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Send, Terminal, Activity, GitBranch, MessageSquare, Play, ChevronRight, Wrench, User, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip, Brain, PlugZap } from "lucide-react";
+import { Square, Terminal, GitBranch, MessageSquare, Play, ChevronRight, ChevronsUpDown, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, RefreshCcw, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip, Brain, PlugZap, Info } from "lucide-react";
 import { apiGet, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type TaskTranscriptEntry } from "@/lib/api";
-import { Button, Badge, Input, Select, Textarea } from "@/components/ui";
+import { Button, Badge, Chip, Input, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { ErrorState, LoadingState, PageContainer } from "@/components/shared";
@@ -12,12 +12,13 @@ import { AttachmentFileRow } from "@/components/AttachmentPicker";
 import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, formatRelativeTime } from "@/lib/format";
 import { mergeTimelineItems, mergeTranscriptEntries, prependTimelineItems, prependTranscriptEntries } from "@/lib/ownerEvents";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 import { useVirtualWindow } from "@/lib/virtualWindow";
 import { taskRuntimeOwnerAdapter, sessionRuntimeOwnerAdapter, type RuntimeOwnerAdapter } from "@/lib/runtimeOwner/adapter";
 import { canPiNativeCrossProvider, conversationModeText, conversationQueueUnavailable, conversationSendLabel, newBlackboardRetryID, newSteerRequestID, resolveConversationAction, resolveConversationSendMode, steerPendingState } from "@/lib/runtimeOwner/conversationKernel";
+import { cn } from "@/lib/utils";
 import { emptyHistory, type ConversationSendMode, type OwnerHistory, type RuntimeOwnerKind, type RuntimeOwnerView } from "@/lib/runtimeOwner/types";
 
 const ACTIVE = new Set(["running", "paused"]);
@@ -779,136 +780,132 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   ].includes(controls?.native_steer_error_code ?? "");
   const focusMode = searchParams.get("focus") === "1";
   const blackboardDisabled = runtimeOwnerBlackboardMode(owner) === "disabled";
+  const runtimeDisplayName = profiles.find((profile) => profile.id === owner.runtimeProfileID)?.name
+    ?? currentContinuation?.runtimeProvider
+    ?? "Runtime";
+  const continuationTitle = currentContinuation
+    ? [
+        `continuation #${currentContinuation.number}`,
+        `runtime: ${currentContinuation.runtimeProvider}`,
+        `runner: ${owner.runner}`,
+        `status: ${currentContinuation.status}`,
+        (controls?.native_session_captured || currentContinuation.nativeSessionID) ? "native session: captured" : "",
+        controls?.same_runtime_provider_only ? "same runtime only" : "",
+        owner.activeContinuation && owner.latestContinuation && owner.latestContinuation.id !== owner.activeContinuation.id
+          ? `prior terminal: #${owner.latestContinuation.number} (${owner.latestContinuation.status})`
+          : "",
+      ].filter(Boolean).join(" · ")
+    : "";
 
   return (
     <RuntimeOwnerShell
       projectChrome={owner.capabilities.projectChrome}
       hideChrome={focusMode}
       data-testid="task-detail-shell"
-      className={focusMode ? "h-[calc(100dvh-3.5rem)] max-w-none p-0 md:h-dvh lg:p-0" : "flex min-h-full flex-col"}
+      className={focusMode ? "h-[calc(100dvh-3.5rem)] max-w-none p-0 md:h-dvh lg:p-0" : "flex h-full flex-col lg:min-h-0 lg:overflow-hidden"}
+      contentClassName={focusMode ? undefined : "mx-auto max-w-6xl px-0 pb-0 lg:px-0 lg:pb-0"}
       bodyClassName={focusMode ? "flex h-full min-h-0 flex-col" : "flex min-h-[32rem] flex-1 flex-col pb-0 lg:min-h-0"}
     >
-      <div data-testid="task-session-header" className="flex h-12 shrink-0 items-center gap-2 px-2 sm:px-3">
-        <StatusBadge status={owner.status} />
-        <RuntimeActivityBadge activity={owner.runtimeActivity} />
-        <BlackboardConclusionBadge owner={owner} />
-        {owner.capabilities.rename && editingTitle ? (
-          <div className="flex min-w-0 flex-1 items-center gap-1.5">
-            <Input
-              aria-label="Session title"
-              value={titleDraft}
-              onChange={(event) => setTitleDraft(event.target.value)}
-              className="h-8 min-w-0"
-              autoFocus
-            />
-            <Button size="sm" onClick={() => void saveSessionTitle()} disabled={!titleDraft.trim()}>Save</Button>
-            <Button size="sm" variant="ghost" onClick={() => setEditingTitle(false)}>Cancel</Button>
-          </div>
-        ) : (
-          <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={owner.title}>{owner.title}</h1>
-        )}
-        {currentContinuation && (
-          <div
-            data-testid="continuation-summary"
-            title={`continuation #${currentContinuation.number} · runtime: ${currentContinuation.runtimeProvider} · runner: ${owner.runner} · status: ${currentContinuation.status}`}
-            className="hidden min-w-0 flex-1 items-center gap-1 overflow-hidden whitespace-nowrap font-mono text-xs text-muted-foreground lg:flex"
-          >
-            <span>continuation #{currentContinuation.number}</span>
-            <span aria-hidden="true">·</span>
-            <span>runtime: {currentContinuation.runtimeProvider}</span>
-            {owner.runtimeConfiguration && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span>model provider: {owner.runtimeConfiguration.model_provider_name || owner.runtimeConfiguration.model_provider_id}</span>
-                <span aria-hidden="true">·</span>
-                <span>model: {owner.runtimeConfiguration.model}</span>
-                {owner.runtimeConfiguration.runtime_profile_name && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span>profile: {owner.runtimeConfiguration.runtime_profile_name}</span>
-                  </>
-                )}
-              </>
-            )}
-            <span aria-hidden="true">·</span>
-            <span>runner: {owner.runner}</span>
-            <span className="hidden xl:inline" aria-hidden="true">·</span>
-            <span className="hidden xl:inline">continuation status: {currentContinuation.status}</span>
-            {owner.activeContinuation &&
-              owner.latestContinuation &&
-              owner.latestContinuation.id !== owner.activeContinuation.id && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span className="hidden 2xl:inline" data-testid="prior-terminal-continuation">
-                    prior terminal: #{owner.latestContinuation.number} ({owner.latestContinuation.status})
-                  </span>
-                </>
+      <header data-testid="task-session-header" className="shrink-0 rounded-t-xl border border-b-0 border-border bg-card px-2 py-2 sm:px-3">
+        <div className="flex min-w-0 items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              {owner.capabilities.rename && editingTitle ? (
+                <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                  <Input
+                    aria-label="Session title"
+                    value={titleDraft}
+                    onChange={(event) => setTitleDraft(event.target.value)}
+                    className="h-8 min-w-0"
+                    autoFocus
+                  />
+                  <Button size="sm" onClick={() => void saveSessionTitle()} disabled={!titleDraft.trim()}>Save</Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditingTitle(false)}>Cancel</Button>
+                </div>
+              ) : (
+                <h1 className="min-w-0 truncate text-base font-semibold tracking-tight" title={owner.title}>{owner.title}</h1>
               )}
-            {(controls?.native_session_captured || currentContinuation.nativeSessionID) && (
-              <span className="hidden 2xl:inline">native session: captured</span>
+              <StatusBadge status={owner.status} />
+              <RuntimeActivityBadge activity={owner.runtimeActivity} />
+              <BlackboardConclusionBadge owner={owner} />
+            </div>
+            {currentContinuation && (
+              <div
+                data-testid="continuation-summary"
+                title={continuationTitle}
+                className="mt-1 hidden min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap font-mono text-[11px] text-muted-foreground sm:flex"
+              >
+                <span>continuation #{currentContinuation.number}</span>
+                <span aria-hidden="true">·</span>
+                <span>runtime {currentContinuation.runtimeProvider}</span>
+                <span aria-hidden="true">·</span>
+                <span>runner {owner.runner}</span>
+                <span aria-hidden="true">·</span>
+                <span>Updated {formatRelativeTime(owner.updatedAt)}</span>
+              </div>
             )}
-            {controls?.same_runtime_provider_only && <span className="hidden 2xl:inline">same runtime only</span>}
           </div>
-        )}
-        <div className="flex shrink-0 items-center gap-1">
-		  {owner.kind === "task" && projectId && (
-			<Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/tasks/${owner.id}/challenges`)} aria-label="Challenge Workflow" title="Open Challenge Workflow">
-			  <Wrench className="h-4 w-4" /> <span className="hidden sm:inline">Challenges</span>
-			</Button>
-		  )}
-          {owner.capabilities.rename && !editingTitle && (
-            <Button size="icon" variant="ghost" onClick={() => setEditingTitle(true)} aria-label={`Rename ${owner.title}`} title="Rename Session" className="h-8 w-8">
-              <Pencil className="h-4 w-4" />
-            </Button>
-          )}
-          {owner.capabilities.archive && (
-            <Button size="icon" variant="ghost" onClick={() => void changeSessionLifecycle("archive")} aria-label="Archive" title="Archive Session" className="h-8 w-8">
-              <Archive className="h-4 w-4" />
-            </Button>
-          )}
-          {owner.capabilities.restore && (
-            <Button size="icon" variant="ghost" onClick={() => void changeSessionLifecycle("restore")} aria-label="Restore" title="Restore Session" className="h-8 w-8">
-              <ArchiveRestore className="h-4 w-4" />
-            </Button>
-          )}
-          {running && finishAvailable && (
+          <div className="flex shrink-0 items-center gap-1">
+            {owner.kind === "task" && projectId && (
+              <Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/tasks/${owner.id}/challenges`)} aria-label="Challenge Workflow" title="Open Challenge Workflow">
+                <Wrench className="h-4 w-4" /> <span className="hidden sm:inline">Challenges</span>
+              </Button>
+            )}
+            {owner.capabilities.rename && !editingTitle && (
+              <Button size="icon" variant="outline" onClick={() => setEditingTitle(true)} aria-label={`Rename ${owner.title}`} title="Rename Session" className="h-8 w-8">
+                <Pencil className="h-4 w-4" />
+              </Button>
+            )}
+            {owner.capabilities.archive && (
+              <Button size="icon" variant="outline" onClick={() => void changeSessionLifecycle("archive")} aria-label="Archive" title="Archive Session" className="h-8 w-8">
+                <Archive className="h-4 w-4" />
+              </Button>
+            )}
+            {owner.capabilities.restore && (
+              <Button size="icon" variant="outline" onClick={() => void changeSessionLifecycle("restore")} aria-label="Restore" title="Restore Session" className="h-8 w-8">
+                <ArchiveRestore className="h-4 w-4" />
+              </Button>
+            )}
+            {running && finishAvailable && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setConfirmAction("finish")}
+                aria-label="Finish task"
+                title="Finish Task: close Runtime and mark completed"
+                data-testid="finish-task"
+              >
+                <Flag className="h-4 w-4" /> <span className="hidden sm:inline">Finish</span>
+              </Button>
+            )}
+            {owner.capabilities.resumeWithoutMessage && !running && (
+              <Button size="sm" variant="ghost" onClick={resumeNative} disabled={!resumeAvailable} aria-label="Resume" title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
+                <Play className="h-4 w-4" /> <span className="hidden sm:inline">Resume</span>
+              </Button>
+            )}
+            {owner.capabilities.delete && (
+              <Button size="icon" variant="outline" onClick={() => setConfirmAction("delete")} aria-label={`Delete ${owner.kind}`} title={`Delete ${owner.kind === "session" ? "Session" : "Task"}`} className="h-8 w-8 text-destructive hover:text-destructive">
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            )}
             <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setConfirmAction("finish")}
-              aria-label="Finish task"
-              title="Finish Task: close Runtime and mark completed"
-              data-testid="finish-task"
+              size="icon"
+              variant="outline"
+              onClick={() => selectFocus(!focusMode)}
+              aria-label={focusMode ? "Exit focus view" : "Enter focus view"}
+              title={focusMode ? "Exit focus view" : "Enter focus view"}
+              className="h-8 w-8"
             >
-              <Flag className="h-4 w-4" /> <span className="hidden sm:inline">Finish</span>
+              {focusMode ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
             </Button>
-          )}
-          {owner.capabilities.resumeWithoutMessage && !running && (
-            <Button size="sm" variant="ghost" onClick={resumeNative} disabled={!resumeAvailable} aria-label="Resume" title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
-              <Play className="h-4 w-4" /> <span className="hidden sm:inline">Resume</span>
-            </Button>
-          )}
-          {owner.capabilities.delete && (
-            <Button size="icon" variant="ghost" onClick={() => setConfirmAction("delete")} aria-label={`Delete ${owner.kind}`} title={`Delete ${owner.kind === "session" ? "Session" : "Task"}`} className="h-8 w-8 text-destructive hover:text-destructive">
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          )}
-          <Button
-            size="icon"
-            variant="ghost"
-            onClick={() => selectFocus(!focusMode)}
-            aria-label={focusMode ? "Exit focus view" : "Enter focus view"}
-            title={focusMode ? "Exit focus view" : "Enter focus view"}
-            className="h-10 w-10"
-          >
-            {focusMode ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-          </Button>
+          </div>
         </div>
-      </div>
+      </header>
 
       {owner.kind === "session" && !focusMode && (
-        <div role="note" className="shrink-0 border-b border-info/20 bg-info/5 px-3 py-2 text-xs text-muted-foreground">
-          Non-Project Mode · no Project Scope; Runtime execution is unrestricted by Project Scope.
+        <div role="note" className="flex shrink-0 items-center gap-2 border-b border-info/20 bg-info/5 px-3 py-2 text-xs text-muted-foreground">
+          <Info className="h-4 w-4 shrink-0 text-info" aria-hidden="true" />
+          <span>Non-Project Mode — no Project Scope is applied, so Runtime execution is not Scope-constrained.</span>
         </div>
       )}
 
@@ -950,14 +947,14 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         />
       )}
 
-      <div className="flex h-10 shrink-0 items-center gap-1 px-2 sm:px-3">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-x border-border bg-card px-2 sm:px-3">
         <button
           type="button"
           className={tabClass(activeView === "conversation")}
           aria-pressed={activeView === "conversation"}
           onClick={() => selectView("conversation")}
         >
-          <MessageSquare className="h-4 w-4" /> Conversation
+          Conversation
         </button>
         <button
           type="button"
@@ -965,7 +962,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           aria-pressed={activeView === "timeline"}
           onClick={() => selectView("timeline")}
         >
-          <Activity className="h-4 w-4" /> Timeline
+          Timeline
         </button>
         <div className="ml-auto">
           {activeView === "conversation" ? (
@@ -978,7 +975,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
 
       <div
         data-testid="task-workspace"
-        className="flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible bg-card/30 md:overflow-hidden lg:min-h-0"
+        className="flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible rounded-b-xl border border-border bg-card/30 md:overflow-hidden lg:min-h-0"
       >
         {activeView === "timeline" ? (
           <div className="min-h-0 flex-1 overflow-hidden p-2 pb-44 sm:p-3 md:pb-5">
@@ -1025,9 +1022,9 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           <div
             ref={bindTranscriptViewport}
             data-testid="conversation-workspace"
-            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 py-5 pb-44 sm:px-6 md:pb-5"
+            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 pt-3 pb-44 sm:px-6 md:pb-5"
           >
-            <div className="mx-auto max-w-3xl">
+            <div className="mx-auto max-w-[860px]">
               {history.transcriptHasOlder && (
                 <div className="mb-2 flex justify-center">
                   <Button
@@ -1056,6 +1053,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
                   history.transcript,
                   owner.runtimeActivity?.liveness === "live" && owner.runtimeActivity.turn_activity === "busy",
                 )}
+                runtimeLabel={runtimeDisplayName}
               />
               {transcriptWindow.spacerAfter > 0 && (
                 <div aria-hidden="true" data-testid="transcript-spacer-after" style={{ height: transcriptWindow.spacerAfter }} />
@@ -1172,27 +1170,28 @@ type RuntimeOwnerShellProps = {
   hideChrome?: boolean;
   className?: string;
   bodyClassName?: string;
+  contentClassName?: string;
   "data-testid"?: string;
 };
 
-function RuntimeOwnerShell({ projectChrome, children, bodyClassName, ...props }: RuntimeOwnerShellProps) {
+function RuntimeOwnerShell({ projectChrome, children, bodyClassName, contentClassName, ...props }: RuntimeOwnerShellProps) {
   if (projectChrome) {
-    return <ProjectPageShell bodyClassName={bodyClassName} {...props}>{children}</ProjectPageShell>;
+    return <ProjectPageShell bodyClassName={bodyClassName} contentClassName={contentClassName} {...props}>{children}</ProjectPageShell>;
   }
   return (
     <PageContainer
       data-testid={props["data-testid"]}
-      className={`mx-auto w-full max-w-6xl ${props.className ?? ""}`}
+      className={cn("mx-auto flex w-full max-w-6xl min-w-0 flex-col p-0 lg:p-0", props.className)}
     >
-      <div className={bodyClassName}>{children}</div>
+      <div className={cn("flex min-h-0 min-w-0 w-full flex-1 flex-col", contentClassName, bodyClassName)}>{children}</div>
     </PageContainer>
   );
 }
 
 function tabClass(active: boolean) {
   return [
-    "inline-flex items-center gap-1.5 rounded-t-md border-b-2 px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-    active ? "border-signal text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+    "inline-flex h-full items-center border-b-2 px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+    active ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
   ].join(" ");
 }
 
@@ -1391,13 +1390,13 @@ function RuntimeOwnerComposer({
   // resume: explain the state and its consequence instead of a bare badge.
   const runtimeOffline = sendMode === "resume";
   return (
-    <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none">
+    <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none lg:px-0">
       <div className="mx-auto max-w-3xl space-y-2">
         {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
         {runtimeOffline && (
           <div className="flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-[hsl(28_90%_32%)]">
             <PlugZap className="h-3.5 w-3.5 flex-none" />
-            <span>Runtime 当前离线。发送消息将恢复此 Session 并启动新的 Runtime。</span>
+            <span>The Runtime is offline. Sending a message resumes this Session with a new Runtime.</span>
           </div>
         )}
         {steerState === "action_required" && (
@@ -1418,12 +1417,13 @@ function RuntimeOwnerComposer({
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Focus on admin.example.com next…"
+            title="Enter to send; Shift+Enter for a new line"
             rows={2}
             autoComplete="off"
             className="max-h-40 min-h-[60px] resize-y rounded-none border-0 bg-transparent px-3 py-2.5 shadow-none focus-visible:border-transparent focus-visible:ring-0"
           />
-          <div className="flex flex-wrap items-center gap-1.5 px-2 py-1.5">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 px-2 py-1.5 md:flex-nowrap">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 md:flex-nowrap">
               {onAttachmentsChange && (
                 <label className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                   <Paperclip className="h-3.5 w-3.5" />
@@ -1439,46 +1439,55 @@ function RuntimeOwnerComposer({
                 </label>
               )}
               {onAttachmentsChange && <span className="mx-1 h-4 w-px bg-border" />}
-              <Select
-                size="sm"
-                className="h-7 min-w-0 w-auto max-w-full border-0 bg-transparent px-1.5 text-xs shadow-none focus-visible:ring-2 sm:max-w-[13rem]"
-                name="continuation_model_provider"
-                value={continuationModelProvider}
-                onChange={(event) => onSelectProvider(event.target.value)}
-                aria-label="Continuation model provider"
-              >
-                <option value="">Select model provider</option>
-                {continuationModelProviders.map((provider) => (
-                  <option key={provider.id} value={provider.id}>{provider.name}</option>
-                ))}
-              </Select>
-              <Select
-                size="sm"
-                className="h-7 min-w-0 w-auto max-w-full border-0 bg-transparent px-1.5 text-xs shadow-none focus-visible:ring-2 sm:max-w-[13rem]"
-                name="continuation_model"
-                value={continuationModelOverride}
-                onChange={(event) => onSelectModel(event.target.value)}
-                aria-label="Continuation model"
-                disabled={!continuationModelProvider || continuationModelOptions.length === 0}
-              >
-                {continuationModelOptions.length === 0 ? (
-                  <option value="">Default model</option>
-                ) : continuationModelOptions.map((model) => (
-                  <option key={model} value={model}>{model}</option>
-                ))}
-              </Select>
-              <Select
-                size="sm"
-                className="h-7 min-w-0 w-auto max-w-full border-0 bg-transparent px-1.5 text-xs shadow-none focus-visible:ring-2 sm:max-w-[9rem]"
-                name="continuation_reasoning_effort"
-                value={displayReasoningEffort(continuationReasoningEffort)}
-                onChange={(event) => onSelectReasoningEffort(event.target.value)}
-                aria-label="Continuation reasoning effort"
-              >
-                {REASONING_EFFORT_VALUES.map((effort) => (
-                  <option key={effort} value={effort}>{effort}</option>
-                ))}
-              </Select>
+              <div className="relative max-w-full sm:max-w-[13rem]">
+                <Select
+                  size="sm"
+                  className="h-7 min-w-0 w-auto max-w-full appearance-none border-0 bg-transparent px-1.5 pr-6 text-xs shadow-none focus-visible:ring-2"
+                  name="continuation_model_provider"
+                  value={continuationModelProvider}
+                  onChange={(event) => onSelectProvider(event.target.value)}
+                  aria-label="Continuation model provider"
+                >
+                  <option value="">Select model provider</option>
+                  {continuationModelProviders.map((provider) => (
+                    <option key={provider.id} value={provider.id}>{provider.name}</option>
+                  ))}
+                </Select>
+                <ChevronsUpDown className="pointer-events-none absolute right-1 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+              </div>
+              <div className="relative max-w-full sm:max-w-[13rem]">
+                <Select
+                  size="sm"
+                  className="h-7 min-w-0 w-auto max-w-full appearance-none border-0 bg-transparent px-1.5 pr-6 text-xs font-medium shadow-none focus-visible:ring-2"
+                  name="continuation_model"
+                  value={continuationModelOverride}
+                  onChange={(event) => onSelectModel(event.target.value)}
+                  aria-label="Continuation model"
+                  disabled={!continuationModelProvider || continuationModelOptions.length === 0}
+                >
+                  {continuationModelOptions.length === 0 ? (
+                    <option value="">Default model</option>
+                  ) : continuationModelOptions.map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </Select>
+                <ChevronsUpDown className="pointer-events-none absolute right-1 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+              </div>
+              <div className="relative w-[5.25rem] shrink-0">
+                <Select
+                  size="sm"
+                  className="h-7 w-full appearance-none whitespace-nowrap border-0 bg-transparent px-1.5 pr-6 text-xs shadow-none focus-visible:ring-2"
+                  name="continuation_reasoning_effort"
+                  value={displayReasoningEffort(continuationReasoningEffort)}
+                  onChange={(event) => onSelectReasoningEffort(event.target.value)}
+                  aria-label="Continuation reasoning effort"
+                >
+                  {REASONING_EFFORT_VALUES.map((effort) => (
+                    <option key={effort} value={effort}>{effort}</option>
+                  ))}
+                </Select>
+                <ChevronsUpDown className="pointer-events-none absolute right-1 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+              </div>
               {!runtimeOffline && (
                 <Badge variant={sendMode === "unavailable" ? "warning" : "outline"} size="sm">
                   {providerSwitchRequested ? "switch provider" : conversationModeText(sendMode)}
@@ -1496,7 +1505,6 @@ function RuntimeOwnerComposer({
               )}
             </div>
             <div className="ml-auto flex shrink-0 items-center gap-1">
-              <span className="mr-1 hidden text-xs text-muted-foreground sm:inline">Enter 发送 · Shift+Enter 换行</span>
               {running && queueAvailable && sendMode !== "queue" && (
                 <Button
                   size="icon-xl"
@@ -1528,13 +1536,14 @@ function RuntimeOwnerComposer({
                 </Button>
               )}
               <Button
+                data-testid="composer-send"
                 size="icon-xl"
                 onClick={onSend}
                 disabled={!value.trim() || sending || sendMode === "unavailable" || (providerSwitchRequested && !providerSwitchAvailable)}
                 aria-label={sendActionLabel}
                 title={sendActionLabel}
               >
-                {sending ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" /> : sendMode === "resume" ? <Play className="h-4 w-4" /> : <Send className="h-4 w-4" />}
+                {sending ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" /> : <ArrowUp className="h-4 w-4" />}
               </Button>
             </div>
           </div>
@@ -1546,36 +1555,35 @@ function RuntimeOwnerComposer({
 
 function StatusBadge({ status }: { status: string }) {
   const variant =
-    status === "completed" ? "success" :
-    status === "running" ? "primary" :
-    status === "failed" ? "destructive" :
-    status === "stopped" ? "warning" :
-    status === "interrupted" ? "warning" : "outline";
-  return <Badge variant={variant} className="shrink-0 whitespace-nowrap">{status}</Badge>;
+    status === "running" ? "success" :
+    status === "failed" ? "danger" :
+    status === "paused" || status === "interrupted" ? "warning" : "neutral";
+  const label = status ? status[0]!.toUpperCase() + status.slice(1) : "Unknown";
+  return <Chip variant={variant} dot className="shrink-0 whitespace-nowrap">{label}</Chip>;
 }
 
 function RuntimeActivityBadge({ activity }: { activity?: RuntimeActivity }) {
   if (!activity?.liveness) return null;
-  const liveness = activity.liveness;
-  const turn = activity.turn_activity;
   const label =
-    liveness === "live" && turn
-      ? `runtime ${liveness} · ${turn}`
-      : `runtime ${liveness}`;
+    activity.liveness === "live"
+      ? activity.turn_activity === "busy" ? "Runtime busy" : "Runtime idle"
+      : activity.liveness === "offline"
+        ? "Runtime offline"
+        : "Runtime state unknown";
   const variant =
-    liveness === "live" ? "primary" :
-    liveness === "offline" ? "outline" :
-    liveness === "orphaned" ? "warning" :
-    liveness === "unknown" ? "warning" : "outline";
+    activity.liveness === "live"
+      ? activity.turn_activity === "busy" ? "success" : "info"
+      : activity.liveness === "offline" ? "danger" : "warning";
   return (
-    <Badge
+    <Chip
       variant={variant}
+      dot
       data-testid="runtime-activity"
       title={activity.warning || label}
       className="shrink-0 whitespace-nowrap"
     >
       {label}
-    </Badge>
+    </Chip>
   );
 }
 
@@ -1583,14 +1591,15 @@ function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
   const mode = runtimeOwnerBlackboardMode(owner);
   if (mode === "disabled") {
     return (
-      <Badge
-        variant="outline"
+      <Chip
+        variant="neutral"
+        dot
         data-testid="blackboard-conclusion-state"
         title="Blackboard: Disabled"
         className="min-w-0 shrink"
       >
         <span className="truncate whitespace-nowrap">Blackboard: Disabled</span>
-      </Badge>
+      </Chip>
     );
   }
   const state = owner.blackboardConclusion?.state ?? "clean";
@@ -1602,14 +1611,15 @@ function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
   if (sourceTurn) details.push(`source Turn ${sourceTurn}`);
   if (appliedRevision !== undefined) details.push(`applied revision ${appliedRevision}`);
   return (
-    <Badge
-      variant={state === "action_required" ? "destructive" : state === "pending" || state === "concluding" ? "warning" : "outline"}
+    <Chip
+      variant={state === "action_required" ? "danger" : state === "pending" || state === "concluding" ? "warning" : "signal"}
+      dot
       data-testid="blackboard-conclusion-state"
       title={details.join(" · ")}
       className="min-w-0 shrink"
     >
       <span className="truncate whitespace-nowrap">{label}</span>
-    </Badge>
+    </Chip>
   );
 }
 
@@ -1687,29 +1697,53 @@ function liveReasoningEntryID(entries: TaskTranscriptEntry[], runtimeBusy: boole
   return undefined;
 }
 
+type TranscriptLane = "user" | "runtime" | "system" | "divider";
+
+type TranscriptDisplayRow = {
+  entry: TaskTranscriptEntry;
+  result?: TaskTranscriptEntry;
+  lane: TranscriptLane;
+  laneStart: boolean;
+};
+
 function TranscriptList({
   entries,
   endRef,
   liveReasoningID,
+  runtimeLabel,
 }: {
   entries: TaskTranscriptEntry[];
   endRef: RefObject<HTMLDivElement | null>;
   liveReasoningID?: string;
+  runtimeLabel: string;
 }) {
+  const rows = buildTranscriptRows(entries);
   return (
     <div>
-      {entries.map((entry, index) => {
-        // A user message starts a new turn and gets breathing room above it.
-        // Everything inside an agent turn — assistant messages, tool calls,
-        // tool results — stays tight so the agent's reasoning reads as one block.
-        const spacing = index === 0 ? "" : isUserTurnStart(entry) ? "mt-4" : "mt-1";
+      {rows.map((row, index) => {
+        const spacing = index === 0 ? "" : row.lane === "user" && row.laneStart ? "mt-4" : "mt-1";
         return (
           <div
-            key={entry.id}
+            key={row.entry.id}
             data-testid="transcript-row"
             className={`[contain-intrinsic-size:72px] [content-visibility:auto] ${spacing}`}
           >
-            <TranscriptRow entry={entry} autoExpandReasoning={entry.id === liveReasoningID} />
+            {row.lane === "divider" ? (
+              <TranscriptRow entry={row.entry} />
+            ) : (
+              <TranscriptTurnGroup
+                lane={row.lane}
+                showMarker={row.laneStart}
+                entry={row.entry}
+                runtimeLabel={runtimeLabel}
+              >
+                <TranscriptRow
+                  entry={row.entry}
+                  pairedResult={row.result}
+                  autoExpandReasoning={row.entry.id === liveReasoningID}
+                />
+              </TranscriptTurnGroup>
+            )}
           </div>
         );
       })}
@@ -1724,17 +1758,91 @@ function TranscriptList({
   );
 }
 
-// isUserTurnStart identifies a row that begins a new operator turn. Only these
-// get the roomier spacing; agent reasoning (assistant text, tool calls, tool
-// results) stays tight so a single agent turn reads as one cohesive block.
-function isUserTurnStart(entry: TaskTranscriptEntry): boolean {
-  if (entry.kind === "continuation" || entry.kind === "tool_call" || entry.kind === "tool_result") {
-    return false;
+function buildTranscriptRows(entries: TaskTranscriptEntry[]): TranscriptDisplayRow[] {
+  const resultByCallID = new Map<string, TaskTranscriptEntry>();
+  for (const entry of entries) {
+    if (entry.kind === "tool_result" && entry.tool_call_id) resultByCallID.set(entry.tool_call_id, entry);
   }
-  return entry.role === "user";
+  const absorbedResults = new Set<string>();
+  const rows: TranscriptDisplayRow[] = [];
+  for (const entry of entries) {
+    if (absorbedResults.has(entry.id)) continue;
+    const result = entry.kind === "tool_call" && entry.tool_call_id ? resultByCallID.get(entry.tool_call_id) : undefined;
+    if (result) absorbedResults.add(result.id);
+    const lane = transcriptLane(entry);
+    rows.push({
+      entry,
+      result,
+      lane,
+      laneStart: lane === "divider" || rows.length === 0 || rows[rows.length - 1]!.lane !== lane,
+    });
+  }
+  return rows;
 }
 
-function TranscriptRow({ entry, autoExpandReasoning = false }: { entry: TaskTranscriptEntry; autoExpandReasoning?: boolean }) {
+function transcriptLane(entry: TaskTranscriptEntry): TranscriptLane {
+  if (entry.kind === "continuation") return "divider";
+  if (entry.role === "user") return "user";
+  if (entry.role === "system") return "system";
+  return "runtime";
+}
+
+function TranscriptTurnGroup({
+  lane,
+  showMarker,
+  entry,
+  runtimeLabel,
+  children,
+}: {
+  lane: Exclude<TranscriptLane, "divider">;
+  showMarker: boolean;
+  entry: TaskTranscriptEntry;
+  runtimeLabel: string;
+  children: ReactNode;
+}) {
+  const label = lane === "user" ? "You" : lane === "runtime" ? runtimeLabel : "System";
+  return (
+    <div className="relative pl-6">
+      {showMarker && (
+        <span
+          className={cn(
+            "absolute left-0 top-1 flex h-4 w-4 items-center justify-center rounded-full border",
+            lane === "user" && "border-border bg-card",
+            lane === "runtime" && "border-signal/40 bg-signal/10 text-signal",
+            lane === "system" && "border-border bg-muted",
+          )}
+        >
+          {lane === "user" && <User className="h-2.5 w-2.5" aria-hidden="true" />}
+          {lane === "runtime" && <Bot className="h-2.5 w-2.5" aria-hidden="true" />}
+          {lane === "system" && <GitBranch className="h-2.5 w-2.5" aria-hidden="true" />}
+        </span>
+      )}
+      <div className="border-l border-border pl-4">
+        {showMarker && (
+          <div data-testid="transcript-turn-header" className="mb-1 flex items-center gap-2 text-xs">
+            <span className={cn("font-medium", lane === "runtime" && "text-signal")}>{label}</span>
+            {entry.created_at && (
+              <span className="text-muted-foreground" title={formatDateTime(entry.created_at)}>
+                {formatRelativeTime(entry.created_at)}
+              </span>
+            )}
+          </div>
+        )}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function TranscriptRow({
+  entry,
+  pairedResult,
+  autoExpandReasoning = false,
+}: {
+  entry: TaskTranscriptEntry;
+  pairedResult?: TaskTranscriptEntry;
+  autoExpandReasoning?: boolean;
+}) {
   if (entry.kind === "continuation") {
     return (
       <div className="flex items-center justify-center gap-2 py-1 text-xs text-muted-foreground">
@@ -1752,41 +1860,61 @@ function TranscriptRow({ entry, autoExpandReasoning = false }: { entry: TaskTran
     return <AttachmentFileRow name={filename} size={size} prefix="Attached" />;
   }
 
-  if (isCollapsedTranscriptEntry(entry)) {
+  if (entry.kind === "tool_call" || entry.kind === "tool_result") {
+    return (
+      <ToolTranscriptRow
+        call={entry.kind === "tool_call" ? entry : undefined}
+        result={entry.kind === "tool_call" ? pairedResult : entry}
+      />
+    );
+  }
+
+  if (entry.kind === "reasoning" || entry.kind === "runtime_output") {
     return <CollapsedTranscriptRow entry={entry} autoExpand={autoExpandReasoning && entry.kind === "reasoning"} />;
   }
 
   const isUser = entry.role === "user";
-  const isAssistant = entry.role === "assistant";
-  const Icon = isUser ? User : MessageSquare;
-  const roleLabel = isUser ? "You" : isAssistant ? "Agent" : entry.role;
+  const isAssistant = entry.role === "assistant" || entry.role === "runtime";
   return (
-    <div className={`flex gap-3 text-sm ${isUser ? "justify-end pl-8 sm:pl-16" : "justify-start pr-2 sm:pr-8"}`}>
-      {!isUser && !isAssistant && (
-        <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-muted/60 text-muted-foreground">
-          <Icon className="h-4 w-4" />
-        </span>
+    <div
+      data-testid="transcript-message-bubble"
+      className={cn(
+        "min-w-0 whitespace-pre-wrap break-words text-sm leading-6 text-foreground",
+        isUser && "rounded-lg border border-border bg-card px-3.5 py-3",
+        isAssistant && "border-l-2 border-signal/40 py-1 pl-4",
+        !isUser && !isAssistant && "rounded-md border border-border bg-muted/30 px-3 py-2",
       )}
-      <div
-        data-testid="transcript-message-bubble"
-        className={`min-w-0 max-w-[88%] rounded-lg px-3 py-2 sm:px-3.5 ${isUser ? "bg-primary/10 dark:bg-primary/15" : "bg-transparent px-0"}`}
-      >
-        {!isAssistant && (
-          <div className="mb-1 text-[11px] font-medium text-muted-foreground">
-            {roleLabel}
-            {entry.created_at && (
-              <span className="font-normal text-muted-foreground/70"> · {formatDateTime(entry.created_at)}</span>
-            )}
-          </div>
-        )}
-        <div className="whitespace-pre-wrap break-words leading-6 text-foreground">{entry.text}</div>
-      </div>
-      {isUser && (
-        <span className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary/10 text-foreground/70 dark:bg-primary/15">
-          <Icon className="h-4 w-4" />
-        </span>
-      )}
+    >
+      {entry.text}
     </div>
+  );
+}
+
+function ToolTranscriptRow({ call, result }: { call?: TaskTranscriptEntry; result?: TaskTranscriptEntry }) {
+  const [manuallyOpen, setManuallyOpen] = useState(false);
+  const isError = Boolean((result?.details as { is_error?: boolean } | undefined)?.is_error) || result?.status === "failed";
+  const title = call ? collapsedTranscriptTitle(call) : result ? collapsedTranscriptTitle(result) : "Tool";
+  const duration = call?.created_at && result?.created_at ? formatTranscriptDuration(call.created_at, result.created_at) : "";
+  return (
+    <details
+      data-testid="transcript-tool-row"
+      open={manuallyOpen}
+      onToggle={(event) => setManuallyOpen(event.currentTarget.open)}
+      className="group"
+    >
+      <summary className="-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+        {isError ? <CircleX className="h-4 w-4 shrink-0 text-destructive" /> : <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />}
+        <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-muted-foreground transition-colors group-hover:text-foreground group-open:text-foreground">{title}</span>
+        {result?.text && <span className="max-w-[40%] truncate text-xs text-muted-foreground">{collapsedTranscriptTitle(result)}</span>}
+        {isError && <Chip variant="danger" className="h-4 px-1 text-[9px]">failed</Chip>}
+        {duration && <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">{duration}</span>}
+      </summary>
+      <div className="ml-[1.625rem] space-y-3 border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
+        {call && <ToolCallDetails entry={call} />}
+        {result && <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-foreground/80">{result.text || "(empty)"}</pre>}
+      </div>
+    </details>
   );
 }
 
@@ -1794,46 +1922,40 @@ function CollapsedTranscriptRow({ entry, autoExpand = false }: { entry: TaskTran
   const [manuallyOpen, setManuallyOpen] = useState(false);
   const wasAutoExpanded = useRef(false);
   useEffect(() => {
-    // A live reasoning row opens automatically. When streaming stops, close
-    // it once; completed rows remain manually expandable across later polls.
     if (wasAutoExpanded.current && !autoExpand) setManuallyOpen(false);
     wasAutoExpanded.current = autoExpand;
   }, [autoExpand]);
-  const isError = entry.kind === "tool_result" && (entry.details as { is_error?: boolean } | undefined)?.is_error === true;
-  const Icon =
-    entry.kind === "reasoning"
-      ? Brain
-      : entry.kind === "runtime_output"
-        ? Terminal
-      : entry.kind === "tool_result"
-        ? isError
-          ? CircleX
-          : CheckCircle2
-        : Wrench;
+  const isReasoning = entry.kind === "reasoning";
+  const Icon = isReasoning ? Brain : Terminal;
   return (
     <details
-      data-testid={entry.kind === "reasoning" ? "transcript-reasoning-row" : "transcript-tool-row"}
+      data-testid={isReasoning ? "transcript-reasoning-row" : "transcript-tool-row"}
       open={autoExpand || manuallyOpen}
       onToggle={(event) => {
         if (!autoExpand) setManuallyOpen(event.currentTarget.open);
       }}
-      className="group border-b border-border/50 last:border-b-0"
+      className="group"
     >
-      <summary className="-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+      <summary className={cn(
+        "-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden",
+        isReasoning && "italic text-muted-foreground",
+      )}>
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-        <Icon className={`h-4 w-4 shrink-0 ${isError ? "text-destructive" : "text-muted-foreground"}`} />
-        <span className="min-w-0 flex-1 truncate text-[13px] text-muted-foreground transition-colors group-hover:text-foreground group-open:text-foreground">{collapsedTranscriptTitle(entry)}</span>
-        {entry.created_at && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground/70">{formatDateTime(entry.created_at)}</span>}
+        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-[13px] transition-colors group-hover:text-foreground group-open:text-foreground">{collapsedTranscriptTitle(entry)}</span>
       </summary>
       <div className="ml-[1.625rem] border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
-        {entry.kind === "tool_call" ? (
-          <ToolCallDetails entry={entry} />
-        ) : (
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-foreground/80">{collapsedBody(entry)}</pre>
-        )}
+        <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-foreground/80">{collapsedBody(entry)}</pre>
       </div>
     </details>
   );
+}
+
+function formatTranscriptDuration(start: string, end: string): string {
+  const milliseconds = Date.parse(end) - Date.parse(start);
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "";
+  if (milliseconds < 1000) return `${milliseconds}ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)}s`;
 }
 
 function ToolCallDetails({ entry }: { entry: TaskTranscriptEntry }) {
@@ -1862,9 +1984,6 @@ function ToolCallDetails({ entry }: { entry: TaskTranscriptEntry }) {
   );
 }
 
-function isCollapsedTranscriptEntry(entry: TaskTranscriptEntry) {
-  return entry.kind === "reasoning" || entry.kind === "tool_call" || entry.kind === "tool_result" || entry.kind === "runtime_output";
-}
 
 function collapsedBody(entry: TaskTranscriptEntry) {
   if (entry.kind === "tool_result") return entry.text || "(empty)";

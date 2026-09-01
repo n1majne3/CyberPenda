@@ -12,7 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { apiDelete, apiGet, apiPost, apiPostForm, apiPut, type RuntimeProfile, type Skill } from "@/lib/api";
-import { Button, Input, Label, Select, Textarea } from "@/components/ui";
+import { Button, Input, Label, Select, Textarea, buttonVariants } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   SettingsAlert,
@@ -469,19 +469,18 @@ export function SkillsPage() {
                         </td>
                         <td className="px-4 py-2.5 text-xs text-muted-foreground">{source}</td>
                         <td className="px-4 py-2.5">
-                          {selectedProfile ? (
-                            <EnableSwitch
-                              enabled={skill.enabled}
-                              onClick={() => toggleOptOut(skill)}
-                              ariaLabel={
-                                skill.enabled
+                          <EnableSwitch
+                            enabled={skill.enabled}
+                            disabled={!selectedProfile}
+                            onClick={() => toggleOptOut(skill)}
+                            ariaLabel={
+                              selectedProfile
+                                ? skill.enabled
                                   ? `Opt out for ${selectedProfile.name}`
                                   : `Enable for ${selectedProfile.name}`
-                              }
-                            />
-                          ) : (
-                            <span className="text-xs text-muted-foreground">—</span>
-                          )}
+                                : `Create a Runtime Profile to manage ${name}`
+                            }
+                          />
                         </td>
                         <td className="px-4 py-2.5">
                           <div className="flex items-center gap-0.5">
@@ -539,22 +538,37 @@ export function SkillsPage() {
               )}
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              发布一个 canonical bundle 原子化。复用 Skill ID 会更新它。
+              Publish one canonical bundle atomically. Reusing a Skill ID updates it.
             </p>
 
             {formMode === "idle" ? (
               <div className="mt-4 space-y-3">
                 <div className="space-y-3 rounded-md border border-border bg-muted/20 p-3">
                   <div>
-                    <Label htmlFor="skill-bundle-archive">Skill bundle archive</Label>
-                    <Input
-                      id="skill-bundle-archive"
-                      name="skill_bundle_archive"
-                      type="file"
-                      accept=".zip,.tar,.tar.gz,.tgz,application/zip,application/x-tar,application/gzip"
-                      onChange={(event) => setArchiveFile(event.target.files?.[0] ?? null)}
-                      className="mt-1.5"
-                    />
+                    <Label>Skill bundle archive</Label>
+                    <div className="mt-1.5 flex h-9 min-w-0 items-center gap-2 rounded-lg border border-input bg-background px-1.5">
+                      <input
+                        id="skill-bundle-archive"
+                        name="skill_bundle_archive"
+                        type="file"
+                        accept=".zip,.tar,.tar.gz,.tgz,application/zip,application/x-tar,application/gzip"
+                        aria-label="Skill bundle archive"
+                        onChange={(event) => setArchiveFile(event.target.files?.[0] ?? null)}
+                        className="peer sr-only"
+                      />
+                      <label
+                        htmlFor="skill-bundle-archive"
+                        className={cn(
+                          buttonVariants({ variant: "outline", size: "sm" }),
+                          "h-7 shrink-0 cursor-pointer px-2.5 text-xs peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2",
+                        )}
+                      >
+                        Choose file
+                      </label>
+                      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                        {archiveFile?.name ?? "No file selected"}
+                      </span>
+                    </div>
                     <p className="mt-1 text-xs text-muted-foreground">
                       Upload one .zip, .tar, .tar.gz, or .tgz bundle containing SKILL.md and optional scripts.
                     </p>
@@ -668,7 +682,7 @@ export function SkillsPage() {
               <Download className="h-4 w-4" /> Import skill from URL or repo
             </button>
             <p className="mt-1.5 text-xs text-muted-foreground">
-              结构化导入仅由 daemon 解析源本身，从不接受原始 shell 命令。
+              Structured imports let the daemon parse the source itself and never accept raw shell commands.
             </p>
             {importOpen && (
               <ImportForm
@@ -752,10 +766,12 @@ function ImportForm({
 
 function EnableSwitch({
   enabled,
+  disabled = false,
   onClick,
   ariaLabel,
 }: {
   enabled: boolean;
+  disabled?: boolean;
   onClick: () => void;
   ariaLabel: string;
 }) {
@@ -766,8 +782,9 @@ function EnableSwitch({
       aria-checked={enabled}
       aria-label={ariaLabel}
       onClick={onClick}
+      disabled={disabled}
       className={cn(
-        "relative h-6 w-10 shrink-0 rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "relative h-6 w-10 shrink-0 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         enabled
           ? "border-success/30 bg-success"
           : "border-border bg-muted",

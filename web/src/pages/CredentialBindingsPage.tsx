@@ -249,7 +249,7 @@ export function CredentialBindingsPage() {
           <div className="flex items-center justify-between lg:shrink-0">
             <div>
               <h2 className="text-base font-semibold">Credential library</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">Bindings 在 preflight 时解析，用于 runtime profiles 和 model providers。</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">Bindings resolve during preflight for Runtime Profiles and Model Providers.</p>
             </div>
             <div className="text-right">
               <span className="text-xl font-semibold">{activeCount}</span>
@@ -616,11 +616,11 @@ export function CredentialBindingsPage() {
               className="rounded-lg border border-border bg-card p-4 shadow-sm"
             >
               <h3 className="text-sm font-medium">Library actions</h3>
-              <p className="mt-1.5 text-xs text-muted-foreground">引用现有密钥源而不在 UI 中存储值，除非选择 literal。</p>
+              <p className="mt-1.5 text-xs text-muted-foreground">Reference existing credential sources without storing values in the UI unless you choose a literal source.</p>
               <Button onClick={startCreate} className="mt-3 w-full">
                 <Plus className="h-4 w-4" /> New binding
               </Button>
-              <p className="mt-3 text-xs text-muted-foreground">优先在 Model providers 页面管理模型 provider API key，当密钥仅用于 LLM 认证时。</p>
+              <p className="mt-3 text-xs text-muted-foreground">Manage Model Provider API keys on the Model Providers page when a credential is used only for LLM authentication.</p>
             </div>
           ) : (
             <SettingsDetailPane

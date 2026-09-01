@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { LoaderCircle, Plus, RefreshCw, Server, Trash2, X, Zap } from "lucide-react";
 import { apiDelete, apiGet, apiPatch, apiPost, apiPut, ApiError, type CredentialBinding, type ModelProvider } from "@/lib/api";
@@ -95,7 +95,7 @@ export function ModelProvidersPage() {
     }
   }
 
-  async function load() {
+  const load = useCallback(async () => {
     try {
       const [data, credentialData] = await Promise.all([
         apiGet<{ providers: ModelProvider[] }>("/api/model-providers"),
@@ -119,16 +119,16 @@ export function ModelProvidersPage() {
     } catch (e) {
       setError((e as Error).message);
     }
-  }
+  }, [searchParams]);
 
-  async function loadCapabilityCacheStatus() {
+  const loadCapabilityCacheStatus = useCallback(async () => {
     try {
       const status = await apiGet<{ refreshed_at?: string }>("/api/model-capability-cache");
       setCacheRefreshedAt(status.refreshed_at ?? "");
     } catch {
       // Cache status is advisory; the form still works without it.
     }
-  }
+  }, []);
 
   // Initial load. Both async loaders dispatch state updates only after an await;
   // the rule cannot prove that for this canonical fetch-on-mount pattern.
@@ -137,7 +137,7 @@ export function ModelProvidersPage() {
     void load();
     void loadCapabilityCacheStatus();
     /* eslint-enable react-hooks/set-state-in-effect */
-  }, []);
+  }, [load, loadCapabilityCacheStatus]);
 
   useEffect(() => {
     return () => {
@@ -492,7 +492,7 @@ export function ModelProvidersPage() {
             <>
               <section className="rounded-lg border border-border bg-card shadow-sm">
                 <div className="border-b border-border px-4 py-3">
-                  <span className="text-sm font-medium">连接与协议</span>
+                  <span className="text-sm font-medium">Connections and protocols</span>
                 </div>
                 <div className="grid gap-3 p-4 md:grid-cols-2">
                   <div>
@@ -597,7 +597,7 @@ export function ModelProvidersPage() {
                                   [protocol]: e.target.value,
                                 },
                               })}
-                              placeholder="未配置"
+                              placeholder="Not configured"
                               disabled={!enabled}
                               autoComplete="off"
                               spellCheck={false}
