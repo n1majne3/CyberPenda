@@ -1872,11 +1872,24 @@ func launchVisiblePath(layout Layout, hostPath string, sandbox bool) string {
 	if !sandbox || !filepath.IsAbs(hostPath) {
 		return hostPath
 	}
-	rel, err := filepath.Rel(layout.TaskRoot, hostPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return hostPath
+	if visible, ok := sandboxMountedPath(layout.TaskRoot, "/task", hostPath); ok {
+		return visible
 	}
-	return "/task/" + filepath.ToSlash(rel)
+	if visible, ok := sandboxMountedPath(layout.Workdir, "/task/workdir", hostPath); ok {
+		return visible
+	}
+	return hostPath
+}
+
+func sandboxMountedPath(hostRoot, sandboxRoot, hostPath string) (string, bool) {
+	rel, err := filepath.Rel(hostRoot, hostPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	if rel == "." {
+		return sandboxRoot, true
+	}
+	return strings.TrimSuffix(sandboxRoot, "/") + "/" + filepath.ToSlash(rel), true
 }
 
 func processEnvRenderContext(layout Layout, profile runtimeprofile.Profile, sandbox bool) runtimeplugin.RenderContext {

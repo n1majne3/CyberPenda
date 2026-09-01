@@ -42,6 +42,40 @@ func TestLaunchProcessEnvProjectsOwnerNeutralCLIGrantOnlyInProcessEnv(t *testing
 	}
 }
 
+func TestLaunchProcessEnvMapsSessionWorkingGraphPathsIntoSandboxWorkdir(t *testing.T) {
+	sessionRoot := t.TempDir()
+	runtimeRoot := filepath.Join(sessionRoot, ".runtime")
+	layout := runner.Layout{
+		TaskRoot:     runtimeRoot,
+		Workdir:      sessionRoot,
+		RuntimeHome:  filepath.Join(runtimeRoot, "runtime-home"),
+		ProviderHome: filepath.Join(runtimeRoot, "runtime-home", "claude"),
+		SkillsRoot:   filepath.Join(runtimeRoot, "skills"),
+		Artifacts:    filepath.Join(runtimeRoot, "artifacts"),
+		Logs:         filepath.Join(runtimeRoot, "logs"),
+	}
+	continuationID := "session-continuation-1"
+	env := runner.LaunchProcessEnv(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode}, true, runner.RuntimeOwnerContext{
+		Owner:                owner.NewSessionContract("session-1", sessionRoot),
+		BlackboardMode:       "working_graph",
+		ContinuationID:       continuationID,
+		WorkingGraphRoot:     sessionRoot,
+		WorkingGraphOutbox:   filepath.Join(sessionRoot, "graph", "outbox", continuationID),
+		WorkingGraphReceipts: filepath.Join(sessionRoot, "graph", "receipts", continuationID),
+	})
+
+	want := map[string]string{
+		"PENTEST_WORKING_GRAPH_ROOT":     "/task/workdir",
+		"PENTEST_WORKING_GRAPH_OUTBOX":   "/task/workdir/graph/outbox/" + continuationID,
+		"PENTEST_WORKING_GRAPH_RECEIPTS": "/task/workdir/graph/receipts/" + continuationID,
+	}
+	for key, value := range want {
+		if env[key] != value {
+			t.Fatalf("%s = %q, want %q; env=%#v", key, env[key], value, env)
+		}
+	}
+}
+
 func TestModelProviderKeyDoesNotSkipProfileCredentialRefs(t *testing.T) {
 	creds := newGlobalEnvTestService(t)
 	t.Setenv("HOSTED_MODEL_API_KEY", "model-secret")
