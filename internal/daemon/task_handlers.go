@@ -828,6 +828,11 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 	sandbox := created.Runner == task.RunnerSandbox
 	goal = runner.RewriteLoopbackTargets(goal, sandbox)
+	injectedGoal, injectErr := modeskill.InjectInvocation(goal, modeskill.Mode(created.RunControls.BlackboardMode))
+	if injectErr != nil {
+		return taskLaunchPlan{}, injectErr
+	}
+	goal = injectedGoal
 	launchGoal := goal
 	if binding != nil {
 		if binding.V2Header != nil {

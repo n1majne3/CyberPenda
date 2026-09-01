@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pentest/internal/modelprovider"
@@ -99,7 +100,9 @@ func TestSessionLaunchPlanCanOmitBlackboardProjection(t *testing.T) {
 	if plan.BlackboardProjection != runner.BlackboardProjectionOmitted {
 		t.Fatalf("Session plan did not represent omitted Blackboard projection: %#v", plan)
 	}
-	if plan.LaunchGoal != fixture.goal || plan.Profile.ID != fixture.profile.ID || plan.Runner != session.RunnerHost {
+	if !strings.Contains(plan.LaunchGoal, fixture.goal) ||
+		strings.Count(plan.LaunchGoal, "`cyberpenda-blackboard-disabled`") != 1 ||
+		plan.Profile.ID != fixture.profile.ID || plan.Runner != session.RunnerHost {
 		t.Fatalf("ordinary Session launch context changed: %#v", plan)
 	}
 	provenance, _ := plan.RuntimeConfig["runtime_profile"].(map[string]any)
@@ -148,7 +151,10 @@ func TestSessionLaunchWithoutBlackboardStartsOrdinaryContinuation(t *testing.T) 
 		t.Fatalf("provider launch requests = %d, want 1", len(requests))
 	}
 	request := requests[0]
-	if request.Owner.ID != fixture.found.ID || request.Continuation.ID != continuation.ID || request.LaunchGoal != fixture.goal || request.Facts.Workdir != fixture.found.Workdir {
+	if request.Owner.ID != fixture.found.ID || request.Continuation.ID != continuation.ID ||
+		!strings.Contains(request.LaunchGoal, fixture.goal) ||
+		strings.Count(request.LaunchGoal, "`cyberpenda-blackboard-disabled`") != 1 ||
+		request.Facts.Workdir != fixture.found.Workdir {
 		t.Fatalf("provider launch lost ordinary Session context: %#v", request)
 	}
 }

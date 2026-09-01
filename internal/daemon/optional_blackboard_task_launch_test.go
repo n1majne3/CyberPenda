@@ -83,7 +83,9 @@ func TestTaskLaunchPlanCanOmitBlackboardProjection(t *testing.T) {
 	if plan.BlackboardProjection != runner.BlackboardProjectionOmitted || plan.BlackboardV2 {
 		t.Fatalf("Task plan did not represent omitted Blackboard projection: %#v", plan)
 	}
-	if plan.LaunchGoal != fixture.created.Goal || plan.Facts.Workdir != filepath.Join(fixture.runtimeRoot, fixture.created.ID, "workdir") {
+	if !strings.Contains(plan.LaunchGoal, fixture.created.Goal) ||
+		strings.Count(plan.LaunchGoal, "`cyberpenda-blackboard-working-graph`") != 1 ||
+		plan.Facts.Workdir != filepath.Join(fixture.runtimeRoot, fixture.created.ID, "workdir") {
 		t.Fatalf("ordinary Task launch context changed: %#v", plan)
 	}
 	launch, ok := runtime.CommandAdapterLaunch(plan.Adapter)
@@ -180,7 +182,9 @@ func TestTaskLaunchWithoutBlackboardCreatesOrdinaryContinuation(t *testing.T) {
 	if continuation.BlackboardReconciliationStatus != task.ReconciliationCompleted {
 		t.Fatalf("ordinary Task Continuation retained Blackboard reconciliation: %#v", continuation)
 	}
-	if bound.BlackboardProjection != runner.BlackboardProjectionOmitted || bound.LaunchGoal != fixture.created.Goal {
+	if bound.BlackboardProjection != runner.BlackboardProjectionOmitted ||
+		!strings.Contains(bound.LaunchGoal, fixture.created.Goal) ||
+		strings.Count(bound.LaunchGoal, "`cyberpenda-blackboard-working-graph`") != 1 {
 		t.Fatalf("bound Task plan changed launch context: %#v", bound)
 	}
 	if _, err := fixture.server.blackboardV2Continuity.ReadLaunchPin(t.Context(), continuation.ID); err == nil {

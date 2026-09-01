@@ -605,7 +605,7 @@ A **Run Controls** choice of `interactive`, `working_graph`, or `disabled`. Inte
 _Avoid_: Blackboard Conclusion Mode, autonomous Task completion, transcript parsing mode, Blackboard write permission
 
 **Mode Skill**:
-The single system Skill projected for one Blackboard Mode. It is separate from user-selected Skills. Exactly one of the interactive, Working Graph, or disabled Mode Skills is present in a Runtime launch.
+The single system Skill projected and explicitly invoked for one Blackboard Mode. It is separate from user-selected Skills. Exactly one of the interactive, Working Graph, or disabled Mode Skills is present in a Runtime launch. Every Runtime Continuation launch injects a mandatory startup directive that invokes the selected Mode Skill before Task work.
 _Avoid_: ordinary Skill toggle, mixed-mode instructions, Runtime Profile capability
 
 **Working Graph**:
@@ -1134,6 +1134,7 @@ _Avoid_: transcript, export, source of truth
 - Project **Task** and Non-Project **Session** Run Controls support the same `interactive`, `working_graph`, and `disabled` **Blackboard Mode** values.
 - New Tasks default to `working_graph`. New Sessions default to `disabled`.
 - A Runtime Owner captures one immutable Blackboard Mode at creation, and every later Resume and Runtime Continuation inherits it.
+- Every Runtime Continuation launch injects a mandatory prompt that invokes the selected **Mode Skill** before Task work. Hosted CTF launches then invoke `ctf-orchestrator`. Ordinary catalog Skills remain task-selected and are not invoked as one batch.
 - A Runtime Owner in `disabled` Blackboard Mode receives no Blackboard context or authority and creates no Blackboard conclusion or reconciliation obligations.
 - A disabled Runtime receives a concise reminder to use a state file at its initial launch and at each replacement Runtime launch, but not on ordinary Runtime Turns; the reminder does not explain file lifecycle or handoff limits.
 - A disabled Runtime receives no built-in **Project Interface**; its Task Goal, Scope Snapshot, and Task Policy Snapshot remain launch context, and it asks the operator in conversation for Scope Expansion or file-retention actions.

@@ -47,3 +47,32 @@ func TestCTFOrchestratorDeclaresDisabledOnly(t *testing.T) {
 		t.Fatal("ctf-orchestrator unexpectedly accepted Working Graph mode")
 	}
 }
+
+func TestInjectInvocationRequiresModeSkillBeforeAdditionalSystemSkills(t *testing.T) {
+	goal, err := modeskill.InjectInvocation(
+		"solve every eligible challenge",
+		modeskill.ModeDisabled,
+		"ctf-orchestrator",
+		"ctf-orchestrator",
+	)
+	if err != nil {
+		t.Fatalf("inject invocation: %v", err)
+	}
+	modeIndex := strings.Index(goal, "`cyberpenda-blackboard-disabled`")
+	orchestratorIndex := strings.Index(goal, "`ctf-orchestrator`")
+	if modeIndex < 0 || orchestratorIndex < 0 || modeIndex >= orchestratorIndex {
+		t.Fatalf("Skill invocation order is not mode-first: %s", goal)
+	}
+	if strings.Count(goal, "`ctf-orchestrator`") != 1 {
+		t.Fatalf("duplicate system Skill invocation was not removed: %s", goal)
+	}
+	for _, required := range []string{
+		"REQUIRED SKILL INVOCATION",
+		"invoke and follow these projected Skills in order",
+		"TASK GOAL:\nsolve every eligible challenge",
+	} {
+		if !strings.Contains(goal, required) {
+			t.Fatalf("injected goal missing %q: %s", required, goal)
+		}
+	}
+}

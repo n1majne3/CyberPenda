@@ -48,6 +48,35 @@ func Resolve(mode Mode) (Spec, error) {
 	return spec, nil
 }
 
+// InjectInvocation prepends the provider-neutral startup directive for the
+// system-selected Mode Skill and any additional system-managed Skills. It
+// deliberately excludes ordinary catalog Skills, which remain available for
+// task-driven selection instead of being invoked as an indiscriminate batch.
+func InjectInvocation(goal string, mode Mode, additionalSkillIDs ...string) (string, error) {
+	spec, err := Resolve(mode)
+	if err != nil {
+		return "", err
+	}
+	ids := make([]string, 0, 1+len(additionalSkillIDs))
+	seen := map[string]bool{}
+	for _, id := range append([]string{spec.ID}, additionalSkillIDs...) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	var prompt strings.Builder
+	prompt.WriteString("REQUIRED SKILL INVOCATION\n\nBefore any task work, invoke and follow these projected Skills in order:\n")
+	for index, id := range ids {
+		fmt.Fprintf(&prompt, "%d. `%s`\n", index+1, id)
+	}
+	prompt.WriteString("\nUse the Runtime's native Skill invocation mechanism for each exact ID. If no invocation primitive exists, read that projected Skill's SKILL.md completely. Keep the loaded instructions active for this Runtime Turn.\n\nTASK GOAL:\n")
+	prompt.WriteString(goal)
+	return prompt.String(), nil
+}
+
 func Project(skillsRoot string, mode Mode) (skill.Bundle, error) {
 	spec, err := Resolve(mode)
 	if err != nil {

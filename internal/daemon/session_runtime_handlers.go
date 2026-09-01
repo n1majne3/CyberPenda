@@ -276,6 +276,10 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
+	launchGoal, err = modeskill.InjectInvocation(launchGoal, modeskill.Mode(found.RunControls.BlackboardMode))
+	if err != nil {
+		return sessionRuntimePlan{}, err
+	}
 	capturedSnapshot, err := server.latestSessionRuntimeSnapshot(found.ID)
 	if err != nil {
 		return sessionRuntimePlan{}, err
