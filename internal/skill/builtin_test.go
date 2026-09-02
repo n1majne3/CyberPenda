@@ -323,7 +323,10 @@ func TestInstallBuiltinSkillsPurgesSupersededPrunedLegacyIDs(t *testing.T) {
 		t.Fatalf("publish legacy builtin: %v", err)
 	}
 	if err := svc.SetOptOut(profile.ID, "cyberstrikeai-business-logic-testing", true); err != nil {
-		t.Fatalf("set legacy opt-out: %v", err)
+		t.Fatalf("set legacy Profile Skill Opt-Out: %v", err)
+	}
+	if err := svc.SetGlobalOptOut("cyberstrikeai-business-logic-testing", true); err != nil {
+		t.Fatalf("set legacy Global Skill Opt-Out: %v", err)
 	}
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("install builtins: %v", err)
@@ -337,6 +340,12 @@ func TestInstallBuiltinSkillsPurgesSupersededPrunedLegacyIDs(t *testing.T) {
 	}
 	if got.Source.Kind != "builtin" {
 		t.Fatalf("unexpected successor provenance: %#v", got.Source)
+	}
+	if !got.GloballyOptedOut {
+		t.Fatal("expected successor builtin to preserve the legacy Global Skill Opt-Out")
+	}
+	if err := svc.SetGlobalOptOut("vulnerabilities-business-logic", false); err != nil {
+		t.Fatalf("remove successor Global Skill Opt-Out: %v", err)
 	}
 	enabled, err := svc.EnabledSkills(profile.ID)
 	if err != nil {

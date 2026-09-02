@@ -1,5 +1,7 @@
 # Global Skills are default-on with per-profile opt-out
 
+> Superseded in part by ADR-0032 on September 2, 2026: Global Skill Opt-Out is now also supported.
+
 Skills are global, runtime-agnostic bundles managed from the Skills page and projected into task-local runtime boundaries. We chose default-on Skill enablement for all current and future Runtime Profiles, with per-profile opt-out, because Skills are intended to be shared baseline agent capabilities rather than provider-specific plugins; provider-specific extensions remain explicit and runtime-owned.
 
 ## Considered Options

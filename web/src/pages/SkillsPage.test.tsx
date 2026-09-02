@@ -132,6 +132,75 @@ describe("SkillsPage", () => {
     );
   });
 
+  it("supports global Skill Opt-Out independently of the selected Runtime Profile", async () => {
+    const fetchMock = mockApi({
+      "/api/runtime-profiles": {
+        profiles: [
+          {
+            id: "profile-1",
+            name: "Codex Default",
+            provider: "codex",
+            fields: {},
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills?runtime_profile_id=profile-1": {
+        skills: [
+          {
+            id: "recon-helper",
+            name: "Recon Helper",
+            enabled: true,
+            globally_opted_out: false,
+            created_at: "",
+            updated_at: "",
+          },
+          {
+            id: "report-helper",
+            name: "Report Helper",
+            enabled: false,
+            globally_opted_out: true,
+            profile_opted_out: false,
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+      "/api/skills/recon-helper/opt-out": {},
+      "/api/skills/report-helper/opt-out": {},
+    });
+
+    renderPage();
+
+    const reconRow = await screen.findByTestId("skill-card-recon-helper");
+    await userEvent.click(
+      within(reconRow).getByRole("switch", { name: "Opt out globally for Recon Helper" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/skills/recon-helper/opt-out",
+      expect.objectContaining({ method: "PUT" }),
+    );
+
+    const reportRow = screen.getByTestId("skill-card-report-helper");
+    expect(
+      within(reportRow).getByRole("switch", { name: "Enable globally for Report Helper" }),
+    ).toBeInTheDocument();
+    const preservedProfileSwitch = within(reportRow).getByRole("switch", {
+      name: /Opt out for Codex Default/i,
+    });
+    expect(preservedProfileSwitch).toBeChecked();
+    expect(preservedProfileSwitch).toBeDisabled();
+
+    await userEvent.click(
+      within(reportRow).getByRole("switch", { name: "Enable globally for Report Helper" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/skills/report-helper/opt-out",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
+
   it("disables and enables all current skills for the selected Runtime Profile", async () => {
     const fetchMock = mockApi({
       "/api/runtime-profiles": {
@@ -263,8 +332,9 @@ describe("SkillsPage", () => {
     renderPage();
 
     expect(
-      await screen.findByText(/Skill opt-outs apply to this Runtime Profile/i),
+      await screen.findByText(/Global Skill Opt-Outs affect direct launches and every Runtime Profile/i),
     ).toBeInTheDocument();
+    expect(screen.getByText(/Profile Skill Opt-Outs apply only when this Runtime Profile/i)).toBeInTheDocument();
     expect(screen.getByText(/new Task or Session/i)).toBeInTheDocument();
   });
 
@@ -326,9 +396,10 @@ describe("SkillsPage", () => {
     );
   });
 
-  it("shows default-on Skill state when no Runtime Profile exists", async () => {
-    mockApi({
+  it("keeps the Global Skill control active when no Runtime Profile exists", async () => {
+    const fetchMock = mockApi({
       "/api/runtime-profiles": { profiles: [] },
+      "/api/skills/api-security/opt-out": {},
       "/api/skills": {
         skills: [
           {
@@ -346,9 +417,21 @@ describe("SkillsPage", () => {
 
     renderPage();
 
-    const switchControl = await screen.findByRole("switch", { name: /create a Runtime Profile to manage API Security/i });
-    expect(switchControl).toBeDisabled();
-    expect(switchControl).toHaveAttribute("aria-checked", "true");
+    const globalSwitch = await screen.findByRole("switch", {
+      name: "Opt out globally for API Security",
+    });
+    expect(globalSwitch).toBeEnabled();
+    await userEvent.click(globalSwitch);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/skills/api-security/opt-out",
+      expect.objectContaining({ method: "PUT" }),
+    );
+
+    const profileSwitch = screen.getByRole("switch", {
+      name: /create a Runtime Profile to manage API Security/i,
+    });
+    expect(profileSwitch).toBeDisabled();
+    expect(profileSwitch).toHaveAttribute("aria-checked", "true");
     expect(within(screen.getByTestId("skill-card-api-security")).queryByText("—")).not.toBeInTheDocument();
   });
 

@@ -136,6 +136,76 @@ func TestSkillsBulkOptOutAndEnableForRuntimeProfileHTTP(t *testing.T) {
 	})
 }
 
+func TestSkillGlobalOptOutHTTP(t *testing.T) {
+	server := newDaemon(t)
+	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex"}`)
+
+	putSkill(t, server, "recon-helper", `{
+		"name":"Recon Helper",
+		"files":{"SKILL.md":"# Recon Helper"}
+	}`)
+
+	profileOptOutReq := httptest.NewRequest(http.MethodPut, "/api/skills/recon-helper/profiles/"+profileID+"/opt-out", nil)
+	profileOptOutResp := httptest.NewRecorder()
+	server.ServeHTTP(profileOptOutResp, profileOptOutReq)
+	if profileOptOutResp.Code != http.StatusNoContent {
+		t.Fatalf("expected Profile Skill Opt-Out status 204, got %d with body %s", profileOptOutResp.Code, profileOptOutResp.Body.String())
+	}
+
+	optOutReq := httptest.NewRequest(http.MethodPut, "/api/skills/recon-helper/opt-out", nil)
+	optOutResp := httptest.NewRecorder()
+	server.ServeHTTP(optOutResp, optOutReq)
+	if optOutResp.Code != http.StatusNoContent {
+		t.Fatalf("expected global opt-out status 204, got %d with body %s", optOutResp.Code, optOutResp.Body.String())
+	}
+
+	for _, item := range []struct {
+		path            string
+		profileOptedOut bool
+	}{
+		{path: "/api/skills", profileOptedOut: false},
+		{path: "/api/skills?runtime_profile_id=" + profileID, profileOptedOut: true},
+	} {
+		path := item.path
+		listReq := httptest.NewRequest(http.MethodGet, path, nil)
+		listResp := httptest.NewRecorder()
+		server.ServeHTTP(listResp, listReq)
+		if listResp.Code != http.StatusOK {
+			t.Fatalf("expected list status 200 for %s, got %d with body %s", path, listResp.Code, listResp.Body.String())
+		}
+		var listed struct {
+			Skills []struct {
+				ID               string `json:"id"`
+				Enabled          bool   `json:"enabled"`
+				GloballyOptedOut bool   `json:"globally_opted_out"`
+				ProfileOptedOut  bool   `json:"profile_opted_out"`
+			} `json:"skills"`
+		}
+		if err := json.NewDecoder(listResp.Body).Decode(&listed); err != nil {
+			t.Fatalf("decode skills list for %s: %v", path, err)
+		}
+		if len(listed.Skills) != 1 || listed.Skills[0].ID != "recon-helper" || listed.Skills[0].Enabled || !listed.Skills[0].GloballyOptedOut || listed.Skills[0].ProfileOptedOut != item.profileOptedOut {
+			t.Fatalf("unexpected globally opted-out list for %s: %#v", path, listed.Skills)
+		}
+	}
+
+	enableReq := httptest.NewRequest(http.MethodDelete, "/api/skills/recon-helper/opt-out", nil)
+	enableResp := httptest.NewRecorder()
+	server.ServeHTTP(enableResp, enableReq)
+	if enableResp.Code != http.StatusNoContent {
+		t.Fatalf("expected global enable status 204, got %d with body %s", enableResp.Code, enableResp.Body.String())
+	}
+	assertListedSkillEnablement(t, server, profileID, map[string]bool{"recon-helper": false})
+
+	profileEnableReq := httptest.NewRequest(http.MethodDelete, "/api/skills/recon-helper/profiles/"+profileID+"/opt-out", nil)
+	profileEnableResp := httptest.NewRecorder()
+	server.ServeHTTP(profileEnableResp, profileEnableReq)
+	if profileEnableResp.Code != http.StatusNoContent {
+		t.Fatalf("expected Profile Skill enable status 204, got %d with body %s", profileEnableResp.Code, profileEnableResp.Body.String())
+	}
+	assertListedSkillEnablement(t, server, profileID, map[string]bool{"recon-helper": true})
+}
+
 func assertListedSkillEnablement(t *testing.T, server http.Handler, profileID string, want map[string]bool) {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "/api/skills?runtime_profile_id="+profileID, nil)
