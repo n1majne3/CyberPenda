@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -749,10 +750,23 @@ func atomicWrite(target string, body []byte) error {
 		return fmt.Errorf("publish Working Graph file: %w", err)
 	}
 	cleanup = false
-	directory, err := os.Open(filepath.Dir(target))
+	return syncDirectory(filepath.Dir(target))
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
 	if err != nil {
-		return err
+		return fmt.Errorf("open Working Graph directory for fsync: %w", err)
 	}
 	defer directory.Close()
-	return directory.Sync()
+	// Windows cannot fsync a directory handle (golang/go#47366). The staged
+	// file was synced before rename, so follow the migration backup behavior
+	// and skip the unsupported directory durability sync.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("fsync Working Graph directory: %w", err)
+	}
+	return nil
 }

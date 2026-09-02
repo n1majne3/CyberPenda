@@ -29,7 +29,7 @@ func TestSandboxShellScriptsAreExecutable(t *testing.T) {
 	}
 }
 
-func TestSandboxMCPLiveSmokeUsesBlackboardV2Boundaries(t *testing.T) {
+func TestSandboxLiveSmokeUsesBlackboardV2HTTPBoundaries(t *testing.T) {
 	repoRoot := repoRoot(t)
 	scriptPath := filepath.Join(repoRoot, "scripts", "smoke-sandbox-mcp-live.sh")
 	scriptBytes, err := os.ReadFile(scriptPath)
@@ -38,21 +38,9 @@ func TestSandboxMCPLiveSmokeUsesBlackboardV2Boundaries(t *testing.T) {
 	}
 	script := string(scriptBytes)
 
-	for _, tool := range []string{
-		"blackboard_change",
-		"blackboard_record_attempt_result",
-		"blackboard_read",
-		"blackboard_history",
-		"blackboard_retain_evidence",
-		"blackboard_checkpoint_attempt",
-		"blackboard_finish",
-	} {
-		assertContains(t, script, tool)
-	}
 	for _, required := range []string{
-		`"method":"tools/list"`,
 		`"kind":"pentest"`,
-		"curl -sf -X POST \"${mcp_url}\" \\\n    \"${auth_args[@]+\"${auth_args[@]}\"}\"",
+		"curl -sf -X POST \"${v2_base_url}/blackboard/changes\"",
 		"/api/v2/projects/",
 		"/blackboard/changes",
 		"/blackboard/records/",
@@ -65,7 +53,9 @@ func TestSandboxMCPLiveSmokeUsesBlackboardV2Boundaries(t *testing.T) {
 
 	for _, retired := range []string{
 		"upsert_project_fact",
+		`"method":"tools/list"`,
 		`"method":"tools/call"`,
+		"/mcp",
 		"/api/projects/",
 		"/facts/",
 	} {
