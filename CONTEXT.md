@@ -1085,7 +1085,10 @@ _Avoid_: transcript, export, source of truth
 - A **Runtime Profile** may add a **Profile Skill Opt-Out** for a Skill enabled by **Default Skill Enablement**.
 - Every **Skill Opt-Out** is tied to **Skill ID** and survives ordinary imports or edits that update the same **Skill**.
 - A **Global Skill Opt-Out** overrides effective Profile enablement but does not erase existing **Profile Skill Opt-Outs**; removing the global override restores each Profile's own choice.
-- The **Skills Page** bulk Profile enablement actions apply to the selected **Runtime Profile** and the current **Skill** library: Disable all atomically creates a **Profile Skill Opt-Out** for every current Skill, while Enable all atomically removes every Profile Skill Opt-Out for that Profile. Neither action changes started **Tasks**, and later imports still follow **Default Skill Enablement**.
+- The **Skills Page** exposes separate bulk Global and Profile enablement actions so the operation scope is explicit.
+- Bulk Global Disable all atomically creates a **Global Skill Opt-Out** for every current Skill, while Bulk Global Enable all atomically removes every Global Skill Opt-Out.
+- Bulk Profile Disable all atomically creates a **Profile Skill Opt-Out** for every current Skill in the selected **Runtime Profile**, while Bulk Profile Enable all atomically removes every Profile Skill Opt-Out for that Profile.
+- Bulk Skill enablement actions do not change started **Runtime Owners**, and later imports still follow **Default Skill Enablement**.
 - **Skill Deletion** ends the enablement lifecycle for that **Skill ID**; re-importing the same **Skill ID** follows **Default Skill Enablement** instead of restoring old Global or Profile Skill Opt-Outs.
 - The **Skills Page** is the source of truth for **Global Skill Opt-Outs** and updates **Profile Skill Opt-Outs** for the selected **Runtime Profile**.
 - A **Runtime Profile** may reference a manually entered **Runtime Extension** identifier, but task launch still requires the daemon **Runtime Extension Registry** to resolve it.

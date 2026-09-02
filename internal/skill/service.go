@@ -324,6 +324,30 @@ func (s *Service) SetGlobalOptOut(skillID string, optedOut bool) error {
 	return nil
 }
 
+func (s *Service) SetAllGlobalOptOut(optedOut bool) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin bulk global Skill Opt-Out: %w", err)
+	}
+	defer tx.Rollback()
+
+	if optedOut {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO skill_global_opt_outs (skill_id, created_at)
+			 SELECT id, ? FROM skills`,
+			time.Now().UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			return fmt.Errorf("store bulk Global Skill Opt-Outs: %w", err)
+		}
+	} else if _, err := tx.Exec(`DELETE FROM skill_global_opt_outs`); err != nil {
+		return fmt.Errorf("delete bulk Global Skill Opt-Outs: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit bulk Global Skill Opt-Out: %w", err)
+	}
+	return nil
+}
+
 func (s *Service) SetOptOut(profileID, skillID string, optedOut bool) error {
 	profileID = strings.TrimSpace(profileID)
 	skillID = strings.TrimSpace(skillID)

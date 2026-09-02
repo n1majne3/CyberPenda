@@ -16,6 +16,7 @@ This decision extends ADR-0001. Skills remain default-on, but Profile Skill Opt-
 - **Skill Deletion** removes both kinds of opt-out. Recreating the same Skill ID starts with **Default Skill Enablement**.
 - Started Runtime Owners keep their captured **Runtime Configuration Snapshot** and **Task Skills Root**. The change applies only to later launch resolution.
 - The **Skills Page** exposes separate Global and Profile controls. A Profile control is inactive while the Global Skill Opt-Out is active because it cannot change effective enablement.
+- The **Skills Page** exposes separate Global and Profile bulk controls. Disable all globally atomically creates a Global Skill Opt-Out for every current Skill, while Enable all globally removes every Global Skill Opt-Out. Later imports still follow Default Skill Enablement.
 
 ## Considered options
 
