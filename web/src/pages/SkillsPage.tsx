@@ -40,6 +40,9 @@ type SkillForm = {
 
 type FormMode = "idle" | "create" | "edit";
 type StatusFilter = "all" | "enabled" | "opted_out";
+type DisableAllTarget =
+  | { scope: "global" }
+  | { scope: "profile"; profile: RuntimeProfile };
 
 const emptySkillForm: SkillForm = {
   id: "",
@@ -63,7 +66,7 @@ export function SkillsPage() {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmDeleteSkill, setConfirmDeleteSkill] = useState<Skill | null>(null);
-  const [confirmDisableAllProfile, setConfirmDisableAllProfile] = useState<RuntimeProfile | null>(null);
+  const [confirmDisableAllTarget, setConfirmDisableAllTarget] = useState<DisableAllTarget | null>(null);
   const [bulkUpdating, setBulkUpdating] = useState(false);
   const [skillsLoading, setSkillsLoading] = useState(true);
 
@@ -239,6 +242,24 @@ export function SkillsPage() {
     }
   }
 
+  async function setAllGlobalSkillsOptOut(optedOut: boolean) {
+    setBulkUpdating(true);
+    setError(null);
+    try {
+      const path = "/api/skills/opt-outs/global";
+      if (optedOut) {
+        await apiPut(path);
+      } else {
+        await apiDelete(path);
+      }
+      await loadSkills();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBulkUpdating(false);
+    }
+  }
+
   async function editSkill(skill: Skill) {
     setError(null);
     try {
@@ -276,6 +297,11 @@ export function SkillsPage() {
 
   const enabledCount = useMemo(() => skills.filter((skill) => skill.enabled).length, [skills]);
   const optedOutCount = skills.length - enabledCount;
+  const globalEnabledCount = useMemo(
+    () => skills.filter((skill) => !skill.globally_opted_out).length,
+    [skills],
+  );
+  const globalOptedOutCount = skills.length - globalEnabledCount;
   const profileEnabledCount = useMemo(
     () => skills.filter((skill) => profileSkillEnabled(skill)).length,
     [skills],
@@ -358,6 +384,112 @@ export function SkillsPage() {
             </Select>
           </div>
 
+          <div className="grid gap-2 rounded-lg border border-border bg-card p-3 shadow-sm sm:grid-cols-2 lg:shrink-0">
+            <div
+              role="group"
+              aria-label="Global Skill bulk actions"
+              className="rounded-md border border-border bg-muted/20 p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold">Global</p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                    Direct launches and every Runtime Profile
+                  </p>
+                </div>
+                <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                  {globalEnabledCount}/{skills.length} enabled
+                </span>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label="Enable all skills globally"
+                  disabled={globalOptedOutCount === 0 || bulkUpdating || skillsLoading}
+                  onClick={() => void setAllGlobalSkillsOptOut(false)}
+                  className="flex-1"
+                >
+                  <CheckCheck className="h-3.5 w-3.5" /> Enable all
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label="Disable all skills globally"
+                  disabled={globalEnabledCount === 0 || bulkUpdating || skillsLoading}
+                  onClick={() => setConfirmDisableAllTarget({ scope: "global" })}
+                  className="flex-1 text-destructive hover:text-destructive"
+                >
+                  <Ban className="h-3.5 w-3.5" /> Disable all
+                </Button>
+              </div>
+            </div>
+
+            <div
+              role="group"
+              aria-label={
+                selectedProfile
+                  ? `${selectedProfile.name} Profile Skill bulk actions`
+                  : "Profile Skill bulk actions"
+              }
+              className="rounded-md border border-border bg-muted/20 p-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-semibold">
+                    Profile{selectedProfile ? ` · ${selectedProfile.name}` : ""}
+                  </p>
+                  <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                    {selectedProfile
+                      ? "Only this Profile; Global Opt-Outs still override"
+                      : "Create a Runtime Profile to use these controls"}
+                  </p>
+                </div>
+                <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
+                  {selectedProfile
+                    ? `${profileEnabledCount}/${skills.length} allowed`
+                    : "Unavailable"}
+                </span>
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label={
+                    selectedProfile
+                      ? `Enable all skills for ${selectedProfile.name}`
+                      : "Enable all skills for a Runtime Profile"
+                  }
+                  disabled={!selectedProfile || profileOptedOutCount === 0 || bulkUpdating || skillsLoading}
+                  onClick={() => {
+                    if (selectedProfile) void setAllSkillsOptOut(selectedProfile, false);
+                  }}
+                  className="flex-1"
+                >
+                  <CheckCheck className="h-3.5 w-3.5" /> Enable all
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  aria-label={
+                    selectedProfile
+                      ? `Disable all skills for ${selectedProfile.name}`
+                      : "Disable all skills for a Runtime Profile"
+                  }
+                  disabled={!selectedProfile || profileEnabledCount === 0 || bulkUpdating || skillsLoading}
+                  onClick={() => {
+                    if (selectedProfile) {
+                      setConfirmDisableAllTarget({ scope: "profile", profile: selectedProfile });
+                    }
+                  }}
+                  className="flex-1 text-destructive hover:text-destructive"
+                >
+                  <Ban className="h-3.5 w-3.5" /> Disable all
+                </Button>
+              </div>
+            </div>
+          </div>
+
           <div className="flex flex-wrap items-center justify-between gap-2 lg:shrink-0">
             <span className="text-base font-semibold">
               {enabledCount}{" "}
@@ -366,29 +498,6 @@ export function SkillsPage() {
               </span>
             </span>
             <div className="flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                aria-label="Enable all skills"
-                disabled={!selectedProfile || profileOptedOutCount === 0 || bulkUpdating || skillsLoading}
-                onClick={() => {
-                  if (selectedProfile) void setAllSkillsOptOut(selectedProfile, false);
-                }}
-              >
-                <CheckCheck className="h-3.5 w-3.5" /> Enable all
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                aria-label="Disable all skills"
-                disabled={!selectedProfile || profileEnabledCount === 0 || bulkUpdating || skillsLoading}
-                onClick={() => {
-                  if (selectedProfile) setConfirmDisableAllProfile(selectedProfile);
-                }}
-                className="text-destructive hover:text-destructive"
-              >
-                <Ban className="h-3.5 w-3.5" /> Disable all
-              </Button>
               <SettingsSegmentedFilter
                 aria-label="Filter by status"
                 value={statusFilter}
@@ -729,21 +838,31 @@ export function SkillsPage() {
         </aside>
       </SettingsSplitLayout>
       <ConfirmDialog
-        open={confirmDisableAllProfile !== null}
+        open={confirmDisableAllTarget !== null}
         title={
-          confirmDisableAllProfile
-            ? `Disable all skills for ${confirmDisableAllProfile.name}?`
+          confirmDisableAllTarget?.scope === "global"
+            ? "Disable all skills globally?"
+            : confirmDisableAllTarget?.scope === "profile"
+              ? `Disable all skills for ${confirmDisableAllTarget.profile.name}?`
             : "Disable all skills?"
         }
-        description="This adds Profile Skill Opt-Outs for all current Skills in this Runtime Profile. Started Tasks do not change, and future imported Skills remain default-on."
-        confirmLabel="Disable all"
+        description={
+          confirmDisableAllTarget?.scope === "global"
+            ? "This adds Global Skill Opt-Outs for all current Skills. Direct launches and every Runtime Profile stop receiving them. Started Runtime Owners do not change, and future imported Skills remain default-on."
+            : "This adds Profile Skill Opt-Outs for all current Skills in this Runtime Profile. Started Runtime Owners do not change, and future imported Skills remain default-on."
+        }
+        confirmLabel={confirmDisableAllTarget?.scope === "global" ? "Disable globally" : "Disable for profile"}
         destructive
         onConfirm={() => {
-          const profile = confirmDisableAllProfile;
-          setConfirmDisableAllProfile(null);
-          if (profile) void setAllSkillsOptOut(profile, true);
+          const target = confirmDisableAllTarget;
+          setConfirmDisableAllTarget(null);
+          if (target?.scope === "global") {
+            void setAllGlobalSkillsOptOut(true);
+          } else if (target?.scope === "profile") {
+            void setAllSkillsOptOut(target.profile, true);
+          }
         }}
-        onCancel={() => setConfirmDisableAllProfile(null)}
+        onCancel={() => setConfirmDisableAllTarget(null)}
       />
       <ConfirmDialog
         open={confirmDeleteSkill !== null}

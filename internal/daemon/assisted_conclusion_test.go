@@ -531,9 +531,9 @@ func TestAssistedConclusionStartupReplaysCommittedValidatedApplyWithoutProviderT
 		}
 	}
 	waitForAssistedProviderRequests(t, session, 2)
-	receipt, err := server.tasks.LatestBlackboardConclusion(created.ID)
-	if err != nil || receipt == nil || receipt.BaseRevision == nil {
-		t.Fatalf("load awaiting receipt: %#v, %v", receipt, err)
+	receipt := waitForBlackboardConclusionReceiptState(t, server, created.ID, task.BlackboardConclusionReceiptAwaitingResult)
+	if receipt.BaseRevision == nil {
+		t.Fatalf("awaiting receipt has no base revision: %#v", receipt)
 	}
 	decoded, err := blackboardconclusion.Decode([]byte(assistedAttemptResultJSON(*receipt.BaseRevision, "attempt:startup-replay", "objective:startup-replay")))
 	if err != nil {

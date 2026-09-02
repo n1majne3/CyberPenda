@@ -232,6 +232,59 @@ func TestGlobalSkillOptOutOverridesProfilesAndDirectLaunches(t *testing.T) {
 	assertEnabledSkillIDs(t, svc, profileB.ID, []string{"recon-helper"})
 }
 
+func TestAllGlobalSkillOptOutsPreserveProfileChoicesAndKeepFutureSkillsDefaultOn(t *testing.T) {
+	db := openTestStore(t)
+	profiles := runtimeprofile.NewService(db)
+	profile, err := profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	svc := skill.NewService(db, filepath.Join(t.TempDir(), "skills"))
+	ctx := context.Background()
+
+	for _, id := range []string{"recon-helper", "report-helper"} {
+		if _, err := svc.Publish(ctx, skill.PublishRequest{
+			Metadata: skill.Metadata{ID: id, Name: id},
+			Files:    map[string]string{"SKILL.md": "# " + id},
+		}); err != nil {
+			t.Fatalf("publish %s: %v", id, err)
+		}
+	}
+	if err := svc.SetOptOut(profile.ID, "recon-helper", true); err != nil {
+		t.Fatalf("set Profile Skill Opt-Out: %v", err)
+	}
+
+	if err := svc.SetAllGlobalOptOut(true); err != nil {
+		t.Fatalf("disable all Skills globally: %v", err)
+	}
+	assertEnabledSkillIDs(t, svc, "", []string{})
+	assertEnabledSkillIDs(t, svc, profile.ID, []string{})
+	for _, id := range []string{"recon-helper", "report-helper"} {
+		got, err := svc.Get(id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if !got.GloballyOptedOut {
+			t.Fatalf("expected %s to have a Global Skill Opt-Out", id)
+		}
+	}
+
+	if _, err := svc.Publish(ctx, skill.PublishRequest{
+		Metadata: skill.Metadata{ID: "future-helper", Name: "Future Helper"},
+		Files:    map[string]string{"SKILL.md": "# Future Helper"},
+	}); err != nil {
+		t.Fatalf("publish future Skill: %v", err)
+	}
+	assertEnabledSkillIDs(t, svc, "", []string{"future-helper"})
+	assertEnabledSkillIDs(t, svc, profile.ID, []string{"future-helper"})
+
+	if err := svc.SetAllGlobalOptOut(false); err != nil {
+		t.Fatalf("enable all Skills globally: %v", err)
+	}
+	assertEnabledSkillIDs(t, svc, "", []string{"future-helper", "recon-helper", "report-helper"})
+	assertEnabledSkillIDs(t, svc, profile.ID, []string{"future-helper", "report-helper"})
+}
+
 func openTestStore(t *testing.T) *store.DB {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
