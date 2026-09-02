@@ -193,7 +193,7 @@ Provider-native arguments required for a **Runtime** to operate without interact
 _Avoid_: permission grant, Scope authorization, **Host Runner Activation**, **Project Interface** authority, runner policy
 
 **Runtime Profile**:
-A global user-created reusable advanced configuration for a **Runtime**, including MCP, Skill opt-outs, Extensions, binary paths, custom configuration, or Runner defaults without storing secret values.
+A global user-created reusable advanced configuration for a **Runtime**, including MCP, **Profile Skill Opt-Outs**, Extensions, binary paths, custom configuration, or Runner defaults without storing secret values.
 _Avoid_: account, credential bundle, secret store, automatic profile, runtime profile preset
 
 **Runtime Custom Arguments**:
@@ -393,7 +393,7 @@ The file-backed content of a **Runtime Extension**, including its instructions, 
 _Avoid_: manifest-only skill, external path pointer, raw JSON config
 
 **Skill**:
-A runtime-agnostic **Runtime Extension Bundle** managed through the **Skills Page** and projected for any supported **Runtime** when enabled by a **Runtime Profile**.
+A runtime-agnostic **Runtime Extension Bundle** managed through the **Skills Page** and projected for any supported **Runtime** when allowed by **Default Skill Enablement**, **Global Skill Opt-Out**, and any selected **Profile Skill Opt-Out**.
 _Avoid_: runtime plugin, provider-specific extension, MCP server
 
 **Skill ID**:
@@ -457,16 +457,24 @@ The checks that gate **Skill Publication** for identity, bundle shape, path safe
 _Avoid_: runtime execution test, trust proof, full code audit
 
 **Runtime Extension Enablement**:
-A **Runtime Profile** choice that allows a compatible **Runtime Extension** from the **Runtime Extension Library** to be projected for tasks using that profile.
+The effective choice that allows a compatible **Runtime Extension** from the **Runtime Extension Library** to be projected for a new Runtime Owner. For **Skills**, it combines **Default Skill Enablement**, **Global Skill Opt-Out**, and any selected **Profile Skill Opt-Out**.
 _Avoid_: library membership, automatic global mount, project-wide default
 
 **Default Skill Enablement**:
-The default-on policy that enables newly uploaded or imported **Skills** for direct launches and all current and future **Runtime Profiles**, unless a selected Profile opts out.
+The default-on policy that enables newly uploaded or imported **Skills** for direct launches and all current and future **Runtime Profiles**, unless a **Global Skill Opt-Out** or selected **Profile Skill Opt-Out** disables the Skill.
 _Avoid_: runtime-specific plugin default, live task mutation, project-local default
 
 **Skill Opt-Out**:
-A **Runtime Profile** override that disables a default-enabled **Skill** by **Skill ID**.
+An enablement override that disables a default-enabled **Skill** by **Skill ID**. It is either a **Global Skill Opt-Out** or a **Profile Skill Opt-Out**.
 _Avoid_: Skill Deletion, Runtime-Specific Extension disablement, temporary task skip
+
+**Global Skill Opt-Out**:
+A **Skills Page** library-level override that disables one default-enabled **Skill** for direct launches and every current or future **Runtime Profile**. It overrides, but does not erase, **Profile Skill Opt-Outs**.
+_Avoid_: Skill Deletion, bulk Profile action, started Runtime Owner mutation
+
+**Profile Skill Opt-Out**:
+A **Runtime Profile** override that disables one default-enabled **Skill** when that Profile is selected for a new Runtime Owner.
+_Avoid_: Global Skill Opt-Out, direct launch default, temporary task skip
 
 **Skills Page**:
 The top-level product view named Skills for managing **Skills** in the **Runtime Extension Library**.
@@ -1071,13 +1079,15 @@ _Avoid_: transcript, export, source of truth
 - **Runtime-Specific Extensions** are managed through their owning runtime-specific surfaces rather than treated as universal **Skills**.
 - A **Runtime Extension Manifest** may declare compatibility, source paths, projection targets, and non-secret defaults but must not contain credential values.
 - A **Runtime Profile** manages **Runtime Extensions** through structured controls rather than raw manifest JSON.
-- **Runtime Extension Enablement** belongs to a **Runtime Profile** and is limited to compatible **Runtime Plugins**.
+- **Runtime Extension Enablement** for **Runtime-Specific Extensions** belongs to a **Runtime Profile** and is limited to compatible **Runtime Plugins**.
 - **Default Skill Enablement** applies to **Skills** but not **Runtime-Specific Extensions**.
-- A **Runtime Profile** may opt out of a **Skill** enabled by **Default Skill Enablement**.
-- A **Skill Opt-Out** is tied to **Skill ID** and survives ordinary imports or edits that update the same **Skill**.
-- The **Skills Page** bulk enablement actions apply to the selected **Runtime Profile** and the current **Skill** library: Disable all atomically creates a **Skill Opt-Out** for every current Skill, while Enable all atomically removes every Skill Opt-Out for that profile. Neither action changes started **Tasks**, and later imports still follow **Default Skill Enablement**.
-- **Skill Deletion** ends the enablement lifecycle for that **Skill ID**; re-importing the same **Skill ID** follows **Default Skill Enablement** instead of restoring old opt-outs.
-- The **Skills Page** may change **Runtime Extension Enablement**, but the enablement state still belongs to the affected **Runtime Profile**.
+- A **Global Skill Opt-Out** removes one Skill from direct launches and every current or future **Runtime Profile**.
+- A **Runtime Profile** may add a **Profile Skill Opt-Out** for a Skill enabled by **Default Skill Enablement**.
+- Every **Skill Opt-Out** is tied to **Skill ID** and survives ordinary imports or edits that update the same **Skill**.
+- A **Global Skill Opt-Out** overrides effective Profile enablement but does not erase existing **Profile Skill Opt-Outs**; removing the global override restores each Profile's own choice.
+- The **Skills Page** bulk Profile enablement actions apply to the selected **Runtime Profile** and the current **Skill** library: Disable all atomically creates a **Profile Skill Opt-Out** for every current Skill, while Enable all atomically removes every Profile Skill Opt-Out for that Profile. Neither action changes started **Tasks**, and later imports still follow **Default Skill Enablement**.
+- **Skill Deletion** ends the enablement lifecycle for that **Skill ID**; re-importing the same **Skill ID** follows **Default Skill Enablement** instead of restoring old Global or Profile Skill Opt-Outs.
+- The **Skills Page** is the source of truth for **Global Skill Opt-Outs** and updates **Profile Skill Opt-Outs** for the selected **Runtime Profile**.
 - A **Runtime Profile** may reference a manually entered **Runtime Extension** identifier, but task launch still requires the daemon **Runtime Extension Registry** to resolve it.
 - A new **Task** loads the current **Runtime Extensions** from the **Runtime Extension Library** when its runtime configuration is projected.
 - **Preflight** previews enabled **Skills** but resolves credentials only from **Runtime Profiles**, **Model Providers**, and launch requests.
@@ -1109,8 +1119,8 @@ _Avoid_: transcript, export, source of truth
 - **Requested Reasoning Effort** belongs to its **Runtime Turn** and does not edit the selected **Runtime Profile**.
 - Changing the selected **Runtime Plugin** family during launch clears an incompatible **Runtime Profile** selection.
 - **Launch Configuration Resolution** applies a **Runtime Profile** only when the launch explicitly selects that Profile.
-- **Launch Configuration Resolution** otherwise builds the **Runtime Configuration Snapshot** directly from the selected **Runtime Plugin**, **Model Provider**, model, **Reasoning Effort**, **Runner**, Runtime Plugin standard configuration, and globally default-enabled **Skills**.
-- A direct **Launch Selection** does not receive **MCP Configuration**, **Custom Config File**, **Runtime Extension Enablement**, or **Skill Opt-Out** from any matching or default **Runtime Profile**.
+- **Launch Configuration Resolution** otherwise builds the **Runtime Configuration Snapshot** directly from the selected **Runtime Plugin**, **Model Provider**, model, **Reasoning Effort**, **Runner**, Runtime Plugin standard configuration, and globally default-enabled **Skills** after **Global Skill Opt-Outs** are applied.
+- A direct **Launch Selection** does not receive **MCP Configuration**, **Custom Config File**, **Runtime Extension Enablement**, or **Profile Skill Opt-Out** from any matching or default **Runtime Profile**.
 - A direct Runtime Owner is displayed by its **Runtime Plugin**, **Model Provider**, and model rather than a synthetic Profile name; an explicit Profile name is shown only when that Owner selected a **Runtime Profile** at creation.
 - **Save as Runtime Profile** requires a user-supplied name and explicit confirmation; CyberPenda never suggests, triggers, or completes it automatically.
 - Task, Reason Task, Session, Resume, Steering, and Runtime Turn model-selection paths never create or reuse a **Launch-Resolved Runtime Profile**.
@@ -1603,10 +1613,11 @@ _Avoid_: transcript, export, source of truth
 - **Task Skills Root** is not global skill installation; resolved: each task receives its own materialized enabled skills.
 - **Skills Page** is not provider-specific plugin management; resolved: runtime-specific plugins belong to their own runtime family.
 - **Skills Page** is not a project tab; resolved: it belongs in global navigation alongside runtime profile and credential management.
-- **Default Skill Enablement** is not runtime-specific plugin injection; resolved: skills are default-on for runtime profiles with per-profile opt-out, while runtime-specific extensions remain explicit.
-- **Skill Opt-Out** is not reset by a skill update; resolved: profile opt-outs follow the stable **Skill ID**.
-- Re-import after **Skill Deletion** is not a skill update; resolved: old opt-outs are not restored after deletion and recreation.
-- **Skills Page** enablement controls are not a second source of truth; resolved: they update **Runtime Profile** enablement.
+- **Default Skill Enablement** is not runtime-specific plugin injection; resolved: Skills are default-on for direct launches and Runtime Profiles, while Global and Profile Skill Opt-Outs can remove them and runtime-specific extensions remain explicit.
+- **Global Skill Opt-Out** is not a bulk Profile action; resolved: it disables one Skill for direct launches and every current or future Runtime Profile.
+- **Skill Opt-Out** is not reset by a Skill update; resolved: Global and Profile Skill Opt-Outs follow the stable **Skill ID**.
+- Re-import after **Skill Deletion** is not a Skill update; resolved: old Global and Profile Skill Opt-Outs are not restored after deletion and recreation.
+- **Skills Page** enablement controls are not a second source of truth; resolved: Global controls own library-level opt-outs, and Profile controls update the selected **Runtime Profile**.
 - **Runtime Extension Import** is not task startup installation; resolved: package-backed skills are imported or updated through management, while task launch projects already-managed extensions.
 - **Controlled Skill Import** is not arbitrary shell execution; resolved: package-backed skill import uses a fixed importer from structured input.
 - **Skill Publication** is not partial live update; resolved: failed imports or edits leave the current live skill unchanged.

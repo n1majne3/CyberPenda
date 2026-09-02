@@ -955,8 +955,18 @@ func migrations() []migration {
 		newMigration(67, "operator_disabled_output_origins", migration67SQL, migration67Up),
 		newMigration(68, "operator_evidence_request_sources", migration68SQL, migration68Up),
 		newMigration(69, "owner_local_runtime_configuration_snapshots", migration69SQL, migration69Up),
+		newMigration(70, "global_skill_opt_outs", migration70SQL, migration70Up),
 	}
 }
+
+const migration70SQL = `
+CREATE TABLE IF NOT EXISTS skill_global_opt_outs (
+	skill_id TEXT PRIMARY KEY,
+	created_at TEXT NOT NULL
+);
+`
+
+func migration70Up(tx *sql.Tx) error { return execStatements(tx, migration70SQL) }
 
 const migration69SQL = `runtime configuration snapshot v1; remove automatic Runtime Profiles and runtime_profiles.kind`
 

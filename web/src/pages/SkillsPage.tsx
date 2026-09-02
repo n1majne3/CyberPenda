@@ -191,14 +191,29 @@ export function SkillsPage() {
   }
 
   async function toggleOptOut(skill: Skill) {
-    if (!selectedProfile) return;
+    if (!selectedProfile || skill.globally_opted_out) return;
     setError(null);
     try {
       const path = `/api/skills/${encodeURIComponent(skill.id)}/profiles/${encodeURIComponent(selectedProfile.id)}/opt-out`;
-      if (skill.enabled) {
+      if (profileSkillEnabled(skill)) {
         await apiPut(path);
       } else {
         await apiDelete(path);
+      }
+      await loadSkills();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function toggleGlobalOptOut(skill: Skill) {
+    setError(null);
+    try {
+      const path = `/api/skills/${encodeURIComponent(skill.id)}/opt-out`;
+      if (skill.globally_opted_out) {
+        await apiDelete(path);
+      } else {
+        await apiPut(path);
       }
       await loadSkills();
     } catch (e) {
@@ -261,6 +276,11 @@ export function SkillsPage() {
 
   const enabledCount = useMemo(() => skills.filter((skill) => skill.enabled).length, [skills]);
   const optedOutCount = skills.length - enabledCount;
+  const profileEnabledCount = useMemo(
+    () => skills.filter((skill) => profileSkillEnabled(skill)).length,
+    [skills],
+  );
+  const profileOptedOutCount = skills.length - profileEnabledCount;
 
   const filteredSkills = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -315,11 +335,12 @@ export function SkillsPage() {
               <Label htmlFor="skills-runtime-profile" className="text-xs font-medium">
                 Runtime profile view
               </Label>
-              {selectedProfile && profileId && (
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  Skill opt-outs apply to this Runtime Profile when it is selected for a new Task or Session.
-                </p>
-              )}
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                Global Skill Opt-Outs affect direct launches and every Runtime Profile.
+                {selectedProfile && profileId
+                  ? " Profile Skill Opt-Outs apply only when this Runtime Profile is selected for a new Task or Session."
+                  : ""}
+              </p>
             </div>
             <Select
               id="skills-runtime-profile"
@@ -349,7 +370,7 @@ export function SkillsPage() {
                 size="sm"
                 variant="outline"
                 aria-label="Enable all skills"
-                disabled={!selectedProfile || optedOutCount === 0 || bulkUpdating || skillsLoading}
+                disabled={!selectedProfile || profileOptedOutCount === 0 || bulkUpdating || skillsLoading}
                 onClick={() => {
                   if (selectedProfile) void setAllSkillsOptOut(selectedProfile, false);
                 }}
@@ -360,7 +381,7 @@ export function SkillsPage() {
                 size="sm"
                 variant="outline"
                 aria-label="Disable all skills"
-                disabled={!selectedProfile || enabledCount === 0 || bulkUpdating || skillsLoading}
+                disabled={!selectedProfile || profileEnabledCount === 0 || bulkUpdating || skillsLoading}
                 onClick={() => {
                   if (selectedProfile) setConfirmDisableAllProfile(selectedProfile);
                 }}
@@ -443,7 +464,8 @@ export function SkillsPage() {
                     <th className="px-4 py-2.5 font-medium">Skill</th>
                     <th className="px-4 py-2.5 font-medium">Description</th>
                     <th className="px-4 py-2.5 font-medium w-[70px]">Source</th>
-                    <th className="px-4 py-2.5 font-medium w-[60px]">Enabled</th>
+                    <th className="px-4 py-2.5 font-medium w-[60px]">Global</th>
+                    <th className="px-4 py-2.5 font-medium w-[60px]">Profile</th>
                     <th className="px-4 py-2.5 font-medium w-[70px]"></th>
                   </tr>
                 </thead>
@@ -469,12 +491,24 @@ export function SkillsPage() {
                         </td>
                         <td className="px-4 py-2.5 text-xs text-muted-foreground">{source}</td>
                         <td className="px-4 py-2.5">
+                          <EnableSwitch
+                            enabled={!skill.globally_opted_out}
+                            onClick={() => toggleGlobalOptOut(skill)}
+                            ariaLabel={
+                              skill.globally_opted_out
+                                ? `Enable globally for ${name}`
+                                : `Opt out globally for ${name}`
+                            }
+                          />
+                        </td>
+                        <td className="px-4 py-2.5">
                           {selectedProfile ? (
                             <EnableSwitch
-                              enabled={skill.enabled}
+                              enabled={profileSkillEnabled(skill)}
+                              disabled={Boolean(skill.globally_opted_out)}
                               onClick={() => toggleOptOut(skill)}
                               ariaLabel={
-                                skill.enabled
+                                profileSkillEnabled(skill)
                                   ? `Opt out for ${selectedProfile.name}`
                                   : `Enable for ${selectedProfile.name}`
                               }
@@ -688,7 +722,7 @@ export function SkillsPage() {
             ? `Disable all skills for ${confirmDisableAllProfile.name}?`
             : "Disable all skills?"
         }
-        description="This adds Skill Opt-Outs for all current Skills in this Runtime Profile. Started Tasks do not change, and future imported Skills remain default-on."
+        description="This adds Profile Skill Opt-Outs for all current Skills in this Runtime Profile. Started Tasks do not change, and future imported Skills remain default-on."
         confirmLabel="Disable all"
         destructive
         onConfirm={() => {
@@ -701,7 +735,7 @@ export function SkillsPage() {
       <ConfirmDialog
         open={confirmDeleteSkill !== null}
         title={confirmDeleteSkill ? `Delete skill ${displaySkillName(confirmDeleteSkill)}?` : "Delete skill?"}
-        description="The skill is force-disabled and removed from this runtime profile view."
+        description="The Skill is removed from the global library and future launches. Started Runtime Owners do not change."
         confirmLabel="Delete"
         destructive
         onConfirm={() => {
@@ -752,10 +786,12 @@ function ImportForm({
 
 function EnableSwitch({
   enabled,
+  disabled = false,
   onClick,
   ariaLabel,
 }: {
   enabled: boolean;
+  disabled?: boolean;
   onClick: () => void;
   ariaLabel: string;
 }) {
@@ -765,9 +801,10 @@ function EnableSwitch({
       role="switch"
       aria-checked={enabled}
       aria-label={ariaLabel}
+      disabled={disabled}
       onClick={onClick}
       className={cn(
-        "relative h-6 w-10 shrink-0 rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "relative h-6 w-10 shrink-0 rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         enabled
           ? "border-success/30 bg-success"
           : "border-border bg-muted",
@@ -781,6 +818,11 @@ function EnableSwitch({
       />
     </button>
   );
+}
+
+function profileSkillEnabled(skill: Skill) {
+  if (typeof skill.profile_opted_out === "boolean") return !skill.profile_opted_out;
+  return skill.enabled;
 }
 
 function sourceLabel(skill: Skill) {

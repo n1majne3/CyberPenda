@@ -576,8 +576,8 @@ await userEvent.click(await screen.findByRole("button", { name: /use saved prese
 
     renderPage();
 
-await userEvent.click(await screen.findByRole("button", { name: /skills/i }));
-    expect(await screen.findByText(/globally default-enabled/i)).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: /skills/i }));
+    expect(await screen.findByText(/after Global Skill Opt-Outs/i)).toBeInTheDocument();
     expect(await screen.findByText("Recon Helper")).toBeInTheDocument();
     expect(screen.queryByText(/^Profile:/)).not.toBeInTheDocument();
   });

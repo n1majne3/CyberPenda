@@ -23,13 +23,14 @@ type SourceProvenance struct {
 }
 
 type Skill struct {
-	ID          string           `json:"id"`
-	Name        string           `json:"name"`
-	Description string           `json:"description,omitempty"`
-	Source      SourceProvenance `json:"source_provenance,omitempty"`
-	BundlePath  string           `json:"-"`
-	CreatedAt   time.Time        `json:"created_at"`
-	UpdatedAt   time.Time        `json:"updated_at"`
+	ID               string           `json:"id"`
+	Name             string           `json:"name"`
+	Description      string           `json:"description,omitempty"`
+	Source           SourceProvenance `json:"source_provenance,omitempty"`
+	GloballyOptedOut bool             `json:"globally_opted_out"`
+	BundlePath       string           `json:"-"`
+	CreatedAt        time.Time        `json:"created_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
 }
 
 type Bundle struct {
