@@ -196,6 +196,22 @@ func (server *Server) handleDeleteGlobalSkillOptOut(response http.ResponseWriter
 	server.handleGlobalSkillOptOut(response, request, false)
 }
 
+func (server *Server) handlePutAllGlobalSkillOptOuts(response http.ResponseWriter, request *http.Request) {
+	server.handleAllGlobalSkillOptOuts(response, request, true)
+}
+
+func (server *Server) handleDeleteAllGlobalSkillOptOuts(response http.ResponseWriter, request *http.Request) {
+	server.handleAllGlobalSkillOptOuts(response, request, false)
+}
+
+func (server *Server) handleAllGlobalSkillOptOuts(response http.ResponseWriter, _ *http.Request, optedOut bool) {
+	if err := server.skills.SetAllGlobalOptOut(optedOut); err != nil {
+		writeSkillError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
 func (server *Server) handleGlobalSkillOptOut(response http.ResponseWriter, request *http.Request, optedOut bool) {
 	skillID := strings.TrimSpace(request.PathValue("skill_id"))
 	if err := server.skills.SetGlobalOptOut(skillID, optedOut); err != nil {

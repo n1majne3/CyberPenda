@@ -206,6 +206,58 @@ func TestSkillGlobalOptOutHTTP(t *testing.T) {
 	assertListedSkillEnablement(t, server, profileID, map[string]bool{"recon-helper": true})
 }
 
+func TestSkillsBulkGlobalOptOutAndEnableHTTP(t *testing.T) {
+	server := newDaemon(t)
+	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex"}`)
+
+	putSkill(t, server, "recon-helper", `{
+		"name":"Recon Helper",
+		"files":{"SKILL.md":"# Recon Helper"}
+	}`)
+	putSkill(t, server, "report-helper", `{
+		"name":"Report Helper",
+		"files":{"SKILL.md":"# Report Helper"}
+	}`)
+
+	profileOptOutReq := httptest.NewRequest(http.MethodPut, "/api/skills/recon-helper/profiles/"+profileID+"/opt-out", nil)
+	profileOptOutResp := httptest.NewRecorder()
+	server.ServeHTTP(profileOptOutResp, profileOptOutReq)
+	if profileOptOutResp.Code != http.StatusNoContent {
+		t.Fatalf("expected Profile Skill Opt-Out status 204, got %d with body %s", profileOptOutResp.Code, profileOptOutResp.Body.String())
+	}
+
+	bulkPath := "/api/skills/opt-outs/global"
+	disableReq := httptest.NewRequest(http.MethodPut, bulkPath, nil)
+	disableResp := httptest.NewRecorder()
+	server.ServeHTTP(disableResp, disableReq)
+	if disableResp.Code != http.StatusNoContent {
+		t.Fatalf("expected global bulk opt-out status 204, got %d with body %s", disableResp.Code, disableResp.Body.String())
+	}
+	assertListedSkillEnablement(t, server, "", map[string]bool{
+		"recon-helper":  false,
+		"report-helper": false,
+	})
+	assertListedSkillEnablement(t, server, profileID, map[string]bool{
+		"recon-helper":  false,
+		"report-helper": false,
+	})
+
+	enableReq := httptest.NewRequest(http.MethodDelete, bulkPath, nil)
+	enableResp := httptest.NewRecorder()
+	server.ServeHTTP(enableResp, enableReq)
+	if enableResp.Code != http.StatusNoContent {
+		t.Fatalf("expected global bulk enable status 204, got %d with body %s", enableResp.Code, enableResp.Body.String())
+	}
+	assertListedSkillEnablement(t, server, "", map[string]bool{
+		"recon-helper":  true,
+		"report-helper": true,
+	})
+	assertListedSkillEnablement(t, server, profileID, map[string]bool{
+		"recon-helper":  false,
+		"report-helper": true,
+	})
+}
+
 func assertListedSkillEnablement(t *testing.T, server http.Handler, profileID string, want map[string]bool) {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, "/api/skills?runtime_profile_id="+profileID, nil)
