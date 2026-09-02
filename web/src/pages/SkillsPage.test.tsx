@@ -396,6 +396,45 @@ describe("SkillsPage", () => {
     );
   });
 
+  it("keeps the Global Skill control active when no Runtime Profile exists", async () => {
+    const fetchMock = mockApi({
+      "/api/runtime-profiles": { profiles: [] },
+      "/api/skills/api-security/opt-out": {},
+      "/api/skills": {
+        skills: [
+          {
+            id: "api-security",
+            name: "API Security",
+            description: "API assessment guidance",
+            enabled: true,
+            source_provenance: { kind: "builtin" },
+            created_at: "",
+            updated_at: "",
+          },
+        ],
+      },
+    });
+
+    renderPage();
+
+    const globalSwitch = await screen.findByRole("switch", {
+      name: "Opt out globally for API Security",
+    });
+    expect(globalSwitch).toBeEnabled();
+    await userEvent.click(globalSwitch);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/skills/api-security/opt-out",
+      expect.objectContaining({ method: "PUT" }),
+    );
+
+    const profileSwitch = screen.getByRole("switch", {
+      name: /create a Runtime Profile to manage API Security/i,
+    });
+    expect(profileSwitch).toBeDisabled();
+    expect(profileSwitch).toHaveAttribute("aria-checked", "true");
+    expect(within(screen.getByTestId("skill-card-api-security")).queryByText("—")).not.toBeInTheDocument();
+  });
+
   it("keeps the create form collapsed until New skill is chosen", async () => {
     mockApi({
       "/api/runtime-profiles": {
@@ -447,8 +486,13 @@ describe("SkillsPage", () => {
     renderPage();
 
     await screen.findByRole("heading", { name: "Upload / edit Skill" });
+    const archiveInput = screen.getByLabelText("Skill bundle archive");
+    expect(archiveInput).toHaveClass("sr-only");
+    expect(screen.getByText("Choose file")).toBeInTheDocument();
+    expect(screen.getByText("No file selected")).toBeInTheDocument();
     const archive = new File(["archive bytes"], "recon-helper.zip", { type: "application/zip" });
-    await userEvent.upload(screen.getByLabelText("Skill bundle archive"), archive);
+    await userEvent.upload(archiveInput, archive);
+    expect(screen.getByText("recon-helper.zip")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Upload archive" }));
 
     expect(fetchMock).toHaveBeenCalledWith(

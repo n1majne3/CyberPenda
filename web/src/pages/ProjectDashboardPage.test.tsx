@@ -57,6 +57,7 @@ const tasks = {
       project_id: "project-1",
       goal: "Enumerate api.acme.example",
       status: "running",
+      runtime_activity: { liveness: "live", turn_activity: "busy" },
       runner: "pi",
       runtime_profile_id: "profile-1",
       run_controls: {},
@@ -141,16 +142,20 @@ describe("ProjectDashboardPage", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { level: 1, name: "Acme External" })).toBeInTheDocument();
+    expect(screen.getByTestId("project-page-shell-header").parentElement).toHaveClass("mx-auto", "max-w-6xl", "px-6", "lg:px-8");
+    // Overview now rides the shared chrome: back link plus section tabs live in
+    // the same sticky plane as every other project tab.
+    expect(screen.getByRole("link", { name: /All projects/i })).toHaveAttribute("href", "/");
     expect(screen.getByRole("link", { name: /launch task/i })).toHaveClass("rounded-md", "bg-primary");
-    expect(screen.getByRole("link", { name: /open report/i })).toBeInTheDocument();
+    // Pentest projects get the mockup's outline Open report button in the footer.
+    expect(screen.getByRole("link", { name: /open report/i })).toHaveClass("border-border", "bg-background");
     expect(screen.getByRole("link", { name: "Blackboard" })).toHaveAttribute(
       "href",
       "/projects/project-1/blackboard",
     );
 
-    // Pill-style project nav with count badges, rendered in page markup.
+    // Shared ProjectNav chrome with count badges from the dashboard payload.
     const nav = screen.getByRole("navigation", { name: /project sections/i });
-    expect(within(nav).getByRole("link", { name: "Overview" })).toHaveClass("bg-secondary", "font-medium");
     expect(within(nav).getByRole("link", { name: /tasks/i })).toHaveTextContent("3");
     expect(within(nav).getByRole("link", { name: /evidence/i })).toHaveTextContent("5");
     expect(within(nav).getByRole("link", { name: /findings/i })).toHaveTextContent("1");
@@ -158,11 +163,11 @@ describe("ProjectDashboardPage", () => {
     // Scope readiness checklist (scope is incomplete in this fixture).
     const scope = screen.getByRole("region", { name: /scope readiness/i });
     expect(scope).toHaveClass("rounded-lg", "border-warning/30");
-    expect(scope).toHaveTextContent("2 / 3 项完成");
-    expect(scope).toHaveTextContent("添加至少一个 in-scope 资产");
+    expect(scope).toHaveTextContent("2 / 3 complete");
+    expect(scope).toHaveTextContent("Add at least one in-scope asset");
     expect(scope).toHaveTextContent("Scope notes");
     expect(scope).toHaveTextContent("Testing limits");
-    expect(within(scope).getByRole("link", { name: /添加资产/ })).toHaveAttribute(
+    expect(within(scope).getByRole("link", { name: /add asset/i })).toHaveAttribute(
       "href",
       "/projects/project-1/scope",
     );
@@ -170,8 +175,9 @@ describe("ProjectDashboardPage", () => {
     // Stat cards link to their sections; the Tasks card carries a running chip.
     const tasksCard = screen.getByRole("link", { name: /view 3 tasks/i });
     expect(tasksCard).toHaveClass("rounded-lg", "border", "bg-card");
-    expect(within(tasksCard).getByText("1 运行中")).toBeInTheDocument();
-    expect(within(tasksCard).getByText(/最近：Enumerate api\.acme\.example · 12m ago/)).toBeInTheDocument();
+    expect(within(tasksCard).getByText("1 running")).toBeInTheDocument();
+    expect(tasksCard).toHaveClass("min-w-0", "overflow-hidden");
+    expect(within(tasksCard).getByText(/Latest: Enumerate api\.acme\.example · .* ago/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 8 facts/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 1 finding/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 5 evidence items/i })).toBeInTheDocument();
@@ -179,11 +185,13 @@ describe("ProjectDashboardPage", () => {
     // Recent activity lists recent tasks with status text and relative time.
     const activity = screen.getByText("Recent activity").closest("section");
     expect(activity).not.toBeNull();
-    expect(activity!).toHaveTextContent("Enumerate api.acme.example — running");
-    expect(activity!).toHaveTextContent("12m ago");
-    expect(activity!).toHaveTextContent("Port scan 203.0.113.10 — completed");
-    expect(activity!).toHaveTextContent("2h ago");
-    expect(within(activity!).getByRole("link", { name: "查看全部" })).toHaveAttribute(
+    expect(activity!).toHaveClass("min-w-0");
+    expect(activity!).toHaveTextContent("Enumerate api.acme.example — Running");
+    expect(activity!).toHaveTextContent("12 minutes ago");
+    expect(activity!).toHaveTextContent("Port scan 203.0.113.10 — Completed");
+    expect(activity!).toHaveTextContent("2 hours ago");
+    expect(activity!).toHaveTextContent("Fingerprint cdn.acme.example — Stopped");
+    expect(within(activity!).getByRole("link", { name: "View all" })).toHaveAttribute(
       "href",
       "/projects/project-1/tasks",
     );
@@ -191,16 +199,18 @@ describe("ProjectDashboardPage", () => {
     // Current work summarizes open work and links into the Blackboard.
     const currentWork = screen.getByText("Current work").closest("section");
     expect(currentWork).not.toBeNull();
+    expect(currentWork!).toHaveClass("min-w-0");
     expect(currentWork!).toHaveTextContent("Exploration objectives");
-    expect(currentWork!).toHaveTextContent("1 开放");
-    expect(currentWork!).toHaveTextContent("1 进行中");
+    expect(currentWork!).toHaveTextContent("1 open");
+    expect(currentWork!).toHaveTextContent("1 in progress");
     expect(currentWork!).toHaveTextContent("1 current");
-    expect(within(currentWork!).getByRole("link", { name: /打开 Blackboard/ })).toHaveAttribute(
+    expect(within(currentWork!).getByRole("link", { name: /open Blackboard/i })).toHaveAttribute(
       "href",
       "/projects/project-1/blackboard",
     );
 
-    expect(screen.getByText("Pentest Project")).toBeInTheDocument();
+    // Project kind is a signal Chip with dot beside the title.
+    expect(screen.getByText("Pentest Project")).toHaveClass("border-signal/25", "bg-signal/10", "text-signal");
   });
 
   it("previews and confirms a blocker-free Project Kind Conversion", async () => {
@@ -231,5 +241,7 @@ describe("ProjectDashboardPage", () => {
     expect(await screen.findByText(/conversion is ready/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /confirm conversion/i }));
     expect(await screen.findByText("CTF Challenge Project")).toBeInTheDocument();
+    // The report route does not exist for CTF projects, so the footer button hides.
+    expect(screen.queryByRole("link", { name: /open report/i })).not.toBeInTheDocument();
   });
 });

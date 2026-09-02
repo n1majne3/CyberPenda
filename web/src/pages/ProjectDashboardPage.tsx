@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowUpRight,
@@ -12,15 +12,14 @@ import {
   FolderLock,
   LayoutGrid,
   ListChecks,
-  Plus,
   RefreshCw,
+  Plus,
   Rocket,
 } from "lucide-react";
 import { apiGet, apiPost, type Dashboard, type Project, type ProjectKind, type Task } from "@/lib/api";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { BackLink } from "@/components/shared";
-import { Badge, Button, buttonVariants, Card, CardDescription, CardTitle, Chip } from "@/components/ui";
-import { formatCompactDateTime } from "@/lib/format";
+import { Button, buttonVariants, Card, CardDescription, CardTitle, Chip } from "@/components/ui";
+import { formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** Lifecycle states whose Task is still open work. Mirrors TasksPage's ACTIVE set plus pending. */
@@ -100,22 +99,9 @@ export function ProjectDashboardPage() {
   const projectKindLabel = project.kind === "ctf_challenge" ? "CTF Challenge Project" : "Pentest Project";
   const targetKind: ProjectKind = project.kind === "ctf_challenge" ? "pentest" : "ctf_challenge";
 
-  // Direction A pill tabs rendered in page markup: ProjectNav is shared chrome
-  // and cannot carry live count badges, so the dashboard ships its own nav in
-  // the same item order (Overview → Tasks → Blackboard → Findings|Solution →
-  // Evidence → Report? → Scope).
+  // Count badges on the section tabs come from the shared ProjectNav chrome,
+  // so the dashboard renders no second nav (keeps every tab on one plane).
   const isCTF = project.kind === "ctf_challenge";
-  const navItems: { to: string; label: string; end?: boolean; count?: number }[] = [
-    { to: "", label: "Overview", end: true },
-    { to: "/tasks", label: "Tasks", count: dash.counts.tasks },
-    { to: "/blackboard", label: "Blackboard" },
-    isCTF
-      ? { to: "/solution", label: "Solution" }
-      : { to: "/findings", label: "Findings", count: dash.counts.findings },
-    { to: "/evidence", label: "Evidence", count: dash.counts.evidence },
-    ...(!isCTF ? [{ to: "/report", label: "Report" }] : []),
-    { to: "/scope", label: "Scope" },
-  ];
 
   // Scope readiness checklist derived from the scope summary the dashboard
   // already loads: one required item (at least one named in-scope asset — the
@@ -132,20 +118,20 @@ export function ProjectDashboardPage() {
     {
       id: "assets",
       done: namedAssets > 0,
-      label: "添加至少一个 in-scope 资产（domain / IP / CIDR / URL），否则 task 结果不可依赖",
-      action: { label: "添加资产", to: `${base}/scope` },
+      label: "Add at least one in-scope asset (domain, IP, CIDR, or URL) before relying on Task results.",
+      action: { label: "Add asset", to: `${base}/scope` },
     },
     {
       id: "notes",
       done: dash.scope.has_notes,
       optional: true,
-      label: "可选：填写 Scope notes 说明授权边界",
+      label: "Optional: add Scope notes that explain the authorization boundary.",
     },
     {
       id: "limits",
       done: dash.scope.has_testing_limits,
       optional: true,
-      label: "可选：设置 Testing limits 约束测试窗口",
+      label: "Optional: define Testing limits for the permitted testing window.",
     },
   ];
   const completedCount = checklistItems.filter((item) => item.done).length;
@@ -199,17 +185,15 @@ export function ProjectDashboardPage() {
 
   return (
     <ProjectPageShell
-      hideChrome
       title={
         <div>
-          <BackLink to="/" className="mb-2 w-fit">
-            All projects
-          </BackLink>
           <p className="mb-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
             Engagement
           </p>
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{project.name}</h1>
-          <Badge variant="outline" className="mt-2 w-fit">{projectKindLabel}</Badge>
+          <div className="mt-0.5 flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
+            <Chip variant="signal" dot>{projectKindLabel}</Chip>
+          </div>
         </div>
       }
       description={project.description || undefined}
@@ -218,28 +202,9 @@ export function ProjectDashboardPage() {
           <Rocket className="h-4 w-4" /> Launch task
         </Link>
       }
-      bodyClassName="space-y-5"
+      bodyClassName="min-w-0 max-w-full space-y-5"
+      contentClassName="mx-auto min-w-0 max-w-6xl px-6 pb-6 lg:px-8 lg:pb-8"
     >
-      <nav aria-label="Project sections" className="flex flex-wrap gap-1 text-sm">
-        {navItems.map((item) => (
-          <NavLink
-            key={item.to}
-            to={`${base}${item.to}`}
-            end={item.end}
-            className={({ isActive }) =>
-              cn(
-                "rounded-md px-3 py-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                isActive ? "bg-secondary font-medium" : "text-muted-foreground hover:bg-muted",
-              )
-            }
-          >
-            {item.label}
-            {item.count != null && item.count > 0 && (
-              <span className="ml-1 rounded-sm bg-muted px-1 text-[10px]">{item.count}</span>
-            )}
-          </NavLink>
-        ))}
-      </nav>
 
       {!scopeReady && (
         <section
@@ -252,7 +217,7 @@ export function ProjectDashboardPage() {
               <AlertTriangle className="h-4 w-4 text-warning" /> Scope readiness
             </div>
             <span className="text-xs font-medium text-[hsl(28_90%_32%)]">
-              {completedCount} / {checklistItems.length} 项完成
+              {completedCount} / {checklistItems.length} complete
             </span>
           </div>
           <div className="px-4 py-3.5">
@@ -288,14 +253,14 @@ export function ProjectDashboardPage() {
         </section>
       )}
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard
           icon={<ListChecks className="h-3.5 w-3.5" />}
           label="Tasks"
           n={dash.counts.tasks}
           to={`${base}/tasks`}
-          chip={runningCount > 0 ? `${runningCount} 运行中` : undefined}
-          sub={latestTask ? `最近：${latestTask.goal} · ${formatRelativeTime(latestTask.updated_at)}` : undefined}
+          chip={runningCount > 0 ? `${runningCount} running` : undefined}
+          sub={latestTask ? `Latest: ${latestTask.goal} · ${formatRelativeTime(latestTask.updated_at)}` : undefined}
         />
         <StatCard icon={<FileText className="h-3.5 w-3.5" />} label="Facts" n={dash.counts.facts} to={`${base}/facts`} />
         <StatCard
@@ -303,20 +268,20 @@ export function ProjectDashboardPage() {
           label="Findings"
           n={dash.counts.findings}
           to={`${base}/findings`}
-          zeroHint="尚无 Finding — 从 Task 结论中产生"
+          zeroHint="No Findings yet — generated from Task conclusions"
         />
         <StatCard icon={<FolderLock className="h-3.5 w-3.5" />} label="Evidence" n={dash.counts.evidence} to={`${base}/evidence`} />
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-5">
+      <div className="grid min-w-0 max-w-full gap-5 lg:grid-cols-5">
         <section
           aria-labelledby="recent-activity-title"
-          className="rounded-lg border border-border bg-card shadow-sm lg:col-span-3"
+          className="min-w-0 rounded-lg border border-border bg-card shadow-sm lg:col-span-3"
         >
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <span id="recent-activity-title" className="text-sm font-medium">Recent activity</span>
             <Link to={`${base}/tasks`} className="text-xs text-muted-foreground hover:text-foreground">
-              查看全部
+              View all
             </Link>
           </div>
           {recentTasks.length === 0 ? (
@@ -327,7 +292,7 @@ export function ProjectDashboardPage() {
                 <li key={task.id} className="flex items-center gap-3 px-4 py-2.5">
                   <span className={cn("h-1.5 w-1.5 flex-none rounded-full", statusDotClass(task.status))} />
                   <span className="min-w-0 flex-1 truncate">
-                    {task.goal} — {task.status}
+                    {task.goal} — {activityStatusText(task)}
                   </span>
                   <span className="flex-none text-xs text-muted-foreground">
                     {formatRelativeTime(task.updated_at)}
@@ -340,7 +305,7 @@ export function ProjectDashboardPage() {
 
         <section
           aria-labelledby="current-work-title"
-          className="rounded-lg border border-border bg-card shadow-sm lg:col-span-2"
+          className="min-w-0 rounded-lg border border-border bg-card shadow-sm lg:col-span-2"
         >
           <div className="border-b border-border px-4 py-3">
             <span id="current-work-title" className="text-sm font-medium">Current work</span>
@@ -350,13 +315,13 @@ export function ProjectDashboardPage() {
               <span className="flex items-center gap-2">
                 <Compass className="h-4 w-4 text-muted-foreground" /> Exploration objectives
               </span>
-              <span className="font-semibold">{openTaskCount} 开放</span>
+              <span className="font-semibold">{openTaskCount} open</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
                 <FlaskConical className="h-4 w-4 text-muted-foreground" /> Attempts
               </span>
-              <span className="font-semibold">{runningCount} 进行中</span>
+              <span className="font-semibold">{runningCount} in progress</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
@@ -369,13 +334,13 @@ export function ProjectDashboardPage() {
               to={`${base}/blackboard`}
               className="mt-1 flex h-8 items-center justify-center gap-1.5 rounded-md border border-border text-xs font-medium hover:bg-muted"
             >
-              <LayoutGrid className="h-3.5 w-3.5" /> 打开 Blackboard
+              <LayoutGrid className="h-3.5 w-3.5" /> Open Blackboard
             </Link>
           </div>
         </section>
       </div>
 
-      <Card role="region" aria-labelledby="project-kind-title" className="gap-4">
+      <Card role="region" aria-labelledby="project-kind-title" className="min-w-0 gap-4">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <CardTitle id="project-kind-title">Project kind</CardTitle>
@@ -408,11 +373,13 @@ export function ProjectDashboardPage() {
         )}
       </Card>
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-6">
-        <Link to={`${base}/report`} className={buttonVariants({ variant: "secondary", size: "sm" })}>
-          <ClipboardList className="h-4 w-4" /> Open report
-        </Link>
-      </div>
+      {!isCTF && (
+        <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-6">
+          <Link to={`${base}/report`} className={buttonVariants({ variant: "outline", size: "sm" })}>
+            <ClipboardList className="h-4 w-4" /> Open report
+          </Link>
+        </div>
+      )}
     </ProjectPageShell>
   );
 }
@@ -461,7 +428,7 @@ function StatCard({
       to={to}
       aria-label={`View ${n} ${countLabel(label, n)}`}
       className={cn(
-        "group rounded-lg border p-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "group min-w-0 overflow-hidden rounded-lg border p-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
         empty
           ? "border-dashed border-border bg-card/50 hover:border-ring"
           : "border-border bg-card shadow-sm hover:border-ring",
@@ -511,20 +478,28 @@ function statusDotClass(status: string): string {
   }
 }
 
-/** Compact relative timestamp for the activity feed (e.g. "12m ago"). */
-function formatRelativeTime(value: string): string {
-  const time = Date.parse(value);
-  if (Number.isNaN(time)) return "";
-  const diffMs = Date.now() - time;
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 7) return `${days}d ago`;
-  return formatCompactDateTime(time);
+/** Maps durable Task state and live Runtime Activity to operator-facing text. */
+function activityStatusText(task: Task): string {
+  const activity = task.runtime_activity;
+  if (activity?.liveness === "live") {
+    return activity.turn_activity === "busy" ? "Running" : "Idle, awaiting input";
+  }
+  switch (task.status) {
+    case "running":
+      return "Running";
+    case "completed":
+      return "Completed";
+    case "failed":
+      return "Failed";
+    case "paused":
+      return "Paused";
+    case "pending":
+      return "Queued";
+    default:
+      return "Stopped";
+  }
 }
+
 
 function countLabel(label: string, count: number) {
   if (label === "Evidence") return count === 1 ? "evidence item" : "evidence items";

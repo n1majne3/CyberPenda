@@ -2,11 +2,10 @@ import { useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Rocket } from "lucide-react";
 import { AttachmentPicker } from "@/components/AttachmentPicker";
-import { RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
+import { LaunchSummaryRail, RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { Button, Card, CardHeader, CardTitle, Input, Label, Select, Textarea } from "@/components/ui";
+import { Card, CardHeader, CardTitle, Input, Label, Select, Textarea } from "@/components/ui";
 import { apiPost, apiPostForm } from "@/lib/api";
-import { displayReasoningEffort } from "@/pages/runtimeProfileForm";
 
 const REASON_TASK_GOAL = "Read the complete Runtime Blackboard Snapshot and prepare an approval-required proposal for next Task Goals, Exploration Objective changes, and a readiness judgment. Do not mutate Blackboard records directly.";
 
@@ -78,11 +77,6 @@ export function TaskLaunchPage() {
   const hostBlocked = launchControls.form.runner === "host" && !launchControls.hostActivated;
   const projectKind = launchControls.project?.kind === "ctf_challenge" ? "ctf_challenge" : "pentest";
   const taskTypeMatchesProject = reasonTask || (taskType !== "" && taskType === projectKind);
-  const runtimeDisplay = launchControls.plugins.find((plugin) => plugin.id === launchControls.form.runtime)?.name ?? (launchControls.form.runtime || "—");
-  const summaryProvider = launchControls.compatibleProviders.find((provider) => provider.id === launchControls.form.modelProviderId);
-  const modelDisplay = [summaryProvider?.name, launchControls.form.modelOverride || "Default model"].filter(Boolean).join(" · ") || "—";
-  const runnerDisplay = launchControls.form.runner === "host" ? "Host" : launchControls.containerCLI === "podman" ? "Podman" : "Docker";
-  const blackboardDisplay = launchControls.blackboardConclusionMode === "assisted" ? "Assisted" : launchControls.blackboardConclusionMode === "disabled" ? "Disabled" : "Interactive";
 
   return (
     <ProjectPageShell
@@ -112,14 +106,14 @@ export function TaskLaunchPage() {
         )}
         <section className="rounded-lg border border-border bg-card shadow-sm">
           <div className="p-4">
-            <Label htmlFor="goal" className="text-sm font-medium">{reasonTask ? "Reason Task goal" : "你想探索什么？"}</Label>
+            <Label htmlFor="goal" className="text-sm font-medium">{reasonTask ? "Reason Task goal" : "What do you want to explore?"}</Label>
             <Textarea
               id="goal"
               name="task_goal"
               rows={4}
               value={effectiveGoal}
               onChange={(event) => setGoal(event.target.value)}
-              placeholder="描述目标，例如：对 staging.example.com 做认证面枚举…"
+              placeholder="Describe the goal, for example: enumerate the authenticated surface of staging.example.com…"
               autoComplete="off"
               readOnly={reasonTask}
               className="mt-2 w-full resize-none rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground focus:border-ring"
@@ -128,6 +122,7 @@ export function TaskLaunchPage() {
             <div className="mt-3">
               <AttachmentPicker
                 id="attachments"
+                variant="compact"
                 files={attachments}
                 onFilesChange={setAttachments}
                 onError={launchControls.setError}
@@ -155,25 +150,13 @@ export function TaskLaunchPage() {
         </Card>
       </div>
 
-<aside className="lg:sticky lg:top-6 h-fit">
-        <div className="rounded-lg border border-border bg-card shadow-sm">
-          <div className="border-b border-border px-4 py-3"><span className="text-sm font-medium">Launch 摘要</span></div>
-          <dl className="space-y-2.5 px-4 py-3.5 text-xs">
-            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Runtime</dt><dd className="min-w-0 truncate font-medium">{runtimeDisplay}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Model</dt><dd className="min-w-0 truncate font-mono">{modelDisplay}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Effort</dt><dd className="font-medium">{displayReasoningEffort(launchControls.form.reasoningEffort)}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Runner</dt><dd className="font-medium">{runnerDisplay}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Blackboard</dt><dd className="font-medium">{blackboardDisplay}</dd></div>
-            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Skills</dt><dd className="font-medium">{launchControls.enabledSkillsPreview.length} enabled</dd></div>
-          </dl>
-          <div className="border-t border-border p-3.5">
-            <Button onClick={launchTask} disabled={!taskTypeMatchesProject || !launchControls.launchReady(effectiveGoal) || launching || hostBlocked} className="w-full">
-              <Rocket className="h-4 w-4" /> {launching ? "Launching…" : reasonTask ? "Launch Reason Task" : "Launch"}
-            </Button>
-            <p className="mt-2 text-center text-xs text-muted-foreground">启动前会自动运行 Preflight 检查</p>
-          </div>
-        </div>
-      </aside>
+<LaunchSummaryRail
+        controller={launchControls}
+        disabled={!taskTypeMatchesProject || !launchControls.launchReady(effectiveGoal) || launching || hostBlocked}
+        busy={launching}
+        label={reasonTask ? "Launch Reason Task" : "Launch"}
+        onClick={launchTask}
+      />
     </ProjectPageShell>
   );
 }

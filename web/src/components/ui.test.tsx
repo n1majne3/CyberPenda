@@ -155,14 +155,14 @@ describe("Badge", () => {
 });
 
 describe("Input", () => {
-  it("is h-8 with a tight radius", () => {
+  it("uses the rounded shadowless mockup control style", () => {
     const { getByRole } = render(<Input />);
-    expect(getByRole("textbox")).toHaveClass("h-8", "rounded-md");
+    expect(getByRole("textbox")).toHaveClass("h-8", "rounded-lg", "shadow-none");
   });
 
-  it("has a Vercel-style focus ring", () => {
+  it("uses border-only focus treatment", () => {
     const { getByRole } = render(<Input />);
-    expect(getByRole("textbox")).toHaveClass("focus-visible:ring-2");
+    expect(getByRole("textbox")).toHaveClass("focus-visible:border-ring", "focus-visible:ring-0");
   });
 
   it("uses a neutral background surface instead of transparent dark overlays", () => {
@@ -186,9 +186,9 @@ describe("Input", () => {
 });
 
 describe("Textarea", () => {
-  it("has a Vercel-style focus ring", () => {
+  it("uses border-only focus treatment", () => {
     const { container } = render(<Textarea />);
-    expect(container.firstChild).toHaveClass("focus-visible:ring-2");
+    expect(container.firstChild).toHaveClass("focus-visible:border-ring", "focus-visible:ring-0");
   });
 
   it("exposes sizes and validation variants", () => {
@@ -221,7 +221,7 @@ describe("Select", () => {
       </Select>,
     );
     expect(container.firstChild?.nodeName).toBe("SELECT");
-    expect(container.firstChild).toHaveClass("h-8", "rounded-md");
+    expect(container.firstChild).toHaveClass("h-8", "rounded-lg", "shadow-none");
   });
 
   it("is a controlled-compatible select (forwards value/onChange)", () => {

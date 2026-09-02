@@ -5,6 +5,7 @@ import {
   ArrowDownNarrowWide,
   ArrowUpNarrowWide,
   Bot,
+  Brain,
   Check,
   CheckCircle2,
   ChevronRight,
@@ -12,8 +13,6 @@ import {
   Copy,
   Filter,
   Loader2,
-  OctagonPause,
-  User,
   XCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -94,28 +93,6 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
     () => (sortDirection === "newest_first" ? [...filteredItems].reverse() : filteredItems),
     [filteredItems, sortDirection],
   );
-
-  // Pair each tool call with the immediately following result for the same
-  // tool so the pair renders as one compressed tool row (Direction A). The
-  // source order is chronological, so the result always trails its call.
-  const toolPairs = useMemo(() => {
-    const resultForCall = new Map<TimelineItem, TimelineItem>();
-    const absorbedResults = new Set<TimelineItem>();
-    for (let index = 0; index + 1 < filteredItems.length; index += 1) {
-      const item = filteredItems[index]!;
-      if (item.type !== "tool_use") continue;
-      const next = filteredItems[index + 1]!;
-      if (next.type === "tool_result" && (!next.tool || !item.tool || next.tool === item.tool)) {
-        resultForCall.set(item, next);
-        absorbedResults.add(next);
-      }
-    }
-    return { resultForCall, absorbedResults };
-  }, [filteredItems]);
-
-  // Timeline lane per displayed row; a lane change starts a new turn-group
-  // marker on the rail.
-  const lanes = useMemo(() => displayItems.map(turnLane), [displayItems]);
 
   // Virtualized rendering window: DOM size stays bounded while loaded older
   // pages accumulate in state (#202). The container element is stored in
@@ -397,30 +374,22 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
             )}
           </div>
         ) : (
-          <div>
+          <div className="divide-y">
             {sortDirection === "chronological" && footer}
             {displayWindow.spacerBefore > 0 && (
               <div aria-hidden="true" style={{ height: displayWindow.spacerBefore }} />
             )}
-            {visibleItems.map((item, visibleIndex) => {
-              if (toolPairs.absorbedResults.has(item)) return null;
-              const absoluteIndex = (displayWindow.virtualized ? displayWindow.startIndex : 0) + visibleIndex;
-              const lane = lanes[absoluteIndex] ?? "runtime";
-              return (
-                <TranscriptEventRow
-                  key={`${item.id ?? `${item.seq}-${visibleIndex}`}-${item.type === "reasoning" ? item.status ?? "" : ""}`}
-                  ref={(el) => {
-                    if (el) eventRefs.current.set(item.seq, el);
-                    else eventRefs.current.delete(item.seq);
-                  }}
-                  item={item}
-                  isSelected={selectedSeq === item.seq}
-                  pairedResult={toolPairs.resultForCall.get(item)}
-                  lane={lane}
-                  laneStart={absoluteIndex === 0 || lanes[absoluteIndex - 1] !== lane}
-                />
-              );
-            })}
+            {visibleItems.map((item, visibleIndex) => (
+              <TranscriptEventRow
+                key={`${item.id ?? `${item.seq}-${visibleIndex}`}-${item.type === "reasoning" ? item.status ?? "" : ""}`}
+                ref={(el) => {
+                  if (el) eventRefs.current.set(item.seq, el);
+                  else eventRefs.current.delete(item.seq);
+                }}
+                item={item}
+                isSelected={selectedSeq === item.seq}
+              />
+            ))}
             {displayWindow.spacerAfter > 0 && (
               <div aria-hidden="true" style={{ height: displayWindow.spacerAfter }} />
             )}
@@ -580,247 +549,46 @@ function TimelineBar({
   );
 }
 
-type TurnLane = "user" | "runtime" | "system" | "divider";
-
-/** Maps a timeline item onto its Direction A lane: operator input, runtime
- * work, system workflow markers, or a full-width lifecycle divider. */
-function turnLane(item: TimelineItem): TurnLane {
-  if (item.type === "lifecycle") return "divider";
-  if (item.type === "steering") return "user";
-  if (item.type === "harness") return "system";
-  return "runtime";
-}
-
-/** Timeline rail grouping one runtime turn: a circular lane marker on the
- * left rail ties the turn's rows into a single visual unit. */
-function TurnGroup({
-  children,
-  marker,
-  showMarker = true,
-}: {
-  children: ReactNode;
-  marker: Exclude<TurnLane, "divider">;
-  showMarker?: boolean;
-}) {
-  return (
-    <div className="relative pl-6">
-      {showMarker && (
-        <span
-          className={cn(
-            "absolute left-0 top-1 flex h-4 w-4 items-center justify-center rounded-full border",
-            marker === "user" && "border-border bg-card",
-            marker === "runtime" && "border-signal/40 bg-signal/10 text-signal",
-            marker === "system" && "border-border bg-muted",
-          )}
-        >
-          {marker === "user" && <User className="h-2.5 w-2.5" />}
-          {marker === "runtime" && <Bot className="h-2.5 w-2.5" />}
-          {marker === "system" && <OctagonPause className="h-2.5 w-2.5" />}
-        </span>
-      )}
-      <div className="border-l border-border pl-4">{children}</div>
-    </div>
-  );
-}
-
-/** Lifecycle events degrade to centered dividers instead of posing as rows. */
-function SystemEventDivider({ item }: { item: TimelineItem }) {
-  return (
-    <div className="flex items-center gap-3 py-1">
-      <span className="h-px flex-1 bg-border" />
-      <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-        <OctagonPause className="h-3 w-3" />
-        {getEventSummary(item) || getEventLabel(item)}
-        <span className="text-muted-foreground/50">· #{item.seq}</span>
-      </span>
-      <span className="h-px flex-1 bg-border" />
-    </div>
-  );
-}
-
-/** One compressed row per tool call: status icon, tool name, one-line command
- * summary, optional failure status, and call→result duration. The call input
- * and the paired result output stay folded behind the row until expanded. */
-function ToolCallRow({
-  call,
-  result,
-  expanded,
-  onToggle,
-}: {
-  call?: TimelineItem;
-  result?: TimelineItem;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const item = call ?? result;
-  if (!item) return null;
-  const hasInput = Boolean(call?.input && Object.keys(call.input).length > 0);
-  const hasOutput = Boolean(result?.output && result.output.length > 0);
-  const hasDetail = hasInput || hasOutput;
-  const failed = Boolean(result?.status && result.status !== "completed" && result.status !== "success");
-  const duration =
-    call?.created_at && result?.created_at ? formatDuration(call.created_at, result.created_at) : null;
-  return (
-    <div className="py-0.5">
-      <button
-        type="button"
-        disabled={!hasDetail}
-        onClick={onToggle}
-        className={cn(
-          "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-          hasDetail ? "hover:bg-muted/50" : "cursor-default",
-        )}
-      >
-        {failed ? (
-          <XCircle className="h-3.5 w-3.5 flex-none text-destructive" />
-        ) : result ? (
-          <CheckCircle2 className="h-3.5 w-3.5 flex-none text-success" />
-        ) : (
-          <Clock className="h-3.5 w-3.5 flex-none text-muted-foreground" />
-        )}
-        <span className="flex-none font-mono text-xs text-muted-foreground">
-          {item.tool ?? (call ? "Tool" : "Result")}
-        </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-xs">{getEventSummary(item) || "(empty)"}</span>
-        {failed && (
-          <span className="flex-none rounded-sm bg-destructive/10 px-1 text-[10px] text-destructive">
-            {result?.status}
-          </span>
-        )}
-        {duration && <span className="flex-none text-xs text-muted-foreground">{duration}</span>}
-        {hasDetail && (
-          <ChevronRight
-            className={cn("h-3.5 w-3.5 flex-none text-muted-foreground transition-transform", expanded && "rotate-90")}
-          />
-        )}
-      </button>
-      {expanded && hasDetail && (
-        <div
-          data-testid="timeline-event-detail"
-          className="ml-5 rounded-md border border-border bg-muted/40 font-mono text-xs leading-relaxed text-muted-foreground"
-        >
-          {hasInput && call && <EventDetailContent item={call} />}
-          {hasOutput && result && <EventDetailContent item={result} />}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Reasoning entries fold behind a single italic summary line by default. */
-function ReasoningRow({
+function TranscriptEventRow({
+  ref,
   item,
-  expanded,
-  onToggle,
+  isSelected,
 }: {
+  ref?: React.Ref<HTMLDivElement>;
   item: TimelineItem;
-  expanded: boolean;
-  onToggle: () => void;
+  isSelected: boolean;
 }) {
-  const hasDetail = Boolean(item.content && item.content.length > 0);
-  const summary = getEventSummary(item);
-  return (
-    <div className="py-1.5">
-      <button
-        type="button"
-        disabled={!hasDetail}
-        onClick={onToggle}
-        className={cn(
-          "flex w-full items-center gap-1.5 rounded text-left text-xs italic text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-          hasDetail ? "hover:text-foreground" : "cursor-default",
-        )}
-      >
-        {hasDetail && (
-          <ChevronRight className={cn("h-3.5 w-3.5 flex-none transition-transform", expanded && "rotate-90")} />
-        )}
-        <span className="min-w-0 flex-1 truncate">
-          {getEventLabel(item)} · {summary || "(empty)"}
-        </span>
-      </button>
-      {expanded && hasDetail && (
-        <div data-testid="timeline-event-detail" className="mt-1 pl-5 text-xs text-muted-foreground">
-          <EventDetailContent item={item} />
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Assistant messages drop the card chrome for a signal-colored left accent. */
-function AssistantMessageRow({
-  item,
-  expanded,
-  onToggle,
-}: {
-  item: TimelineItem;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const hasDetail = Boolean(item.content && item.content.length > 0);
-  const summary = getEventSummary(item);
-  return (
-    <div className="py-1.5">
-      <div className="border-l-2 border-signal/40 pl-4 text-sm leading-relaxed">
-        <button
-          type="button"
-          disabled={!hasDetail}
-          onClick={onToggle}
-          className={cn(
-            "w-full rounded text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
-            hasDetail ? "cursor-pointer hover:text-foreground" : "cursor-default",
-          )}
-        >
-          <div className="flex items-start gap-1.5">
-            {hasDetail && (
-              <ChevronRight
-                className={cn(
-                  "mt-0.5 h-3 w-3 shrink-0 text-muted-foreground/50 transition-transform",
-                  expanded && "rotate-90",
-                )}
-              />
-            )}
-            <span className="truncate">{summary || "(empty)"}</span>
-          </div>
-        </button>
-        {expanded && hasDetail && (
-          <div data-testid="timeline-event-detail" className="mt-1">
-            <EventDetailContent item={item} />
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** Rows the Direction A redesign leaves on the classic layout: errors,
- * Harness workflow markers, subagent activity, and steering directives. */
-function GenericEventRow({
-  item,
-  expanded,
-  onToggle,
-  date,
-}: {
-  item: TimelineItem;
-  expanded: boolean;
-  onToggle: () => void;
-  date: Date | null;
-}) {
+  const [expanded, setExpanded] = useState(item.type === "reasoning" && item.status === "streaming");
   const color = getEventColor(item);
   const label = getEventLabel(item);
   const summary = getEventSummary(item);
-  const hasDetail = Boolean(
-    (item.type === "harness" || item.type === "error") && item.content && item.content.length > 0,
-  );
+  const date = useMemo(() => (item.created_at ? new Date(item.created_at) : null), [item.created_at]);
+
+  const hasDetail =
+    (item.type === "tool_use" && item.input && Object.keys(item.input).length > 0) ||
+    (item.type === "tool_result" && item.output && item.output.length > 0) ||
+    (item.type === "reasoning" && item.content && item.content.length > 0) ||
+    (item.type === "text" && item.content && item.content.length > 0) ||
+    (item.type === "harness" && item.content && item.content.length > 0) ||
+    (item.type === "error" && item.content && item.content.length > 0);
 
   return (
-    <>
-      <div className="flex items-start gap-2 py-2">
+    <div
+      ref={ref}
+      data-testid="transcript-event-row"
+      className={cn(
+        "group [contain-intrinsic-size:48px] [content-visibility:auto] transition-colors",
+        isSelected && "bg-accent/50",
+      )}
+    >
+      <div className="flex items-start gap-2 px-4 py-2">
         <span
           className={cn(
             "mt-0.5 inline-flex min-w-[60px] shrink-0 items-center justify-center rounded px-1.5 py-0.5 text-[11px] font-medium",
             colorClasses[color].label,
           )}
         >
+          {item.type === "reasoning" && <Brain className="mr-1 h-3 w-3 shrink-0" />}
           {item.type === "error" && <AlertCircle className="mr-1 h-3 w-3 shrink-0" />}
           {label}
         </span>
@@ -828,7 +596,7 @@ function GenericEventRow({
         <button
           type="button"
           disabled={!hasDetail}
-          onClick={onToggle}
+          onClick={() => hasDetail && setExpanded((open) => !open)}
           className={cn(
             "min-w-0 flex-1 rounded py-0.5 text-left text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
             hasDetail ? "cursor-pointer hover:text-foreground" : "cursor-default",
@@ -861,63 +629,11 @@ function GenericEventRow({
       </div>
 
       {hasDetail && expanded && (
-        <div data-testid="timeline-event-detail" className="pb-3">
+        <div data-testid="timeline-event-detail" className="px-4 pb-3">
           <div className="ml-[72px] border-l-2 border-border/60">
             <EventDetailContent item={item} />
           </div>
         </div>
-      )}
-    </>
-  );
-}
-
-function TranscriptEventRow({
-  ref,
-  item,
-  isSelected,
-  pairedResult,
-  lane,
-  laneStart,
-}: {
-  ref?: React.Ref<HTMLDivElement>;
-  item: TimelineItem;
-  isSelected: boolean;
-  pairedResult?: TimelineItem;
-  lane: TurnLane;
-  laneStart: boolean;
-}) {
-  const [expanded, setExpanded] = useState(item.type === "reasoning" && item.status === "streaming");
-  const toggle = useCallback(() => setExpanded((open) => !open), []);
-  const date = useMemo(() => (item.created_at ? new Date(item.created_at) : null), [item.created_at]);
-
-  return (
-    <div
-      ref={ref}
-      data-testid="transcript-event-row"
-      className={cn(
-        "group px-4 [contain-intrinsic-size:48px] [content-visibility:auto] transition-colors",
-        isSelected && "bg-accent/50",
-      )}
-    >
-      {lane === "divider" ? (
-        <SystemEventDivider item={item} />
-      ) : (
-        <TurnGroup marker={lane} showMarker={laneStart}>
-          {item.type === "tool_use" || item.type === "tool_result" ? (
-            <ToolCallRow
-              call={item.type === "tool_use" ? item : undefined}
-              result={item.type === "tool_use" ? pairedResult : item}
-              expanded={expanded}
-              onToggle={toggle}
-            />
-          ) : item.type === "reasoning" ? (
-            <ReasoningRow item={item} expanded={expanded} onToggle={toggle} />
-          ) : item.type === "text" ? (
-            <AssistantMessageRow item={item} expanded={expanded} onToggle={toggle} />
-          ) : (
-            <GenericEventRow item={item} expanded={expanded} onToggle={toggle} date={date} />
-          )}
-        </TurnGroup>
       )}
     </div>
   );

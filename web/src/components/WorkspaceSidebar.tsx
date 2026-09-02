@@ -29,6 +29,7 @@ import { ThemeToggle } from "@/components/ThemeProvider";
 import { PromptDialog } from "@/components/ConfirmDialog";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 import { cn } from "@/lib/utils";
+import { formatRelativeTime } from "@/lib/format";
 
 // Dense sidebar rows: keep a visible focus target without the outer black
 // ring-offset frame that reads as a heavy selection box.
@@ -230,14 +231,6 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
     [sortedProjects, normalizedQuery],
   );
 
-  // Sessions sharing a title get a relative-time suffix so the rows stay
-  // distinguishable; counts cover every loaded Session, not just visible rows.
-  const sessionNameCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const session of sessions) counts.set(session.title, (counts.get(session.title) ?? 0) + 1);
-    return counts;
-  }, [sessions]);
-
   const toggleProject = (projectId: string, defaultOpen: boolean) => {
     setProjectDisclosure((previous) => {
       const next = !(previous[projectId] ?? defaultOpen);
@@ -341,7 +334,6 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
                     session={session}
                     current={session.id === currentSessionId}
                     busy={sessionActionId === session.id}
-                    duplicate={(sessionNameCounts.get(session.title) ?? 0) > 1}
                     onNavigate={onNavigate}
                     onRename={(session) => setRenameTarget(session)}
                     onArchive={handleSessionArchive}
@@ -528,7 +520,7 @@ function ProjectRow({
         </NavLink>
       </div>
 
-      <div id={taskPanelId} hidden={!open} className="ml-4 mt-0.5 space-y-0.5 border-l border-sidebar-border/70 pl-2">
+      <div id={taskPanelId} hidden={!open} className="mt-0.5 space-y-0.5">
         {tasksLoading ? (
           <SidebarStatus label={`Loading tasks for ${project.name}`} />
         ) : tasksError ? (
@@ -544,7 +536,7 @@ function ProjectRow({
               to={`/projects/${encodeURIComponent(project.id)}/tasks`}
               onClick={onNavigate}
               className={cn(
-                "inline-flex h-8 w-full items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                "inline-flex h-8 w-full items-center rounded-md pl-7 pr-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
                 sidebarFocusClass,
               )}
             >
@@ -561,7 +553,6 @@ function SessionRow({
   session,
   current,
   busy,
-  duplicate,
   onNavigate,
   onRename,
   onArchive,
@@ -569,29 +560,31 @@ function SessionRow({
   session: Session;
   current: boolean;
   busy: boolean;
-  duplicate: boolean;
   onNavigate?: () => void;
   onRename: (session: Session) => void;
   onArchive: (session: Session) => Promise<void>;
 }) {
+  const failed = session.latest_continuation?.status === "failed";
+  const state = runtimeActivityState(session.runtime_activity, failed);
+  const time = formatRelativeTime(session.last_activity_at ?? session.updated_at);
   return (
-    <div className="group flex items-center gap-1">
+    <div className="group flex items-start gap-1">
       <NavLink
         to={`/sessions/${encodeURIComponent(session.id)}`}
         end
-        aria-label={`Open ${session.title} session conversation. ${runtimeActivityState(session.runtime_activity, session.latest_continuation?.status === "failed").label}.`}
+        aria-label={`Open ${session.title} session conversation. ${state.label}.`}
         onClick={onNavigate}
-        className={({ isActive }) => navItemClasses(isActive, "min-w-0 flex-1")}
+        className={({ isActive }) => navItemClasses(isActive, "h-auto min-w-0 flex-1 items-start")}
       >
         {({ isActive }) => (
           <>
-            <RuntimeActivityIndicator activity={session.runtime_activity} failed={session.latest_continuation?.status === "failed"} />
-            <span className="truncate">{session.title}</span>
-            {duplicate && (
-              <span className="shrink-0 text-xs text-muted-foreground">
-                {formatRelativeTime(session.last_activity_at ?? session.updated_at)}
+            <RuntimeActivityIndicator activity={session.runtime_activity} failed={failed} className="mt-0.5" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{session.title}</span>
+              <span className="mt-0.5 block truncate text-[11px] leading-[1.3] text-muted-foreground">
+                {time ? `${time} · ${state.text}` : state.text}
               </span>
-            )}
+            </span>
             <span className="sr-only"> session conversation</span>
             <ActiveIndicator active={isActive || current} />
           </>
@@ -609,7 +602,7 @@ function TaskRow({ task, current, onNavigate }: { task: Task; current: boolean; 
       end
       aria-label={`Open ${task.goal || "Untitled task"} task conversation. ${runtimeActivityState(task.runtime_activity, task.status === "failed").label}.`}
       onClick={onNavigate}
-      className={({ isActive }) => navItemClasses(isActive || current, "min-w-0 w-full")}
+      className={({ isActive }) => navItemClasses(isActive || current, "h-auto min-w-0 w-full py-1 pl-7 text-xs")}
     >
       {({ isActive }) => (
         <>
@@ -671,6 +664,9 @@ function SessionOverflowMenu({
         onClick={() => setOpen((previous) => !previous)}
         className={cn(
           "inline-flex size-8 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+          // Mockup parity: the overflow action is hover-revealed, but stays
+          // visible while the menu is open or the button has keyboard focus.
+          open ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
           sidebarFocusClass,
         )}
       >
@@ -839,10 +835,10 @@ function SidebarEmpty({
   );
 }
 
-function RuntimeActivityIndicator({ activity, failed = false }: { activity?: RuntimeActivity; failed?: boolean }) {
+function RuntimeActivityIndicator({ activity, failed = false, className }: { activity?: RuntimeActivity; failed?: boolean; className?: string }) {
   const state = runtimeActivityState(activity, failed);
   return (
-    <span role="img" title={state.label} aria-label={state.label} className="inline-flex size-4 shrink-0 items-center justify-center">
+    <span role="img" title={state.label} aria-label={state.label} className={cn("inline-flex size-4 shrink-0 items-center justify-center", className)}>
       <span
         aria-hidden="true"
         className={cn("size-1.5 rounded-full", state.dot, state.busy && "animate-pulse motion-reduce:animate-none")}
@@ -851,21 +847,21 @@ function RuntimeActivityIndicator({ activity, failed = false }: { activity?: Run
   );
 }
 
-// Direction A status dots: a busy Runtime pulses green, a live-but-idle one is
-// blue, and offline/unknown/missing activity falls back to muted gray. Durable
-// failures keep a red dot so they never visually collapse into offline.
+// Direction A status dots keep the visible state text aligned with the
+// accessible Runtime Activity label. Durable failures remain distinct from an
+// offline Runtime so operators never mistake failure for a normal stop.
 function runtimeActivityState(activity?: RuntimeActivity, failed = false) {
-  if (failed) return { label: "Runtime failure", dot: "bg-destructive", busy: false };
+  if (failed) return { label: "Runtime failure", text: "Failed", dot: "bg-destructive", busy: false };
   if (activity?.liveness === "live" && activity.turn_activity === "busy") {
-    return { label: "Runtime busy", dot: "bg-success", busy: true };
+    return { label: "Runtime busy", text: "Running", dot: "bg-success", busy: true };
   }
-  if (activity?.liveness === "live") return { label: "Runtime live idle", dot: "bg-info", busy: false };
-  if (activity?.liveness === "offline") return { label: "Runtime offline", dot: "bg-muted-foreground/40", busy: false };
+  if (activity?.liveness === "live") return { label: "Runtime live idle", text: "Idle", dot: "bg-info", busy: false };
+  if (activity?.liveness === "offline") return { label: "Runtime offline", text: "Stopped", dot: "bg-muted-foreground/40", busy: false };
   if (activity?.liveness === "orphaned") {
-    return { label: "Runtime failure (orphaned)", dot: "bg-destructive", busy: false };
+    return { label: "Runtime failure (orphaned)", text: "Unknown", dot: "bg-warning", busy: false };
   }
-  if (activity?.liveness === "unknown") return { label: "Runtime unavailable (unknown)", dot: "bg-muted-foreground/40", busy: false };
-  return { label: "Runtime activity unavailable", dot: "bg-muted-foreground/40", busy: false };
+  if (activity?.liveness === "unknown") return { label: "Runtime unavailable (unknown)", text: "Unknown", dot: "bg-warning", busy: false };
+  return { label: "Runtime activity unavailable", text: "Stopped", dot: "bg-muted-foreground/40", busy: false };
 }
 
 function isSessionBusy(session: Session) {
@@ -894,34 +890,6 @@ function activityTime(...values: (string | undefined)[]) {
   return Math.max(...values.map((value) => (value ? Date.parse(value) : Number.NEGATIVE_INFINITY)));
 }
 
-const relativeTimeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
-
-const RELATIVE_TIME_DIVISIONS: { amount: number; unit: Intl.RelativeTimeFormatUnit }[] = [
-  { amount: 60, unit: "second" },
-  { amount: 60, unit: "minute" },
-  { amount: 24, unit: "hour" },
-  { amount: 7, unit: "day" },
-  { amount: 4.34524, unit: "week" },
-  { amount: 12, unit: "month" },
-  { amount: Number.POSITIVE_INFINITY, unit: "year" },
-];
-
-// Compact "2 days ago"-style timestamp that disambiguates same-named Sessions
-// in the Sidebar. The repo's format helpers are all absolute, so this is the
-// one relative-time formatter.
-function formatRelativeTime(value: string | undefined) {
-  if (!value) return "";
-  const time = Date.parse(value);
-  if (Number.isNaN(time)) return "";
-  let delta = (time - Date.now()) / 1000;
-  for (const division of RELATIVE_TIME_DIVISIONS) {
-    if (Math.abs(delta) < division.amount) {
-      return relativeTimeFormatter.format(Math.round(delta), division.unit);
-    }
-    delta /= division.amount;
-  }
-  return "";
-}
 
 function takeRecentWithCurrent<T>(
   items: T[],
