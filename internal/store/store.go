@@ -955,13 +955,14 @@ func migrations() []migration {
 		newMigration(67, "operator_disabled_output_origins", migration67SQL, migration67Up),
 		newMigration(68, "operator_evidence_request_sources", migration68SQL, migration68Up),
 		newMigration(69, "owner_local_runtime_configuration_snapshots", migration69SQL, migration69Up),
-		newMigration(70, "working_graph_blackboard_modes", migration70SQL, migration70Up),
-		newMigration(71, "continuation_grant_access", migration71SQL, migration71Up),
-		newMigration(72, "working_graph_intents", migration72SQL, migration72Up),
+		newMigration(70, "global_skill_opt_outs", migration70SQL, migration70Up),
+		newMigration(71, "working_graph_blackboard_modes", migration71SQL, migration71Up),
+		newMigration(72, "continuation_grant_access", migration72SQL, migration72Up),
+		newMigration(73, "working_graph_intents", migration73SQL, migration73Up),
 	}
 }
 
-const migration72SQL = `
+const migration73SQL = `
 CREATE TABLE IF NOT EXISTS working_graph_intents (
  id TEXT PRIMARY KEY,
  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('task','session')),
@@ -986,16 +987,16 @@ CREATE INDEX IF NOT EXISTS idx_working_graph_intents_settlement
  ON working_graph_intents(owner_kind,owner_id,continuation_id,state,sequence);
 `
 
-func migration72Up(tx *sql.Tx) error { return execStatements(tx, migration72SQL) }
+func migration73Up(tx *sql.Tx) error { return execStatements(tx, migration73SQL) }
 
-const migration71SQL = `
+const migration72SQL = `
 ALTER TABLE blackboard_continuation_grants
 	ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'full' CHECK (access_mode IN ('full', 'read_only'));
 ALTER TABLE session_continuation_interface_grants
 	ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'full' CHECK (access_mode IN ('full', 'read_only'));
 `
 
-func migration71Up(tx *sql.Tx) error {
+func migration72Up(tx *sql.Tx) error {
 	for _, item := range []struct {
 		table string
 		sql   string
@@ -1017,13 +1018,13 @@ func migration71Up(tx *sql.Tx) error {
 	return nil
 }
 
-const migration70SQL = `
+const migration71SQL = `
 Rename the Session Blackboard Mode column to blackboard_mode.
 Map historical assisted values to working_graph.
 Migrate Task Run Controls from blackboard_conclusion_mode to blackboard_mode.
 `
 
-func migration70Up(tx *sql.Tx) error {
+func migration71Up(tx *sql.Tx) error {
 	hasLegacy, err := storeTableHasColumn(tx, "sessions", "blackboard_conclusion_mode")
 	if err != nil {
 		return err
@@ -1075,6 +1076,15 @@ func migration70Up(tx *sql.Tx) error {
 	}
 	return nil
 }
+
+const migration70SQL = `
+CREATE TABLE IF NOT EXISTS skill_global_opt_outs (
+	skill_id TEXT PRIMARY KEY,
+	created_at TEXT NOT NULL
+);
+`
+
+func migration70Up(tx *sql.Tx) error { return execStatements(tx, migration70SQL) }
 
 const migration69SQL = `runtime configuration snapshot v1; remove automatic Runtime Profiles and runtime_profiles.kind`
 

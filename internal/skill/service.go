@@ -196,13 +196,21 @@ func (s *Service) Get(id string) (Skill, error) {
 		return Skill{}, ErrNotFound
 	}
 	return s.scanSkill(s.db.QueryRow(
-		`SELECT id, name, description, source_provenance_json, created_at, updated_at FROM skills WHERE id = ?`,
+		`SELECT s.id, s.name, s.description, s.source_provenance_json, s.created_at, s.updated_at,
+		        EXISTS (SELECT 1 FROM skill_global_opt_outs g WHERE g.skill_id = s.id)
+		 FROM skills s
+		 WHERE s.id = ?`,
 		id,
 	))
 }
 
 func (s *Service) List() ([]Skill, error) {
-	rows, err := s.db.Query(`SELECT id, name, description, source_provenance_json, created_at, updated_at FROM skills ORDER BY id ASC`)
+	rows, err := s.db.Query(
+		`SELECT s.id, s.name, s.description, s.source_provenance_json, s.created_at, s.updated_at,
+		        EXISTS (SELECT 1 FROM skill_global_opt_outs g WHERE g.skill_id = s.id)
+		 FROM skills s
+		 ORDER BY s.id ASC`,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("list skills: %w", err)
 	}
@@ -262,6 +270,82 @@ func (s *Service) Files(id string) (map[string]string, error) {
 		return nil, err
 	}
 	return files, nil
+}
+
+func (s *Service) ProfileOptedOutSkillIDs(profileID string) ([]string, error) {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return []string{}, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT skill_id FROM skill_profile_opt_outs WHERE profile_id = ? ORDER BY skill_id ASC`,
+		profileID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list Profile Skill Opt-Outs: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var skillID string
+		if err := rows.Scan(&skillID); err != nil {
+			return nil, fmt.Errorf("scan Profile Skill Opt-Out: %w", err)
+		}
+		out = append(out, skillID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate Profile Skill Opt-Outs: %w", err)
+	}
+	return out, nil
+}
+
+func (s *Service) SetGlobalOptOut(skillID string, optedOut bool) error {
+	skillID = strings.TrimSpace(skillID)
+	if skillID == "" {
+		return ErrNotFound
+	}
+	if _, err := s.Get(skillID); err != nil {
+		return err
+	}
+	if optedOut {
+		_, err := s.db.Exec(
+			`INSERT INTO skill_global_opt_outs (skill_id, created_at) VALUES (?, ?)
+			 ON CONFLICT(skill_id) DO NOTHING`,
+			skillID, time.Now().UTC().Format(time.RFC3339Nano),
+		)
+		if err != nil {
+			return fmt.Errorf("store global Skill Opt-Out: %w", err)
+		}
+		return nil
+	}
+	if _, err := s.db.Exec(`DELETE FROM skill_global_opt_outs WHERE skill_id = ?`, skillID); err != nil {
+		return fmt.Errorf("delete global Skill Opt-Out: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) SetAllGlobalOptOut(optedOut bool) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin bulk global Skill Opt-Out: %w", err)
+	}
+	defer tx.Rollback()
+
+	if optedOut {
+		if _, err := tx.Exec(
+			`INSERT OR IGNORE INTO skill_global_opt_outs (skill_id, created_at)
+			 SELECT id, ? FROM skills`,
+			time.Now().UTC().Format(time.RFC3339Nano),
+		); err != nil {
+			return fmt.Errorf("store bulk Global Skill Opt-Outs: %w", err)
+		}
+	} else if _, err := tx.Exec(`DELETE FROM skill_global_opt_outs`); err != nil {
+		return fmt.Errorf("delete bulk Global Skill Opt-Outs: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit bulk Global Skill Opt-Out: %w", err)
+	}
+	return nil
 }
 
 func (s *Service) SetOptOut(profileID, skillID string, optedOut bool) error {
@@ -336,12 +420,16 @@ func (s *Service) SetAllOptOut(profileID string, optedOut bool) error {
 func (s *Service) EnabledSkills(profileID string) ([]Skill, error) {
 	profileID = strings.TrimSpace(profileID)
 	rows, err := s.db.Query(
-		`SELECT id, name, description, source_provenance_json, created_at, updated_at
-		 FROM skills
+		`SELECT s.id, s.name, s.description, s.source_provenance_json, s.created_at, s.updated_at,
+		        EXISTS (SELECT 1 FROM skill_global_opt_outs g WHERE g.skill_id = s.id)
+		 FROM skills s
 		 WHERE NOT EXISTS (
-			 SELECT 1 FROM skill_profile_opt_outs WHERE profile_id = ? AND skill_id = skills.id
+			 SELECT 1 FROM skill_global_opt_outs g WHERE g.skill_id = s.id
 		 )
-		 ORDER BY id ASC`,
+		 AND NOT EXISTS (
+			 SELECT 1 FROM skill_profile_opt_outs o WHERE o.profile_id = ? AND o.skill_id = s.id
+		 )
+		 ORDER BY s.id ASC`,
 		profileID,
 	)
 	if err != nil {
@@ -398,9 +486,12 @@ func (s *Service) Delete(ctx context.Context, id string, forceDisable bool) erro
 		if err := s.db.QueryRow(
 			`SELECT COUNT(*) FROM runtime_profiles
 			 WHERE NOT EXISTS (
+				 SELECT 1 FROM skill_global_opt_outs WHERE skill_id = ?
+			 )
+			 AND NOT EXISTS (
 				 SELECT 1 FROM skill_profile_opt_outs WHERE profile_id = runtime_profiles.id AND skill_id = ?
 			 )`,
-			id,
+			id, id,
 		).Scan(&enabledProfiles); err != nil {
 			return fmt.Errorf("check skill enablement: %w", err)
 		}
@@ -414,7 +505,11 @@ func (s *Service) Delete(ctx context.Context, id string, forceDisable bool) erro
 	}
 	if _, err := tx.Exec(`DELETE FROM skill_profile_opt_outs WHERE skill_id = ?`, id); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("delete skill opt-outs: %w", err)
+		return fmt.Errorf("delete Profile Skill Opt-Outs: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM skill_global_opt_outs WHERE skill_id = ?`, id); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("delete Global Skill Opt-Out: %w", err)
 	}
 	result, err := tx.Exec(`DELETE FROM skills WHERE id = ?`, id)
 	if err != nil {
@@ -489,7 +584,8 @@ func (s *Service) upsertMetadata(meta Metadata) (Skill, error) {
 func (s *Service) scanSkill(row rowScanner) (Skill, error) {
 	var got Skill
 	var sourceJSON, createdAt, updatedAt string
-	err := row.Scan(&got.ID, &got.Name, &got.Description, &sourceJSON, &createdAt, &updatedAt)
+	var globallyOptedOut int
+	err := row.Scan(&got.ID, &got.Name, &got.Description, &sourceJSON, &createdAt, &updatedAt, &globallyOptedOut)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Skill{}, ErrNotFound
 	}
@@ -509,6 +605,7 @@ func (s *Service) scanSkill(row rowScanner) (Skill, error) {
 	}
 	got.CreatedAt = created
 	got.UpdatedAt = updated
+	got.GloballyOptedOut = globallyOptedOut != 0
 	got.BundlePath = s.bundlePath(got.ID)
 	return got, nil
 }

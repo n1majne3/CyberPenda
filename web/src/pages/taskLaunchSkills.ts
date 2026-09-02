@@ -16,7 +16,7 @@ export function enabledLaunchSkills(skills: Skill[]): Skill[] {
 
 export function launchSkillsPreviewDetail(presetMode: boolean): string {
   if (presetMode) {
-    return "Skills follow the selected Runtime Profile. Library Skills are enabled by default unless this Profile has Opt-Outs.";
+    return "Global Skill Opt-Outs apply first. Other library Skills follow the selected Runtime Profile and its Profile Skill Opt-Outs.";
   }
-  return "Direct configuration captures the current globally default-enabled Skills. Later library changes do not change this Runtime Owner.";
+  return "Direct configuration captures the current Skills after Global Skill Opt-Outs. Later library changes do not change this Runtime Owner.";
 }

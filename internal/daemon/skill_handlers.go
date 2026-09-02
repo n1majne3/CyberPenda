@@ -20,14 +20,16 @@ type skillWriteRequest struct {
 }
 
 type skillResponse struct {
-	ID          string                 `json:"id"`
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	Source      skill.SourceProvenance `json:"source_provenance,omitempty"`
-	Files       map[string]string      `json:"files,omitempty"`
-	Enabled     bool                   `json:"enabled"`
-	CreatedAt   any                    `json:"created_at"`
-	UpdatedAt   any                    `json:"updated_at"`
+	ID               string                 `json:"id"`
+	Name             string                 `json:"name"`
+	Description      string                 `json:"description,omitempty"`
+	Source           skill.SourceProvenance `json:"source_provenance,omitempty"`
+	Files            map[string]string      `json:"files,omitempty"`
+	Enabled          bool                   `json:"enabled"`
+	GloballyOptedOut bool                   `json:"globally_opted_out"`
+	ProfileOptedOut  bool                   `json:"profile_opted_out"`
+	CreatedAt        any                    `json:"created_at"`
+	UpdatedAt        any                    `json:"updated_at"`
 }
 
 func (server *Server) handleListSkills(response http.ResponseWriter, request *http.Request) {
@@ -37,24 +39,22 @@ func (server *Server) handleListSkills(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusInternalServerError, "list skills")
 		return
 	}
-	enabled := map[string]bool{}
+	profileOptedOut := map[string]bool{}
 	if profileID != "" {
-		enabledSkills, err := server.skills.EnabledSkills(profileID)
+		ids, err := server.skills.ProfileOptedOutSkillIDs(profileID)
 		if err != nil {
-			writeError(response, http.StatusInternalServerError, "resolve enabled skills")
+			writeError(response, http.StatusInternalServerError, "resolve Profile Skill Opt-Outs")
 			return
 		}
-		for _, got := range enabledSkills {
-			enabled[got.ID] = true
+		for _, id := range ids {
+			profileOptedOut[id] = true
 		}
 	}
 	out := make([]skillResponse, 0, len(skills))
 	for _, got := range skills {
-		isEnabled := true
-		if profileID != "" {
-			isEnabled = enabled[got.ID]
-		}
-		out = append(out, newSkillResponse(got, isEnabled))
+		isProfileOptedOut := profileOptedOut[got.ID]
+		isEnabled := !got.GloballyOptedOut && !isProfileOptedOut
+		out = append(out, newSkillResponse(got, isEnabled, isProfileOptedOut))
 	}
 	writeJSON(response, http.StatusOK, struct {
 		Skills []skillResponse `json:"skills"`
@@ -72,7 +72,7 @@ func (server *Server) handleGetSkill(response http.ResponseWriter, request *http
 		writeSkillError(response, err)
 		return
 	}
-	out := newSkillResponse(got, true)
+	out := newSkillResponse(got, !got.GloballyOptedOut, false)
 	out.Files = publicSkillFiles(got, files)
 	writeJSON(response, http.StatusOK, out)
 }
@@ -107,7 +107,7 @@ func (server *Server) handlePutSkill(response http.ResponseWriter, request *http
 	if existed {
 		status = http.StatusOK
 	}
-	writeJSON(response, status, newSkillResponse(published, true))
+	writeJSON(response, status, newSkillResponse(published, !published.GloballyOptedOut, false))
 }
 
 func (server *Server) handleImportSkill(response http.ResponseWriter, request *http.Request) {
@@ -139,7 +139,7 @@ func (server *Server) handleImportSkill(response http.ResponseWriter, request *h
 		writeSkillError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusCreated, newSkillResponse(imported, true))
+	writeJSON(response, http.StatusCreated, newSkillResponse(imported, !imported.GloballyOptedOut, false))
 }
 
 func (server *Server) handleImportSkillArchive(response http.ResponseWriter, request *http.Request) {
@@ -159,7 +159,7 @@ func (server *Server) handleImportSkillArchive(response http.ResponseWriter, req
 		writeSkillError(response, err)
 		return
 	}
-	writeJSON(response, http.StatusCreated, newSkillResponse(imported, true))
+	writeJSON(response, http.StatusCreated, newSkillResponse(imported, !imported.GloballyOptedOut, false))
 }
 
 func (server *Server) importSkillArchive(request *http.Request, header *multipart.FileHeader) (skill.Skill, error) {
@@ -182,6 +182,39 @@ func (server *Server) handleDeleteSkill(response http.ResponseWriter, request *h
 	id := strings.TrimSpace(request.PathValue("skill_id"))
 	forceDisable := parseBoolQuery(request.URL.Query().Get("force_disable"))
 	if err := server.skills.Delete(request.Context(), id, forceDisable); err != nil {
+		writeSkillError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (server *Server) handlePutGlobalSkillOptOut(response http.ResponseWriter, request *http.Request) {
+	server.handleGlobalSkillOptOut(response, request, true)
+}
+
+func (server *Server) handleDeleteGlobalSkillOptOut(response http.ResponseWriter, request *http.Request) {
+	server.handleGlobalSkillOptOut(response, request, false)
+}
+
+func (server *Server) handlePutAllGlobalSkillOptOuts(response http.ResponseWriter, request *http.Request) {
+	server.handleAllGlobalSkillOptOuts(response, request, true)
+}
+
+func (server *Server) handleDeleteAllGlobalSkillOptOuts(response http.ResponseWriter, request *http.Request) {
+	server.handleAllGlobalSkillOptOuts(response, request, false)
+}
+
+func (server *Server) handleAllGlobalSkillOptOuts(response http.ResponseWriter, _ *http.Request, optedOut bool) {
+	if err := server.skills.SetAllGlobalOptOut(optedOut); err != nil {
+		writeSkillError(response, err)
+		return
+	}
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (server *Server) handleGlobalSkillOptOut(response http.ResponseWriter, request *http.Request, optedOut bool) {
+	skillID := strings.TrimSpace(request.PathValue("skill_id"))
+	if err := server.skills.SetGlobalOptOut(skillID, optedOut); err != nil {
 		writeSkillError(response, err)
 		return
 	}
@@ -223,15 +256,17 @@ func (server *Server) handleSkillProfileOptOut(response http.ResponseWriter, req
 	response.WriteHeader(http.StatusNoContent)
 }
 
-func newSkillResponse(got skill.Skill, enabled bool) skillResponse {
+func newSkillResponse(got skill.Skill, enabled, profileOptedOut bool) skillResponse {
 	return skillResponse{
-		ID:          got.ID,
-		Name:        got.Name,
-		Description: got.Description,
-		Source:      publicSkillSource(got.Source),
-		Enabled:     enabled,
-		CreatedAt:   got.CreatedAt,
-		UpdatedAt:   got.UpdatedAt,
+		ID:               got.ID,
+		Name:             got.Name,
+		Description:      got.Description,
+		Source:           publicSkillSource(got.Source),
+		Enabled:          enabled,
+		GloballyOptedOut: got.GloballyOptedOut,
+		ProfileOptedOut:  profileOptedOut,
+		CreatedAt:        got.CreatedAt,
+		UpdatedAt:        got.UpdatedAt,
 	}
 }
 

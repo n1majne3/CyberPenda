@@ -603,6 +603,8 @@ export interface Skill {
   };
   files?: Record<string, string>;
   enabled: boolean;
+  globally_opted_out?: boolean;
+  profile_opted_out?: boolean;
   created_at: string;
   updated_at: string;
 }

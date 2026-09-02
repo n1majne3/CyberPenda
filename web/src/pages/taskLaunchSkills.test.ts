@@ -56,8 +56,10 @@ describe("taskLaunchSkills", () => {
     expect(enabledLaunchSkills(skills).map((skill) => skill.id)).toEqual(["recon-helper"]);
   });
 
-  it("explains Profile vs direct configuration semantics", () => {
-    expect(launchSkillsPreviewDetail(true)).toMatch(/Runtime Profile/i);
+  it("explains Global and Profile Skill Opt-Out semantics", () => {
+    expect(launchSkillsPreviewDetail(true)).toMatch(/Global Skill Opt-Outs/i);
+    expect(launchSkillsPreviewDetail(true)).toMatch(/Profile Skill Opt-Outs/i);
     expect(launchSkillsPreviewDetail(false)).toMatch(/Direct configuration/i);
+    expect(launchSkillsPreviewDetail(false)).toMatch(/Global Skill Opt-Outs/i);
   });
 });

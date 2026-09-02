@@ -124,7 +124,11 @@ func (s *Service) migrateLegacyBuiltinSkillID(newID string) (Skill, error) {
 		}
 		if _, err := tx.Exec(`UPDATE skill_profile_opt_outs SET skill_id = ? WHERE skill_id = ?`, newID, legacyID); err != nil {
 			_ = tx.Rollback()
-			return Skill{}, fmt.Errorf("migrate builtin skill opt-outs: %w", err)
+			return Skill{}, fmt.Errorf("migrate builtin Profile Skill Opt-Outs: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE skill_global_opt_outs SET skill_id = ? WHERE skill_id = ?`, newID, legacyID); err != nil {
+			_ = tx.Rollback()
+			return Skill{}, fmt.Errorf("migrate builtin Global Skill Opt-Out: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
 			return Skill{}, fmt.Errorf("commit builtin skill id migration: %w", err)
@@ -213,7 +217,16 @@ func (s *Service) purgeLegacyBuiltinIfPresent(ctx context.Context, legacyID, suc
 			 ON CONFLICT(profile_id, skill_id) DO NOTHING`,
 			successorID, now, legacyID,
 		); err != nil {
-			return fmt.Errorf("migrate legacy skill opt-outs %q -> %q: %w", legacyID, successorID, err)
+			return fmt.Errorf("migrate legacy Profile Skill Opt-Outs %q -> %q: %w", legacyID, successorID, err)
+		}
+		if _, err := s.db.Exec(
+			`INSERT INTO skill_global_opt_outs (skill_id, created_at)
+			 SELECT ?, ?
+			 WHERE EXISTS (SELECT 1 FROM skill_global_opt_outs WHERE skill_id = ?)
+			 ON CONFLICT(skill_id) DO NOTHING`,
+			successorID, now, legacyID,
+		); err != nil {
+			return fmt.Errorf("migrate legacy Global Skill Opt-Out %q -> %q: %w", legacyID, successorID, err)
 		}
 	}
 	return s.Delete(ctx, legacyID, true)
