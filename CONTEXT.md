@@ -117,16 +117,12 @@ A single provider response cycle initiated by operator input within a **Task Con
 _Avoid_: task, continuation, internal reasoning step
 
 **Work Runtime Turn**:
-A **Runtime Turn** initiated by the operator's Task Goal, Task Conversation input, or Session Conversation input. The **Runtime Harness** assigns this kind from request lineage; provider output cannot claim it. In assisted Blackboard mode, bounded Tool and Turn observations from this kind may create a **Pending Blackboard Conclusion**.
+A **Runtime Turn** initiated by the operator's Task Goal, Task Conversation input, or Session Conversation input. The **Runtime Harness** assigns this kind from request lineage; provider output cannot claim it.
 _Avoid_: harness control turn, provider-classified turn, task
 
 **Harness Control Turn**:
-A **Runtime Turn** initiated by the **Runtime Harness** for a bounded control purpose such as Blackboard conclusion reconciliation. The Harness assigns this kind from request lineage so it cannot recursively trigger assisted conclusion detection.
+A **Runtime Turn** initiated by the **Runtime Harness** for a bounded control purpose. The Harness assigns this kind from request lineage; provider output cannot claim it.
 _Avoid_: operator message, autonomous task, provider-classified turn
-
-**Conclude Runtime Turn**:
-A **Harness Control Turn** delivered by one **Conclusion Dispatch** for a **Pending Blackboard Conclusion**. It runs on that dispatch's bound **Runtime Continuation**, reuses the source **Runtime Turn Selection**, forbids further testing, and returns one closed semantic Attempt result for Harness validation and application.
-_Avoid_: user message, new continuation, task finish turn, unrestricted agent turn
 
 **Runtime Turn Selection**:
 The **Model Provider**, model, and **Requested Reasoning Effort** resolved for one **Runtime Turn**, independently of adjacent turns and without editing the selected **Runtime Profile**.
@@ -137,8 +133,8 @@ Operator removal of a terminal **Task** from normal task surfaces and counts whi
 _Avoid_: active task cancellation, provenance erasure, hard deletion
 
 **Task Finish**:
-An operator action confirming that a **Task** is complete, which closes its Runtime after required reconciliation and marks the Task completed; it is distinct from **Stop** and **Blackboard Finish**.
-_Avoid_: stop, auto-complete, **Blackboard Finish**
+An operator action confirming that a **Task** is complete, which closes its Runtime after required reconciliation and marks the Task completed; it is distinct from **Stop**.
+_Avoid_: stop, auto-complete
 
 **Scope**:
 The asset boundaries and testing limits that define what the **Pentest Agent** is authorized to do within a **Project**.
@@ -632,18 +628,6 @@ _Avoid_: model acknowledgement, transient stdout, Blackboard record
 Optional files that a Runtime chooses and maintains in its ordinary workdir when **Blackboard Mode** is disabled. CyberPenda may remind the Runtime that file tracing is available, but it does not define, parse, or migrate a trace file.
 _Avoid_: file-backed Blackboard, fixed state file, Working Blackboard Snapshot, cross-Runtime handoff
 
-**Conclusion Dispatch**:
-A durable, idempotent attempt to deliver one **Conclude Runtime Turn** for a **Pending Blackboard Conclusion**. It is bound immutably to one **Runtime Continuation**, source Runtime session, and source **Runtime Turn Selection**; safe recovery creates a new dispatch instead of rewriting an earlier one.
-_Avoid_: semantic obligation, mutable receipt, continuation migration
-
-**Blackboard Finish Intent**:
-A Runtime request within a **Work Runtime Turn** to close the current **Runtime Continuation**'s Blackboard write protocol when that Turn settles. Later source work in the same Turn invalidates the intent.
-_Avoid_: Task Finish, immediate continuation close, coverage of later work
-
-**Semantic Debt Watermarks**:
-The ordered counts persisted for a completed **Work Runtime Turn**: source work advances for each terminal non-Blackboard Tool Result, while semantic persistence advances only when a later successful semantic Blackboard change, Attempt checkpoint, or Blackboard Finish covers the work observed so far. The conclusion is pending only while source work is ahead of semantic persistence.
-_Avoid_: raw Tool output, transcript offset, proof that a read or Evidence retention persisted semantics
-
 **Blackboard Key**:
 A stable, human-readable semantic identifier that is unique across every record in one **Blackboard** and resolves only within its **Project**. It identifies a record without requiring its type or a database ID and does not embed internal Project, Task, Continuation, Runtime, generated-ID, or hash values.
 _Avoid_: database ID, globally unique ID, type-scoped key
@@ -769,8 +753,8 @@ The TSecBench-specific bootstrap process that validates hosted configuration, st
 _Avoid_: Runtime, Challenge Workflow, challenge scheduler
 
 **Subagent Activity**:
-A provider-neutral Timeline projection of one child agent that a **Runtime** spawned inside a **Work Runtime Turn**, such as a Codex child thread from the in-turn multi-agent tools or a Claude Code Task-tool subagent. It carries durable child identity, a coarse started-to-settled activity state, and its provider, and is a Timeline entry rather than a conversation message. The **Runtime Harness** only observes it and never gains a spawn RPC or a Harness-owned subagent scheduling surface.
-_Avoid_: Harness-owned subagent, Runtime Continuation per child, raw provider JSON dump, Task
+A provider-neutral projection of one child agent that a **Runtime** spawned through its own agent-spawning tool, such as a Claude Code async Agent-tool child or a Codex child thread. It carries durable child identity, a coarse started-to-settled activity state, and its provider, and it projects two ways: one Timeline lifecycle entry, plus one collapsed and attributed conversation block anchored at the spawning tool call that aggregates the child's own transcript items regardless of stream interleaving. A child agent may keep working after the **Work Runtime Turn** that spawned it has settled. The **Runtime Harness** only observes it and never gains a spawn RPC or a Harness-owned subagent scheduling surface.
+_Avoid_: Harness-owned subagent, Runtime Continuation per child, raw provider JSON dump, Task, provider-specific display rule
 
 **Hosted Challenge Client**:
 A bounded, one-command process inside the TSecBench Hosted Image that performs one list, start, hint, submit, or guarded close operation for the Runtime. It has no background lifecycle, never controls the Hosted Controller or daemon, and derives safety decisions from current platform state so its failure cannot terminate the host process. It loads one Challenge Platform adapter by `CYBERPENDA_CHALLENGE_ADAPTER`. Overlay manifests under `/data/adapters` replace baked adapters without rebuilding the image.
@@ -809,7 +793,7 @@ A read-only Task projection that reports whether **Task Finish** can proceed and
 _Avoid_: Task status, Runtime Activity Indicator, automatic completion
 
 **Finish Blocker**:
-A stable typed reason that prevents Task Finish, such as a Pending Blackboard Conclusion, open Attempt, unfinalized challenge Attempt, open Exploration Objective, unsettled reconciliation, invalid Finish Intent, or missing required Evidence.
+A stable typed reason that prevents Task Finish, such as open Attempt, unfinalized challenge Attempt, open Exploration Objective, unsettled reconciliation, or missing required Evidence.
 _Avoid_: warning text, latest conclusion status, runtime error
 
 **Runtime Blackboard Snapshot**:
@@ -1247,10 +1231,7 @@ _Avoid_: transcript, export, source of truth
 - **Runtime Owner-Scoped Persistent Runtime** does not remove **Host Runner Activation** or weaken the separate Sandbox and Host execution boundaries.
 - A plugin without a usable native session bridge may retain one-shot Runtime execution; normal process exit completes that one-shot **Task**.
 - A **Runtime Owner-Scoped Persistent Runtime** remains active until the operator finishes, stops, archives, or otherwise closes its **Runtime Owner**, a required **Config Projection** restart replaces it, it fails, or daemon shutdown closes it.
-- A **Runtime** cannot autonomously complete its **Task** through a **Project Interface**; a valid **Blackboard Finish Intent** closes only the current Continuation's Blackboard write protocol when its **Work Runtime Turn** settles.
-- Source work after a **Blackboard Finish Intent** invalidates that intent and continues to advance **Semantic Debt Watermarks**.
-- `blackboard_finish` reports that a **Blackboard Finish Intent** was recorded, not that the Runtime Continuation is already closed.
-- Invalidating a **Blackboard Finish Intent** produces a bounded Runtime notice and requires a new finish intent before the Blackboard write protocol can close.
+- A **Runtime** cannot autonomously complete its **Task** through a **Project Interface**.
 - A **Runtime Activity Indicator** reflects current Runtime liveness without creating a separate **Task Event**, audit record, or historical status.
 - Runtime liveness has exactly four states: `live`, `offline`, `orphaned`, and `unknown`; a live Runtime separately reports turn activity as `busy` or `idle`.
 - `orphaned` means the durable **Task** appears active but the current daemon cannot prove ownership of a live Runtime; `unknown` means liveness cannot currently be determined.
@@ -1264,16 +1245,6 @@ _Avoid_: transcript, export, source of truth
 - An `orphaned` Runtime must be closed or proven absent before a replacement Runtime starts, preventing two live Runtimes from owning one **Task**.
 - **Harness Steering** never changes the **Runtime Owner** identity. Provider-native same-turn steering appends operator input to the current active steerable **Work Runtime Turn** and keeps its Runtime Continuation; interrupt-then-replace creates a replacement **Work Runtime Turn** and changes the writable Runtime Continuation when the provider contract requires it.
 - **Harness Steering** never rewrites completed reasoning, messages, or tool items. A provider-native same-turn steer may enqueue additional operator input while the active Runtime Turn is still running.
-- A **Pending Blackboard Conclusion** may survive replacement of its source **Runtime Continuation**.
-- Each **Conclusion Dispatch** belongs to exactly one **Pending Blackboard Conclusion** and is bound immutably to exactly one Runtime Continuation and source Runtime session.
-- Replacing a Runtime Continuation never rewrites an earlier **Conclusion Dispatch**; recovery creates a new dispatch and retains the earlier dispatch outcome.
-- Only one **Conclusion Dispatch** for a **Pending Blackboard Conclusion** may be active at a time.
-- A new **Conclusion Dispatch** requires proven ownership of the current Runtime Owner-scoped Runtime and a writable replacement Runtime Continuation.
-- A recovered **Conclusion Dispatch** reuses the source **Runtime Turn Selection**; if that selection cannot be projected safely, the **Pending Blackboard Conclusion** becomes `action_required`.
-- Automatic conclusion and repair budgets belong to the **Pending Blackboard Conclusion** and do not reset when a new **Conclusion Dispatch** is created.
-- Only the active **Conclusion Dispatch** may validate or apply a result. A late result from an earlier dispatch is retained as a terminal delivery outcome and cannot change Blackboard state.
-- An `action_required` **Pending Blackboard Conclusion** exposes only recovery actions that are safe for its recorded delivery boundary; an acceptance-ambiguous dispatch never offers generic Retry.
-- Legacy conclusion receipts become one **Pending Blackboard Conclusion** and one immutable historical **Conclusion Dispatch**. A new dispatch is created only when current Runtime ownership and writable authority are proven; otherwise the obligation becomes `action_required`.
 - A **Project Navigation Projection** reads a fixed number of ordinary Tasks per Project plus the selected Task and every Task with a live busy Runtime; its Task work does not grow with total historical Task count.
 - An unchanged Project navigation refresh does not resend the complete **Project Navigation Projection**.
 - A **Runtime Owner Workspace** replaces its **Runtime Owner History Window** when the selected owner changes and never merges events from different owners.
@@ -1439,14 +1410,10 @@ _Avoid_: transcript, export, source of truth
 - Disabled Blackboard is not the new default or a Task-only option; resolved: `interactive` remains the default, and both Project Tasks and Non-Project Sessions may explicitly select `disabled`.
 - **Blackboard Mode** is not a per-Continuation toggle; resolved: the Runtime Owner captures it at creation and every Resume or Continuation inherits it.
 - Disabled Task Finish is not blocked by state the Runtime is forbidden to settle; resolved: **Finish Readiness** skips Blackboard-specific blockers and retains ordinary lifecycle and policy checks.
-- A **Pending Blackboard Conclusion** is not one mutable delivery receipt; resolved: it is the stable semantic obligation, while each **Conclusion Dispatch** keeps immutable Runtime Continuation and source-session identity.
-- **Blackboard Finish Intent** is not an immediate close inside a busy **Work Runtime Turn**; resolved: it closes the Blackboard write protocol only at Turn settlement and later source work invalidates it.
 - **Accepted Steering** is not durable message storage alone; resolved: the Runtime Harness owns eventual settlement as `applied`, `failed`, or `action_required`, including after daemon restart.
 - A bounded **Project Navigation Projection** is not request-count-only optimization; resolved: Task query work and response content are bounded per Project independently of total Task history, with current and busy exceptions retained.
 - Initial **Runtime Owner Workspace** history is not the complete Timeline and Transcript; resolved: load and render a bounded recent **Runtime Owner History Window**, with older history available on demand.
-- Runtime replacement is not a new automatic-conclusion budget; resolved: every **Conclusion Dispatch** for one **Pending Blackboard Conclusion** shares the obligation's bounded budget and source **Runtime Turn Selection**.
 - Ambiguous provider Steering is not replayed after restart; resolved: a durable send-start fence separates safe pre-send recovery from post-send `action_required` settlement.
-- Legacy stuck conclusion receipts are not silently rebound or left on the old model; resolved: preserve the historical dispatch and create a safe replacement dispatch only with proven current Runtime ownership.
 - A Non-Project **Session** is not presented through a separate chat UI; resolved: **Session** and **Task** reuse the same **Runtime Owner Workspace**, with owner-specific API and lifecycle adapters at the boundary.
 
 - "vulnerability" and **Finding** were used for the same reportable issue concept; resolved: use **Finding** as the product/domain term and reserve "vulnerability" for type names, schemas, or imported source terminology.
