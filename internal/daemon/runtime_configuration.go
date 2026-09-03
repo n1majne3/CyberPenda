@@ -302,7 +302,12 @@ func (server *Server) runtimeSnapshotSkillBundles(snapshot runtimeconfig.Runtime
 	for _, skillID := range snapshot.EnabledSkillIDs {
 		captured, err := server.skills.Get(skillID)
 		if err != nil {
-			return nil, fmt.Errorf("captured Skill %s is unavailable", skillID)
+			// Retired builtins stay in historical snapshots; continuation
+			// projects the surviving skills instead of failing.
+			if errors.Is(err, skill.ErrNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("resolve captured Skill %s: %w", skillID, err)
 		}
 		bundles = append(bundles, skill.Bundle{ID: captured.ID, Name: captured.Name, Source: captured.Source, Path: captured.BundlePath})
 	}

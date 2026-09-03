@@ -193,7 +193,7 @@ cmd/pentestctl/        CLI entrypoint
 internal/              Domain services, adapters, daemon HTTP, runner, store
 web/                   React + Vite dashboard
 docker/                Daemon and sandbox Dockerfiles
-skills/bundles/        Built-in skill content
+skills/                Daemon-owned runtime extension library (untracked; built-in sources in internal/skill/builtins/assets)
 runtime-extensions/    Runtime-specific extension packs
 docs/                  Product docs and ADRs
 scripts/               Release builds and live smokes

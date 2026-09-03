@@ -354,13 +354,19 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		}
 		plan.Adapter = wrapPersistentProviderAdapter(binding.Adapter, plan.ResolvedProfile.Provider, providerHome)
 	}
+	launchCtx, err := server.beginRuntimeLaunch()
+	if err != nil {
+		_ = server.closeProviderSession(created.ID)
+		return err
+	}
 	server.logTask(created, "launched", "")
 	go func() {
+		defer server.runtimeLaunchWG.Done()
 		launchGoal := plan.LaunchGoal
 		if launchGoal == "" {
 			launchGoal = goal
 		}
-		err := server.harness.Launch(context.Background(), runtime.LaunchRequest{
+		err := server.harness.Launch(launchCtx, runtime.LaunchRequest{
 			TaskID:           created.ID,
 			Goal:             launchGoal,
 			Adapter:          plan.Adapter,
@@ -369,6 +375,8 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 			StopConfirmation: plan.StopConfirmation,
 		})
 		switch {
+		case errors.Is(err, runtime.ErrHarnessShutdown):
+			server.logTask(created, "shutdown", "")
 		case err == nil:
 			server.logTask(created, "completed", "")
 			// Persistent sessions that end cleanly still release ownership.

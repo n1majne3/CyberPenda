@@ -81,6 +81,9 @@ func (h *SessionHarness) IsActive(sessionID string) bool { return h.core.IsActiv
 func (h *SessionHarness) StopAndWait(sessionID string, timeout time.Duration) bool {
 	return h.core.StopAndWait(sessionID, timeout)
 }
+func (h *SessionHarness) ShutdownAllAndWait(timeout time.Duration) bool {
+	return h.core.ShutdownAllAndWait(timeout)
+}
 func (h *SessionHarness) RebindContinuation(sessionID, continuationID string) error {
 	return h.core.RebindContinuation(sessionID, continuationID)
 }

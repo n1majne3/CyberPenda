@@ -724,8 +724,14 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 		server.failSessionProviderLaunch(found.ID, continuation.ID, err)
 		return continuation, err
 	}
+	launchCtx, err := server.beginRuntimeLaunch()
+	if err != nil {
+		_ = server.closeSessionProviderSession(found.ID)
+		return continuation, err
+	}
 	go func() {
-		runErr := server.sessionHarness.Launch(context.Background(), runtime.SessionLaunchRequest{
+		defer server.runtimeLaunchWG.Done()
+		runErr := server.sessionHarness.Launch(launchCtx, runtime.SessionLaunchRequest{
 			SessionID: found.ID, Goal: plan.LaunchGoal, Adapter: plan.Adapter, ContinuationID: continuation.ID,
 			Metadata: plan.Metadata, StopConfirmation: plan.StopConfirmation,
 		})

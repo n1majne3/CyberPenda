@@ -386,7 +386,9 @@ describe("TaskDetailPage", () => {
 
     expect(await screen.findByText("Conversation should be hidden by default")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Conversation" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTestId("transcript-row")).toHaveClass("[content-visibility:auto]");
+    // The virtual window's measured coverage pass needs real row heights, so
+    // rows must not carry content-visibility size hints.
+    expect(screen.getByTestId("transcript-row")).not.toHaveClass("[content-visibility:auto]");
 
     await user.click(screen.getByRole("button", { name: "Timeline" }));
     expect(searches.at(-1)).toBe("?view=timeline");
@@ -2180,8 +2182,11 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
     expect(await screen.findByText("Oldest message")).toBeInTheDocument();
     const calls = fetchMock.mock.calls.map(([input]) => String(input));
     expect(calls.some((url) => url.includes("/transcript?before=51"))).toBe(true);
-    // The prepended page pushed the visible rows down by 2 × 72px.
-    expect(viewport.scrollTop).toBe(720 + 2 * 72);
+    // Prepending must not move the reading position. Rows carry no measurable
+    // height in jsdom, so no compensation fires here; in a real browser the
+    // virtual window shifts scrollTop by the measured height of the prepended
+    // rows (see virtualWindow.test.ts).
+    expect(viewport.scrollTop).toBe(720);
     // The boundary page reached the beginning: the affordance disappears.
     expect(screen.queryByTestId("load-older-transcript")).not.toBeInTheDocument();
     expect(screen.getAllByTestId("transcript-row")).toHaveLength(4);

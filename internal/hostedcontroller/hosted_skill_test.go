@@ -146,14 +146,32 @@ func TestTSecBenchSkillTreatsClientFailureAsLocalAndRecoverable(t *testing.T) {
 	}
 }
 
-func TestNormalBuiltinSkillCatalogDoesNotContainTheHostedCTFOrchestrator(t *testing.T) {
+func TestNormalBuiltinCTFOrchestratorDoesNotContainTheHostedOnlyContract(t *testing.T) {
 	bundles, err := skill.BuiltinBundles()
 	if err != nil {
 		t.Fatal(err)
 	}
+	var instruction string
 	for _, bundle := range bundles {
-		if bundle.Metadata.ID == "ctf-orchestrator" {
-			t.Fatal("hosted-only Skill leaked into the normal built-in catalog")
+		if bundle.Metadata.ID != "ctf-orchestrator" {
+			continue
+		}
+		if bundle.Metadata.Source.Kind != "builtin" {
+			t.Fatalf("normal ctf-orchestrator provenance = %#v", bundle.Metadata.Source)
+		}
+		instruction = bundle.Files["SKILL.md"]
+		break
+	}
+	if strings.TrimSpace(instruction) == "" {
+		t.Fatal("normal ctf-orchestrator Built-in Skill is missing")
+	}
+	for _, hostedOnly := range []string{
+		"pentest-tsecbench-client",
+		"Challenge Pass Clock",
+		"Hosted Task uses Disabled Blackboard Mode",
+	} {
+		if strings.Contains(instruction, hostedOnly) {
+			t.Fatalf("normal ctf-orchestrator leaked hosted-only contract %q", hostedOnly)
 		}
 	}
 }

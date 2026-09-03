@@ -258,17 +258,28 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		var enabledSkills []skill.Skill
 		var bundles []skill.Bundle
 		var err error
+		skipNote := ""
 		if request.CapturedSkillIDs != nil {
 			enabledSkills = make([]skill.Skill, 0, len(request.CapturedSkillIDs))
 			bundles = make([]skill.Bundle, 0, len(request.CapturedSkillIDs))
+			unavailable := 0
 			for _, skillID := range request.CapturedSkillIDs {
 				captured, captureErr := s.skills.Get(skillID)
 				if captureErr != nil {
-					err = fmt.Errorf("captured Skill %s is unavailable", skillID)
+					// Retired builtins stay in historical snapshots; resume
+					// skips them instead of failing the skills check.
+					if errors.Is(captureErr, skill.ErrNotFound) {
+						unavailable++
+						continue
+					}
+					err = captureErr
 					break
 				}
 				enabledSkills = append(enabledSkills, captured)
 				bundles = append(bundles, skill.Bundle{ID: captured.ID, Name: captured.Name, Source: captured.Source, Path: captured.BundlePath})
+			}
+			if err == nil && unavailable > 0 {
+				skipNote = fmt.Sprintf(", %d captured skill(s) unavailable and skipped", unavailable)
 			}
 		} else {
 			enabledSkills, err = s.skills.EnabledSkills(profile.ID)
@@ -297,9 +308,9 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 					Detail: bundleErr.Error(),
 				})
 			} else if len(enabledSkills) == 0 {
-				result.add(Check{Name: "skills", Status: CheckPass, Detail: "no enabled skills"})
+				result.add(Check{Name: "skills", Status: CheckPass, Detail: "no enabled skills" + skipNote})
 			} else {
-				result.add(Check{Name: "skills", Status: CheckPass, Detail: fmt.Sprintf("%d enabled skill(s)", len(enabledSkills))})
+				result.add(Check{Name: "skills", Status: CheckPass, Detail: fmt.Sprintf("%d enabled skill(s)%s", len(enabledSkills), skipNote)})
 			}
 		}
 	}

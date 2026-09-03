@@ -18,6 +18,7 @@ import (
 // handleResumeTask must wait through (not bypass by pre-waiting in fixtures).
 type holdAdapter struct {
 	release <-chan struct{}
+	started chan<- struct{}
 }
 
 func (holdAdapter) Name() string { return "hold" }
@@ -25,6 +26,9 @@ func (holdAdapter) Name() string { return "hold" }
 func (a holdAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
 	_ = goal
 	emit(task.EventKindLifecycle, task.EventPayload{"phase": "hold_started"})
+	if a.started != nil {
+		close(a.started)
+	}
 	select {
 	case <-a.release:
 		return nil
@@ -54,15 +58,20 @@ func forceTerminalWithActiveHarness(t *testing.T, server *Server, created task.T
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
+	started := make(chan struct{})
 	go func() {
 		done <- server.harness.Launch(context.Background(), runtime.LaunchRequest{
 			TaskID:         created.ID,
 			Goal:           created.Goal,
 			ContinuationID: cont.ID,
-			Adapter:        holdAdapter{release: release},
+			Adapter:        holdAdapter{release: release, started: started},
 		})
 	}()
-	waitForHarnessActive(t, server, created.ID, true)
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("setup: Runtime Harness did not finish marking the Task running")
+	}
 
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusCompleted); err != nil {
 		t.Fatal(err)

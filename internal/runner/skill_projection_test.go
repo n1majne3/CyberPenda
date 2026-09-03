@@ -117,8 +117,8 @@ func TestProjectRuntimeConfigProjectsBuiltinSkillsWithSourceFreeFolderNames(t *t
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
 		SkillBundles: []skill.Bundle{{
-			ID:     "cyberstrikeai-vulnerabilities-xss",
-			Name:   "cyberstrikeai-vulnerabilities-xss",
+			ID:     "cyberstrikeai-tooling-nmap",
+			Name:   "cyberstrikeai-tooling-nmap",
 			Source: skill.SourceProvenance{Kind: "builtin"},
 			Path:   sourceDir,
 		}},
@@ -127,18 +127,18 @@ func TestProjectRuntimeConfigProjectsBuiltinSkillsWithSourceFreeFolderNames(t *t
 		t.Fatalf("project runtime config: %v", err)
 	}
 
-	projectedDoc := filepath.Join(layout.SkillsRoot, "vulnerabilities-xss", "SKILL.md")
+	projectedDoc := filepath.Join(layout.SkillsRoot, "tooling-nmap", "SKILL.md")
 	if _, err := os.Stat(projectedDoc); err != nil {
 		t.Fatalf("expected builtin skill doc projected to source-free path %s: %v", projectedDoc, err)
 	}
-	if _, err := os.Stat(filepath.Join(layout.SkillsRoot, "cyberstrikeai-vulnerabilities-xss")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(layout.SkillsRoot, "cyberstrikeai-tooling-nmap")); !os.IsNotExist(err) {
 		t.Fatalf("expected no source-prefixed projected skill folder, stat err=%v", err)
 	}
 	previews, ok := projection.Config["skills"].([]map[string]any)
-	if !ok || len(previews) != 1 || previews[0]["id"] != "vulnerabilities-xss" {
+	if !ok || len(previews) != 1 || previews[0]["id"] != "tooling-nmap" {
 		t.Fatalf("expected source-free skills preview, got %#v", projection.Config["skills"])
 	}
-	if target, _ := previews[0]["target"].(string); filepath.Base(target) != "vulnerabilities-xss" {
+	if target, _ := previews[0]["target"].(string); filepath.Base(target) != "tooling-nmap" {
 		t.Fatalf("expected source-free preview target, got %#v", previews[0])
 	}
 }

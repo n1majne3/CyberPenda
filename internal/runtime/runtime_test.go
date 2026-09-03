@@ -436,8 +436,63 @@ func TestHarnessStopAndWaitEndsActiveRun(t *testing.T) {
 	if !harness.StopAndWait(created.ID, 2*time.Second) {
 		t.Fatal("expected StopAndWait to observe launch exit")
 	}
+	if harness.IsActive(created.ID) {
+		t.Fatal("StopAndWait returned before releasing the active Runtime owner")
+	}
 	if err := <-done; err == nil {
 		t.Fatal("expected stopped run to report a cancellation error")
+	}
+}
+
+func TestHarnessShutdownAllAndWaitReleasesRuntimeWithoutFinalizingDurableState(t *testing.T) {
+	harness, tasks, projects := newServices(t)
+	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
+	created, _ := tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "long task", Runner: task.RunnerSandbox})
+	continuation, err := tasks.CreateContinuation(created.ID, "profile", "fake", task.RunnerSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID: created.ID, ContinuationID: continuation.ID, Adapter: slowFakeAdapter{},
+		})
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		found, getErr := tasks.Get(created.ID)
+		if getErr == nil && found.Status == task.StatusRunning {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("Task did not reach running before shutdown: %#v, %v", found, getErr)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if !harness.ShutdownAllAndWait(2 * time.Second) {
+		t.Fatal("shutdown did not release the active Runtime")
+	}
+	if harness.IsActive(created.ID) {
+		t.Fatal("shutdown returned before releasing the active Runtime owner")
+	}
+	if err := <-done; !errors.Is(err, runtime.ErrHarnessShutdown) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("shutdown Launch error = %v, want Harness shutdown cancellation", err)
+	}
+	found, err := tasks.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found.Status != task.StatusRunning {
+		t.Fatalf("shutdown finalized durable Task status = %q, want running for restart reconciliation", found.Status)
+	}
+	latest, err := tasks.Continuation(continuation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Status != task.StatusRunning {
+		t.Fatalf("shutdown finalized durable Continuation status = %q, want running for restart reconciliation", latest.Status)
 	}
 }
 

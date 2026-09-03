@@ -2,12 +2,18 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"pentest/internal/task"
 )
+
+// ErrHarnessShutdown is the parent-context cause used when a daemon closes.
+// It stops in-memory Runtime ownership without writing a user-requested Stop
+// into durable Task or Session lifecycle state.
+var ErrHarnessShutdown = fmt.Errorf("Runtime Harness shutdown: %w", context.Canceled)
 
 // OwnerHarnessConfig supplies the owner-specific persistence callbacks for the
 // shared Runtime Harness. Task and Session use the same lifecycle, stop, and
@@ -33,12 +39,13 @@ type OwnerLaunchRequest struct {
 }
 
 type ownerActiveRun struct {
-	mu               sync.RWMutex
-	cancel           context.CancelFunc
-	done             chan struct{}
-	stopConfirmation StopConfirmation
-	continuationID   string
-	finishRequested  bool
+	mu                sync.RWMutex
+	cancel            context.CancelFunc
+	done              chan struct{}
+	stopConfirmation  StopConfirmation
+	continuationID    string
+	finishRequested   bool
+	shutdownRequested bool
 }
 
 // OwnerHarness owns process lifecycle and continuation control for one
@@ -71,8 +78,11 @@ func (h *OwnerHarness) Launch(ctx context.Context, req OwnerLaunchRequest) error
 	ctx, cancel := context.WithCancel(ctx)
 	run := h.register(req.OwnerID, cancel, req.ContinuationID, req.StopConfirmation)
 	defer func() {
+		// Release the active-owner slot before notifying waiters. A waiter may
+		// launch the replacement Runtime as soon as done closes; the old run must
+		// not remain visible or later delete that replacement from the registry.
+		h.unregister(req.OwnerID, run)
 		close(run.done)
-		h.unregister(req.OwnerID)
 	}()
 
 	emit := func(kind task.EventKind, payload task.EventPayload) {
@@ -105,6 +115,9 @@ func (h *OwnerHarness) Launch(ctx context.Context, req OwnerLaunchRequest) error
 				return fmt.Errorf("record Runtime continuation metadata: %w", err)
 			}
 		}
+	}
+	if run.shutdownWasRequested() || errors.Is(context.Cause(ctx), ErrHarnessShutdown) {
+		return ErrHarnessShutdown
 	}
 
 	if run.finishWasRequested() {
@@ -139,9 +152,11 @@ func (h *OwnerHarness) register(ownerID string, cancel context.CancelFunc, conti
 	return run
 }
 
-func (h *OwnerHarness) unregister(ownerID string) {
+func (h *OwnerHarness) unregister(ownerID string, run *ownerActiveRun) {
 	h.mu.Lock()
-	delete(h.active, ownerID)
+	if h.active[ownerID] == run {
+		delete(h.active, ownerID)
+	}
 	h.mu.Unlock()
 }
 
@@ -200,22 +215,70 @@ func (h *OwnerHarness) StopAndWait(ownerID string, timeout time.Duration) bool {
 		return true
 	}
 	run.cancel()
+	return waitForOwnerRun(run, time.Now().Add(timeout))
+}
+
+// ShutdownAllAndWait cancels every Runtime active at the start of the call and
+// waits for each Harness run to release its owner without finalizing durable
+// lifecycle state. The next daemon reconciles those owners as interrupted.
+// New launches must be blocked by the caller before this method starts.
+func (h *OwnerHarness) ShutdownAllAndWait(timeout time.Duration) bool {
+	if h == nil {
+		return true
+	}
+	h.mu.Lock()
+	runs := make([]*ownerActiveRun, 0, len(h.active))
+	for _, run := range h.active {
+		runs = append(runs, run)
+	}
+	h.mu.Unlock()
+
+	for _, run := range runs {
+		run.requestShutdown()
+		run.cancel()
+	}
 	deadline := time.Now().Add(timeout)
-	timer := time.NewTimer(timeout)
+	for _, run := range runs {
+		if !waitForOwnerRunRelease(run, deadline) {
+			return false
+		}
+	}
+	return true
+}
+
+func waitForOwnerRun(run *ownerActiveRun, deadline time.Time) bool {
+	if !waitForOwnerRunRelease(run, deadline) {
+		return false
+	}
+	return confirmOwnerRunStopped(run, deadline)
+}
+
+func waitForOwnerRunRelease(run *ownerActiveRun, deadline time.Time) bool {
+	select {
+	case <-run.done:
+		return true
+	default:
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return false
+	}
+	timer := time.NewTimer(remaining)
 	defer timer.Stop()
 	select {
 	case <-run.done:
-		if run.stopConfirmation == nil {
-			return true
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return false
-		}
-		return run.stopConfirmation(remaining) == nil
+		return true
 	case <-timer.C:
 		return false
 	}
+}
+
+func confirmOwnerRunStopped(run *ownerActiveRun, deadline time.Time) bool {
+	if run.stopConfirmation == nil {
+		return true
+	}
+	remaining := time.Until(deadline)
+	return remaining > 0 && run.stopConfirmation(remaining) == nil
 }
 
 func (h *OwnerHarness) RebindContinuation(ownerID, continuationID string) error {
@@ -241,4 +304,16 @@ func (run *ownerActiveRun) finishWasRequested() bool {
 	run.mu.RLock()
 	defer run.mu.RUnlock()
 	return run.finishRequested
+}
+
+func (run *ownerActiveRun) requestShutdown() {
+	run.mu.Lock()
+	run.shutdownRequested = true
+	run.mu.Unlock()
+}
+
+func (run *ownerActiveRun) shutdownWasRequested() bool {
+	run.mu.RLock()
+	defer run.mu.RUnlock()
+	return run.shutdownRequested
 }

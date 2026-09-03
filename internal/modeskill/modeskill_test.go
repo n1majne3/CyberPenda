@@ -38,13 +38,15 @@ func TestModeSkillsAreExclusiveSystemBundles(t *testing.T) {
 	}
 }
 
-func TestCTFOrchestratorDeclaresDisabledOnly(t *testing.T) {
-	bundle := skill.Bundle{ID: "ctf-orchestrator", Name: "ctf-orchestrator", Path: filepath.Join("..", "..", "skills", "bundles", "ctf-orchestrator")}
-	if err := modeskill.ValidateBundleCompatibility(modeskill.ModeDisabled, bundle); err != nil {
-		t.Fatalf("disabled compatibility: %v", err)
+func TestCTFOrchestratorBuiltinAcceptsDisabledAndWorkingGraph(t *testing.T) {
+	bundle := skill.Bundle{ID: "ctf-orchestrator", Name: "ctf-orchestrator", Path: filepath.Join("..", "..", "internal", "skill", "builtins", "assets", "ctf-orchestrator")}
+	for _, mode := range []modeskill.Mode{modeskill.ModeDisabled, modeskill.ModeWorkingGraph} {
+		if err := modeskill.ValidateBundleCompatibility(mode, bundle); err != nil {
+			t.Fatalf("%s compatibility: %v", mode, err)
+		}
 	}
-	if err := modeskill.ValidateBundleCompatibility(modeskill.ModeWorkingGraph, bundle); err == nil {
-		t.Fatal("ctf-orchestrator unexpectedly accepted Working Graph mode")
+	if err := modeskill.ValidateBundleCompatibility(modeskill.ModeInteractive, bundle); err == nil {
+		t.Fatal("ctf-orchestrator unexpectedly accepted Interactive mode")
 	}
 }
 

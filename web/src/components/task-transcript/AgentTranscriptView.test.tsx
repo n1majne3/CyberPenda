@@ -82,7 +82,7 @@ describe("AgentTranscriptView", () => {
     expect(screen.queryByTestId("timeline-event-detail")).not.toBeInTheDocument();
   });
 
-  it("labels timeline segment buttons and gives rows a content-visibility boundary", () => {
+  it("labels timeline segment buttons and keeps rows on real layout for coverage measurement", () => {
     render(
       <AgentTranscriptView
         owner={owner}
@@ -95,7 +95,10 @@ describe("AgentTranscriptView", () => {
 
     expect(screen.getByRole("button", { name: /Jump to shell event/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Jump to Error event/i })).toBeInTheDocument();
-    expect(screen.getAllByTestId("transcript-event-row")[0]).toHaveClass("[content-visibility:auto]");
+    // The virtual window's measured coverage pass needs real row heights, so
+    // rows must not carry content-visibility size hints that report phantom
+    // heights for offscreen rows.
+    expect(screen.getAllByTestId("transcript-event-row")[0]).not.toHaveClass("[content-visibility:auto]");
   });
 
   it("exposes disclosure state and visible focus styles on transcript controls", () => {
