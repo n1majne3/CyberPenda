@@ -112,6 +112,48 @@ SANDBOX_IMAGE=pentest-sandbox:dev make build-sandbox-image
 
 Override the source-build tag with `SANDBOX_IMAGE=...`. The source-smoke Make targets use that tag; direct daemon and script invocations use the published GHCR image unless `PENTEST_SANDBOX_IMAGE=...` is set.
 
+## TSecBench Hosted evaluation
+
+CyberPenda also builds a self-contained `linux/amd64` image for [TSecBench Hosted Mode](https://tsecbench.zc.tencent.com). The image runs the isolated Hosted Controller (`pentest-tsecbench-hosted`) plus the challenge client and one of the bundled Codex / Claude Code runtimes. TSecBench supplies the VPN-isolated network, challenge lifecycle, and scorekeeping; the container only solves challenges and emits its JSONL transcript.
+
+### Build the image
+
+The build target always targets `linux/amd64`, regardless of the host architecture:
+
+```sh
+make build-tsecbench-hosted-image
+```
+
+The default tag is `cyberpenda-tsecbench-hosted:local`. Override it with `TSECBENCH_HOSTED_IMAGE=...`.
+
+After a build you can verify the image and inspect its bundled runtimes:
+
+```sh
+make smoke-tsecbench-hosted-image
+make tsecbench-hosted-runtime-inventory
+```
+
+For the TSecBench upload bundle, run the `Build TSecBench Hosted Bundle` GitHub Actions workflow (or `make build-tsecbench-hosted-bundle TSECBENCH_BUNDLE_VERSION=v1` after exporting the image). The bundle archives the image as one `.tar.gz` Docker file plus its checksum and component inventory. See [docs/tsecbench/README.md](docs/tsecbench/README.md) for upload, environment templates, and VPN-backed local validation.
+
+### Hosted environment variables
+
+TSecBench injects `BENCHMARK_BASE_URL` and the one-use `BENCHMARK_TOKEN` in Hosted Mode. The remaining `CYBERPENDA_*` values are entered on the TSecBench page (secrets are never stored in the repo):
+
+| Variable | Meaning |
+| --- | --- |
+| `CYBERPENDA_RUNTIME` | `codex` (default) or `claude_code` |
+| `CYBERPENDA_MODEL_PROTOCOL` | `openai_responses` for Codex; `anthropic_messages` for Claude Code |
+| `CYBERPENDA_MODEL_BASE_URL` | Gateway base URL ending in `.tsecbench.gw`; do not append an operation suffix |
+| `CYBERPENDA_MODEL` | Model ID served by the gateway |
+| `CYBERPENDA_MODEL_API_KEY` | Dedicated, revocable evaluation model API key |
+| `CYBERPENDA_REASONING_EFFORT` | Optional; `low`, `medium`, `high`, `xhigh`, or `max` |
+| `CYBERPENDA_TASK_GOAL_APPENDIX` | Optional text appended to the required Hosted Task Goal |
+| `CYBERPENDA_AUTO_COMPACT_THRESHOLD` | Optional Claude Code compaction threshold (1-100) |
+| `CYBERPENDA_AUTO_COMPACT_WINDOW` | Optional Claude Code compaction window (1-1048576) |
+| `CYBERPENDA_MAX_OUTPUT_TOKENS` | Optional max output tokens (1-1048576); DeepSeek hosted runs use `393216` |
+| `CYBERPENDA_CONTEXT_WINDOW` | Optional context window in tokens |
+| `CYBERPENDA_CHALLENGE_ADAPTER` | Optional challenge adapter id; defaults to `tsecbench` |
+
 ## Typical workflow
 
 1. Create a **Project** and define **Scope** (what is authorized).
@@ -132,6 +174,10 @@ Domain terms are defined in [CONTEXT.md](CONTEXT.md).
 | `make build-ui` | Build React UI into the local (gitignored) embed path |
 | `make build` | `build-ui` + compile `pentestd` with embedded UI |
 | `make build-sandbox-image` | Build local sandbox container image |
+| `make build-tsecbench-hosted-image` | Build the local TSecBench Hosted image (`linux/amd64`) |
+| `make smoke-tsecbench-hosted-image` | Run the no-capability smoke test against a built Hosted image |
+| `make tsecbench-hosted-runtime-inventory` | Print runtime versions bundled in a built Hosted image |
+| `make build-tsecbench-hosted-bundle TSECBENCH_BUNDLE_VERSION=v1` | Export a Hosted upload bundle from a built image |
 | `make test` / `make test-backend` | Go unit and integration tests |
 | `make test-ci` | CI-safe tests (no Docker, no LLM credentials) |
 | `make smoke-sandbox-mcp` | Live smoke: sandbox → daemon Blackboard v2 MCP change |
