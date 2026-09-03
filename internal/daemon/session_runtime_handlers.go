@@ -910,7 +910,13 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 	}
 	found.RuntimeActivity = activity
 
-	controls := session.RuntimeControls{RuntimeProvider: provider}
+	controls := session.RuntimeControls{
+		RuntimeProvider: provider,
+		// An open Session without a live Runtime accepts a new message to start
+		// its replacement Runtime. A bound Runtime overrides this with its
+		// provider-native SendTurn capability below.
+		QueueSteerAvailable: found.Lifecycle == session.LifecycleOpen,
+	}
 	if latest != nil {
 		controls.NativeSessionCaptured = latest.NativeSessionID != "" || latest.NativeSessionPath != ""
 		selection, selectionErr := server.sessionCurrentSelection(*latest)

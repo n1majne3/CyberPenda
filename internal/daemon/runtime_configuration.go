@@ -221,11 +221,9 @@ func (server *Server) resolveSessionSnapshot(profile runtimeprofile.Profile, run
 		if err := json.Unmarshal(encoded, &prior); err != nil || prior.SnapshotVersion != runtimeconfig.SnapshotVersion {
 			return nil, errors.New("runtime configuration snapshot is missing")
 		}
-		for _, skillID := range prior.EnabledSkillIDs {
-			if _, err := server.skills.Get(skillID); err != nil {
-				return nil, fmt.Errorf("captured Skill %s is unavailable", skillID)
-			}
-		}
+		// Keep the immutable historical Skill IDs in the cloned Snapshot.
+		// Preflight and Config Projection skip captured IDs that no longer
+		// resolve, such as Built-in Skills retired after this Session started.
 		cloned, err := runtimeconfig.CloneForTurn(prior, turn, provider)
 		if err != nil {
 			return nil, err
