@@ -249,3 +249,147 @@ test("a page-long final message stays at its beginning when a live Transcript en
   await expect(page.getByTestId("unseen-transcript-indicator")).toContainText("2 new messages", { timeout: 3000 });
   expect(await viewport.evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(readingPosition + 2);
 });
+
+test("leaving the live tail keeps the viewport covered without a blank band", async ({ page }) => {
+  // Collapsed single-line rows sit far below the 72px virtual-window
+  // estimate, so the estimate-derived window used to end above the viewport
+  // bottom and expose the tail spacer as a large blank band.
+  const shortEntries: TranscriptEntry[] = Array.from({ length: 200 }, (_, index) => ({
+    id: `entry-${index + 1}`,
+    seq: index + 1,
+    continuation: 1,
+    kind: "message",
+    role: "assistant",
+    text: `History entry ${index + 1}`,
+    created_at: "2026-08-01T00:00:00Z",
+  }));
+  await routeRuntimeOwnerWorkspace(page, { transcript: shortEntries });
+
+  await page.goto("/projects/project-0/tasks/task-0");
+  await expect(page.getByText("History entry 200")).toBeVisible();
+
+  const viewport = page.getByTestId("conversation-workspace");
+  await viewport.hover();
+  await page.mouse.wheel(0, -600);
+  await expect(page.getByRole("button", { name: "Scroll to latest (auto-follow off)" })).toBeVisible();
+
+  await expect.poll(async () => {
+    const [viewportBox, rowsBox] = await Promise.all([
+      viewport.boundingBox(),
+      page.getByTestId("transcript-rows").boundingBox(),
+    ]);
+    if (viewportBox === null || rowsBox === null) return false;
+    // The rows cannot cover the container's bottom padding, so compare
+    // against the content-box bottom.
+    const paddingBottom = await viewport.evaluate(
+      (element) => parseFloat(getComputedStyle(element).paddingBottom) || 0,
+    );
+    return rowsBox.y + rowsBox.height >= viewportBox.y + viewportBox.height - paddingBottom - 4;
+  }).toBe(true);
+
+  // The coverage extension must stay bounded (#202).
+  expect(await page.getByTestId("transcript-row").count()).toBeLessThan(120);
+});
+
+test("scrolling up through mixed row heights never exceeds the React update depth", async ({ page }) => {
+  // Real transcripts mix collapsed single-line rows with tall messages. This
+  // sweep is a browser smoke pass over that mix; the deterministic guard for
+  // the covering/over-covering ping-pong (React error #185) lives in
+  // virtualWindow.test.ts, where the resonant geometry is exact.
+  const mixedEntries: TranscriptEntry[] = Array.from({ length: 200 }, (_, index) => ({
+    id: `entry-${index + 1}`,
+    seq: index + 1,
+    continuation: 1,
+    kind: "message",
+    role: "assistant",
+    text: index === 120
+      ? Array.from({ length: 180 }, (_, line) => `Tall message line ${line + 1}`).join("\n")
+      : `History entry ${index + 1}`,
+    created_at: "2026-08-01T00:00:00Z",
+  }));
+  await routeRuntimeOwnerWorkspace(page, { transcript: mixedEntries });
+
+  await page.goto("/projects/project-0/tasks/task-0");
+  await expect(page.getByText("History entry 200")).toBeVisible();
+
+  const viewport = page.getByTestId("conversation-workspace");
+  await viewport.hover();
+  await page.mouse.wheel(0, -600);
+  await expect(page.getByRole("button", { name: "Scroll to latest (auto-follow off)" })).toBeVisible();
+  // The reading position must move smoothly while rows above the viewport are
+  // measured: a fixed row may shift at most by the wheel step plus slack, not
+  // by the thousands of px a layout mis-anchor used to snap.
+  const tallMessage = page.getByText("Tall message line 1");
+  let previousY: number | null = null;
+  for (let step = 0; step < 24; step += 1) {
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(120);
+    await expect(page.getByRole("heading", { name: "Something went wrong" })).toHaveCount(0);
+    if (await tallMessage.count() > 0) {
+      const box = await tallMessage.boundingBox();
+      if (box) {
+        if (previousY !== null) {
+          expect(Math.abs(box.y - previousY)).toBeLessThanOrEqual(700);
+        }
+        previousY = box.y;
+      }
+    }
+  }
+
+  await expect.poll(async () => {
+    const [viewportBox, rowsBox] = await Promise.all([
+      viewport.boundingBox(),
+      page.getByTestId("transcript-rows").boundingBox(),
+    ]);
+    if (viewportBox === null || rowsBox === null) return false;
+    const paddingBottom = await viewport.evaluate(
+      (element) => parseFloat(getComputedStyle(element).paddingBottom) || 0,
+    );
+    return rowsBox.y + rowsBox.height >= viewportBox.y + viewportBox.height - paddingBottom - 4;
+  }).toBe(true);
+  expect(await page.getByTestId("transcript-row").count()).toBeLessThan(120);
+});
+
+test("a tall transcript scrolls from the live tail back to its oldest history", async ({ page }) => {
+  // Real transcript rows are far taller than the uniform estimate. Scrolling
+  // up must keep measuring rows and shifting the window instead of staying
+  // pinned on the same tail rows or snapping back.
+  const tallEntries: TranscriptEntry[] = Array.from({ length: 200 }, (_, index) => ({
+    id: `entry-${index + 1}`,
+    seq: index + 1,
+    continuation: 1,
+    kind: "message",
+    role: "assistant",
+    text: Array.from({ length: 20 }, (_, line) => `Entry ${index + 1} line ${line + 1}`).join("\n"),
+    created_at: "2026-08-01T00:00:00Z",
+  }));
+  await routeRuntimeOwnerWorkspace(page, { transcript: tallEntries });
+
+  await page.goto("/projects/project-0/tasks/task-0");
+  await expect(page.getByText("Entry 200 line 20")).toBeVisible();
+
+  const viewport = page.getByTestId("conversation-workspace");
+  await viewport.hover();
+  await page.mouse.wheel(0, -600);
+  await expect(page.getByRole("button", { name: "Scroll to latest (auto-follow off)" })).toBeVisible();
+
+  let scrollTop = await viewport.evaluate((element) => element.scrollTop);
+  for (let step = 0; step < 80 && scrollTop > 1500; step += 1) {
+    await page.mouse.wheel(0, -3000);
+    await page.waitForTimeout(50);
+    scrollTop = await viewport.evaluate((element) => element.scrollTop);
+  }
+  expect(scrollTop).toBeLessThan(1500);
+  await expect(page.getByRole("heading", { name: "Something went wrong" })).toHaveCount(0);
+
+  const [viewportBox, entryBox] = await Promise.all([
+    viewport.boundingBox(),
+    page.getByText("Entry 1 line 1").boundingBox(),
+  ]);
+  expect(viewportBox).not.toBeNull();
+  expect(entryBox).not.toBeNull();
+  // The oldest message intersects the viewport.
+  expect(entryBox!.y + entryBox!.height).toBeGreaterThanOrEqual(viewportBox!.y);
+  expect(entryBox!.y).toBeLessThanOrEqual(viewportBox!.y + viewportBox!.height);
+  expect(await page.getByTestId("transcript-row").count()).toBeLessThan(120);
+});
