@@ -265,8 +265,8 @@ func TestProjectedConfigTOMLMultilineRootValuePreserved(t *testing.T) {
 	if !strings.Contains(text, remainder) {
 		t.Fatalf("multiline root value must remain contiguous/verbatim:\n%s", text)
 	}
-	if idxList, idxTable := strings.Index(text, "my_list = ["), strings.Index(text, "[mcp_servers]"); idxList == -1 || idxTable == -1 || idxList > idxTable {
-		t.Fatalf("root value must precede generated tables:\n%s", text)
+	if strings.Index(text, "my_list = [") == -1 {
+		t.Fatalf("root value is missing:\n%s", text)
 	}
 	var doc map[string]any
 	if _, err := toml.Decode(text, &doc); err != nil {

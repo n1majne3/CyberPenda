@@ -57,7 +57,6 @@ type Capabilities struct {
 	InTurnSteer          bool `json:"in_turn_steer"`
 	PermissionResponse   bool `json:"permission_response"`
 	ResumeSession        bool `json:"resume_session"`
-	AssistedConclusion   bool `json:"assisted_conclusion"`
 }
 
 type ProfileSchema struct {

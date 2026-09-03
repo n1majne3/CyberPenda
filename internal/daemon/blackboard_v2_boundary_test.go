@@ -1,8 +1,6 @@
 package daemon_test
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -10,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"pentest/internal/daemon"
 	"pentest/internal/project"
@@ -144,7 +140,9 @@ func TestBlackboardV2DaemonDoesNotRegisterLegacyBlackboardSurfaces(t *testing.T)
 		})
 	}
 
-	assertV2BootstrapMCPHasNoLegacyTools(t, server)
+	mcpResponse := httptest.NewRecorder()
+	server.ServeHTTP(mcpResponse, httptest.NewRequest(http.MethodPost, "/mcp", nil))
+	assertBlackboardV1RouteNotFound(t, mcpResponse)
 
 	after := blackboardfixture.CaptureLegacyState(t, inspectionDB)
 	if !reflect.DeepEqual(after, before) {
@@ -224,58 +222,6 @@ func TestBlackboardV2FreshResumeIgnoresLegacyRows(t *testing.T) {
 	after := blackboardfixture.CaptureLegacyState(t, inspectionDB)
 	if !reflect.DeepEqual(after, before) {
 		t.Fatalf("fresh resume mutated legacy Blackboard state\nbefore: %#v\nafter:  %#v", before, after)
-	}
-}
-
-func assertV2BootstrapMCPHasNoLegacyTools(t *testing.T, server *daemon.Server) {
-	t.Helper()
-	httpServer := httptest.NewServer(server)
-	defer httpServer.Close()
-	ctx := context.Background()
-	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "v2-boundary-test", Version: "1"}, nil)
-	session, err := client.Connect(ctx, &sdkmcp.StreamableClientTransport{Endpoint: httpServer.URL + "/mcp"}, nil)
-	if err != nil {
-		t.Fatalf("connect v2 bootstrap MCP: %v", err)
-	}
-	defer func() { _ = session.Close() }()
-	listed, err := session.ListTools(ctx, nil)
-	if err != nil {
-		t.Fatalf("list v2 bootstrap MCP tools: %v", err)
-	}
-	wantTools := map[string]bool{
-		"blackboard_change": true, "blackboard_record_attempt_result": true, "blackboard_read": true, "blackboard_history": true,
-		"blackboard_retain_evidence": true, "blackboard_checkpoint_attempt": true, "blackboard_finish": true,
-	}
-	if len(listed.Tools) != len(wantTools) {
-		t.Fatalf("v2 bootstrap MCP tools = %#v, want exactly the seven trusted v2 tools", listed.Tools)
-	}
-	for _, tool := range listed.Tools {
-		if !wantTools[tool.Name] {
-			t.Fatalf("v2 bootstrap MCP exposed unexpected tool %q", tool.Name)
-		}
-		delete(wantTools, tool.Name)
-	}
-	if len(wantTools) != 0 {
-		t.Fatalf("v2 bootstrap MCP missing tools %#v", wantTools)
-	}
-	retiredTools := []string{
-		"upsert_project_fact", "deprecate_project_fact", "upsert_fact_relation",
-		"record_vulnerability", "attach_evidence", "generate_report", "submit_task_summary",
-		"blackboard_apply", "blackboard_resolve_records", "blackboard_get_current_graph",
-		"blackboard_finish_continuation", "blackboard_reconcile_attempts", "blackboard_reconcile_interruption",
-	}
-	for _, tool := range listed.Tools {
-		for _, retired := range retiredTools {
-			if tool.Name == retired {
-				t.Fatalf("v2 bootstrap MCP exposed retired tool %q", retired)
-			}
-		}
-	}
-	for _, retired := range retiredTools {
-		_, err := session.CallTool(ctx, &sdkmcp.CallToolParams{Name: retired, Arguments: map[string]any{}})
-		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf(`unknown tool %q`, retired)) {
-			t.Fatalf("retired MCP tool %q call error = %v", retired, err)
-		}
 	}
 }
 

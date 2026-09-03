@@ -124,18 +124,25 @@ func ProjectCodexV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, 
 // Continuation without legacy identity context files. Claude and Pi retain the
 // trusted MCP grant URL; Codex remains networkless for Project Interface writes.
 func ProjectBlackboardV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
+	var projection ConfigProjection
+	var err error
 	switch profile.Provider {
 	case runtimeprofile.ProviderCodex:
-		return projectCodexV2RuntimeConfig(layout, profile, req)
+		projection, err = projectCodexV2RuntimeConfig(layout, profile, req)
 	case runtimeprofile.ProviderClaudeCode:
-		return projectClaudeV2RuntimeConfig(layout, profile, req)
+		projection, err = projectClaudeV2RuntimeConfig(layout, profile, req)
 	case runtimeprofile.ProviderPi:
-		return projectPiV2RuntimeConfig(layout, profile, req)
+		projection, err = projectPiV2RuntimeConfig(layout, profile, req)
 	case runtimeprofile.ProviderHermes:
-		return projectHermesV2RuntimeConfig(layout, profile, req)
+		projection, err = projectHermesV2RuntimeConfig(layout, profile, req)
 	default:
 		return ConfigProjection{}, fmt.Errorf("Blackboard v2 projection is unsupported for provider %q", profile.Provider)
 	}
+	if err != nil {
+		return ConfigProjection{}, err
+	}
+	addModeSkillProjectionPreview(&projection, req.BlackboardMode, layout)
+	return projection, nil
 }
 
 func projectCodexV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
@@ -145,14 +152,12 @@ func projectCodexV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, 
 	if err := os.MkdirAll(layout.ProviderHome, 0o700); err != nil {
 		return ConfigProjection{}, fmt.Errorf("prepare provider home: %w", err)
 	}
-	if len(req.SkillBundles) > 0 {
-		if err := projectSkillBundles(layout, req.SkillBundles); err != nil {
-			return ConfigProjection{}, err
-		}
+	if err := projectModeAndUserSkills(layout, req); err != nil {
+		return ConfigProjection{}, err
 	}
-	if req.Sandbox || len(req.SkillBundles) > 0 {
+	if req.Sandbox || len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
 		target := sandboxSkillsImagePath
-		if len(req.SkillBundles) > 0 {
+		if len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
 			target = layout.SkillsRoot
 			if req.Sandbox {
 				target = "/task/skills"
@@ -279,14 +284,12 @@ func prepareBlackboardV2Skills(layout Layout, profile runtimeprofile.Profile, re
 	if err := os.MkdirAll(layout.ProviderHome, 0o700); err != nil {
 		return fmt.Errorf("prepare provider home: %w", err)
 	}
-	if len(req.SkillBundles) > 0 {
-		if err := projectSkillBundles(layout, req.SkillBundles); err != nil {
-			return err
-		}
+	if err := projectModeAndUserSkills(layout, req); err != nil {
+		return err
 	}
-	if req.Sandbox || len(req.SkillBundles) > 0 {
+	if req.Sandbox || len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
 		target := sandboxSkillsImagePath
-		if len(req.SkillBundles) > 0 {
+		if len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
 			target = layout.SkillsRoot
 			if req.Sandbox {
 				target = "/task/skills"

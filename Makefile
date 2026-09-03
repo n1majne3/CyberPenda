@@ -69,7 +69,8 @@ build-tsecbench-hosted-bundle:
 	@test -n "$(TSECBENCH_BUNDLE_VERSION)" || (echo "TSECBENCH_BUNDLE_VERSION is required" >&2; exit 2)
 	scripts/build-tsecbench-hosted-bundle.sh "$(TSECBENCH_BUNDLE_VERSION)" "$(TSECBENCH_HOSTED_IMAGE)"
 
-# Prove the configured sandbox image can reach daemon MCP and write a fact.
+# Prove the configured sandbox image can reach the daemon Blackboard v2 HTTP
+# boundary and write a semantic fact.
 smoke-sandbox-mcp:
 	@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) bash scripts/smoke-sandbox-mcp-live.sh
 
@@ -119,7 +120,7 @@ test-ci-windows: ensure-embed-stub
 	go test -timeout 20m $$(go list ./cmd/... ./internal/... | grep -vxF 'pentest/internal/daemon' | grep -vxF 'pentest/internal/runner')
 
 # Live smokes (local):
-#   make smoke-sandbox-mcp     — sandbox image + daemon MCP, no LLM
+#   make smoke-sandbox-mcp     — sandbox image + daemon Blackboard HTTP, no LLM
 #   make smoke-runtime-tasks   — Codex/Claude/Pi task smoke; needs Docker + provider creds
 # Optional filters: PENTEST_SMOKE_ONLY=codex|claude_code|pi|pi_sandbox
 

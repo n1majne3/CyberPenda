@@ -24,9 +24,17 @@ type blackboardV2Principal struct {
 	operator       bool
 	actorID        string
 	projectID      string
+	sessionID      string
 	taskID         string
 	continuationID string
 	grant          projectinterface.Grant
+}
+
+func requireBlackboardV2WriteAccess(principal blackboardV2Principal) *blackboardv2.Error {
+	if principal.operator || principal.grant.Access == projectinterface.GrantAccessFull {
+		return nil
+	}
+	return blackboardV2HTTPError("authority_denied", "Continuation Interface capability is read-only", "authority")
 }
 
 func (server *Server) registerBlackboardV2Routes() {
@@ -106,6 +114,10 @@ func (server *Server) handleBlackboardV2Change(response http.ResponseWriter, req
 	principal, authErr := server.authenticateBlackboardV2(request, false)
 	if authErr != nil {
 		writeBlackboardV2Error(response, authErr, nil)
+		return
+	}
+	if accessErr := requireBlackboardV2WriteAccess(principal); accessErr != nil {
+		writeBlackboardV2Error(response, accessErr, nil)
 		return
 	}
 	idempotencyKey, err := requireBlackboardV2IdempotencyKey(request)
@@ -210,6 +222,10 @@ func (server *Server) handleBlackboardV2EvidenceRetain(response http.ResponseWri
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	if accessErr := requireBlackboardV2WriteAccess(principal); accessErr != nil {
+		writeBlackboardV2Error(response, accessErr, nil)
+		return
+	}
 	idempotencyKey, err := requireBlackboardV2IdempotencyKey(request)
 	if err != nil {
 		writeBlackboardV2Error(response, err, nil)
@@ -259,7 +275,7 @@ func (server *Server) handleDisabledTaskOutputEvidenceRetain(response http.Respo
 		writeBlackboardV2Error(response, blackboardV2HTTPError("not_found", "Task was not found in this Project", "path.task_id"), nil)
 		return
 	}
-	if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeDisabled {
+	if found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 		writeBlackboardV2Error(response, blackboardV2HTTPError("semantic_validation", "selected output retention requires a Disabled Task", "path.task_id"), nil)
 		return
 	}
@@ -301,6 +317,10 @@ func (server *Server) handleBlackboardV2Checkpoint(response http.ResponseWriter,
 	principal, authErr := server.authenticateBlackboardV2(request, true)
 	if authErr != nil {
 		writeBlackboardV2Error(response, authErr, nil)
+		return
+	}
+	if accessErr := requireBlackboardV2WriteAccess(principal); accessErr != nil {
+		writeBlackboardV2Error(response, accessErr, nil)
 		return
 	}
 	action := request.PathValue("attempt_action")
@@ -396,6 +416,10 @@ func (server *Server) handleBlackboardV2Finish(response http.ResponseWriter, req
 	principal, authErr := server.authenticateBlackboardV2(request, true)
 	if authErr != nil {
 		writeBlackboardV2Error(response, authErr, nil)
+		return
+	}
+	if accessErr := requireBlackboardV2WriteAccess(principal); accessErr != nil {
+		writeBlackboardV2Error(response, accessErr, nil)
 		return
 	}
 	idempotencyKey, err := requireBlackboardV2IdempotencyKey(request)

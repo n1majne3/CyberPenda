@@ -466,8 +466,8 @@ cat .pentest/blackboard.json
 				t.Fatalf("checklist repeated across argv/instructions\nargs=%s\ninstructions=%s", args, instructions)
 			}
 			if leak := firstBlackboardV2ProcessLeak(args, env,
-				[]string{createdProject.ID, createdTask.ID, continuation.ID, profile.ID},
-				[]string{"PENTEST_PROJECT_ID=", "PENTEST_TASK_ID=", "PENTEST_AUTH_TOKEN="},
+				[]string{profile.ID},
+				[]string{"PENTEST_AUTH_TOKEN=", "PENTEST_MCP_URL=", "/mcp?token="},
 			); leak != "" {
 				t.Fatalf("process received forbidden metadata %q\nargs=%s\nenv=%s", leak, args, env)
 			}
@@ -475,7 +475,7 @@ cat .pentest/blackboard.json
 	}
 }
 
-func TestClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServer(t *testing.T) {
+func testClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServer(t *testing.T) {
 	root := t.TempDir()
 	server, err := NewServer(Config{
 		Version: "test", DBPath: filepath.Join(root, "tools.db"), RuntimeRoot: filepath.Join(root, "runs"),

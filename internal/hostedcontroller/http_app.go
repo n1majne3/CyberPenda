@@ -152,7 +152,7 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootst
 	if err := app.request(ctx, http.MethodPost, "/api/projects/"+project.ID+"/tasks", map[string]any{
 		"type": evaluation.Task.Type, "goal": evaluation.Task.Goal,
 		"runtime_profile_id": profile.ID, "runner": evaluation.Task.Runner,
-		"run_controls": map[string]any{"host_activated": evaluation.Task.HostActivated, "blackboard_conclusion_mode": "disabled"},
+		"run_controls": map[string]any{"host_activated": evaluation.Task.HostActivated, "blackboard_mode": "disabled"},
 	}, &task); err != nil {
 		return HostedEvaluationReference{}, fmt.Errorf("create hosted Task: %w", err)
 	}

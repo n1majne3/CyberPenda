@@ -81,12 +81,6 @@ func TestClaudeAndPiV2PostGrantProjectionFailureRollsBackDurableLaunchAndGrantCo
 			injected := errors.New("injected post-grant projection failure")
 			server.blackboardV2Continuity.SetFailureInjector(func(point blackboardv2.ContinuityFailurePoint) error {
 				if point == blackboardv2.ContinuityFailureAfterBindGrant {
-					// Prove BindGrant already wrote a grant-bearing config before abort.
-					if raw, readErr := os.ReadFile(tc.mcpPath(runtimeRoot, createdTask.ID)); readErr == nil {
-						if !strings.Contains(string(raw), "/mcp?token=") {
-							t.Fatalf("expected grant-bearing MCP config before abort injection: %s", raw)
-						}
-					}
 					return injected
 				}
 				return nil
@@ -133,12 +127,8 @@ func TestClaudeAndPiV2PostGrantProjectionFailureRollsBackDurableLaunchAndGrantCo
 			if continuation.ID == "" || bound.Adapter == nil {
 				t.Fatalf("retry returned empty launch: %#v %#v", continuation, bound)
 			}
-			raw, err := os.ReadFile(tc.mcpPath(runtimeRoot, createdTask.ID))
-			if err != nil {
-				t.Fatalf("read grant-bearing MCP after successful retry: %v", err)
-			}
-			if !strings.Contains(string(raw), "/mcp?token=") {
-				t.Fatalf("successful retry missing grant token in MCP config: %s", raw)
+			if _, err := os.Stat(tc.mcpPath(runtimeRoot, createdTask.ID)); !os.IsNotExist(err) {
+				t.Fatalf("successful retry projected retired built-in MCP config: %v", err)
 			}
 		})
 	}
@@ -273,13 +263,18 @@ func TestClaudeAndPiV2SandboxArgvAndEnvOmitIdentityAndHostTaskRoots(t *testing.T
 				}
 			}
 			envJoined := strings.Join(envPairs, "\n")
-			for _, forbidden := range []string{
-				createdProject.ID, createdTask.ID, continuation.ID, profile.ID,
-				taskRoot, runtimeRoot,
-				"PENTEST_PROJECT_ID=", "PENTEST_TASK_ID=", "PENTEST_CONTINUATION_ID=",
-				"PENTEST_AUTH_TOKEN=", "PENTEST_INTERFACE_TOKEN=", "PENTEST_MCP_URL=",
+			for _, required := range []string{
+				"PENTEST_PROJECT_ID=" + createdProject.ID,
+				"PENTEST_TASK_ID=" + createdTask.ID,
+				"PENTEST_CONTINUATION_ID=" + continuation.ID,
+				"PENTEST_INTERFACE_TOKEN=",
 				"PENTEST_API_URL=",
 			} {
+				if !strings.Contains(envJoined, required) {
+					t.Fatalf("sandbox process env missing %q:\n%s", required, envJoined)
+				}
+			}
+			for _, forbidden := range []string{profile.ID, taskRoot, runtimeRoot, "PENTEST_AUTH_TOKEN=", "PENTEST_MCP_URL="} {
 				if forbidden != "" && strings.Contains(envJoined, forbidden) {
 					t.Fatalf("sandbox process env leaked %q:\n%s", forbidden, envJoined)
 				}

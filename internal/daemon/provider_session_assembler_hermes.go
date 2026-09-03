@@ -77,8 +77,6 @@ func (a hermesAssembler) Setup(ctx context.Context, bridge productionBridgeTrans
 	if err != nil {
 		return providerSessionSetup{}, err
 	}
-	// Adapter conformance owns assisted conclusion; see the Codex assembler.
-	capabilities.AssistedConclusion = true
 	return providerSessionSetup{
 		Session: runtime.NewHermesProviderSession(runtime.HermesProviderSessionConfig{
 			Transport:    bridge,

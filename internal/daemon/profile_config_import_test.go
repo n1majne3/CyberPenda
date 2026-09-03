@@ -514,9 +514,7 @@ func TestImportRuntimeProfileConfigMapsOfficialPlugin(t *testing.T) {
 	}
 }
 
-// Story 16: Claude preview must include the harness-generated trusted MCP
-// allow list the launch projection writes.
-func TestProjectedConfigPreviewIncludesTrustedMCPAllow(t *testing.T) {
+func TestProjectedConfigPreviewOmitsRetiredBuiltinMCPAllow(t *testing.T) {
 	server := newImportTestServer(t)
 	id := createProfileForImport(t, server)
 	req := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+id+"/projected-config", nil)
@@ -525,8 +523,8 @@ func TestProjectedConfigPreviewIncludesTrustedMCPAllow(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("projected-config status %d body %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "mcp__pentest__") {
-		t.Fatalf("preview must include harness-generated trusted MCP allow entries, got %s", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "mcp__pentest__") {
+		t.Fatalf("preview contains retired built-in MCP allow entries: %s", rec.Body.String())
 	}
 }
 

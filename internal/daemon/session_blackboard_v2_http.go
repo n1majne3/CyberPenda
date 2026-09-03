@@ -16,33 +16,51 @@ import (
 	"pentest/internal/projectinterface"
 )
 
-// authenticateSessionBlackboardV2 deliberately accepts only the daemon
-// operator credential for this initial Session surface. Project Continuation
-// grants cannot be widened into Session authority because their contract has
-// a Project/Task owner binding.
-func (server *Server) authenticateSessionBlackboardV2(request *http.Request) (string, *blackboardv2.Error) {
+// authenticateSessionBlackboardV2 accepts either daemon operator authority or
+// one Session-bound Continuation Interface Grant. Project grants cannot widen
+// into Session authority because the owner contract must match the path.
+func (server *Server) authenticateSessionBlackboardV2(request *http.Request) (blackboardV2Principal, *blackboardv2.Error) {
 	if request.URL.Query().Get("token") != "" {
-		return "", blackboardV2HTTPError("invalid_schema", "v2 does not accept bearer credentials in query strings", "authorization")
+		return blackboardV2Principal{}, blackboardV2HTTPError("invalid_schema", "v2 does not accept bearer credentials in query strings", "authorization")
 	}
 	sessionID := strings.TrimSpace(request.PathValue("id"))
 	if sessionID == "" {
-		return "", blackboardV2HTTPError("invalid_schema", "session id is required", "path.session_id")
+		return blackboardV2Principal{}, blackboardV2HTTPError("invalid_schema", "session id is required", "path.session_id")
 	}
 	token := projectinterface.BearerToken(request)
 	operator := token != "" &&
 		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) == 1
-	if !operator {
-		return "", blackboardV2HTTPError("authority_denied", "Session Blackboard requires the trusted operator authority", "authorization")
+	if operator {
+		actorID := strings.TrimSpace(request.Header.Get(projectinterface.OperatorActorHeader))
+		if actorID == "" {
+			actorID = "local-operator"
+		}
+		return blackboardV2Principal{operator: true, actorID: actorID, sessionID: sessionID}, nil
 	}
-	return sessionID, nil
+	if token == "" || server.projectInterfaceGrants == nil {
+		return blackboardV2Principal{}, blackboardV2HTTPError("authority_denied", "Session Continuation Interface capability is required", "authorization")
+	}
+	grant, err := server.projectInterfaceGrants.Resolve(request.Context(), token)
+	if err != nil || !grant.Status().IsReadable() {
+		return blackboardV2Principal{}, blackboardV2HTTPError("authority_denied", "Session Continuation Interface capability is invalid", "authorization")
+	}
+	if !grant.IsSession() || grant.Owner.SessionID != sessionID {
+		return blackboardV2Principal{}, blackboardV2HTTPError("authority_denied", "declared Session does not match Continuation Interface capability", "path.session_id")
+	}
+	return blackboardV2Principal{sessionID: sessionID, continuationID: grant.ContinuationID, grant: grant}, nil
 }
 
 func (server *Server) handleSessionBlackboardV2Change(response http.ResponseWriter, request *http.Request) {
-	sessionID, authErr := server.authenticateSessionBlackboardV2(request)
+	principal, authErr := server.authenticateSessionBlackboardV2(request)
 	if authErr != nil {
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	if accessErr := requireBlackboardV2WriteAccess(principal); accessErr != nil {
+		writeBlackboardV2Error(response, accessErr, nil)
+		return
+	}
+	sessionID := principal.sessionID
 	idempotencyKey, err := requireBlackboardV2IdempotencyKey(request)
 	if err != nil {
 		writeBlackboardV2Error(response, err, nil)
@@ -62,11 +80,12 @@ func (server *Server) handleSessionBlackboardV2Change(response http.ResponseWrit
 }
 
 func (server *Server) handleSessionBlackboardV2Snapshot(response http.ResponseWriter, request *http.Request) {
-	sessionID, authErr := server.authenticateSessionBlackboardV2(request)
+	principal, authErr := server.authenticateSessionBlackboardV2(request)
 	if authErr != nil {
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	sessionID := principal.sessionID
 	projection, err := server.blackboardV2.ProjectSessionRuntimeSnapshot(request.Context(), sessionID)
 	if err != nil {
 		writeBlackboardV2Error(response, asBlackboardV2Error(err), nil)
@@ -76,11 +95,12 @@ func (server *Server) handleSessionBlackboardV2Snapshot(response http.ResponseWr
 }
 
 func (server *Server) handleSessionBlackboardV2Health(response http.ResponseWriter, request *http.Request) {
-	sessionID, authErr := server.authenticateSessionBlackboardV2(request)
+	principal, authErr := server.authenticateSessionBlackboardV2(request)
 	if authErr != nil {
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	sessionID := principal.sessionID
 	health, err := server.blackboardV2.SessionSemanticHealth(request.Context(), sessionID)
 	if err != nil {
 		writeBlackboardV2Error(response, asBlackboardV2Error(err), nil)
@@ -90,11 +110,12 @@ func (server *Server) handleSessionBlackboardV2Health(response http.ResponseWrit
 }
 
 func (server *Server) handleSessionBlackboardV2Read(response http.ResponseWriter, request *http.Request) {
-	sessionID, authErr := server.authenticateSessionBlackboardV2(request)
+	principal, authErr := server.authenticateSessionBlackboardV2(request)
 	if authErr != nil {
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	sessionID := principal.sessionID
 	detail, err := server.blackboardV2.ReadSessionCurrent(request.Context(), sessionID, request.PathValue("key"))
 	if err != nil {
 		writeBlackboardV2Error(response, asBlackboardV2Error(err), nil)
@@ -104,11 +125,12 @@ func (server *Server) handleSessionBlackboardV2Read(response http.ResponseWriter
 }
 
 func (server *Server) handleSessionBlackboardV2History(response http.ResponseWriter, request *http.Request) {
-	sessionID, authErr := server.authenticateSessionBlackboardV2(request)
+	principal, authErr := server.authenticateSessionBlackboardV2(request)
 	if authErr != nil {
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	sessionID := principal.sessionID
 	limit := 0
 	if raw := strings.TrimSpace(request.URL.Query().Get("limit")); raw != "" {
 		parsed, parseErr := strconv.Atoi(raw)
@@ -129,11 +151,16 @@ func (server *Server) handleSessionBlackboardV2History(response http.ResponseWri
 }
 
 func (server *Server) handleSessionBlackboardV2Checkpoint(response http.ResponseWriter, request *http.Request) {
-	sessionID, authErr := server.authenticateSessionBlackboardV2(request)
+	principal, authErr := server.authenticateSessionBlackboardV2(request)
 	if authErr != nil {
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	if accessErr := requireBlackboardV2WriteAccess(principal); accessErr != nil {
+		writeBlackboardV2Error(response, accessErr, nil)
+		return
+	}
+	sessionID := principal.sessionID
 	action := request.PathValue("attempt_action")
 	if !strings.HasSuffix(action, ":checkpoint") || strings.TrimSuffix(action, ":checkpoint") == "" {
 		writeBlackboardV2Error(response, blackboardV2HTTPError("invalid_schema", "checkpoint path must end in :checkpoint", "path"), nil)
@@ -180,11 +207,16 @@ func (server *Server) handleSessionBlackboardV2Checkpoint(response http.Response
 }
 
 func (server *Server) handleSessionBlackboardV2Finish(response http.ResponseWriter, request *http.Request) {
-	sessionID, authErr := server.authenticateSessionBlackboardV2(request)
+	principal, authErr := server.authenticateSessionBlackboardV2(request)
 	if authErr != nil {
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	if accessErr := requireBlackboardV2WriteAccess(principal); accessErr != nil {
+		writeBlackboardV2Error(response, accessErr, nil)
+		return
+	}
+	sessionID := principal.sessionID
 	idempotencyKey, err := requireBlackboardV2IdempotencyKey(request)
 	if err != nil {
 		writeBlackboardV2Error(response, err, nil)

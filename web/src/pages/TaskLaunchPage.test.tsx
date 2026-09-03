@@ -118,7 +118,7 @@ describe("TaskLaunchPage", () => {
     await screen.findByRole("option", { name: "MiMo" });
     await user.selectOptions(await screen.findByLabelText("Task type"), "pentest");
     await user.type(screen.getByLabelText("What do you want to explore?"), "Inspect the target");
-    await user.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
+    await user.click(await screen.findByRole("button", { name: /blackboard mode/i }));
     const disabledMode = screen.getByRole("radio", { name: /^Disabled/ });
     expect(disabledMode).toBeEnabled();
     await user.click(disabledMode);
@@ -131,73 +131,17 @@ describe("TaskLaunchPage", () => {
       );
       expect(call).toBeDefined();
       const body = JSON.parse(String(call?.[1]?.body ?? "{}"));
-      expect(body.run_controls?.blackboard_conclusion_mode).toBe("disabled");
+      expect(body.run_controls?.blackboard_mode).toBe("disabled");
     });
   });
 
-  it("launches a Reason Task with the server-owned planning goal", async () => {
+  it("launches with an explicit Working Graph mode", async () => {
+    const workingGraphPlugin = codexPlugin;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const method = init?.method ?? "GET";
       if (url.includes("/api/runtime-plugins")) {
-        return Promise.resolve(new Response(JSON.stringify({ plugins: [codexPlugin] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.includes("/api/model-providers")) {
-        return Promise.resolve(new Response(JSON.stringify({ providers: [mimoProvider] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.includes("/api/runtime-profiles")) {
-        return Promise.resolve(new Response(JSON.stringify({ profiles: [codexPreset] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.includes("/api/skills?")) {
-        return Promise.resolve(new Response(JSON.stringify({ skills: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
-        return Promise.resolve(new Response(JSON.stringify({ pass: true, checks: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.includes("/api/projects/project-1/reason-tasks") && method === "POST") {
-        const body = JSON.parse(String(init?.body ?? "{}")) as { goal?: string };
-        expect(body.goal).toMatch(/^Read the complete Runtime Blackboard Snapshot/);
-        expect(body.goal).toMatch(/Do not mutate Blackboard records directly\.$/);
-        return Promise.resolve(new Response(JSON.stringify({ id: "reason-task-1" }), { status: 201, headers: { "Content-Type": "application/json" } }));
-      }
-      if (url.includes("/api/projects/project-1")) {
-        return Promise.resolve(new Response(JSON.stringify({
-          id: "project-1", name: "Acme", description: "", kind: "pentest", scope: {},
-          defaults: { runner: "sandbox", runtime_profile: "codex-preset" }, created_at: "", updated_at: "",
-        }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderPage("/projects/project-1/tasks/new?purpose=reason");
-
-    expect(await screen.findByRole("heading", { name: /Launch Reason Task/i })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Task type")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Reason Task goal")).toHaveAttribute("readonly");
-    await userEvent.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
-    expect(screen.getByRole("radio", { name: /^Interactive/ })).toHaveAttribute("aria-checked", "true");
-    expect(screen.queryByRole("radio", { name: /^Disabled/ })).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole("button", { name: /Launch Reason Task/i })).toBeEnabled());
-    await userEvent.click(screen.getByRole("button", { name: /Launch Reason Task/i }));
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/projects/project-1/reason-tasks"),
-      expect.objectContaining({ method: "POST" }),
-    ));
-    expect(await screen.findByText("Task detail")).toBeInTheDocument();
-  });
-
-  it("launches with an explicit assisted Blackboard conclusion mode", async () => {
-    const assistedPlugin = {
-      ...codexPlugin,
-      capabilities: { ...codexPlugin.capabilities, assisted_conclusion: true },
-    };
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      const method = init?.method ?? "GET";
-      if (url.includes("/api/runtime-plugins")) {
-        return Promise.resolve(new Response(JSON.stringify({ plugins: [assistedPlugin] }), {
+        return Promise.resolve(new Response(JSON.stringify({ plugins: [workingGraphPlugin] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         }));
@@ -229,9 +173,9 @@ describe("TaskLaunchPage", () => {
       }
       if (url.includes("/api/projects/project-1/preflight") && method === "POST") {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
-          run_controls?: { blackboard_conclusion_mode?: string };
+          run_controls?: { blackboard_mode?: string };
         };
-        expect(body.run_controls?.blackboard_conclusion_mode).toBe("assisted");
+        expect(body.run_controls?.blackboard_mode).toBe("working_graph");
         return Promise.resolve(new Response(JSON.stringify({ pass: true, checks: [] }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -240,10 +184,10 @@ describe("TaskLaunchPage", () => {
       if (url.includes("/api/projects/project-1/tasks") && method === "POST") {
         const body = JSON.parse(String(init?.body ?? "{}")) as {
           type?: string;
-          run_controls?: { blackboard_conclusion_mode?: string; policy?: { max_wrong_submissions?: number; max_rating_drawdown?: number } };
+          run_controls?: { blackboard_mode?: string; policy?: { max_wrong_submissions?: number; max_rating_drawdown?: number } };
         };
         expect(body.type).toBe("ctf_challenge");
-        expect(body.run_controls?.blackboard_conclusion_mode).toBe("assisted");
+        expect(body.run_controls?.blackboard_mode).toBe("working_graph");
         expect(body.run_controls?.policy).toMatchObject({ max_wrong_submissions: 3, max_rating_drawdown: 50 });
         return Promise.resolve(new Response(JSON.stringify({ id: "task-1" }), {
           status: 201,
@@ -280,10 +224,9 @@ describe("TaskLaunchPage", () => {
     expect(screen.getByText(/must match this Project's kind/i)).toBeInTheDocument();
     await userEvent.selectOptions(taskType, "ctf_challenge");
 
-    await userEvent.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
-    expect(screen.getByRole("radio", { name: /^Interactive/ })).toHaveAttribute("aria-checked", "true");
-    await userEvent.click(screen.getByRole("radio", { name: /^Assisted/ }));
-    expect(screen.getByText(/runs a bounded Conclude Turn and applies its validated Attempt result/i)).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: /blackboard mode/i }));
+    expect(screen.getByRole("radio", { name: /^Working Graph/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText(/emits local intents.*settles them into Blackboard in order/i)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("What do you want to explore?"), "Run recon");
     await userEvent.clear(screen.getByLabelText("Maximum wrong submissions"));
     await userEvent.type(screen.getByLabelText("Maximum wrong submissions"), "3");
@@ -360,7 +303,7 @@ describe("TaskLaunchPage", () => {
     expect(await screen.findByRole("option", { name: "MiMo" })).toBeInTheDocument();
   });
 
-  it("keeps interactive launch available when assisted conclusions are unsupported", async () => {
+  it("keeps all Blackboard modes available without provider capability gating", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -398,10 +341,10 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    await userEvent.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
-    expect(screen.getByRole("radio", { name: /^Interactive/ })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByRole("radio", { name: /^Assisted/ })).toBeDisabled();
-    expect(screen.getByText(/does not expose the complete persistent Turn, normalized Tool\/Turn event, and closed AttemptResult contract/i)).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: /blackboard mode/i }));
+    expect(screen.getByRole("radio", { name: /^Working Graph/ })).toBeEnabled();
+    expect(screen.getByRole("radio", { name: /^Interactive/ })).toBeEnabled();
+    expect(screen.getByRole("radio", { name: /^Disabled/ })).toBeEnabled();
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("What do you want to explore?"), "Run recon");
     await waitFor(() => expect(screen.getByRole("button", { name: /launch/i })).toBeEnabled());

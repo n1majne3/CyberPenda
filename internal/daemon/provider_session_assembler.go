@@ -250,18 +250,14 @@ func (f *ProductionProviderSessionFactory) finishProviderSessionBinding(
 	setup providerSessionSetup,
 ) (ProviderSessionBinding, error) {
 	var session runtime.ProviderSession
-	session, err := newProductionBoundProviderSession(setup.Session, func(closeCtx context.Context) {
+	session = &productionBoundSession{ProviderSession: setup.Session, onClose: func(closeCtx context.Context) {
 		f.mu.Lock()
 		if current, ok := f.bounds[taskID]; ok && current.Session == session {
 			delete(f.bounds, taskID)
 		}
 		f.mu.Unlock()
 		closeBridge(closeCtx)
-	})
-	if err != nil {
-		closeBridge(ctx)
-		return ProviderSessionBinding{}, err
-	}
+	}}
 	runAdapterMu.Lock()
 	// Unexpected process/protocol exit (Terminated) and explicit cleanup
 	// (Closed) both end the harness wait; they remain distinct bridge signals.

@@ -84,3 +84,41 @@ func TestSessionContinuationGrantResolvesOnlyItsBoundSession(t *testing.T) {
 		t.Fatalf("terminal Session grant status = %q", terminal.Status())
 	}
 }
+
+func TestSessionContinuationGrantPersistsReadOnlyAccess(t *testing.T) {
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sessions := session.NewService(db, filepath.Join(t.TempDir(), "sessions"))
+	created, err := sessions.Create(session.CreateRequest{Input: "investigate"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := sessions.CreateContinuation(created.ID, "profile-1", "claude_code", session.RunnerSandbox, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grants := projectinterface.NewGrantStore(db, fixedClock{}, fixedIDs{value: "grant-read-only"}, fixedTokens{value: "read-only-secret"})
+	token, issued, err := grants.IssueSession(context.Background(), projectinterface.IssueSessionGrantRequest{
+		SessionID: created.ID, ContinuationID: continuation.ID,
+		RuntimeConfigVersionID: continuation.RuntimeConfigID,
+		RuntimeProfileID:       continuation.RuntimeProfileID,
+		RuntimePluginID:        "claude_code", Runner: string(continuation.Runner),
+		Access: projectinterface.GrantAccessReadOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issued.Access != projectinterface.GrantAccessReadOnly || issued.AllowsWrite() {
+		t.Fatalf("issued grant access = %#v", issued)
+	}
+	resolved, err := grants.Resolve(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Access != projectinterface.GrantAccessReadOnly || resolved.AllowsWrite() {
+		t.Fatalf("resolved grant access = %#v", resolved)
+	}
+}

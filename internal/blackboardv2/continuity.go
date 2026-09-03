@@ -45,6 +45,7 @@ type ContinuationLaunchRequest struct {
 	RuntimeProfileID string
 	RuntimeProvider  string
 	Runner           task.Runner
+	GrantAccess      projectinterface.GrantAccess
 	RuntimeConfig    map[string]any
 	SteeringEventIDs []string
 	// Native session metadata is durable provider identity for Resume. A stale
@@ -62,7 +63,7 @@ type ContinuationLaunchRequest struct {
 	// Snapshot is restored. Callers that write grant-bearing config must
 	// scrub it before returning an error from BindGrant, or via UnbindGrant
 	// when the service aborts after a successful BindGrant.
-	BindGrant func(plaintextGrant string) error
+	BindGrant func(plaintextGrant string, continuation task.TaskContinuation) error
 	// UnbindGrant is invoked when BindGrant returned nil but the launch still
 	// aborts before success (failure injection or commit failure). Optional.
 	UnbindGrant func()
@@ -827,7 +828,7 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 		plaintext, _, grantErr := s.grants.IssueInTx(ctx, tx, projectinterface.IssueGrantRequest{
 			ProjectID: req.ProjectID, TaskID: req.TaskID, ContinuationID: continuation.ID,
 			RuntimeConfigVersionID: config.ID, RuntimeProfileID: req.RuntimeProfileID,
-			RuntimePluginID: req.RuntimeProvider, Runner: string(req.Runner),
+			RuntimePluginID: req.RuntimeProvider, Runner: string(req.Runner), Access: req.GrantAccess,
 		})
 		if grantErr != nil {
 			return ContinuationLaunch{}, fmt.Errorf("issue Continuation Interface capability: %w", grantErr)
@@ -856,7 +857,7 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 	}
 	grantBound := false
 	if req.BindGrant != nil {
-		if err := req.BindGrant(token); err != nil {
+		if err := req.BindGrant(token, continuation); err != nil {
 			restoreWorkingSnapshot()
 			return ContinuationLaunch{}, err
 		}

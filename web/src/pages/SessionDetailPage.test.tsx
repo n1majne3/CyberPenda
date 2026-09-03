@@ -117,7 +117,7 @@ describe("SessionDetailPage", () => {
         id: "session-disabled",
         title: "Inspect without Blackboard",
         lifecycle: "open",
-        run_controls: { blackboard_conclusion_mode: "disabled" },
+        run_controls: { blackboard_mode: "disabled" },
         blackboard_conclusion: {
           mode: "disabled",
           state: "action_required",
@@ -520,64 +520,6 @@ describe("SessionDetailPage", () => {
     });
   });
 
-  it("shows Session-local conclusion recovery and retries with an idempotency key", async () => {
-    const fetchMock = mockApi({
-      "/api/sessions/session-retry/transcript": { session_id: "session-retry", entries: [] },
-      "/api/sessions/session-retry/timeline": { session_id: "session-retry", items: [] },
-      "/api/sessions/session-retry/blackboard-conclusion/retry": {
-        id: "session-retry",
-        title: "Needs recovery",
-        lifecycle: "open",
-        run_controls: { blackboard_conclusion_mode: "assisted" },
-        blackboard_conclusion: { mode: "assisted", state: "pending", retry_available: false },
-        created_at: "2026-08-01T01:00:00Z",
-        updated_at: "2026-08-01T01:00:00Z",
-        last_activity_at: "2026-08-01T01:00:00Z",
-      },
-      "/api/sessions/session-retry": {
-        id: "session-retry",
-        title: "Needs recovery",
-        lifecycle: "open",
-        run_controls: { blackboard_conclusion_mode: "assisted" },
-        blackboard_conclusion: {
-          mode: "assisted",
-          state: "action_required",
-          error_code: "semantic_conclusion_repair_exhausted",
-          retry_available: true,
-        },
-        created_at: "2026-08-01T01:00:00Z",
-        updated_at: "2026-08-01T01:00:00Z",
-        last_activity_at: "2026-08-01T01:00:00Z",
-      },
-    });
-    const user = userEvent.setup();
-
-    render(
-      <MemoryRouter initialEntries={["/sessions/session-retry"]}>
-        <Routes>
-          <Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent("assisted");
-    expect(screen.getByRole("alert")).toHaveTextContent("semantic_conclusion_repair_exhausted");
-    await user.click(screen.getByRole("button", { name: /retry blackboard conclusion/i }));
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        "/api/sessions/session-retry/blackboard-conclusion/retry",
-        expect.objectContaining({
-          method: "POST",
-          headers: expect.objectContaining({ "idempotency-key": expect.stringMatching(/^blackboard-retry-/) }),
-        }),
-      );
-    });
-    await waitFor(() => {
-      expect(screen.getByTestId("blackboard-conclusion-state")).toHaveTextContent("pending");
-    });
-    expect(screen.getByRole("heading", { level: 1, name: "Needs recovery" })).toBeInTheDocument();
-  });
 });
 
 describe("SessionDetailPage Runtime Owner History Window (#202)", () => {

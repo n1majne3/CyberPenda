@@ -192,7 +192,7 @@ func TestHostedStartProjectsEachRuntimeThroughNormalProviderAndCredentialInputs(
 			if controls["yolo"] != nil {
 				t.Fatalf("Task added synthetic YOLO control: %#v", taskRequest)
 			}
-			if controls["blackboard_conclusion_mode"] != "disabled" {
+			if controls["blackboard_mode"] != "disabled" {
 				t.Fatalf("Hosted Task Blackboard Mode = %#v, want disabled", controls)
 			}
 			assertHostedLiteralBinding(t, bindingRequests, "BENCHMARK_TOKEN", "token")

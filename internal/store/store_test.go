@@ -54,7 +54,7 @@ func TestMigration66AllowsDisabledSessionModeWithoutLosingSessionState(t *testin
 	}
 	stamp := "2026-08-29T00:00:00Z"
 	if _, err := db.Exec(`INSERT INTO sessions
-		(id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at)
+		(id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at)
 		VALUES ('session-v65','Existing Session','open','/tmp/session-v65','interactive',?,?,?)`, stamp, stamp, stamp); err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +67,8 @@ func TestMigration66AllowsDisabledSessionModeWithoutLosingSessionState(t *testin
 	}
 	if _, err := db.Exec(`UPDATE sqlite_schema
 		SET sql=replace(sql,
-			'blackboard_conclusion_mode IN (''interactive'', ''assisted'', ''disabled'')',
-			'blackboard_conclusion_mode IN (''interactive'', ''assisted'')')
+			'blackboard_mode IN (''interactive'', ''working_graph'', ''disabled'')',
+			'blackboard_mode IN (''interactive'', ''working_graph'')')
 		WHERE type='table' AND name='sessions'`); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestMigration66AllowsDisabledSessionModeWithoutLosingSessionState(t *testin
 		t.Fatalf("preserved Session state = title %q payload %q", title, payload)
 	}
 	if _, err := reopened.Exec(`INSERT INTO sessions
-		(id,title,lifecycle,workdir,blackboard_conclusion_mode,created_at,updated_at,last_activity_at)
+		(id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at)
 		VALUES ('session-disabled','Disabled Session','open','/tmp/session-disabled','disabled',?,?,?)`, stamp, stamp, stamp); err != nil {
 		t.Fatalf("persist disabled Session mode: %v", err)
 	}

@@ -147,7 +147,7 @@ func (s *Service) RecordBlackboardConclusionCheckpoint(taskID, continuationID, s
 	if err != nil {
 		return BlackboardConclusionReceipt{}, false, err
 	}
-	if found.RunControls.BlackboardConclusionMode != BlackboardConclusionModeAssisted {
+	if found.RunControls.BlackboardMode != BlackboardModeWorkingGraph {
 		return BlackboardConclusionReceipt{}, false, ErrInvalidBlackboardConclusionReceipt
 	}
 	rec, created, err := s.conclusions().RecordBlackboardConclusionCheckpoint(taskID, continuationID, sourceRequestID, sourceSessionID, sourceTurnID,

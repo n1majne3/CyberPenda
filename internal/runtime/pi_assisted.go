@@ -58,7 +58,7 @@ func (s *PiProviderSession) SetAttemptResultValidationFailureSink(sink ProviderS
 }
 
 // HandleEvent extends Pi's ordinary lifecycle projection with the bounded
-// observations and closed Attempt result required by assisted conclusions.
+// observations and closed Attempt results used by generic Runtime telemetry.
 // PiWire supplies session/Turn correlation; raw tool payloads and reasoning
 // are neither represented in observations nor forwarded to Task events.
 func (s *PiProviderSession) HandleEvent(event SandboxBridgeEvent, emit ProviderSessionEmit) {

@@ -88,9 +88,6 @@ func TestProductionProviderSessionFactoryOpensCodexAppServerBridgeWithoutPTY(t *
 	if binding.Session.SessionID() != "thread-live" || binding.Adapter == nil {
 		t.Fatalf("binding = %#v", binding)
 	}
-	if err := validateAssistedConclusionBinding(binding); err != nil {
-		t.Fatalf("Codex assisted binding validation failed: %v", err)
-	}
 	docker.mu.Lock()
 	args := append([]string(nil), docker.createArgs...)
 	docker.mu.Unlock()
@@ -215,7 +212,7 @@ func TestProductionProviderSessionFactoryOpensClaudeAgentSDKBridge(t *testing.T)
 			var request runtime.SandboxBridgeRequest
 			_ = json.Unmarshal(scanner.Bytes(), &request)
 			methods <- request.Method
-			_, _ = io.WriteString(docker.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":{"session_id":"claude-durable","status":"ready","capabilities":{"persistent_session":true,"send_turn":true,"interrupt_turn":true,"normalized_tool_events":true,"normalized_turn_events":true,"attempt_result":true,"assisted_conclusion":true}}}`+"\n")
+			_, _ = io.WriteString(docker.outputW, `{"jsonrpc":"2.0","id":"`+request.ID+`","result":{"session_id":"claude-durable","status":"ready","capabilities":{"persistent_session":true,"send_turn":true,"interrupt_turn":true}}}`+"\n")
 		}
 	}()
 	binding, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
@@ -227,11 +224,8 @@ func TestProductionProviderSessionFactoryOpensClaudeAgentSDKBridge(t *testing.T)
 		t.Fatal(err)
 	}
 	defer binding.Session.Close(context.Background())
-	if binding.Session.SessionID() != "claude-durable" || !binding.Session.Capabilities().InterruptThenReplace || binding.Session.Capabilities().InTurnSteer || !binding.Session.Capabilities().AssistedConclusion {
+	if binding.Session.SessionID() != "claude-durable" || !binding.Session.Capabilities().InterruptThenReplace || binding.Session.Capabilities().InTurnSteer {
 		t.Fatalf("Claude binding = %#v capabilities=%#v", binding, binding.Session.Capabilities())
-	}
-	if err := validateAssistedConclusionBinding(binding); err != nil {
-		t.Fatalf("Claude assisted binding validation failed: %v", err)
 	}
 	select {
 	case method := <-methods:
@@ -249,65 +243,6 @@ func TestProductionProviderSessionFactoryOpensClaudeAgentSDKBridge(t *testing.T)
 	}
 	if strings.Contains(joined, " -t ") || strings.Contains(joined, " --tty ") {
 		t.Fatalf("Claude bridge allocated a terminal: %q", joined)
-	}
-}
-
-func TestClaudeBridgeAssistedCapabilityRequiresCompleteHandshake(t *testing.T) {
-	complete := claudeBridgeCapabilities{
-		PersistentSession: true, SendTurn: true, InterruptTurn: true,
-		NormalizedToolEvents: true, NormalizedTurnEvents: true,
-		AttemptResult: true, AssistedConclusion: true,
-	}
-	if !complete.supportsAssistedConclusion() {
-		t.Fatal("complete Claude bridge contract was not capable")
-	}
-	for _, missing := range []struct {
-		name   string
-		mutate func(*claudeBridgeCapabilities)
-	}{
-		{name: "persistent session", mutate: func(value *claudeBridgeCapabilities) { value.PersistentSession = false }},
-		{name: "send turn", mutate: func(value *claudeBridgeCapabilities) { value.SendTurn = false }},
-		{name: "interrupt turn", mutate: func(value *claudeBridgeCapabilities) { value.InterruptTurn = false }},
-		{name: "tool events", mutate: func(value *claudeBridgeCapabilities) { value.NormalizedToolEvents = false }},
-		{name: "turn events", mutate: func(value *claudeBridgeCapabilities) { value.NormalizedTurnEvents = false }},
-		{name: "attempt result", mutate: func(value *claudeBridgeCapabilities) { value.AttemptResult = false }},
-		{name: "assisted conclusion", mutate: func(value *claudeBridgeCapabilities) { value.AssistedConclusion = false }},
-	} {
-		t.Run(missing.name, func(t *testing.T) {
-			candidate := complete
-			missing.mutate(&candidate)
-			if candidate.supportsAssistedConclusion() {
-				t.Fatalf("incomplete handshake reported capable: %#v", candidate)
-			}
-		})
-	}
-}
-
-func TestProductionProviderSessionFactoryReportsImplementedAssistedProviders(t *testing.T) {
-	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{})
-	for _, provider := range []runtimeprofile.Provider{
-		runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes,
-	} {
-		if !factory.SupportsAssistedConclusion(provider) {
-			t.Fatalf("provider %q did not project assisted support", provider)
-		}
-	}
-	if factory.SupportsAssistedConclusion(runtimeprofile.Provider("unknown")) {
-		t.Fatal("unknown provider projected assisted support")
-	}
-}
-
-func TestProductionProviderSessionFactoryDoesNotProjectCustomClaudeBridgeAsStaticallyAssisted(t *testing.T) {
-	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{
-		ClaudeSDKBridgeCommand: "/opt/custom/claude-bridge",
-	})
-	if factory.SupportsAssistedConclusion(runtimeprofile.ProviderClaudeCode) {
-		t.Fatal("custom Claude bridge projected assisted support before its runtime handshake")
-	}
-	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderCodex, runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes} {
-		if !factory.SupportsAssistedConclusion(provider) {
-			t.Fatalf("provider %q lost static assisted support", provider)
-		}
 	}
 }
 
@@ -337,9 +272,6 @@ func TestProductionProviderSessionFactoryOpensPiRPCBridge(t *testing.T) {
 	defer binding.Session.Close(context.Background())
 	if binding.Session.SessionID() != "pi-session" || !binding.Session.Capabilities().InTurnSteer {
 		t.Fatalf("Pi binding = %#v capabilities=%#v", binding, binding.Session.Capabilities())
-	}
-	if err := validateAssistedConclusionBinding(binding); err != nil {
-		t.Fatalf("Pi assisted binding validation failed: %v", err)
 	}
 	select {
 	case method := <-methods:

@@ -151,19 +151,6 @@ export interface ScopeExpansion {
   decided_at?: string;
 }
 
-export interface ReasonTaskProposal {
-  id: string;
-  project_id: string;
-  reason_task_id: string;
-  next_task_goals: string[];
-  exploration_objective_changes: string[];
-  readiness_judgment: string;
-  changes: unknown[];
-  status: ApprovalStatus;
-  created_at: string;
-  decided_at?: string;
-}
-
 export interface ProjectDefaults {
   runner?: string;
   task_policy?: string;
@@ -240,7 +227,7 @@ export interface Session {
   id: string;
   title: string;
   lifecycle: SessionLifecycle;
-  run_controls?: { blackboard_conclusion_mode?: BlackboardConclusionMode };
+  run_controls?: { blackboard_mode?: BlackboardMode };
   blackboard_conclusion?: BlackboardConclusionView;
   runtime_controls?: SessionRuntimeControls;
   runtime_activity?: RuntimeActivity;
@@ -323,9 +310,9 @@ export interface SessionLaunchOptions {
   reasoning_effort?: string;
   runner?: string;
   host_activated?: boolean;
-  blackboard_conclusion_mode?: BlackboardConclusionMode;
+  blackboard_mode?: BlackboardMode;
   run_controls?: {
-    blackboard_conclusion_mode?: BlackboardConclusionMode;
+    blackboard_mode?: BlackboardMode;
     container_cli?: "docker" | "podman" | string;
     sandbox_network?: string;
     sandbox_vpn_tun?: boolean;
@@ -503,14 +490,13 @@ export interface RuntimePluginCapabilities {
   mcp_config: boolean;
   streaming_transcript: boolean;
   resume: boolean;
-  assisted_conclusion?: boolean;
 }
 
-export type BlackboardConclusionMode = "interactive" | "assisted" | "disabled";
+export type BlackboardMode = "interactive" | "working_graph" | "disabled";
 export type BlackboardConclusionState = "clean" | "pending" | "concluding" | "action_required";
 
 export interface BlackboardConclusionView {
-  mode: BlackboardConclusionMode;
+  mode: BlackboardMode;
   state: BlackboardConclusionState;
   source_turn_id?: string;
   applied_revision?: number;
@@ -647,7 +633,7 @@ export interface Task {
 		sandbox_network?: string;
 		sandbox_vpn_tun?: boolean;
 		container_cli?: "docker" | "podman" | string;
-		blackboard_conclusion_mode?: BlackboardConclusionMode;
+		blackboard_mode?: BlackboardMode;
 		notes?: string;
 		extras?: Record<string, string>;
 		policy?: TaskPolicy;

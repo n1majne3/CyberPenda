@@ -42,7 +42,6 @@ export type RuntimeOwnerAdapter = {
   stop(): Promise<unknown>;
   finish(): Promise<unknown>;
   resume(selection: ConversationSelection): Promise<unknown>;
-  retryConclusion(idempotencyKey: string): Promise<RuntimeOwnerView>;
   respondPermission(permissionRequestID: string, decision: "allow" | "deny"): Promise<unknown>;
   rename(title: string): Promise<RuntimeOwnerView>;
   changeLifecycle(action: "archive" | "restore"): Promise<RuntimeOwnerView>;
@@ -100,11 +99,6 @@ export function taskRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
     stop: () => apiPost(`${base}/stop`, {}),
     finish: () => apiPost(`${base}/finish`, {}),
     resume: (selection) => apiPost(`${base}/resume`, selection),
-    async retryConclusion(idempotencyKey) {
-      return taskAsRuntimeOwner(await apiPost<Task>(`${base}/blackboard-conclusion/retry`, {}, {
-        headers: { "Idempotency-Key": idempotencyKey },
-      }));
-    },
     respondPermission: (permissionRequestID, decision) =>
       apiPost(`${base}/permissions/${encodeURIComponent(permissionRequestID)}/respond`, {
         request_id: newPermissionRequestID(),
@@ -152,11 +146,6 @@ export function sessionRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
     stop: () => apiPost(`${base}/stop`, {}),
     finish: () => apiPost(`${base}/finish`, {}),
     resume: (selection) => apiPost(`${base}/resume`, selection),
-    async retryConclusion(idempotencyKey) {
-      return sessionAsRuntimeOwner(await apiPost<Session>(`${base}/blackboard-conclusion/retry`, {}, {
-        headers: { "Idempotency-Key": idempotencyKey },
-      }));
-    },
     respondPermission: (permissionRequestID, decision) =>
       apiPost(`${base}/permissions/${encodeURIComponent(permissionRequestID)}/respond`, {
         request_id: newPermissionRequestID(),
@@ -208,7 +197,7 @@ export function taskAsRuntimeOwner(task: Task): RuntimeOwnerView {
     runner: displayRunnerLabel(task.runner, task.run_controls?.container_cli),
     runtimeProfileID: task.runtime_profile_id ?? "",
     runtimeConfiguration: task.runtime_configuration,
-    blackboardConclusionMode: task.run_controls.blackboard_conclusion_mode,
+    blackboardMode: task.run_controls.blackboard_mode,
     blackboardConclusion: task.blackboard_conclusion,
     runtimeControls: task.runtime_controls,
     runtimeActivity: task.runtime_activity,
@@ -257,7 +246,7 @@ export function sessionAsRuntimeOwner(session: Session): RuntimeOwnerView {
     runner: continuation?.runner ?? "host",
     runtimeProfileID: continuation?.runtimeProfileID ?? "",
     runtimeConfiguration: session.runtime_configuration,
-    blackboardConclusionMode: session.run_controls?.blackboard_conclusion_mode,
+    blackboardMode: session.run_controls?.blackboard_mode,
     blackboardConclusion: session.blackboard_conclusion,
     runtimeActivity: session.runtime_activity,
     activeContinuation: active,
@@ -361,10 +350,6 @@ export function fakeRuntimeOwnerAdapter(options: { kind: RuntimeOwnerKind }): Ru
     },
     async resume() {
       adapter.__recorded.push({ op: "resume" });
-    },
-    async retryConclusion() {
-      adapter.__recorded.push({ op: "retryConclusion" });
-      return undefined as unknown as RuntimeOwnerView;
     },
     async respondPermission(permissionRequestID, decision) {
       adapter.__recorded.push({ op: "respondPermission", permissionRequestID, decision });

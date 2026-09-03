@@ -86,7 +86,6 @@ func (a claudeAssembler) Setup(ctx context.Context, bridge productionBridgeTrans
 	if err != nil {
 		return providerSessionSetup{}, err
 	}
-	capabilities.AssistedConclusion = state.Capabilities.supportsAssistedConclusion()
 	return providerSessionSetup{
 		Session: runtime.NewClaudeCodeProviderSession(runtime.ClaudeCodeProviderSessionConfig{
 			Transport: bridge, SessionID: sessionID, Capabilities: capabilities,

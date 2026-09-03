@@ -1905,9 +1905,14 @@ func TestClaudeSteerNativeResumeKeepsSettingsAndMCPArgs(t *testing.T) {
 	if resumeLine == "" {
 		t.Fatalf("expected resumed claude command in events, got %#v", events)
 	}
-	for _, want := range []string{"--settings", "settings.json", "--strict-mcp-config", "--mcp-config", ".mcp.json"} {
+	for _, want := range []string{"--settings", "settings.json"} {
 		if !strings.Contains(resumeLine, want) {
 			t.Fatalf("expected resumed claude command to contain %q, got %q", want, resumeLine)
+		}
+	}
+	for _, retired := range []string{"--strict-mcp-config", "--mcp-config", ".mcp.json"} {
+		if strings.Contains(resumeLine, retired) {
+			t.Fatalf("resumed claude command retained retired built-in MCP argument %q: %q", retired, resumeLine)
 		}
 	}
 }

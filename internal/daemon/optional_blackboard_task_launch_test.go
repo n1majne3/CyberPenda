@@ -83,7 +83,9 @@ func TestTaskLaunchPlanCanOmitBlackboardProjection(t *testing.T) {
 	if plan.BlackboardProjection != runner.BlackboardProjectionOmitted || plan.BlackboardV2 {
 		t.Fatalf("Task plan did not represent omitted Blackboard projection: %#v", plan)
 	}
-	if plan.LaunchGoal != fixture.created.Goal || plan.Facts.Workdir != filepath.Join(fixture.runtimeRoot, fixture.created.ID, "workdir") {
+	if !strings.Contains(plan.LaunchGoal, fixture.created.Goal) ||
+		strings.Count(plan.LaunchGoal, "`cyberpenda-blackboard-working-graph`") != 1 ||
+		plan.Facts.Workdir != filepath.Join(fixture.runtimeRoot, fixture.created.ID, "workdir") {
 		t.Fatalf("ordinary Task launch context changed: %#v", plan)
 	}
 	launch, ok := runtime.CommandAdapterLaunch(plan.Adapter)
@@ -138,6 +140,35 @@ func TestTaskLaunchWithoutBlackboardKeepsOrdinaryOwnerContext(t *testing.T) {
 	}
 }
 
+func TestWorkingGraphTaskLaunchProjectsContinuationScopedMailboxEnv(t *testing.T) {
+	fixture := newOptionalBlackboardTaskFixture(t)
+	plan, err := fixture.server.buildTaskLaunchPlanForBlackboardProjection(
+		fixture.created, fixture.created.Goal, "", "", "high", runner.BlackboardProjectionRequired,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, bound, err := fixture.server.prepareTaskContinuationLaunch(fixture.created, plan, fixture.created.Goal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launch, ok := runtime.CommandAdapterLaunch(bound.Adapter)
+	if !ok {
+		t.Fatalf("adapter = %T", bound.Adapter)
+	}
+	if launch.Env["PENTEST_CONTINUATION_ID"] != continuation.ID ||
+		launch.Env["PENTEST_BLACKBOARD_MODE"] != "working_graph" ||
+		launch.Env["PENTEST_INTERFACE_TOKEN"] == "" || launch.Env["PENTEST_API_URL"] == "" {
+		t.Fatalf("Working Graph launch env = %#v", launch.Env)
+	}
+	wantOutbox := filepath.ToSlash(filepath.Join("graph", "outbox", continuation.ID))
+	if launch.Env["PENTEST_WORKING_GRAPH_ROOT"] != "." ||
+		launch.Env["PENTEST_WORKING_GRAPH_OUTBOX"] != wantOutbox ||
+		launch.Env["PENTEST_WORKING_GRAPH_RECEIPTS"] != filepath.ToSlash(filepath.Join("graph", "receipts", continuation.ID)) {
+		t.Fatalf("Working Graph mailbox env = %#v", launch.Env)
+	}
+}
+
 func TestTaskLaunchWithoutBlackboardCreatesOrdinaryContinuation(t *testing.T) {
 	fixture := newOptionalBlackboardTaskFixture(t)
 	plan := fixture.omittedPlan(t, fixture.created.Goal)
@@ -151,7 +182,9 @@ func TestTaskLaunchWithoutBlackboardCreatesOrdinaryContinuation(t *testing.T) {
 	if continuation.BlackboardReconciliationStatus != task.ReconciliationCompleted {
 		t.Fatalf("ordinary Task Continuation retained Blackboard reconciliation: %#v", continuation)
 	}
-	if bound.BlackboardProjection != runner.BlackboardProjectionOmitted || bound.LaunchGoal != fixture.created.Goal {
+	if bound.BlackboardProjection != runner.BlackboardProjectionOmitted ||
+		!strings.Contains(bound.LaunchGoal, fixture.created.Goal) ||
+		strings.Count(bound.LaunchGoal, "`cyberpenda-blackboard-working-graph`") != 1 {
 		t.Fatalf("bound Task plan changed launch context: %#v", bound)
 	}
 	if _, err := fixture.server.blackboardV2Continuity.ReadLaunchPin(t.Context(), continuation.ID); err == nil {

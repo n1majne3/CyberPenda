@@ -459,7 +459,7 @@ func (server *Server) settleOwnerSteeringRecord(ctx context.Context, record owne
 	server.settleSteeringRecord(ctx, adapter, record, state, reason, message)
 }
 
-// taskConclusionSettlementForID waits for the durable assisted conclusion of
+// taskConclusionSettlementForID waits for the durable Working Graph intents of
 // one Task to settle before an accepted steer takes the provider control
 // boundary. Interactive owners have no conclusion gate.
 func (server *Server) taskConclusionSettlementForID(taskID string) providerControlSettlement {
@@ -468,7 +468,7 @@ func (server *Server) taskConclusionSettlementForID(taskID string) providerContr
 		if err != nil {
 			return false, err
 		}
-		if found.RunControls.BlackboardConclusionMode != task.BlackboardConclusionModeAssisted {
+		if found.RunControls.BlackboardMode != task.BlackboardModeWorkingGraph {
 			return true, nil
 		}
 		return server.taskConclusionSettlement(found)(ctx, wait)
@@ -477,7 +477,7 @@ func (server *Server) taskConclusionSettlementForID(taskID string) providerContr
 
 // sessionConclusionSettlementForID mirrors the Task gate for Session owners.
 func (server *Server) sessionConclusionSettlementForID(sessionID string) providerControlSettlement {
-	return server.sessionBlackboardConclusionSettlement(sessionID, true)
+	return server.sessionWorkingGraphSettlement(sessionID, true)
 }
 
 func (server *Server) steeringAdapterFor(record owner.SteeringRecord) *steeringAdapter {

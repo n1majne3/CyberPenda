@@ -76,11 +76,6 @@ type HealthProposal struct {
 	Required         bool   `json:"required"`
 }
 
-const (
-	proposalCodeConsolidationReasonTask = "consolidation_reason_task"
-	proposalActionStartReasonTask       = "start_reason_task"
-)
-
 // ProjectSemanticHealth derives the current Project's semantic health DTO.
 // Corruption that makes the canonical Runtime Snapshot unreadable is reported
 // as anomalies with a diagnostic attention measurement; it is never a hard
@@ -163,22 +158,13 @@ func (s *Service) ProjectSemanticHealth(ctx context.Context, projectID string) (
 		ConsolidationOffered:  offered,
 		ConsolidationRequired: required,
 	}
-	proposals := make([]HealthProposal, 0)
-	if offered {
-		proposals = append(proposals, HealthProposal{
-			Code:             proposalCodeConsolidationReasonTask,
-			Action:           proposalActionStartReasonTask,
-			ApprovalRequired: true,
-			Required:         required,
-		})
-	}
 	return SemanticHealth{
 		Schema:    healthSchema,
 		Revision:  revision,
 		Status:    healthStatusFromAnomalies(anomalies),
 		Attention: attention,
 		Anomalies: anomalies,
-		Proposals: proposals,
+		Proposals: []HealthProposal{},
 	}, nil
 }
 
@@ -417,13 +403,13 @@ func attentionAnomalies(projection RuntimeSnapshotProjection, canonicalComplete 
 		return []HealthAnomaly{{
 			Code:     "attention_warning",
 			Severity: HealthSeverityWarning,
-			Message:  fmt.Sprintf("Runtime Snapshot reached the 32K warning threshold (%d estimated tokens). Offer an approval-required Reason Task for consolidation; do not truncate or auto-merge. %s", projection.EstimatedTokens, completeNote),
+			Message:  fmt.Sprintf("Runtime Snapshot reached the 32K warning threshold (%d estimated tokens). Review and consolidate the Working Graph before it grows further; do not truncate or auto-merge. %s", projection.EstimatedTokens, completeNote),
 		}}
 	case AttentionRequired:
 		return []HealthAnomaly{{
 			Code:     "attention_required",
 			Severity: HealthSeverityCritical,
-			Message:  fmt.Sprintf("Runtime Snapshot reached the 64K consolidation-required threshold (%d estimated tokens). Start an approval-required Reason Task for consolidation; do not truncate or auto-merge. %s", projection.EstimatedTokens, completeNote),
+			Message:  fmt.Sprintf("Runtime Snapshot reached the 64K consolidation-required threshold (%d estimated tokens). Review and consolidate the Working Graph before the next run; do not truncate or auto-merge. %s", projection.EstimatedTokens, completeNote),
 		}}
 	default:
 		return nil

@@ -3,7 +3,6 @@ import {
   canPiNativeCrossProvider,
   conversationQueueUnavailable,
   conversationSendLabel,
-  newBlackboardRetryID,
   newSteerRequestID,
   resolveConversationAction,
   resolveConversationSendMode,
@@ -217,10 +216,9 @@ describe("provider switch gates", () => {
 });
 
 describe("request ids", () => {
-  it("generates unique steer and retry ids", () => {
+  it("generates unique steer ids", () => {
     const a = newSteerRequestID();
     const b = newSteerRequestID();
     expect(a).not.toBe(b);
-    expect(newBlackboardRetryID()).toMatch(/^blackboard-retry-/);
   });
 });

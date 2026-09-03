@@ -266,10 +266,10 @@ describe("TaskDetailPage", () => {
     expect(screen.getByTestId("task-composer")).not.toHaveClass("border-t");
   });
 
-  it("shows assisted pending Blackboard conclusion state in the Task header", async () => {
+  it("shows pending Working Graph settlement state in the Task header", async () => {
     stubTaskDetailApi({
       blackboard_conclusion: {
-        mode: "assisted",
+        mode: "working_graph",
         state: "pending",
         source_turn_id: "turn-7",
       },
@@ -278,14 +278,14 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     const badge = await screen.findByTestId("blackboard-conclusion-state");
-    expect(badge).toHaveTextContent("Blackboard · assisted · pending");
+    expect(badge).toHaveTextContent("Blackboard · Working Graph · pending");
     expect(badge).toHaveAttribute("title", expect.stringContaining("turn-7"));
   });
 
   it("shows Disabled mode and hides Task Blackboard surfaces", async () => {
     stubTaskDetailApi({
       status: "running",
-      run_controls: { blackboard_conclusion_mode: "disabled" },
+      run_controls: { blackboard_mode: "disabled" },
       blackboard_conclusion: {
         mode: "disabled",
         state: "action_required",
@@ -333,22 +333,22 @@ describe("TaskDetailPage", () => {
 	expect(within(readiness).getByRole("link", { name: "Open unfinalized_challenge_attempts" })).toHaveAttribute("href", "/projects/project-1/tasks/task-1/challenges");
   });
 
-  it("shows an assisted Conclude Turn in the Task header", async () => {
+  it("shows Working Graph settlement in the Task header", async () => {
 	stubTaskDetailApi({
 	  blackboard_conclusion: {
-		mode: "assisted",
+		mode: "working_graph",
 		state: "concluding",
 		source_turn_id: "turn-7",
 	  },
 	});
 
 	renderPage();
-	expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent("Blackboard · assisted · concluding");
+	expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent("Blackboard · Working Graph · concluding");
   });
 
   it("shows the applied Blackboard revision in the Task header", async () => {
 	stubTaskDetailApi({
-	  blackboard_conclusion: { mode: "assisted", state: "clean", source_turn_id: "turn-7", applied_revision: 9 },
+	  blackboard_conclusion: { mode: "working_graph", state: "clean", source_turn_id: "turn-7", applied_revision: 9 },
 	});
 	renderPage();
 	const badge = await screen.findByTestId("blackboard-conclusion-state");
@@ -357,11 +357,10 @@ describe("TaskDetailPage", () => {
   });
 
   it("surfaces action-required Blackboard recovery without blocking manual conversation", async () => {
-    const user = userEvent.setup();
     const { fetchMock } = stubTaskDetailApi({
       status: "running",
       blackboard_conclusion: {
-        mode: "assisted",
+        mode: "working_graph",
         state: "action_required",
         source_turn_id: "turn-7",
         error_code: "semantic_conclusion_invalid_result",
@@ -372,64 +371,10 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent(
-      "Blackboard · assisted · action required",
+      "Blackboard · Working Graph · action required",
     );
-    const recovery = screen.getByRole("alert", { name: "Blackboard conclusion requires attention" });
-    expect(recovery).toHaveTextContent("The runtime returned an invalid Blackboard conclusion.");
-    expect(recovery).toHaveTextContent("semantic_conclusion_invalid_result");
     expect(screen.getByRole("textbox", { name: "Task message" })).toBeEnabled();
-
-    await user.click(screen.getByRole("button", { name: "Retry Blackboard conclusion" }));
-
-    await waitFor(() => {
-      const retryCall = fetchMock.mock.calls.find(([input]) =>
-        String(input).endsWith("/api/projects/project-1/tasks/task-1/blackboard-conclusion/retry"),
-      );
-      expect(retryCall).toBeDefined();
-      const headers = new Headers((retryCall?.[1] as RequestInit | undefined)?.headers);
-      expect(headers.get("Idempotency-Key")).toMatch(/^blackboard-retry-/);
-    });
-  });
-
-  it("surfaces the bounded validation reason when the repair budget is exhausted", async () => {
-    stubTaskDetailApi({
-      status: "running",
-      blackboard_conclusion: {
-        mode: "assisted",
-        state: "action_required",
-        error_code: "semantic_conclusion_repair_exhausted",
-        validation_reason: "invalid_key_format",
-        validation_field_path: "attempt.key",
-        validation_expected: "the key must use the attempt: prefix",
-        retry_available: true,
-      },
-    });
-
-    renderPage();
-
-    const recovery = await screen.findByRole("alert", { name: "Blackboard conclusion requires attention" });
-    expect(recovery).toHaveTextContent("semantic_conclusion_repair_exhausted");
-    expect(screen.getByTestId("blackboard-conclusion-validation")).toHaveTextContent(
-      "invalid_key_format · attempt.key · the key must use the attempt: prefix",
-    );
-  });
-
-  it("maps forbidden Conclude tool use to bounded operator copy", async () => {
-    stubTaskDetailApi({
-      status: "running",
-      blackboard_conclusion: {
-        mode: "assisted",
-        state: "action_required",
-        error_code: "conclude_tool_use_forbidden",
-      },
-    });
-
-    renderPage();
-
-    expect(await screen.findByRole("alert", { name: "Blackboard conclusion requires attention" })).toHaveTextContent(
-      "The runtime attempted to use a tool while concluding Blackboard state.",
-    );
-    expect(screen.getByRole("button", { name: "Retry Blackboard conclusion" })).toBeDisabled();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes("blackboard-conclusion/retry"))).toBe(false);
   });
 
   it("deep-links and updates the task view tab", async () => {

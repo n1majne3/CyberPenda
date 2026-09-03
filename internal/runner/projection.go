@@ -15,6 +15,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/runtimeextension"
@@ -64,6 +65,9 @@ type ProjectionRequest struct {
 	ModelSnapshot               *modelprovider.Snapshot
 	LaunchModelOverride         string
 	SkillBundles                []skill.Bundle
+	// BlackboardMode selects the one system-owned Mode Skill projected before
+	// ordinary user Skills. Empty is allowed only for legacy/test projections.
+	BlackboardMode modeskill.Mode
 	// BlackboardProjectionOmitted keeps ordinary Runtime configuration, Skills,
 	// external MCP servers, credentials, and Task Scope while withholding every
 	// trusted Blackboard interface and its launch context.
@@ -95,14 +99,15 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if err := os.MkdirAll(layout.ProviderHome, 0o700); err != nil {
 		return ConfigProjection{}, fmt.Errorf("prepare provider home: %w", err)
 	}
-	if len(req.SkillBundles) > 0 {
-		if err := projectSkillBundles(layout, req.SkillBundles); err != nil {
-			return ConfigProjection{}, err
-		}
+	if err := projectModeAndUserSkills(layout, req); err != nil {
+		return ConfigProjection{}, err
 	}
-	if req.Sandbox || len(req.SkillBundles) > 0 {
+	if len(req.SkillBundles) > 0 {
+		// User bundles were projected by projectModeAndUserSkills above.
+	}
+	if req.Sandbox || len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
 		target := sandboxSkillsImagePath
-		if len(req.SkillBundles) > 0 {
+		if len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
 			target = layout.SkillsRoot
 			if req.Sandbox {
 				target = "/task/skills"
@@ -164,7 +169,43 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if len(req.SkillBundles) > 0 {
 		addSkillProjectionPreview(&projection, req.SkillBundles, layout)
 	}
+	addModeSkillProjectionPreview(&projection, req.BlackboardMode, layout)
 	return projection, nil
+}
+
+func projectModeAndUserSkills(layout Layout, req ProjectionRequest) error {
+	if req.BlackboardMode != "" {
+		if _, err := modeskill.Project(layout.SkillsRoot, req.BlackboardMode); err != nil {
+			return err
+		}
+	}
+	for _, bundle := range req.SkillBundles {
+		if req.BlackboardMode != "" {
+			if err := modeskill.ValidateBundleCompatibility(req.BlackboardMode, bundle); err != nil {
+				return err
+			}
+		}
+	}
+	if len(req.SkillBundles) > 0 {
+		return projectSkillBundles(layout, req.SkillBundles)
+	}
+	return nil
+}
+
+func addModeSkillProjectionPreview(projection *ConfigProjection, mode modeskill.Mode, layout Layout) {
+	if mode == "" {
+		return
+	}
+	spec, err := modeskill.Resolve(mode)
+	if err != nil {
+		return
+	}
+	if projection.Config == nil {
+		projection.Config = map[string]any{}
+	}
+	projection.Config["mode_skill"] = map[string]any{
+		"id": spec.ID, "name": spec.Name, "target": filepath.Join(layout.SkillsRoot, spec.ID), "system_owned": true,
+	}
 }
 
 func projectSkillBundles(layout Layout, bundles []skill.Bundle) error {
@@ -473,10 +514,6 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 	}
 
 	settings := map[string]any{"env": env}
-	allowedTools := claudeTrustedMCPAllowedTools(mcpServers)
-	if len(allowedTools) > 0 {
-		settings["permissions"] = map[string]any{"allow": allowedTools}
-	}
 	// Catalog-sourced plugins (install refs from claude-plugins-official) are
 	// installed and enabled by Claude Code when listed under enabledPlugins.
 	installRefs := enabledExtensionInstallRefs(profile)
@@ -529,9 +566,6 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 	if servers := mcpPreview(mcpServers); len(servers) > 0 {
 		preview["mcp_servers"] = servers
 		preview["mcp_config_path"] = filepath.Join(layout.Workdir, ".mcp.json")
-	}
-	if len(allowedTools) > 0 {
-		preview["allowed_tools"] = allowedTools
 	}
 	if len(installRefs) > 0 {
 		preview["enabled_plugins"] = installRefs
@@ -970,7 +1004,8 @@ func isBlackboardAuthorityEnv(key string) bool {
 	switch strings.TrimSpace(key) {
 	case "PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_SESSION_ID", "PENTEST_CONTINUATION_ID",
 		"PENTEST_MCP_URL", "PENTEST_API_URL", "PENTEST_AUTH_TOKEN", "PENTEST_INTERFACE_TOKEN",
-		"PENTEST_DISABLE_TRUSTED_MCP":
+		"PENTEST_BLACKBOARD_MODE", "PENTEST_WORKING_GRAPH_ROOT", "PENTEST_WORKING_GRAPH_OUTBOX",
+		"PENTEST_WORKING_GRAPH_RECEIPTS", "PENTEST_DISABLE_TRUSTED_MCP":
 		return true
 	default:
 		return false
@@ -1788,6 +1823,9 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	if ctx.Owner.SessionID != "" {
 		env["PENTEST_SESSION_ID"] = ctx.Owner.SessionID
 	}
+	if ctx.ContinuationID != "" {
+		env["PENTEST_CONTINUATION_ID"] = ctx.ContinuationID
+	}
 	if ctx.MCPURL != "" {
 		env["PENTEST_MCP_URL"] = ctx.MCPURL
 	}
@@ -1799,6 +1837,18 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	}
 	if ctx.APIURL != "" {
 		env["PENTEST_API_URL"] = ctx.APIURL
+	}
+	if ctx.BlackboardMode != "" {
+		env["PENTEST_BLACKBOARD_MODE"] = ctx.BlackboardMode
+	}
+	if ctx.WorkingGraphRoot != "" {
+		env["PENTEST_WORKING_GRAPH_ROOT"] = launchVisiblePath(layout, ctx.WorkingGraphRoot, sandbox)
+	}
+	if ctx.WorkingGraphOutbox != "" {
+		env["PENTEST_WORKING_GRAPH_OUTBOX"] = launchVisiblePath(layout, ctx.WorkingGraphOutbox, sandbox)
+	}
+	if ctx.WorkingGraphReceipts != "" {
+		env["PENTEST_WORKING_GRAPH_RECEIPTS"] = launchVisiblePath(layout, ctx.WorkingGraphReceipts, sandbox)
 	}
 	manifestEnvRendered := false
 	if plugin, ok := runtimePluginForProvider(profile.Provider, registry); ok {
@@ -1816,6 +1866,30 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 		}
 	}
 	return env
+}
+
+func launchVisiblePath(layout Layout, hostPath string, sandbox bool) string {
+	if !sandbox || !filepath.IsAbs(hostPath) {
+		return hostPath
+	}
+	if visible, ok := sandboxMountedPath(layout.TaskRoot, "/task", hostPath); ok {
+		return visible
+	}
+	if visible, ok := sandboxMountedPath(layout.Workdir, "/task/workdir", hostPath); ok {
+		return visible
+	}
+	return hostPath
+}
+
+func sandboxMountedPath(hostRoot, sandboxRoot, hostPath string) (string, bool) {
+	rel, err := filepath.Rel(hostRoot, hostPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	if rel == "." {
+		return sandboxRoot, true
+	}
+	return strings.TrimSuffix(sandboxRoot, "/") + "/" + filepath.ToSlash(rel), true
 }
 
 func processEnvRenderContext(layout Layout, profile runtimeprofile.Profile, sandbox bool) runtimeplugin.RenderContext {

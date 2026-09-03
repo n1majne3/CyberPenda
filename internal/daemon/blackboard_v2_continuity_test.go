@@ -733,7 +733,7 @@ func TestCodexV2LaunchExcludesIdentityMetadataAndOperatorCredentialSurface(t *te
 	if err != nil {
 		t.Fatalf("build initial plan: %v", err)
 	}
-	continuation, bound, err := server.prepareBlackboardV2ContinuationLaunch(createdTask, plan, createdTask.Goal)
+	_, bound, err := server.prepareBlackboardV2ContinuationLaunch(createdTask, plan, createdTask.Goal)
 	if err != nil {
 		t.Fatalf("prepare bound plan: %v", err)
 	}
@@ -751,9 +751,9 @@ func TestCodexV2LaunchExcludesIdentityMetadataAndOperatorCredentialSurface(t *te
 	}
 	visible := strings.Join([]string{bound.LaunchGoal, string(runtimeConfig), string(configTOML), string(agents)}, "\n")
 	for _, forbidden := range []string{
-		projectA.ID, projectB.ID, createdTask.ID, continuation.ID, profile.ID, operatorToken,
-		"project_id", "task_id", "continuation_id", "runtime_profile_id", "runtime_plugin_id",
-		"PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_MCP_URL", "PENTEST_AUTH_TOKEN",
+		projectB.ID, profile.ID, operatorToken,
+		"runtime_profile_id", "runtime_plugin_id",
+		"PENTEST_MCP_URL", "PENTEST_AUTH_TOKEN",
 		"[mcp_servers.pentest]", "/mcp?token=", "projection_hash", "estimated_tokens", "protocol_rule_digest",
 	} {
 		if strings.Contains(visible, forbidden) {
@@ -890,8 +890,8 @@ cat .pentest/blackboard.json
 		t.Fatalf("checklist repeated across Codex argv/instructions\nargs=%s\nagents=%s", args, agents)
 	}
 	if leak := firstBlackboardV2ProcessLeak(args, env,
-		[]string{createdProject.ID, createdTask.ID, continuation.ID, profile.ID},
-		[]string{"PENTEST_PROJECT_ID=", "PENTEST_TASK_ID=", "PENTEST_MCP_URL=", "PENTEST_AUTH_TOKEN=", "/mcp?token="},
+		[]string{profile.ID},
+		[]string{"PENTEST_MCP_URL=", "PENTEST_AUTH_TOKEN=", "/mcp?token="},
 	); leak != "" {
 		t.Fatalf("production Codex process received forbidden metadata %q\nargs=%s\nenv=%s", leak, args, env)
 	}

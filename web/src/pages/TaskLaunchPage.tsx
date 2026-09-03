@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Rocket } from "lucide-react";
 import { AttachmentPicker } from "@/components/AttachmentPicker";
 import { LaunchSummaryRail, RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
@@ -7,14 +7,10 @@ import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Card, CardHeader, CardTitle, Input, Label, Select, Textarea } from "@/components/ui";
 import { apiPost, apiPostForm } from "@/lib/api";
 
-const REASON_TASK_GOAL = "Read the complete Runtime Blackboard Snapshot and prepare an approval-required proposal for next Task Goals, Exploration Objective changes, and a readiness judgment. Do not mutate Blackboard records directly.";
-
 export function TaskLaunchPage() {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const reasonTask = searchParams.get("purpose") === "reason";
-  const launchControls = useRuntimeLaunchControls({ projectId });
+  const launchControls = useRuntimeLaunchControls({ projectId, defaultBlackboardMode: "working_graph" });
   const [taskType, setTaskType] = useState("");
   const [goal, setGoal] = useState("");
   const [launching, setLaunching] = useState(false);
@@ -27,7 +23,7 @@ export function TaskLaunchPage() {
     maxRatingDrawdown: "0",
     maxNoProgressSeconds: "0",
   });
-  const effectiveGoal = reasonTask ? REASON_TASK_GOAL : goal;
+  const effectiveGoal = goal;
 
   async function launchTask() {
     if (!projectId) return;
@@ -41,7 +37,7 @@ export function TaskLaunchPage() {
       }
       const launch = launchControls.launchPayload();
       const payload = {
-        type: reasonTask ? projectKind : taskType,
+        type: taskType,
         goal: effectiveGoal,
         ...launch,
         run_controls: {
@@ -56,7 +52,7 @@ export function TaskLaunchPage() {
           },
         },
       };
-      const taskPath = `/api/projects/${projectId}/${reasonTask ? "reason-tasks" : "tasks"}`;
+      const taskPath = `/api/projects/${projectId}/tasks`;
       let created: { id: string };
       if (attachments.length > 0) {
         const body = new FormData();
@@ -76,19 +72,18 @@ export function TaskLaunchPage() {
 
   const hostBlocked = launchControls.form.runner === "host" && !launchControls.hostActivated;
   const projectKind = launchControls.project?.kind === "ctf_challenge" ? "ctf_challenge" : "pentest";
-  const taskTypeMatchesProject = reasonTask || (taskType !== "" && taskType === projectKind);
+  const taskTypeMatchesProject = taskType !== "" && taskType === projectKind;
 
   return (
     <ProjectPageShell
       title={
         <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-          <Rocket className="h-5 w-5 text-signal" /> {reasonTask ? "Launch Reason Task" : "Launch task"}
+          <Rocket className="h-5 w-5 text-signal" /> Launch task
         </h1>
       }
       bodyClassName="mx-auto grid w-full max-w-[1080px] grid-cols-1 gap-6 lg:grid-cols-[1fr_300px]"
     >
       <div className="space-y-5">
-        {!reasonTask && (
           <div>
             <Label htmlFor="task-type">Task type</Label>
             <Select id="task-type" name="task_type" value={taskType} onChange={(event) => setTaskType(event.target.value)}>
@@ -103,10 +98,9 @@ export function TaskLaunchPage() {
               </p>
             )}
           </div>
-        )}
         <section className="rounded-lg border border-border bg-card shadow-sm">
           <div className="p-4">
-            <Label htmlFor="goal" className="text-sm font-medium">{reasonTask ? "Reason Task goal" : "What do you want to explore?"}</Label>
+            <Label htmlFor="goal" className="text-sm font-medium">What do you want to explore?</Label>
             <Textarea
               id="goal"
               name="task_goal"
@@ -115,10 +109,8 @@ export function TaskLaunchPage() {
               onChange={(event) => setGoal(event.target.value)}
               placeholder="Describe the goal, for example: enumerate the authenticated surface of staging.example.com…"
               autoComplete="off"
-              readOnly={reasonTask}
               className="mt-2 w-full resize-none rounded-lg border border-input bg-background px-3.5 py-3 text-sm leading-relaxed outline-none placeholder:text-muted-foreground focus:border-ring"
             />
-            {reasonTask && <p className="mt-1 text-xs text-muted-foreground">The daemon owns this planning goal. The Task can only submit an approval-required proposal.</p>}
             <div className="mt-3">
               <AttachmentPicker
                 id="attachments"
@@ -132,7 +124,7 @@ export function TaskLaunchPage() {
           </div>
         </section>
 
-        <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={effectiveGoal} allowDisabledBlackboardMode={!reasonTask} />
+        <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={effectiveGoal} />
 
         <Card as="section" className="border-border/70 bg-muted/10">
           <CardHeader>
@@ -154,7 +146,7 @@ export function TaskLaunchPage() {
         controller={launchControls}
         disabled={!taskTypeMatchesProject || !launchControls.launchReady(effectiveGoal) || launching || hostBlocked}
         busy={launching}
-        label={reasonTask ? "Launch Reason Task" : "Launch"}
+        label="Launch"
         onClick={launchTask}
       />
     </ProjectPageShell>

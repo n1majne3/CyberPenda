@@ -1018,9 +1018,6 @@ func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile
 			}
 		}
 		settings := map[string]any{"env": redactEnvMap(env)}
-		if allowed := claudeTrustedMCPAllowedTools(servers); len(allowed) > 0 {
-			settings["permissions"] = map[string]any{"allow": allowed}
-		}
 		if refs := enabledExtensionInstallRefs(profile); len(refs) > 0 {
 			enabled := make(map[string]bool, len(refs))
 			for _, ref := range refs {

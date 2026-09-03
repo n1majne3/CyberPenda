@@ -26,7 +26,6 @@ import (
 	"pentest/internal/preflight"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
-	"pentest/internal/reasontask"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeconfig"
@@ -39,6 +38,7 @@ import (
 	"pentest/internal/steering"
 	"pentest/internal/store"
 	"pentest/internal/task"
+	"pentest/internal/workinggraph"
 
 	"pentest/internal/daemon/webfs"
 )
@@ -103,7 +103,6 @@ type Server struct {
 	db                      *store.DB
 	projects                *project.Service
 	scopeExpansions         *scopeexpansion.Service
-	reasonTasks             *reasontask.Service
 	runtimePlugins          *runtimeplugin.Registry
 	runtimeExtensions       *runtimeextension.Registry
 	profiles                *runtimeprofile.Service
@@ -120,6 +119,8 @@ type Server struct {
 	sessionHarness          *runtime.SessionHarness
 	canonicalStore          string
 	blackboardV2            *blackboardv2.Service
+	workingGraph            *workinggraph.Service
+	workingGraphCompiler    *workinggraph.SemanticCompiler
 	challengeWorkflow       *challengeworkflow.Service
 	finishReadiness         *finishreadiness.Service
 	blackboardV2Continuity  *blackboardv2.ContinuityService
@@ -153,7 +154,6 @@ type Server struct {
 	providerSessionFactory  ProviderSessionFactory
 	runtimeRecoveryMu       sync.RWMutex
 	runtimeRecovery         map[string]task.RuntimeActivity
-	blackboardConclusions   *runtime.AssistedConclusionTracker
 	runtimeStopTimeout      time.Duration
 	steeringDispatchTimeout time.Duration
 }
@@ -333,7 +333,6 @@ func NewServer(config Config) (*Server, error) {
 		sessionProviderSessions: newProviderSessionRegistry(),
 		providerSessionFactory:  config.ProviderSessionFactory,
 		runtimeRecovery:         map[string]task.RuntimeActivity{},
-		blackboardConclusions:   runtime.NewAssistedConclusionTracker(),
 		runtimeStopTimeout:      10 * time.Second,
 		steeringDispatchTimeout: defaultAcceptedSteeringDispatchTimeout,
 	}
@@ -354,7 +353,8 @@ func NewServer(config Config) (*Server, error) {
 	server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.sessions.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
-	server.reasonTasks = reasontask.NewService(db, server.blackboardV2)
+	server.workingGraph = workinggraph.NewService(db)
+	server.workingGraphCompiler = workinggraph.NewSemanticCompiler(server.blackboardV2)
 	server.challengeWorkflow = challengeworkflow.NewService(db, server.projects, server.tasks, config.ChallengePlatforms, challengeworkflow.NewBlackboardRecorder(server.blackboardV2, server.tasks, runtimeRoot))
 	server.finishReadiness = finishreadiness.NewService(db, server.tasks)
 	server.tasks.SetContinuationReconciler(server.blackboardV2)
@@ -391,13 +391,8 @@ func NewServer(config Config) (*Server, error) {
 		return text, generated, nil
 	})
 	server.routes()
-	server.reconcileValidatedBlackboardConclusionApplies()
-	recovery := server.recoverBlackboardConclusionReceipts(context.Background())
-	server.reconcileInterruptedTasks(recovery.ReconciliationExcludedOwnerIDs)
-	server.applyProviderSessionRecoveryLifecycle(recovery.Outcomes)
-	server.reconcileValidatedSessionBlackboardConclusionApplies()
-	sessionRecovery := server.recoverSessionBlackboardConclusionReceipts(context.Background())
-	server.reconcileInterruptedSessions(sessionRecovery.LiveOwnerIDs)
+	server.reconcileInterruptedTasks(nil)
+	server.reconcileInterruptedSessions(nil)
 	server.recoverAcceptedSteering(context.Background())
 
 	return server, nil
@@ -547,7 +542,7 @@ func (server *Server) reconcileInterruptedTasks(lifecycleProtectedTaskIDs []stri
 				server.logger.Printf("task reconcile: failed to load Task %s for terminal Continuation %s: %v", continuation.TaskID, continuation.ID, ownerErr)
 				continue
 			}
-			if owner.RunControls.BlackboardConclusionMode == task.BlackboardConclusionModeDisabled {
+			if owner.RunControls.BlackboardMode == task.BlackboardModeDisabled {
 				continue
 			}
 			if reconcileErr := server.blackboardV2.ReconcileTerminalContinuation(context.Background(), continuation.ID, "daemon_restart"); reconcileErr != nil {
@@ -649,11 +644,9 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}
 	if server.authToken != "" && !server.publicPath(request) {
 		if !server.authorized(request) {
-			// Blackboard v2 and Reason proposal-create handlers own their narrower
-			// Continuation capability checks. Let only those exact transports classify
-			// a missing or invalid grant; every other API remains behind this middleware.
-			handlerOwnsCapability := server.blackboardV2 != nil &&
-				(isBlackboardV2HTTPTransport(request) || isReasonTaskProposalCreateHTTPTransport(request))
+			// Blackboard v2 handlers own their narrower Continuation capability
+			// checks. Every other API remains behind this middleware.
+			handlerOwnsCapability := server.blackboardV2 != nil && isBlackboardV2HTTPTransport(request)
 			if !handlerOwnsCapability {
 				writeError(response, http.StatusUnauthorized, "unauthorized")
 				return
@@ -784,10 +777,10 @@ func (server *Server) authorized(request *http.Request) bool {
 		}
 	}
 	// A Continuation Interface Grant is a separate, narrower credential from
-	// the daemon operator token. Accept it only on Blackboard v2 HTTP and MCP.
+	// the daemon operator token. Accept it only on Blackboard v2 HTTP.
 	if token := projectinterface.BearerToken(request); token != "" {
 		if server.blackboardV2 != nil && server.projectInterfaceGrants != nil &&
-			(isBlackboardV2HTTPTransport(request) || request.URL.Path == "/mcp") {
+			isBlackboardV2HTTPTransport(request) {
 			_, err := server.projectInterfaceGrants.Resolve(request.Context(), token)
 			return err == nil
 		}
@@ -941,11 +934,6 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/scope-expansions", server.handleProposeScopeExpansion)
 	server.mux.HandleFunc("POST /api/projects/{id}/scope-expansions/{expansion_id}/approve", server.handleApproveScopeExpansion)
 	server.mux.HandleFunc("POST /api/projects/{id}/scope-expansions/{expansion_id}/reject", server.handleRejectScopeExpansion)
-	server.mux.HandleFunc("POST /api/projects/{id}/reason-tasks", server.handleCreateReasonTask)
-	server.mux.HandleFunc("GET /api/projects/{id}/reason-task-proposals", server.handleListReasonTaskProposals)
-	server.mux.HandleFunc("POST /api/projects/{id}/reason-tasks/{task_id}/proposals", server.handleProposeReasonTaskChanges)
-	server.mux.HandleFunc("POST /api/projects/{id}/reason-task-proposals/{proposal_id}/approve", server.handleApproveReasonTaskProposal)
-	server.mux.HandleFunc("POST /api/projects/{id}/reason-task-proposals/{proposal_id}/reject", server.handleRejectReasonTaskProposal)
 	server.mux.HandleFunc("GET /api/projects/{id}", server.handleGetProject)
 	server.mux.HandleFunc("PATCH /api/projects/{id}", server.handleUpdateProject)
 	server.mux.HandleFunc("POST /api/projects/{id}/kind-conversion/preview", server.handlePreviewProjectKindConversion)
@@ -967,7 +955,6 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/sessions/{id}/steer", server.handleSessionSteer)
 	server.mux.HandleFunc("POST /api/sessions/{id}/steer/queue", server.handleSessionQueueSteer)
 	server.mux.HandleFunc("POST /api/sessions/{id}/permissions/{permission_id}/respond", server.handleSessionProviderPermissionResponse)
-	server.mux.HandleFunc("POST /api/sessions/{id}/blackboard-conclusion/retry", server.handleRetrySessionBlackboardConclusion)
 	server.mux.HandleFunc("POST /api/sessions/{id}/stop", server.handleSessionStop)
 	server.mux.HandleFunc("PATCH /api/sessions/{id}", server.handleRenameSession)
 	server.mux.HandleFunc("POST /api/sessions/{id}/archive", server.handleArchiveSession)
@@ -1035,13 +1022,11 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/submit", server.handleChallengeSubmit)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/abandon", server.handleChallengeAbandon)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/finalize", server.handleChallengeFinalize)
-	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/blackboard-conclusion/retry", server.handleRetryBlackboardConclusion)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer/queue", server.handleQueueSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/permissions/{permission_id}/respond", server.handleProviderPermissionResponse)
 	server.registerBlackboardV2Routes()
-	server.registerMCP()
 	server.registerSPA()
 }
 
@@ -1051,10 +1036,6 @@ func (server *Server) handleHealth(response http.ResponseWriter, request *http.R
 		Database struct {
 			Status string `json:"status"`
 		} `json:"database"`
-		MCP struct {
-			Status string `json:"status"`
-			Path   string `json:"path"`
-		} `json:"mcp"`
 		Runner struct {
 			RuntimeRoot  string `json:"runtime_root"`
 			SandboxImage string `json:"sandbox_image"`
@@ -1066,8 +1047,6 @@ func (server *Server) handleHealth(response http.ResponseWriter, request *http.R
 		Version: server.version,
 	}
 	payload.Database.Status = "ok"
-	payload.MCP.Status = "ok"
-	payload.MCP.Path = "/mcp"
 	payload.Runner.RuntimeRoot = server.runtimeRoot
 	payload.Runner.SandboxImage = server.sandboxImage
 	payload.Runner.ContainerCLI = server.containerCLI

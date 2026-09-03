@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   createMemoryRouter,
@@ -254,17 +254,10 @@ const actionableHealth = {
       code: "attention_warning",
       severity: "warning",
       message:
-        "Runtime Snapshot reached the 32K warning threshold (35000 estimated tokens). Offer an approval-required Reason Task for consolidation; do not truncate or auto-merge.",
+        "Runtime Snapshot reached the 32K warning threshold (35000 estimated tokens). Review and consolidate the Working Graph before it grows further; do not truncate or auto-merge.",
     },
   ],
-  proposals: [
-    {
-      code: "consolidation_reason_task",
-      action: "start_reason_task",
-      approval_required: true,
-      required: false,
-    },
-  ],
+  proposals: [],
 };
 
 const danglingHealth = {
@@ -303,20 +296,12 @@ function trackFetch(handlers: {
   detail?: unknown;
   history?: (url: string) => unknown;
   project?: unknown;
-  reasonProposals?: unknown;
   errors?: Record<string, { status: number; body: unknown }>;
 }) {
   const requests: string[] = [];
-  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === "string" ? input : input.toString();
     requests.push(url);
-
-    if (url.includes("/reason-task-proposals/") && (init?.method ?? "GET") === "POST") {
-      return json({ proposal: { id: "reason-proposal-1", status: "approved" }, result: {} });
-    }
-    if (url.includes("/reason-task-proposals")) {
-      return json(handlers.reasonProposals ?? { proposals: [] });
-    }
 
     for (const [match, err] of Object.entries(handlers.errors ?? {})) {
       if (url.includes(match)) {
@@ -406,17 +391,9 @@ describe("Blackboard UI v2 workflows", () => {
     expect(
       within(health).getByText(/Runtime Snapshot reached the 32K warning threshold/i),
     ).toBeInTheDocument();
-    expect(within(health).getByText(/Approval-required Reason Task proposal/i)).toBeInTheDocument();
-    expect(within(health).getByText(/consolidation_reason_task/i)).toBeInTheDocument();
-    expect(within(health).getByText(/start_reason_task/i)).toBeInTheDocument();
-    expect(within(health).getByRole("link", { name: /Start Reason Task/i })).toHaveAttribute(
-      "href",
-      "/projects/project-1/tasks/new?purpose=reason",
-    );
-
     const status = screen.getByRole("region", { name: /Blackboard status/i });
     expect(within(status).getByText("critical")).toBeInTheDocument();
-    expect(within(status).getByText(/32K warning — offer Reason Task/i)).toBeInTheDocument();
+    expect(within(status).getByText(/32K warning — review Working Graph/i)).toBeInTheDocument();
 
     const body = health.textContent ?? "";
     for (const forbidden of FORBIDDEN_ORDINARY_UI_TERMS) {
@@ -429,37 +406,6 @@ describe("Blackboard UI v2 workflows", () => {
     expect(requests.some((url) => url.includes("/api/v2/projects/project-1/blackboard/health"))).toBe(
       true,
     );
-  });
-
-  it("lets the operator approve a pending Reason Task proposal", async () => {
-    const { fetchMock } = trackFetch({
-      health: actionableHealth,
-      reasonProposals: {
-        proposals: [{
-          id: "reason-proposal-1",
-          project_id: "project-1",
-          reason_task_id: "reason-task-1",
-          next_task_goals: ["Confirm the exposed admin route"],
-          exploration_objective_changes: ["Close the broad enumeration objective"],
-          readiness_judgment: "Ready after one targeted confirmation",
-          changes: [{ op: "upsert" }],
-          status: "proposed",
-          created_at: "2026-01-03T00:00:00Z",
-        }],
-      },
-    });
-    renderBlackboard("/projects/project-1/blackboard");
-
-    const region = await screen.findByRole("region", { name: /Reason Task proposals/i });
-    expect(within(region).getByText("Confirm the exposed admin route")).toBeInTheDocument();
-    expect(within(region).getByText(/Ready after one targeted confirmation/i)).toBeInTheDocument();
-    await userEvent.click(within(region).getByRole("button", { name: /Approve/i }));
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/reason-task-proposals/reason-proposal-1/approve"),
-      expect.objectContaining({ method: "POST" }),
-    ));
-    await waitFor(() => expect(within(region).queryByRole("button", { name: /Approve/i })).not.toBeInTheDocument());
   });
 
   it("keeps dangling anomaly links actionable and wraps long keys", async () => {

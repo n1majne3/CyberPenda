@@ -76,7 +76,7 @@ func TestLegacyLaunchPlanNeverProjectsOperatorToken(t *testing.T) {
 
 			layoutRoot := filepath.Join(runtimeRoot, created.ID)
 			walkErr := filepath.WalkDir(layoutRoot, func(path string, entry os.DirEntry, walkErr error) error {
-				if walkErr != nil || entry.IsDir() {
+				if walkErr != nil || entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
 					return walkErr
 				}
 				content, readErr := os.ReadFile(path)

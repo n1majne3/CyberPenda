@@ -71,6 +71,7 @@ type RuntimeConfigurationSnapshot struct {
 	TurnSelection    RuntimeTurnSelection   `json:"runtime_turn_selection"`
 	Settings         map[string]any         `json:"settings"`
 	EnabledSkillIDs  []string               `json:"enabled_skill_ids"`
+	ModeSkillID      string                 `json:"mode_skill_id,omitempty"`
 	ConfigProjection map[string]any         `json:"config_projection,omitempty"`
 }
 

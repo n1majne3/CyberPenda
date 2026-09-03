@@ -70,4 +70,3 @@ while true; do sleep 0.1; done
 	}
 	t.Fatalf("process group %d still has live members after Close", pgid)
 }
-

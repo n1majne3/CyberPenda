@@ -118,7 +118,7 @@ func TestHostedEvaluationPublishesOnlyCTFOrchestratorAndProjectsBenchmarkEnviron
 		t.Fatalf("model binding = %#v", bindings["HOSTED_MODEL_API_KEY"])
 	}
 	runControls, _ := taskRequest["run_controls"].(map[string]any)
-	if runControls["blackboard_conclusion_mode"] != "disabled" {
+	if runControls["blackboard_mode"] != "disabled" {
 		t.Fatalf("hosted Task run controls = %#v", runControls)
 	}
 }

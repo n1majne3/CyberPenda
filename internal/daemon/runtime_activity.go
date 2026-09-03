@@ -302,9 +302,6 @@ func (server *Server) validateAndBindRecoveredProviderSession(request ProviderSe
 	if !capabilities.PersistentSession || !capabilities.SendTurn || sessionOffline(binding.Session) || sessionHealthUnknown(binding.Session) {
 		return fmt.Errorf("recovered provider session is not healthy and controllable")
 	}
-	if err := validateAssistedConclusionBinding(binding); err != nil {
-		return err
-	}
 	if request.Owner.IsSession() {
 		return server.BindSessionProviderSession(request.Owner.ID, binding.Session)
 	}

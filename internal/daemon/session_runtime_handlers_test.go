@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"pentest/internal/modelprovider"
+	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeconfig"
 	"pentest/internal/runtimeplugin"
@@ -22,7 +23,31 @@ import (
 	"pentest/internal/session"
 	"pentest/internal/skill"
 	"pentest/internal/task"
+	"pentest/internal/workinggraph"
 )
+
+func testSessionRuntimeSnapshot(t *testing.T, server *Server, plugin runtimeprofile.Provider, run session.Runner) map[string]any {
+	t.Helper()
+	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
+		Name: string(plugin) + " test provider", BaseURL: "https://api.example.test/v1",
+		Protocols: []modelprovider.Protocol{modelprovider.ProtocolOpenAIResponses},
+		Catalog:   modelprovider.Catalog{Manual: []string{"test-model"}, DefaultModel: "test-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(provider.APIKeyEnv, "sk-test")
+	return map[string]any{
+		"snapshot_version": 1, "runtime_plugin_id": string(plugin), "runner": string(run),
+		"model_provider_snapshot": map[string]any{
+			"model_provider_id": provider.ID, "model_provider_name": provider.Name, "base_url": provider.BaseURL,
+			"protocol": string(modelprovider.ProtocolOpenAIResponses), "model": "test-model", "api_key_env": provider.APIKeyEnv,
+		},
+		"runtime_turn_selection": map[string]any{"model_provider_id": provider.ID, "model": "test-model"},
+		"settings":               map[string]any{"model_provider_id": provider.ID, "model_override": "test-model"},
+		"enabled_skill_ids":      []string{}, "config_projection": map[string]any{},
+	}
+}
 
 func TestSessionRuntimePlanProjectsOnlyCapturedSnapshotSkills(t *testing.T) {
 	runtimeRoot := t.TempDir()
@@ -131,7 +156,7 @@ func TestPrepareSessionResumeUsesCapturedModelProviderSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	prepared, err := server.prepareSessionRuntime(context.Background(), session.BlackboardConclusionModeInteractive, sessionRuntimeInput{HostActivated: true}, previous)
+	prepared, err := server.prepareSessionRuntime(context.Background(), session.BlackboardModeInteractive, sessionRuntimeInput{HostActivated: true}, previous)
 	if err != nil {
 		t.Fatalf("prepare Session Resume: %v", err)
 	}
@@ -260,6 +285,71 @@ func TestSessionPiSandboxUsesTheSharedBootstrapWrapper(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "command -v pi") {
 		t.Fatalf("Session Pi sandbox argv lacks bootstrap wrapper: %q", joined)
+	}
+}
+
+func TestSessionSandboxProjectsWorkingGraphPathsThroughWorkdirMount(t *testing.T) {
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(), DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	found, err := server.sessions.Create(session.CreateRequest{
+		Input: "use Working Graph", BlackboardMode: session.BlackboardModeWorkingGraph,
+	})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
+	}
+	profile, err := server.profiles.Create("Session Pi", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+		DefaultRunner: "sandbox", Model: "pi-model", SandboxImage: "kalilinux/kali-rolling",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	continuationID := "session-continuation-1"
+	graph, err := server.workingGraph.Prepare(t.Context(), workinggraph.OwnerContext{
+		Owner: found.OwnerContract(), ContinuationID: continuationID, Workdir: found.Workdir,
+	})
+	if err != nil {
+		t.Fatalf("prepare Working Graph: %v", err)
+	}
+	plan, err := server.buildSessionRuntimePlanForOwnerContext(
+		found, "inspect", sessionRuntimeInput{}, profile, session.RunnerSandbox, "token", "",
+		runner.BlackboardProjectionRequired, continuationID, &graph,
+	)
+	if err != nil {
+		t.Fatalf("build Session plan: %v", err)
+	}
+	if strings.Count(plan.LaunchGoal, "`cyberpenda-blackboard-working-graph`") != 1 ||
+		!strings.Contains(plan.LaunchGoal, "TASK GOAL:\ninspect") {
+		t.Fatalf("Session launch goal did not invoke Working Graph Skill: %s", plan.LaunchGoal)
+	}
+	args, ok := runtime.DockerSandboxCreateArgs(plan.Adapter)
+	if !ok {
+		t.Fatalf("Session sandbox adapter = %T", plan.Adapter)
+	}
+	env := map[string]string{}
+	for index := 0; index < len(args)-1; index++ {
+		if args[index] != "-e" {
+			continue
+		}
+		parts := strings.SplitN(args[index+1], "=", 2)
+		if len(parts) == 2 {
+			env[parts[0]] = parts[1]
+		}
+		index++
+	}
+	want := map[string]string{
+		"PENTEST_WORKING_GRAPH_ROOT":     "/task/workdir",
+		"PENTEST_WORKING_GRAPH_OUTBOX":   "/task/workdir/graph/outbox/" + continuationID,
+		"PENTEST_WORKING_GRAPH_RECEIPTS": "/task/workdir/graph/receipts/" + continuationID,
+	}
+	for key, value := range want {
+		if env[key] != value {
+			t.Fatalf("%s = %q, want %q", key, env[key], value)
+		}
 	}
 }
 
@@ -863,7 +953,7 @@ func TestResolveSessionRuntimeProfileHonorsNewModelProviderAfterPreviousContinua
 		t.Fatalf("model override = %q, want MiniMax-M3", resolved.Fields.ModelOverride)
 	}
 
-	if _, err := server.prepareSessionRuntime(t.Context(), session.BlackboardConclusionModeInteractive, sessionRuntimeInput{
+	if _, err := server.prepareSessionRuntime(t.Context(), session.BlackboardModeInteractive, sessionRuntimeInput{
 		ModelProviderID: hub.ID,
 		Model:           "MiniMax-M3",
 	}, previous); err != nil {

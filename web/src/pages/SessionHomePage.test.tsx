@@ -17,7 +17,6 @@ const codexPlugin = {
     mcp_config: true,
     streaming_transcript: true,
     resume: true,
-    assisted_conclusion: true,
   },
   model_provider: {
     requirement: "required",
@@ -84,7 +83,7 @@ describe("SessionHomePage", () => {
 
     await screen.findByRole("option", { name: "MiMo" });
     await user.type(screen.getByLabelText("What do you want to explore?"), "Inspect the standalone target");
-    await user.click(await screen.findByRole("button", { name: /blackboard conclusions/i }));
+    await user.click(await screen.findByRole("button", { name: /blackboard mode/i }));
     const disabledCard = screen.getByRole("radio", { name: /^disabled/i });
     expect(disabledCard).toBeEnabled();
     await user.click(disabledCard);
@@ -103,7 +102,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "high",
             runner: "sandbox",
-            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "disabled" },
+            run_controls: { container_cli: "docker", blackboard_mode: "disabled" },
           }),
         }),
       );
@@ -130,8 +129,8 @@ describe("SessionHomePage", () => {
 
     await user.type(screen.getByLabelText("What do you want to explore?"), "Inspect the standalone target");
     await user.click(screen.getByRole("button", { name: "xhigh" }));
-    await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
-    await user.click(screen.getByRole("radio", { name: /^assisted/i }));
+    await user.click(screen.getByRole("button", { name: /blackboard mode/i }));
+    await user.click(screen.getByRole("radio", { name: /^working graph/i }));
     await user.click(screen.getByRole("button", { name: /launch session/i }));
 
     await waitFor(() => {
@@ -150,7 +149,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "xhigh",
             runner: "sandbox",
-            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "assisted" },
+            run_controls: { container_cli: "docker", blackboard_mode: "working_graph" },
           }),
         }),
       );
@@ -249,7 +248,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "high",
             runner: "sandbox",
-            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "interactive" },
+            run_controls: { container_cli: "docker", blackboard_mode: "disabled" },
           }),
         }),
       );
@@ -277,7 +276,7 @@ describe("SessionHomePage", () => {
     expect(screen.queryByText("notes.txt")).not.toBeInTheDocument();
   });
 
-  it("persists assisted Blackboard conclusions from the Session launch controls", async () => {
+  it("persists Working Graph mode from the Session launch controls", async () => {
     const fetchMock = mockApi({
       ...sessionLaunchRoutes,
       "/api/sessions?lifecycle=archived": { sessions: [] },
@@ -289,8 +288,8 @@ describe("SessionHomePage", () => {
 
     await screen.findByRole("option", { name: "MiMo" });
     await user.type(await screen.findByRole("textbox", { name: "What do you want to explore?" }), "Inspect the standalone target");
-    await user.click(screen.getByRole("button", { name: /blackboard conclusions/i }));
-    await user.click(screen.getByRole("radio", { name: /^Assisted/ }));
+    await user.click(screen.getByRole("button", { name: /blackboard mode/i }));
+    await user.click(screen.getByRole("radio", { name: /^Working Graph/ }));
     await user.click(screen.getByRole("button", { name: /launch session/i }));
 
     await waitFor(() => {
@@ -305,7 +304,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "high",
             runner: "sandbox",
-            run_controls: { container_cli: "docker", blackboard_conclusion_mode: "assisted" },
+            run_controls: { container_cli: "docker", blackboard_mode: "working_graph" },
           }),
         }),
       );

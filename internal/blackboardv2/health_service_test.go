@@ -293,20 +293,11 @@ func TestSemanticHealthAttentionThresholdsOfferConsolidationWithoutBlocking(t *t
 				}
 			} else {
 				anomaly := anomalyByCode(t, health, test.code)
-				if !strings.Contains(strings.ToLower(anomaly.Message), "reason task") && test.offered {
-					t.Fatalf("consolidation offer message missing Reason Task guidance: %#v", anomaly)
+				if !strings.Contains(strings.ToLower(anomaly.Message), "working graph") && test.offered {
+					t.Fatalf("consolidation offer message missing Working Graph guidance: %#v", anomaly)
 				}
-				if test.offered {
-					if len(health.Proposals) != 1 {
-						t.Fatalf("proposals = %#v", health.Proposals)
-					}
-					proposal := health.Proposals[0]
-					if proposal.Code != "consolidation_reason_task" || proposal.Action != "start_reason_task" || !proposal.ApprovalRequired {
-						t.Fatalf("proposal = %#v", proposal)
-					}
-					if proposal.Required != test.required {
-						t.Fatalf("proposal.required = %t, want %t", proposal.Required, test.required)
-					}
+				if len(health.Proposals) != 0 {
+					t.Fatalf("retired Reason Task proposals remain: %#v", health.Proposals)
 				}
 			}
 			// Exact Snapshot measurement parity.
@@ -647,7 +638,7 @@ func TestSemanticHealthDetectsRedirectSourceStillCurrent(t *testing.T) {
 	}
 }
 
-func TestSemanticHealthOffersExplicitConsolidationProposal(t *testing.T) {
+func TestSemanticHealthReportsConsolidationWithoutSchedulingWork(t *testing.T) {
 	fixture := newHealthFixture(t, project.KindPentest)
 	changes := make([]blackboardv2.Change, 0, 120)
 	for index := 0; index < 120; index++ {
@@ -672,15 +663,8 @@ func TestSemanticHealthOffersExplicitConsolidationProposal(t *testing.T) {
 	if !health.Attention.ConsolidationOffered || health.Attention.ConsolidationRequired {
 		t.Fatalf("expected offered-not-required: %#v", health.Attention)
 	}
-	if len(health.Proposals) != 1 {
-		t.Fatalf("proposals = %#v, want one consolidation proposal", health.Proposals)
-	}
-	proposal := health.Proposals[0]
-	if proposal.Code != "consolidation_reason_task" || proposal.Action != "start_reason_task" || !proposal.ApprovalRequired {
-		t.Fatalf("proposal shape = %#v", proposal)
-	}
-	if proposal.Required {
-		t.Fatalf("proposal.required = true at warning threshold")
+	if len(health.Proposals) != 0 {
+		t.Fatalf("retired Reason Task proposals remain: %#v", health.Proposals)
 	}
 	assertContractJSON(t, mustHarness(t), "semanticHealth", health)
 

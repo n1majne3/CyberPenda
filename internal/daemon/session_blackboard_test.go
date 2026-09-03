@@ -12,8 +12,56 @@ import (
 
 	"pentest/internal/blackboardv2"
 	"pentest/internal/project"
+	"pentest/internal/projectinterface"
 	"pentest/internal/session"
 )
+
+func TestSessionReadOnlyGrantCanReadAndCannotWrite(t *testing.T) {
+	root := t.TempDir()
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(root, "session-read-only.db"),
+		RuntimeRoot: filepath.Join(root, "runs"), SessionRoot: filepath.Join(root, "sessions"),
+		AuthToken: "operator-secret", DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	found, err := server.sessions.Create(session.CreateRequest{Input: "Read the Session graph", BlackboardMode: session.BlackboardModeWorkingGraph})
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuation, err := server.sessions.CreateContinuation(found.ID, "profile-1", "claude_code", session.RunnerSandbox, map[string]any{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.blackboardV2.BindSessionContinuation(context.Background(), found.ID, continuation.ID); err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := server.projectInterfaceGrants.IssueSession(context.Background(), projectinterface.IssueSessionGrantRequest{
+		SessionID: found.ID, ContinuationID: continuation.ID,
+		RuntimeConfigVersionID: continuation.RuntimeConfigID, RuntimeProfileID: continuation.RuntimeProfileID,
+		RuntimePluginID: continuation.RuntimeProvider, Runner: string(continuation.Runner), Access: projectinterface.GrantAccessReadOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "/api/v2/sessions/" + found.ID + "/blackboard"
+	seed := sessionBlackboardRequest(t, server, http.MethodPost, base+"/changes", "operator-secret", "seed-read-only",
+		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"fact:seed","type":"fact","record":{"category":"note","summary":"Readable","confidence":"tentative"}}]}`)
+	if seed.status != http.StatusOK {
+		t.Fatalf("seed status = %d body=%s", seed.status, seed.body)
+	}
+	read := sessionBlackboardRequest(t, server, http.MethodGet, base+"/records/fact:seed", token, "", "")
+	if read.status != http.StatusOK || !bytes.Contains(read.body, []byte("Readable")) {
+		t.Fatalf("read-only Session read = %d %s", read.status, read.body)
+	}
+	write := sessionBlackboardRequest(t, server, http.MethodPost, base+"/changes", token, "read-only-write",
+		`{"schema":"semantic-change-batch/v2","changes":[]}`)
+	if write.status != http.StatusForbidden || !bytes.Contains(write.body, []byte(`"code":"authority_denied"`)) {
+		t.Fatalf("read-only Session write = %d %s", write.status, write.body)
+	}
+}
 
 func TestSessionBlackboardHTTPUsesOwnerLocalSharedV2Semantics(t *testing.T) {
 	root := t.TempDir()

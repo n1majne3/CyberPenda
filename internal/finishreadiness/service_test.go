@@ -45,10 +45,10 @@ func (noOpRecorder) RecordFinalize(context.Context, challengeworkflow.RecordFina
 }
 
 func fixture(t *testing.T) (*store.DB, *project.Service, *task.Service, project.Project, task.Task, string) {
-	return fixtureWithBlackboardMode(t, task.BlackboardConclusionModeInteractive)
+	return fixtureWithBlackboardMode(t, task.BlackboardModeInteractive)
 }
 
-func fixtureWithBlackboardMode(t *testing.T, mode task.BlackboardConclusionMode) (*store.DB, *project.Service, *task.Service, project.Project, task.Task, string) {
+func fixtureWithBlackboardMode(t *testing.T, mode task.BlackboardMode) (*store.DB, *project.Service, *task.Service, project.Project, task.Task, string) {
 	t.Helper()
 	root := t.TempDir()
 	db, err := store.Open(filepath.Join(root, "db.sqlite"))
@@ -68,7 +68,7 @@ func fixtureWithBlackboardMode(t *testing.T, mode task.BlackboardConclusionMode)
 		Goal:      "solve",
 		Runner:    task.RunnerSandbox,
 		RunControls: task.RunControls{
-			BlackboardConclusionMode: mode,
+			BlackboardMode: mode,
 		},
 	})
 	if err != nil {
@@ -99,7 +99,7 @@ func TestReadinessReportsOpenWorkflowAndMissingEvidence(t *testing.T) {
 }
 
 func TestDisabledReadinessRetainsChallengeWorkflowBlockers(t *testing.T) {
-	db, _, tasks, proj, created, _ := fixtureWithBlackboardMode(t, task.BlackboardConclusionModeDisabled)
+	db, _, tasks, proj, created, _ := fixtureWithBlackboardMode(t, task.BlackboardModeDisabled)
 	// Disabled rejects new Challenge Workflow writes. Seed durable legacy state
 	// directly so this test only specifies how Finish treats existing blockers.
 	if _, err := db.Exec(`INSERT INTO challenge_attempts (

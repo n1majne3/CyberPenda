@@ -119,7 +119,7 @@ func TestCreateSessionAtomicallyPersistsInitialRuntimeSnapshotAndContinuation(t 
 	}
 }
 
-func TestCreateSessionPersistsAssistedBlackboardConclusionRunControl(t *testing.T) {
+func TestCreateSessionPersistsWorkingGraphBlackboardMode(t *testing.T) {
 	dataRoot := t.TempDir()
 	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
 	if err != nil {
@@ -129,21 +129,21 @@ func TestCreateSessionPersistsAssistedBlackboardConclusionRunControl(t *testing.
 
 	service := NewService(db, filepath.Join(dataRoot, "sessions"))
 	created, err := service.Create(CreateRequest{
-		Input:                    "Inspect the standalone target",
-		BlackboardConclusionMode: BlackboardConclusionModeAssisted,
+		Input:          "Inspect the standalone target",
+		BlackboardMode: BlackboardModeWorkingGraph,
 	})
 	if err != nil {
-		t.Fatalf("create assisted Session: %v", err)
+		t.Fatalf("create working-graph Session: %v", err)
 	}
-	if created.RunControls.BlackboardConclusionMode != BlackboardConclusionModeAssisted {
+	if created.RunControls.BlackboardMode != BlackboardModeWorkingGraph {
 		t.Fatalf("created run controls = %#v", created.RunControls)
 	}
 
 	reloaded, err := service.Get(created.ID)
 	if err != nil {
-		t.Fatalf("reload assisted Session: %v", err)
+		t.Fatalf("reload working-graph Session: %v", err)
 	}
-	if reloaded.RunControls.BlackboardConclusionMode != BlackboardConclusionModeAssisted {
+	if reloaded.RunControls.BlackboardMode != BlackboardModeWorkingGraph {
 		t.Fatalf("reloaded run controls = %#v", reloaded.RunControls)
 	}
 }
@@ -158,14 +158,14 @@ func TestCreateSessionPersistsDisabledBlackboardMode(t *testing.T) {
 
 	service := NewService(db, filepath.Join(dataRoot, "sessions"))
 	created, err := service.Create(CreateRequest{
-		Input:                    "Inspect without Blackboard",
-		BlackboardConclusionMode: BlackboardConclusionModeDisabled,
+		Input:          "Inspect without Blackboard",
+		BlackboardMode: BlackboardModeDisabled,
 	})
 	if err != nil {
 		t.Fatalf("create disabled Session: %v", err)
 	}
-	if created.RunControls.BlackboardConclusionMode != BlackboardConclusionModeDisabled ||
-		created.BlackboardConclusion.Mode != BlackboardConclusionModeDisabled {
+	if created.RunControls.BlackboardMode != BlackboardModeDisabled ||
+		created.BlackboardConclusion.Mode != BlackboardModeDisabled {
 		t.Fatalf("created disabled Session = %#v", created)
 	}
 
@@ -173,13 +173,13 @@ func TestCreateSessionPersistsDisabledBlackboardMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload disabled Session: %v", err)
 	}
-	if reloaded.RunControls.BlackboardConclusionMode != BlackboardConclusionModeDisabled ||
-		reloaded.BlackboardConclusion.Mode != BlackboardConclusionModeDisabled {
+	if reloaded.RunControls.BlackboardMode != BlackboardModeDisabled ||
+		reloaded.BlackboardConclusion.Mode != BlackboardModeDisabled {
 		t.Fatalf("reloaded disabled Session = %#v", reloaded)
 	}
 }
 
-func TestSessionBlackboardModeDefaultsAndRejectsUnknownValues(t *testing.T) {
+func TestSessionBlackboardModeDefaultsToDisabledAndRejectsUnknownValues(t *testing.T) {
 	dataRoot := t.TempDir()
 	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
 	if err != nil {
@@ -197,13 +197,13 @@ func TestSessionBlackboardModeDefaultsAndRejectsUnknownValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reloaded.RunControls.BlackboardConclusionMode != BlackboardConclusionModeInteractive ||
-		reloaded.BlackboardConclusion.Mode != BlackboardConclusionModeInteractive {
+	if reloaded.RunControls.BlackboardMode != BlackboardModeDisabled ||
+		reloaded.BlackboardConclusion.Mode != BlackboardModeDisabled {
 		t.Fatalf("normalized legacy Session = %#v", reloaded)
 	}
 
-	_, err = service.Create(CreateRequest{Input: "invalid mode", BlackboardConclusionMode: "automatic"})
-	if !errors.Is(err, ErrInvalidBlackboardConclusionMode) {
+	_, err = service.Create(CreateRequest{Input: "invalid mode", BlackboardMode: "assisted"})
+	if !errors.Is(err, ErrInvalidBlackboardMode) {
 		t.Fatalf("invalid Blackboard Mode error = %v", err)
 	}
 }

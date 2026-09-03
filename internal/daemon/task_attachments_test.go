@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -150,6 +151,15 @@ func TestParseCreateTaskRequestJSON(t *testing.T) {
 	}
 	if attachments != nil {
 		t.Errorf("expected no attachments, got %d", len(attachments))
+	}
+}
+
+func TestParseCreateTaskRequestRejectsLegacyBlackboardConclusionMode(t *testing.T) {
+	body := `{"type":"pentest","goal":"enumerate","runner":"sandbox","run_controls":{"blackboard_conclusion_mode":"assisted"}}`
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/p1/tasks", bytes.NewReader([]byte(body)))
+	request.Header.Set("Content-Type", "application/json")
+	if _, _, err := parseCreateTaskRequest(request); !errors.Is(err, errLegacyBlackboardModeField) {
+		t.Fatalf("error = %v, want legacy Blackboard Mode rejection", err)
 	}
 }
 

@@ -3,7 +3,7 @@ import { AlertTriangle, Ban, BookOpen, Bookmark, CheckCircle2, ChevronRight, Che
 import {
   apiGet,
   apiPost,
-  type BlackboardConclusionMode,
+  type BlackboardMode,
   type CredentialBinding,
   type Health,
   type ModelProvider,
@@ -38,12 +38,13 @@ import {
 
 type RuntimeLaunchControlsOptions = {
   projectId?: string;
+  defaultBlackboardMode?: BlackboardMode;
 };
 
 // The hook and its render surface intentionally live together so Task and
 // Session launch behavior cannot drift behind a component-only abstraction.
 // eslint-disable-next-line react-refresh/only-export-components
-export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOptions = {}) {
+export function useRuntimeLaunchControls({ projectId, defaultBlackboardMode = "disabled" }: RuntimeLaunchControlsOptions = {}) {
   const [plugins, setPlugins] = useState<RuntimePlugin[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
@@ -63,7 +64,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
   const [containerCLI, setContainerCLI] = useState<"docker" | "podman">("docker");
   const [sandboxNetwork, setSandboxNetwork] = useState("");
   const [sandboxVPNTun, setSandboxVPNTun] = useState(false);
-  const [blackboardConclusionMode, setBlackboardConclusionMode] = useState<BlackboardConclusionMode>("interactive");
+  const [blackboardMode, setBlackboardMode] = useState<BlackboardMode>(defaultBlackboardMode);
   const [preflight, setPreflight] = useState<PreflightResult | null>(null);
   const [skillsPreview, setSkillsPreview] = useState<Skill[] | null>(null);
   const [skillsPreviewLoading, setSkillsPreviewLoading] = useState(false);
@@ -140,8 +141,6 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
     [compatibleProviders, form.modelProviderId],
   );
   const modelOptions = useMemo(() => modelsForProvider(selectedProvider), [selectedProvider]);
-  const assistedConclusionSupported = selectedPlugin?.capabilities.assisted_conclusion === true;
-  const assistedConclusionUnavailableReason = `${selectedPlugin?.name ?? "Selected Runtime"} does not expose the complete persistent Turn, normalized Tool/Turn event, and closed AttemptResult contract required by assisted conclusions.`;
 
   useEffect(() => {
     if (!canPreviewLaunchSkills(form, presetId)) {
@@ -223,7 +222,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
       ...selection,
       runner: form.runner,
       ...(form.runner === "host" ? { host_activated: hostActivated } : {}),
-      run_controls: launchRunControls(hostActivated, form.runner, containerCLI, sandboxNetwork, sandboxVPNTun, blackboardConclusionMode),
+      run_controls: launchRunControls(hostActivated, form.runner, containerCLI, sandboxNetwork, sandboxVPNTun, blackboardMode),
     };
   }
 
@@ -234,9 +233,7 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
   }
 
   function launchReady(input: string) {
-    return canLaunch(input, form, { presetId }) &&
-      (presetMode || compatibleProviders.length > 0) &&
-      !(blackboardConclusionMode === "assisted" && !assistedConclusionSupported);
+    return canLaunch(input, form, { presetId }) && (presetMode || compatibleProviders.length > 0);
   }
 
   return {
@@ -257,8 +254,8 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
     setSandboxNetwork,
     sandboxVPNTun,
     setSandboxVPNTun,
-    blackboardConclusionMode,
-    setBlackboardConclusionMode,
+    blackboardMode,
+    setBlackboardMode,
     preflight,
     setPreflight,
     skillsProfileId,
@@ -270,8 +267,6 @@ export function useRuntimeLaunchControls({ projectId }: RuntimeLaunchControlsOpt
     runtimePresets,
     compatibleProviders,
     modelOptions,
-    assistedConclusionSupported,
-    assistedConclusionUnavailableReason,
     error,
     setError,
     updateRuntime,
@@ -311,8 +306,8 @@ export function RuntimeLaunchControls({
     setSandboxNetwork,
     sandboxVPNTun,
     setSandboxVPNTun,
-    blackboardConclusionMode,
-    setBlackboardConclusionMode,
+    blackboardMode,
+    setBlackboardMode,
     preflight,
     setPreflight,
     skillsProfileId,
@@ -324,32 +319,27 @@ export function RuntimeLaunchControls({
     runtimePresets,
     compatibleProviders,
     modelOptions,
-    assistedConclusionSupported,
-    assistedConclusionUnavailableReason,
     error,
     updateRuntime,
     updateModelProvider,
     updatePreset,
   } = controller;
   useEffect(() => {
-    if (!allowDisabledBlackboardMode && blackboardConclusionMode === "disabled") {
-      setBlackboardConclusionMode("interactive");
+    if (!allowDisabledBlackboardMode && blackboardMode === "disabled") {
+      setBlackboardMode("interactive");
       setPreflight(null);
     }
-  }, [allowDisabledBlackboardMode, blackboardConclusionMode, setBlackboardConclusionMode, setPreflight]);
+  }, [allowDisabledBlackboardMode, blackboardMode, setBlackboardMode, setPreflight]);
   const hostRunner = form.runner === "host";
   const hostBlocked = hostRunner && !hostActivated;
-  const assistedConclusionUnsupported = blackboardConclusionMode === "assisted" && !assistedConclusionSupported;
-  const unavailableReason = assistedConclusionUnsupported
-    ? assistedConclusionUnavailableReason
-    : launchUnavailableReason({
-        input: initialInput,
-        inputLabel: ownerLabel === "task" ? "Task goal" : "Session goal",
-        form,
-        presetMode,
-        compatibleProviderCount: compatibleProviders.length,
-        hostBlocked,
-      });
+  const unavailableReason = launchUnavailableReason({
+    input: initialInput,
+    inputLabel: ownerLabel === "task" ? "Task goal" : "Session goal",
+    form,
+    presetMode,
+    compatibleProviderCount: compatibleProviders.length,
+    hostBlocked,
+  });
   // UI value maps Docker/Podman (container engines) + Host; backend still uses runner=sandbox|host.
   const runnerSelectValue = form.runner === "host" ? "host" : containerCLI;
   const engineLabel = form.runner === "host" ? "host" : containerCLI;
@@ -361,9 +351,9 @@ export function RuntimeLaunchControls({
     : skillsPreviewError
       ? "Error"
       : `${enabledSkillsPreview.length} enabled`;
-  const blackboardModeCards: { mode: BlackboardConclusionMode; icon: LucideIcon; title: string; description: string; disabled: boolean }[] = [
+  const blackboardModeCards: { mode: BlackboardMode; icon: LucideIcon; title: string; description: string; disabled: boolean }[] = [
     { mode: "interactive", icon: UserCheck, title: "Interactive", description: "You decide when Runtime work is committed to the Blackboard.", disabled: false },
-    { mode: "assisted", icon: Sparkles, title: "Assisted", description: "The harness detects semantic debt and dispatches a Conclude Turn automatically.", disabled: !assistedConclusionSupported },
+    { mode: "working_graph", icon: Sparkles, title: "Working Graph", description: "The Runtime emits local intents. The Harness settles them into Blackboard in order.", disabled: false },
     ...(allowDisabledBlackboardMode
       ? [{ mode: "disabled" as const, icon: Ban, title: "Disabled", description: ownerLabel === "task" ? "This Task does not write to the Blackboard." : "This Session does not write to the Blackboard.", disabled: false }]
       : []),
@@ -515,11 +505,11 @@ export function RuntimeLaunchControls({
             )}
           </ConfigAccordion>
 
-          <ConfigAccordion icon={GitBranch} title="Blackboard conclusions" summary={blackboardConclusionMode === "assisted" ? "Assisted" : blackboardConclusionMode === "disabled" ? "Disabled" : "Interactive"}>
+          <ConfigAccordion icon={GitBranch} title="Blackboard mode" summary={blackboardMode === "working_graph" ? "Working Graph" : blackboardMode === "disabled" ? "Disabled" : "Interactive"}>
             <div role="radiogroup" aria-label="Blackboard conclusions" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {blackboardModeCards.map((card) => {
                 const CardIcon = card.icon;
-                const selected = blackboardConclusionMode === card.mode;
+                const selected = blackboardMode === card.mode;
                 return (
                   <button
                     key={card.mode}
@@ -527,7 +517,7 @@ export function RuntimeLaunchControls({
                     role="radio"
                     aria-checked={selected}
                     disabled={card.disabled}
-                    onClick={() => { setBlackboardConclusionMode(card.mode); setPreflight(null); }}
+                    onClick={() => { setBlackboardMode(card.mode); setPreflight(null); }}
                     className={cn(
                       "rounded-lg border-2 p-3 text-left transition-colors",
                       selected ? "border-primary bg-primary/[0.03]" : "border-border hover:border-ring",
@@ -541,13 +531,11 @@ export function RuntimeLaunchControls({
               })}
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              {blackboardConclusionMode === "disabled"
+              {blackboardMode === "disabled"
                 ? "The Runtime does not receive Blackboard state or Blackboard access. All non-Blackboard launch context remains available."
-                : blackboardConclusionMode === "assisted"
-                  ? "After tool-producing work, the Harness runs a bounded Conclude Turn and applies its validated Attempt result to the Blackboard."
-                  : assistedConclusionSupported
-                    ? "The operator decides when Runtime work is written to the Blackboard."
-                    : `${assistedConclusionUnavailableReason} ${allowDisabledBlackboardMode ? "Interactive and Disabled launch remain available." : "Interactive launch remains available."}`}
+                : blackboardMode === "working_graph"
+                  ? "The Runtime reads Blackboard through the CLI and emits local write intents. The Harness owns versions, idempotency, and ordered settlement."
+                  : "The Runtime receives full Blackboard CLI access. The operator and Runtime decide when to write."}
             </p>
           </ConfigAccordion>
 
@@ -640,7 +628,7 @@ export function LaunchSummaryRail({
     plugins,
     compatibleProviders,
     containerCLI,
-    blackboardConclusionMode,
+    blackboardMode,
     enabledSkillsPreview,
   } = controller;
   // Best-effort credential readiness preview: on failure, show the env name only.
@@ -661,7 +649,7 @@ export function LaunchSummaryRail({
   const summaryProvider = compatibleProviders.find((provider) => provider.id === form.modelProviderId);
   const modelDisplay = [summaryProvider?.name, form.modelOverride || "Default model"].filter(Boolean).join(" · ") || "—";
   const runnerDisplay = form.runner === "host" ? "Host" : containerCLI === "podman" ? "Podman" : "Docker";
-  const blackboardDisplay = blackboardConclusionMode === "assisted" ? "Assisted" : blackboardConclusionMode === "disabled" ? "Disabled" : "Interactive";
+  const blackboardDisplay = blackboardMode === "working_graph" ? "Working Graph" : blackboardMode === "disabled" ? "Disabled" : "Interactive";
   const profileDisplay = presetMode ? `Runtime Profile: ${profiles.find((profile) => profile.id === presetId)?.name ?? presetId}` : "Direct configuration";
   const apiKeyEnv = summaryProvider?.api_key_env ?? "";
   const credentialConfigured = bindings !== null && bindings.some((binding) => binding.credential_ref === apiKeyEnv && !binding.disabled);
@@ -774,7 +762,7 @@ function launchRunControls(
   containerCLI: "docker" | "podman",
   sandboxNetwork: string,
   sandboxVPNTun: boolean,
-  blackboardConclusionMode: BlackboardConclusionMode,
+  blackboardMode: BlackboardMode,
 ) {
   return {
     ...(runner === "host" ? { host_activated: hostActivated } : {}),
@@ -783,7 +771,7 @@ function launchRunControls(
     ...(runner === "sandbox" && sandboxVPNTun && sandboxNetwork !== "host_proxy_only"
       ? { sandbox_vpn_tun: true }
       : {}),
-    blackboard_conclusion_mode: blackboardConclusionMode,
+    blackboard_mode: blackboardMode,
   };
 }
 

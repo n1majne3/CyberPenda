@@ -125,32 +125,6 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 			server.persistProviderSessionEvent(taskID, kind, payload)
 		})
 	}
-	if source, ok := session.(runtime.ProviderSessionObservationSink); ok {
-		lineage, lineageOK := session.(runtime.ProviderSessionCompleteTurnLineageResolver)
-		continuationID := ""
-		if active, activeErr := server.tasks.ActiveContinuation(taskID); activeErr == nil && active != nil {
-			continuationID = active.ID
-		}
-		source.SetObservationSink(func(observation runtime.ProviderSessionObservation) {
-			if !lineageOK {
-				return
-			}
-			turnLineage, resolved := lineage.ResolveProviderSessionTurnLineage(observation.RequestID, observation.ProviderTurnID)
-			if !resolved {
-				server.logger.Printf("provider session observation: ignore unowned Turn %s for Task %s", observation.ProviderTurnID, taskID)
-				return
-			}
-			server.observeProviderSession(taskID, continuationID, session.SessionID(), turnLineage, observation)
-		})
-	}
-	if source, ok := session.(runtime.ProviderSessionAttemptResultSource); ok {
-		source.SetAttemptResultSink(func(result runtime.ProviderSessionAttemptResult) {
-			server.acceptBlackboardConclusionResult(taskID, result)
-		})
-		source.SetAttemptResultValidationFailureSink(func(failure runtime.ProviderSessionAttemptResultValidationFailure) {
-			server.acceptBlackboardConclusionValidationFailure(taskID, failure)
-		})
-	}
 	server.triggerAcceptedSteeringDispatch(taskSteeringAdapter(server, taskID, server.taskConclusionSettlementForID(taskID)))
 	return nil
 }
@@ -159,14 +133,8 @@ func (server *Server) BindProviderSession(taskID string, session runtime.Provide
 // Non-Project Session. The same provider event contract is used, but the
 // durable owner and current continuation are Session identities.
 func (server *Server) BindSessionProviderSession(sessionID string, providerSession runtime.ProviderSession) error {
-	found, err := server.sessions.Get(sessionID)
-	if err != nil {
+	if _, err := server.sessions.Get(sessionID); err != nil {
 		return err
-	}
-	if found.RunControls.BlackboardConclusionMode == session.BlackboardConclusionModeAssisted {
-		if err := validateAssistedConclusionProviderSession(providerSession); err != nil {
-			return err
-		}
 	}
 	if err := server.sessionProviderSessions.bind(sessionID, providerSession); err != nil {
 		return err
@@ -176,49 +144,7 @@ func (server *Server) BindSessionProviderSession(sessionID string, providerSessi
 			server.persistSessionProviderSessionEvent(sessionID, kind, payload)
 		})
 	}
-	if source, ok := providerSession.(runtime.ProviderSessionObservationSink); ok {
-		lineage, lineageOK := providerSession.(runtime.ProviderSessionCompleteTurnLineageResolver)
-		source.SetObservationSink(func(observation runtime.ProviderSessionObservation) {
-			if !lineageOK {
-				return
-			}
-			turnLineage, resolved := lineage.ResolveProviderSessionTurnLineage(observation.RequestID, observation.ProviderTurnID)
-			if !resolved {
-				server.logger.Printf("provider session observation: ignore unowned Turn %s for Session %s", observation.ProviderTurnID, sessionID)
-				return
-			}
-			continuationID := ""
-			if active, activeErr := server.sessions.ActiveContinuation(sessionID); activeErr == nil && active != nil {
-				continuationID = active.ID
-			}
-			server.observeSessionProviderSession(sessionID, continuationID, providerSession.SessionID(), turnLineage, observation)
-		})
-	}
-	if source, ok := providerSession.(runtime.ProviderSessionAttemptResultSource); ok {
-		source.SetAttemptResultSink(func(result runtime.ProviderSessionAttemptResult) {
-			server.acceptSessionBlackboardConclusionResult(sessionID, result)
-		})
-		source.SetAttemptResultValidationFailureSink(func(failure runtime.ProviderSessionAttemptResultValidationFailure) {
-			server.acceptSessionBlackboardConclusionValidationFailure(sessionID, failure)
-		})
-	}
 	server.triggerAcceptedSteeringDispatch(sessionSteeringAdapter(server, sessionID, server.sessionConclusionSettlementForID(sessionID)))
-	return nil
-}
-
-func validateAssistedConclusionProviderSession(providerSession runtime.ProviderSession) error {
-	if providerSession == nil || !providerSession.Capabilities().AssistedConclusion {
-		return errAssistedConclusionUnsupported
-	}
-	if _, ok := providerSession.(runtime.ProviderSessionObservationSink); !ok {
-		return errAssistedConclusionUnsupported
-	}
-	if _, ok := providerSession.(runtime.ProviderSessionCompleteTurnLineageResolver); !ok {
-		return errAssistedConclusionUnsupported
-	}
-	if _, ok := providerSession.(runtime.ProviderSessionAttemptResultSource); !ok {
-		return errAssistedConclusionUnsupported
-	}
 	return nil
 }
 
@@ -313,26 +239,17 @@ func (server *Server) persistProviderSessionEvent(taskID string, kind task.Event
 }
 
 func (server *Server) closeProviderSession(taskID string) error {
-	err := server.providerSessions.closeTask(context.Background(), taskID)
-	if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
-		server.blackboardConclusions.DeleteOwner(taskID)
-	}
-	return err
+	return server.providerSessions.closeTask(context.Background(), taskID)
 }
 
 func (server *Server) closeSessionProviderSession(sessionID string) error {
-	err := server.sessionProviderSessions.closeTask(context.Background(), sessionID)
-	if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
-		server.blackboardConclusions.DeleteOwner(sessionID)
-	}
-	return err
+	return server.sessionProviderSessions.closeTask(context.Background(), sessionID)
 }
 
 func (server *Server) closeSessionProviderSessionForStop(ctx context.Context, sessionID string) error {
 	for {
 		err := server.sessionProviderSessions.closeTask(ctx, sessionID)
 		if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
-			server.blackboardConclusions.DeleteOwner(sessionID)
 			return nil
 		}
 		if !errors.Is(err, runtime.ErrProviderSessionControlConflict) {
@@ -352,7 +269,6 @@ func (server *Server) closeProviderSessionForStop(ctx context.Context, taskID st
 	for {
 		err := server.providerSessions.closeTask(ctx, taskID)
 		if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
-			server.blackboardConclusions.DeleteOwner(taskID)
 			return nil
 		}
 		if !errors.Is(err, runtime.ErrProviderSessionControlConflict) {

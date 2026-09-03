@@ -7,7 +7,6 @@ These documents define CyberPenda, a local-first pentest agent, from product int
 - [Product Requirements](./product/prd.md): what the product must do and why.
 - [MVP Scope](./product/mvp.md): what the first usable release includes, excludes, and must prove.
 - [Implementation Plan](./product/implementation-plan.md): historical MVP build order and acceptance record.
-- [Assisted Blackboard live validation](./product/assisted-blackboard-validation.md): run and interpret the manual-style Juice Shop Harness acceptance test.
 
 ## Supporting Context
 

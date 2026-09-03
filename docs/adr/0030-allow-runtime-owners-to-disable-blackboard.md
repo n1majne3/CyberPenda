@@ -1,6 +1,6 @@
 # Allow Runtime Owners to disable Blackboard
 
-CyberPenda supports an immutable **Blackboard Mode** of `interactive`, `assisted`, or `disabled` for Project Tasks and Non-Project Sessions, while keeping `interactive` as the default. A **Reason Task** cannot use `disabled` because its fixed planning goal requires the complete **Runtime Blackboard Snapshot**. Disabled mode exists for operators who prefer the Runtime to trace its own work in ordinary workdir files instead of paying the context and workflow cost of Blackboard integration.
+This decision is superseded by [ADR 0032](0032-replace-assisted-blackboard-with-working-graph.md). The current immutable **Blackboard Mode** values are `interactive`, `working_graph`, and `disabled`.
 
 ## Considered options
 

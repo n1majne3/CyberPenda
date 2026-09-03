@@ -97,6 +97,11 @@ func TestHostedControllerStartsOneCodexEvaluationAndOnlyObservesIt(t *testing.T)
 	if evaluation.Task.Goal != hostedcontroller.HostedTaskGoal {
 		t.Fatalf("Task Goal = %q", evaluation.Task.Goal)
 	}
+	modeSkill := strings.Index(evaluation.Task.Goal, "`cyberpenda-blackboard-disabled`")
+	orchestrator := strings.Index(evaluation.Task.Goal, "`ctf-orchestrator`")
+	if modeSkill < 0 || orchestrator < 0 || modeSkill >= orchestrator {
+		t.Fatalf("Hosted Task Goal does not invoke disabled Mode Skill before orchestrator: %q", evaluation.Task.Goal)
+	}
 	if evaluation.Runtime.ReasoningEffort != "" {
 		t.Fatalf("missing Reasoning Effort should stay empty, got %q", evaluation.Runtime.ReasoningEffort)
 	}
