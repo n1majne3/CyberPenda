@@ -31,9 +31,9 @@ import {
   itemFilterKey,
 } from "./timeline-utils";
 
-// Uniform row-height estimate matching the contain-intrinsic-size hint on the
-// rendered rows; the virtualized window uses it to bound DOM size while older
-// pages accumulate (#202).
+// Uniform row-height estimate used by the virtualized window to bound DOM
+// size while older pages accumulate (#202). Rows render with real layout so
+// the window's measured coverage pass sees true heights.
 const TIMELINE_ROW_ESTIMATE = 48;
 // Distance from the tail (in px) below which the operator is "at the tail".
 const TAIL_THRESHOLD = 48;
@@ -72,6 +72,9 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
   const [sortDirection, setSortDirection] = useState<TranscriptSortDirection>("newest_first");
   const [filterOpen, setFilterOpen] = useState(false);
   const [scrollContainer, setScrollContainer] = useState<HTMLDivElement | null>(null);
+  // The element wrapping exactly the rendered rows; the virtual window
+  // measures it so the rows always cover the viewport (#blank band).
+  const [rowsElement, setRowsElement] = useState<HTMLDivElement | null>(null);
   const eventRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const filterRef = useRef<HTMLDivElement>(null);
   const atTailRef = useRef(true);
@@ -101,6 +104,11 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
     itemCount: displayItems.length,
     viewport: scrollContainer,
     estimateHeight: TIMELINE_ROW_ESTIMATE,
+    windowElement: rowsElement,
+    rowKey: (index) => {
+      const item = displayItems[index];
+      return item === undefined ? "" : item.id ?? `seq-${item.seq}`;
+    },
   });
   const visibleItems = displayWindow.virtualized
     ? displayItems.slice(displayWindow.startIndex, displayWindow.endIndex)
@@ -256,7 +264,7 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
     <div
       ref={setScrollContainer}
       data-testid="timeline-workspace"
-      className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain rounded-lg border border-border bg-card"
+      className="flex h-full min-h-0 flex-col overflow-y-auto overscroll-contain rounded-lg border border-border bg-card [overflow-anchor:none]"
     >
       <div className="shrink-0 space-y-2 border-b px-4 py-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
@@ -374,22 +382,25 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
             )}
           </div>
         ) : (
-          <div className="divide-y">
+          <div>
             {sortDirection === "chronological" && footer}
             {displayWindow.spacerBefore > 0 && (
               <div aria-hidden="true" style={{ height: displayWindow.spacerBefore }} />
             )}
-            {visibleItems.map((item, visibleIndex) => (
-              <TranscriptEventRow
-                key={`${item.id ?? `${item.seq}-${visibleIndex}`}-${item.type === "reasoning" ? item.status ?? "" : ""}`}
-                ref={(el) => {
-                  if (el) eventRefs.current.set(item.seq, el);
-                  else eventRefs.current.delete(item.seq);
-                }}
-                item={item}
-                isSelected={selectedSeq === item.seq}
-              />
-            ))}
+            <div ref={setRowsElement} data-testid="timeline-rows" className="divide-y">
+              {visibleItems.map((item, visibleIndex) => (
+                <TranscriptEventRow
+                  key={`${item.id ?? `${item.seq}-${visibleIndex}`}-${item.type === "reasoning" ? item.status ?? "" : ""}`}
+                  vwKey={item.id ?? `seq-${item.seq}`}
+                  ref={(el) => {
+                    if (el) eventRefs.current.set(item.seq, el);
+                    else eventRefs.current.delete(item.seq);
+                  }}
+                  item={item}
+                  isSelected={selectedSeq === item.seq}
+                />
+              ))}
+            </div>
             {displayWindow.spacerAfter > 0 && (
               <div aria-hidden="true" style={{ height: displayWindow.spacerAfter }} />
             )}
@@ -551,10 +562,12 @@ function TimelineBar({
 
 function TranscriptEventRow({
   ref,
+  vwKey,
   item,
   isSelected,
 }: {
   ref?: React.Ref<HTMLDivElement>;
+  vwKey: string;
   item: TimelineItem;
   isSelected: boolean;
 }) {
@@ -575,9 +588,10 @@ function TranscriptEventRow({
   return (
     <div
       ref={ref}
+      data-vw-key={vwKey}
       data-testid="transcript-event-row"
       className={cn(
-        "group [contain-intrinsic-size:48px] [content-visibility:auto] transition-colors",
+        "group transition-colors",
         isSelected && "bg-accent/50",
       )}
     >

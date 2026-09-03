@@ -24,7 +24,9 @@ import { emptyHistory, type ConversationSendMode, type OwnerHistory, type Runtim
 const ACTIVE = new Set(["running", "paused"]);
 
 // Uniform row-height estimates used by the virtualized Runtime Owner history
-// lists; they match the contain-intrinsic-size hints on the rendered rows.
+// lists. The virtual window bounds DOM size, and its measured coverage pass
+// needs real row layout, so rows carry no content-visibility size hints that
+// would report phantom heights for offscreen rows.
 const TRANSCRIPT_ROW_ESTIMATE = 72;
 const TIMELINE_ROW_ESTIMATE = 48;
 
@@ -205,25 +207,19 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     commitHistory(next);
   }
 
-  // loadOlderConversation prepends one backward Transcript page and preserves
-  // the visible anchor by shifting the container by the prepended height.
+  // loadOlderConversation prepends one backward Transcript page. The virtual
+  // window measures the new rows and compensates scrollTop, so the reading
+  // position survives without a manual estimate-based shift.
   async function loadOlderConversation() {
     const current = historyRef.current;
     if (current.loadingOlder !== null || current.transcript.length === 0 || !current.transcriptHasOlder) return;
     const before = current.transcript[0]!.seq;
-    const anchor = conversationViewport.current?.scrollTop ?? 0;
     commitHistory({ ...current, loadingOlder: "transcript" });
     try {
       const page = await ownerAdapter.loadOlderTranscript(before);
       const latest = historyRef.current;
       const merged = prependTranscriptEntries(latest.transcript, page.entries ?? []);
-      const prepended = merged.length - latest.transcript.length;
-      const next: OwnerHistory = { ...latest, transcript: merged, transcriptHasOlder: page.has_older === true, loadingOlder: null };
-      flushSync(() => commitHistory(next));
-      const viewport = conversationViewport.current;
-      if (viewport && prepended > 0) {
-        viewport.scrollTop = anchor + prepended * TRANSCRIPT_ROW_ESTIMATE;
-      }
+      commitHistory({ ...latest, transcript: merged, transcriptHasOlder: page.has_older === true, loadingOlder: null });
     } catch (e) {
       commitHistory({ ...historyRef.current, loadingOlder: null });
       setActionError((e as Error).message);
@@ -431,11 +427,19 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   // container element is stored in state so the hook attaches its scroll
   // listener once the workspace renders after the owner loads.
   const [transcriptViewport, setTranscriptViewport] = useState<HTMLDivElement | null>(null);
+  // The element wrapping exactly the rendered transcript rows; the virtual
+  // window measures it so the rows always cover the viewport (#blank band).
+  const [transcriptRowsElement, setTranscriptRowsElement] = useState<HTMLDivElement | null>(null);
+  // The window slices display rows (tool results already paired with their
+  // calls), so row keys and measured heights match the rendered DOM 1:1.
+  const transcriptDisplayRows = buildTranscriptRows(history.transcript);
   const transcriptWindow = useVirtualWindow({
-    itemCount: history.transcript.length,
+    itemCount: transcriptDisplayRows.length,
     viewport: transcriptViewport,
     estimateHeight: TRANSCRIPT_ROW_ESTIMATE,
     anchorEnd: autoFollow,
+    windowElement: transcriptRowsElement,
+    rowKey: (index) => transcriptDisplayRows[index]!.entry.id,
   });
   const bindTranscriptViewport = useCallback((node: HTMLDivElement | null) => {
     conversationViewport.current = node;
@@ -443,6 +447,9 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       node.scrollTop = conversationScrollTop.current;
     }
     setTranscriptViewport(node);
+  }, []);
+  const bindTranscriptRows = useCallback((node: HTMLDivElement | null) => {
+    setTranscriptRowsElement(node);
   }, []);
 
   const currentProfileRuntimeProvider = owner?.runtimeConfiguration?.runtime_plugin_id ?? profiles.find((profile) => profile.id === owner?.runtimeProfileID)?.provider;
@@ -1022,7 +1029,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           <div
             ref={bindTranscriptViewport}
             data-testid="conversation-workspace"
-            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 pt-3 pb-44 sm:px-6 md:pb-5"
+            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 pt-3 pb-44 sm:px-6 md:pb-5 [overflow-anchor:none]"
           >
             <div className="mx-auto max-w-[860px]">
               {history.transcriptHasOlder && (
@@ -1047,7 +1054,8 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
                 <div aria-hidden="true" data-testid="transcript-spacer-before" style={{ height: transcriptWindow.spacerBefore }} />
               )}
               <TranscriptList
-                entries={history.transcript.slice(transcriptWindow.startIndex, transcriptWindow.endIndex)}
+                rows={transcriptDisplayRows.slice(transcriptWindow.startIndex, transcriptWindow.endIndex)}
+                rowsRef={bindTranscriptRows}
                 endRef={conversationEnd}
                 liveReasoningID={liveReasoningEntryID(
                   history.transcript,
@@ -1707,26 +1715,28 @@ type TranscriptDisplayRow = {
 };
 
 function TranscriptList({
-  entries,
+  rows,
+  rowsRef,
   endRef,
   liveReasoningID,
   runtimeLabel,
 }: {
-  entries: TaskTranscriptEntry[];
+  rows: TranscriptDisplayRow[];
+  rowsRef: (node: HTMLDivElement | null) => void;
   endRef: RefObject<HTMLDivElement | null>;
   liveReasoningID?: string;
   runtimeLabel: string;
 }) {
-  const rows = buildTranscriptRows(entries);
   return (
-    <div>
+    <div ref={rowsRef} data-testid="transcript-rows">
       {rows.map((row, index) => {
         const spacing = index === 0 ? "" : row.lane === "user" && row.laneStart ? "mt-4" : "mt-1";
         return (
           <div
             key={row.entry.id}
+            data-vw-key={row.entry.id}
             data-testid="transcript-row"
-            className={`[contain-intrinsic-size:72px] [content-visibility:auto] ${spacing}`}
+            className={`${spacing}`}
           >
             {row.lane === "divider" ? (
               <TranscriptRow entry={row.entry} />
@@ -1747,7 +1757,7 @@ function TranscriptList({
           </div>
         );
       })}
-      {entries.length === 0 && (
+      {rows.length === 0 && (
         <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-sm text-muted-foreground">
           <MessageSquare className="size-5 opacity-50" aria-hidden="true" />
           <p>No transcript yet. Send a message below to start.</p>
