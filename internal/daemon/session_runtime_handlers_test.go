@@ -838,6 +838,13 @@ func TestSessionRuntimeRecoveryFailsClosedAcrossDaemonRestart(t *testing.T) {
 	if !recoveryEvent {
 		t.Fatalf("restart did not record Session recovery event: %#v", events)
 	}
+	decorated, err := restarted.decorateSession(created)
+	if err != nil {
+		t.Fatalf("decorate recovered Session: %v", err)
+	}
+	if !decorated.RuntimeControls.QueueSteerAvailable {
+		t.Fatal("recovered Session does not allow the message that starts its replacement Runtime")
+	}
 }
 
 func TestSessionRestartCarriesNativeProviderIdentityIntoTheNewContinuation(t *testing.T) {
