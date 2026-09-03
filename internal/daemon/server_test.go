@@ -13,6 +13,7 @@ import (
 
 	"pentest/internal/daemon"
 	"pentest/internal/project"
+	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
 	"pentest/internal/task"
 )
@@ -498,12 +499,21 @@ func TestNewServerReconcilesGhostTasksOnRestart(t *testing.T) {
 		t.Fatalf("first NewServer: %v", err)
 	}
 	projectID := createProject(t, first, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
-	profileID := createRuntimeProfile(t, first, `{"name":"Fake","provider":"fake"}`)
+	binary := filepath.Join(t.TempDir(), "ghost-runtime")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\necho ghost-runtime-started\nexec sleep 30\n"), 0o700); err != nil {
+		t.Fatalf("write ghost Runtime: %v", err)
+	}
+	profileID := createLocalRuntimeProfile(t, first, "Ghost Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+		BinaryPath: binary,
+		Model:      "gpt-test",
+	})
 	taskID := createTask(t, first, projectID, `{
 		"type":"pentest","goal":"enumerate example.com",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
-		"runner":"sandbox"
+		"runner":"host",
+		"run_controls":{"host_activated":true}
 	}`)
+	waitForEventText(t, first, projectID, taskID, "ghost-runtime-started")
 	if err := first.Close(); err != nil {
 		t.Fatalf("close first: %v", err)
 	}

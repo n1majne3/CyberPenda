@@ -353,6 +353,7 @@ func TestAssistedConclusionRegeneratesOnceAfterConcurrentContinuationAdvancesPro
 		}
 	}
 	waitForAssistedProviderRequests(t, session, 2)
+	waitForBlackboardConclusionReceiptState(t, server, created.ID, task.BlackboardConclusionReceiptAwaitingResult)
 	concludeRequest := session.LastRequests()[1]
 
 	peerRevision := advanceProjectFromPeerContinuation(t, server, projectID, profileID)
@@ -361,6 +362,7 @@ func TestAssistedConclusionRegeneratesOnceAfterConcurrentContinuationAdvancesPro
 		t.Fatal(err)
 	}
 	waitForAssistedProviderRequests(t, session, 3)
+	waitForBlackboardConclusionReceiptState(t, server, created.ID, task.BlackboardConclusionReceiptAwaitingResult)
 
 	regenerateRequest := session.LastRequests()[2]
 	if regenerateRequest.RequestID == concludeRequest.RequestID || !strings.Contains(regenerateRequest.RequestID, "version") {
@@ -436,11 +438,13 @@ func TestAssistedConclusionSecondProjectRevisionConflictRequiresAction(t *testin
 		}
 	}
 	waitForAssistedProviderRequests(t, session, 2)
+	waitForBlackboardConclusionReceiptState(t, server, created.ID, task.BlackboardConclusionReceiptAwaitingResult)
 	firstPeerRevision := advanceProjectFromPeerContinuation(t, server, projectID, profileID)
 	if err := emitAttemptResultAndComplete(t, session, []byte(assistedAttemptResultJSON(0, "attempt:second-version-conflict", "objective:second-version-conflict"))); err != nil {
 		t.Fatal(err)
 	}
 	waitForAssistedProviderRequests(t, session, 3)
+	waitForBlackboardConclusionReceiptState(t, server, created.ID, task.BlackboardConclusionReceiptAwaitingResult)
 	secondPeerRevision := advanceProjectFromPeerContinuation(t, server, projectID, profileID)
 	if secondPeerRevision <= firstPeerRevision {
 		t.Fatalf("second peer revision = %d after %d", secondPeerRevision, firstPeerRevision)

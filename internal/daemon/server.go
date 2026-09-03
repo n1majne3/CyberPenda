@@ -140,6 +140,9 @@ type Server struct {
 	providerControlCtx      context.Context
 	providerControlCancel   context.CancelFunc
 	providerControlWG       sync.WaitGroup
+	runtimeLaunchCtx        context.Context
+	runtimeLaunchCancel     context.CancelCauseFunc
+	runtimeLaunchWG         sync.WaitGroup
 	providerTaskContexts    map[string]context.Context
 	providerTaskCancels     map[string]context.CancelFunc
 	activeProviderControls  map[string]bool
@@ -277,6 +280,7 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	providerControlCtx, providerControlCancel := context.WithCancel(context.Background())
+	runtimeLaunchCtx, runtimeLaunchCancel := context.WithCancelCause(context.Background())
 	modelRefreshClient := config.ModelRefreshClient
 	if modelRefreshClient == nil {
 		modelRefreshClient = modelprovider.NewCatalogHTTPClient()
@@ -319,6 +323,8 @@ func NewServer(config Config) (*Server, error) {
 		activeControls:          map[string]bool{},
 		providerControlCtx:      providerControlCtx,
 		providerControlCancel:   providerControlCancel,
+		runtimeLaunchCtx:        runtimeLaunchCtx,
+		runtimeLaunchCancel:     runtimeLaunchCancel,
 		providerTaskContexts:    map[string]context.Context{},
 		providerTaskCancels:     map[string]context.CancelFunc{},
 		activeProviderControls:  map[string]bool{},
@@ -679,30 +685,36 @@ func (server *Server) Close() error {
 	server.controlMu.Lock()
 	server.closing = true
 	server.providerControlCancel()
+	server.runtimeLaunchCancel(runtime.ErrHarnessShutdown)
 	server.controlMu.Unlock()
 	server.providerControlWG.Wait()
-	var sessionRuns []session.Session
-	if server.sessions != nil && server.sessionHarness != nil {
-		var listErr error
-		sessionRuns, listErr = server.sessions.List(session.LifecycleOpen)
-		if listErr != nil && !strings.Contains(strings.ToLower(listErr.Error()), "database is closed") {
-			server.logger.Printf("Session Runtime shutdown: failed to list open Sessions: %v", listErr)
-		}
-		for _, found := range sessionRuns {
-			server.sessionHarness.Stop(found.ID)
-		}
+	var err error
+	taskRunsStopped := server.harness == nil || server.harness.ShutdownAllAndWait(server.runtimeStopTimeout)
+	if !taskRunsStopped {
+		err = fmt.Errorf("Task Runtime shutdown timed out")
 	}
-	err := server.providerSessions.closeAll(context.Background())
+	sessionRunsStopped := server.sessionHarness == nil || server.sessionHarness.ShutdownAllAndWait(server.runtimeStopTimeout)
+	if !sessionRunsStopped && err == nil {
+		err = fmt.Errorf("Session Runtime shutdown timed out")
+	}
+	if providerErr := server.providerSessions.closeAll(context.Background()); err == nil {
+		err = providerErr
+	}
 	if sessionErr := server.sessionProviderSessions.closeAll(context.Background()); err == nil {
 		err = sessionErr
 	}
-	if server.sessionHarness != nil {
-		deadline := time.Now().Add(server.runtimeStopTimeout)
-		for _, found := range sessionRuns {
-			if !server.sessionHarness.StopAndWait(found.ID, time.Until(deadline)) && err == nil {
-				err = fmt.Errorf("Session Runtime shutdown timed out for %s", found.ID)
-			}
-		}
+	if !taskRunsStopped && server.harness != nil {
+		taskRunsStopped = server.harness.ShutdownAllAndWait(server.runtimeStopTimeout)
+	}
+	if !sessionRunsStopped && server.sessionHarness != nil {
+		sessionRunsStopped = server.sessionHarness.ShutdownAllAndWait(server.runtimeStopTimeout)
+	}
+	launchesStopped := waitForRuntimeLaunches(&server.runtimeLaunchWG, server.runtimeStopTimeout)
+	if !launchesStopped && err == nil {
+		err = fmt.Errorf("Runtime launch shutdown timed out")
+	}
+	if !taskRunsStopped || !sessionRunsStopped || !launchesStopped {
+		return err
 	}
 	if dbErr := server.db.Close(); err == nil {
 		err = dbErr
@@ -713,6 +725,42 @@ func (server *Server) Close() error {
 		}
 	}
 	return err
+}
+
+var errServerClosing = errors.New("server is closing")
+
+func (server *Server) beginRuntimeLaunch() (context.Context, error) {
+	server.controlMu.Lock()
+	defer server.controlMu.Unlock()
+	if server.closing {
+		return nil, errServerClosing
+	}
+	server.runtimeLaunchWG.Add(1)
+	return server.runtimeLaunchCtx, nil
+}
+
+func waitForRuntimeLaunches(group *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(done)
+	}()
+	if timeout <= 0 {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 // authorized reports whether the request carries the configured auth token.

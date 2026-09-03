@@ -53,7 +53,7 @@ func (session *cancelableNativeSteerSession) SteerInTurn(ctx context.Context, _ 
 
 func TestStopCancelsTaskScopedNativeSteerWithoutAutoFinish(t *testing.T) {
 	var native *cancelableNativeSteerSession
-	server, projectID, profileID, _ := newAssistedConclusionFixtureAtWithDecorator(
+	server, projectID, profileID, session := newAssistedConclusionFixtureAtWithDecorator(
 		t, t.TempDir(), true, true,
 		func(fake *runtime.FakeProviderSession) runtime.ProviderSession {
 			native = &cancelableNativeSteerSession{
@@ -63,6 +63,7 @@ func TestStopCancelsTaskScopedNativeSteerWithoutAutoFinish(t *testing.T) {
 		},
 	)
 	created := launchConclusionTask(t, server, projectID, profileID, "assisted")
+	waitForAssistedProviderRequests(t, session, 1)
 
 	steer := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{"request_id":"cancel-me","message":"continue"}`))
 	steer.Header.Set("Content-Type", "application/json")

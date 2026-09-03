@@ -108,6 +108,9 @@ func (h *Harness) IsActive(taskID string) bool           { return h.core.IsActiv
 func (h *Harness) StopAndWait(taskID string, timeout time.Duration) bool {
 	return h.core.StopAndWait(taskID, timeout)
 }
+func (h *Harness) ShutdownAllAndWait(timeout time.Duration) bool {
+	return h.core.ShutdownAllAndWait(timeout)
+}
 func (h *Harness) RebindContinuation(taskID, continuationID string) error {
 	return h.core.RebindContinuation(taskID, continuationID)
 }
