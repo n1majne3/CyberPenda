@@ -617,7 +617,7 @@ The single system Skill projected and explicitly invoked for one Blackboard Mode
 _Avoid_: ordinary Skill toggle, mixed-mode instructions, Runtime Profile capability
 
 **Working Graph**:
-The Harness-defined file graph used in `working_graph` mode. It contains `state.md`, fact and data directories, goals, steps, a continuation-scoped Outbox, and continuation-scoped Receipts. It is Runtime working state, while the Blackboard remains the durable semantic source of truth.
+The Harness-defined file graph used in `working_graph` mode. It contains `state.md`, fact and data directories, goals, steps, a continuation-scoped Outbox, and continuation-scoped Receipts. The main Runtime is its implicit Decide process unless a selected orchestration Skill provides that role. It is Runtime working state, while the Blackboard remains the durable semantic source of truth.
 _Avoid_: Assisted Blackboard, transcript parser, direct Blackboard storage
 
 **Working Graph Intent**:
