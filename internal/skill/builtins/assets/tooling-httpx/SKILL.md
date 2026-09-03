@@ -76,7 +76,8 @@ Failure recovery:
 If uncertain, query web_search with:
 `site:docs.projectdiscovery.io httpx <flag> usage`
 
-Companion: `wafw00f <url>` fingerprints the WAF/CDN in front of a target
-(Cloudflare, Akamai, AWS WAF, etc.). Run it once after httpx confirms the
-host is live — the WAF identity decides whether to throttle fuzzing,
-swap to evasion payload sets, or assume blocking and route differently.
+Companion: `nuclei -u <url> -tags waf` fingerprints the WAF/CDN in front
+of a target (Cloudflare, Akamai, AWS WAF, etc.) using the bundled
+nuclei-templates. Run it once after httpx confirms the host is live — the
+WAF identity decides whether to throttle fuzzing, swap to evasion payload
+sets, or assume blocking and route differently.

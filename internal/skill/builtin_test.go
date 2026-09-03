@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -27,140 +28,40 @@ func TestBuiltinBundlesIncludeRequestedProjects(t *testing.T) {
 		byID[bundle.Metadata.ID] = bundle
 	}
 
-	assertBuiltinBundle(t, byID, "vulnerabilities-xss")
-	assertBuiltinBundle(t, byID, "scoreboard-driven-web-challenge")
-	assertBuiltinBundle(t, byID, "ctf-orchestrator")
-
-	// Vendored reverse-skill router and its methodology sub-skills.
-	for _, id := range []string{
-		"reverse-skill-router",
-		"api-security",
-		"apk-reverse",
-		"attack-chain",
-		"binary-diff",
-		"browser-automation",
-		"browser-extension-reverse",
-		"cloud-k8s",
-		"code-audit",
-		"database-security",
-		"diagram-generator",
-		"digital-forensics",
-		"docs-generator",
-		"dotnet-reverse",
-		"edr-bypass-re",
-		"email-security",
-		"firmware-pentest",
-		"ghidra-reverse",
-		"go-rust-reverse",
-		"hardware-security",
-		"ida-reverse",
-		"identity-federation",
-		"js-reverse",
-		"llm-security",
-		"macos-reverse",
-		"malware-analysis",
-		"mobile-reverse",
-		"ot-ics",
-		"patch-diff-exploit",
-		"pentest-tools",
-		"protocol-reverse",
-		"pwn-chain",
-		"radare2",
-		"radio-sdr",
-		"reverse-engineering",
-		"supply-chain-security",
-		"thick-client",
-		"threat-hunting",
-		"wifi-wireless",
-		"windows-ad",
-	} {
+	// The curated builtin set: sandbox tooling discipline the model cannot know
+	// from pretraining, the product-integrated scoreboard flow, and the
+	// operator-authored benchmark orchestration skill.
+	want := []string{
+		"scoreboard-driven-web-challenge",
+		"ctf-orchestrator",
+		"tooling-ffuf",
+		"tooling-httpx",
+		"tooling-katana",
+		"tooling-naabu",
+		"tooling-nmap",
+		"tooling-nuclei",
+		"tooling-sqlmap",
+		"tooling-subfinder",
+	}
+	for _, id := range want {
 		assertBuiltinBundle(t, byID, id)
 	}
-
-	// Vendored CTF-Sandbox-Orchestrator sub-skills.
-	for _, id := range []string{
-		"ctf-sandbox-orchestrator",
-		"competition-ad-certificate-abuse",
-		"competition-agent-cloud",
-		"competition-android-hooking",
-		"competition-browser-persistence",
-		"competition-bundle-sourcemap-recovery",
-		"competition-cloud-metadata-path",
-		"competition-container-runtime",
-		"competition-crypto-mobile",
-		"competition-custom-protocol-replay",
-		"competition-dpapi-credential-chain",
-		"competition-file-parser-chain",
-		"competition-firmware-layout",
-		"competition-forensic-timeline",
-		"competition-graphql-rpc-drift",
-		"competition-identity-windows",
-		"competition-ios-runtime",
-		"competition-jwt-claim-confusion",
-		"competition-k8s-control-plane",
-		"competition-kerberos-delegation",
-		"competition-kernel-container-escape",
-		"competition-linux-credential-pivot",
-		"competition-lsass-ticket-material",
-		"competition-mailbox-abuse",
-		"competition-malware-config",
-		"competition-oauth-oidc-chain",
-		"competition-pcap-protocol",
-		"competition-prompt-injection",
-		"competition-queue-worker-drift",
-		"competition-race-condition-state-drift",
-		"competition-relay-coercion-chain",
-		"competition-request-normalization-smuggling",
-		"competition-reverse-pwn",
-		"competition-runtime-routing",
-		"competition-ssrf-metadata-pivot",
-		"competition-stego-media",
-		"competition-supply-chain",
-		"competition-template-render-path",
-		"competition-web-runtime",
-		"competition-websocket-runtime",
-		"competition-windows-pivot",
-	} {
-		assertBuiltinBundle(t, byID, id)
+	wantSet := map[string]bool{}
+	for _, id := range want {
+		wantSet[id] = true
 	}
-
-	for _, prunedID := range []string{
-		"api-security-testing",
-		"cloud-kubernetes",
-		"cloud-security-audit",
-		"container-security-testing",
-		"cyberstrike-eino-demo",
-		"deserialization-testing",
-		"ldap-injection-testing",
-		"mobile-app-security-testing",
-		"network-penetration-testing",
-		"security-awareness-training",
-		"incident-response",
-		"security-automation",
-		"coordination-root-agent",
-		"scan-modes-quick",
-		"scan-modes-standard",
-		"scan-modes-deep",
-		"tooling-agent-browser",
-		"tooling-python",
-		"sql-injection-testing",
-		"xss-testing",
-		"ssrf-testing",
-		"csrf-testing",
-		"idor-testing",
-		"file-upload-testing",
-		"business-logic-testing",
-		"command-injection-testing",
-		"secure-code-review",
-		"vulnerability-assessment",
-		"xpath-injection-testing",
-		"xxe-testing",
-		"cyberstrikeai-api-security-testing",
-		"strix-vulnerabilities-xss",
-	} {
-		if _, ok := byID[prunedID]; ok {
-			t.Fatalf("pruned builtin skill %q should not be bundled", prunedID)
+	extra := []string{}
+	for id := range byID {
+		if !wantSet[id] {
+			extra = append(extra, id)
 		}
+	}
+	if len(extra) > 0 {
+		sort.Strings(extra)
+		t.Fatalf("builtin bundle set should contain exactly %d bundles; unexpected extras: %v", len(want), extra)
+	}
+	if len(byID) != len(want) {
+		t.Fatalf("builtin bundle set should contain exactly %d bundles, got %d", len(want), len(byID))
 	}
 }
 
@@ -201,7 +102,7 @@ func TestInstallBuiltinSkillsSeedsMissingBundlesWithoutOverwritingUserEdits(t *t
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("install builtins: %v", err)
 	}
-	seeded, err := svc.Get("vulnerabilities-xss")
+	seeded, err := svc.Get("tooling-nmap")
 	if err != nil {
 		t.Fatalf("get seeded builtin: %v", err)
 	}
@@ -210,7 +111,7 @@ func TestInstallBuiltinSkillsSeedsMissingBundlesWithoutOverwritingUserEdits(t *t
 	}
 
 	if _, err := svc.Publish(ctx, skill.PublishRequest{
-		Metadata: skill.Metadata{ID: "vulnerabilities-xss", Name: "User Edited XSS"},
+		Metadata: skill.Metadata{ID: "tooling-nmap", Name: "User Edited XSS"},
 		Files:    map[string]string{"SKILL.md": "# user edit"},
 	}); err != nil {
 		t.Fatalf("user edit builtin skill: %v", err)
@@ -218,7 +119,7 @@ func TestInstallBuiltinSkillsSeedsMissingBundlesWithoutOverwritingUserEdits(t *t
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("reinstall builtins: %v", err)
 	}
-	files, err := svc.Files("vulnerabilities-xss")
+	files, err := svc.Files("tooling-nmap")
 	if err != nil {
 		t.Fatalf("read edited builtin files: %v", err)
 	}
@@ -232,12 +133,12 @@ func TestInstallBuiltinSkillsSanitizesOldBuiltinSourceDetails(t *testing.T) {
 	skillsRoot := filepath.Join(t.TempDir(), "skills")
 	svc := skill.NewService(db, skillsRoot)
 	ctx := context.Background()
-	expected := builtinBundleByID(t, "vulnerabilities-xss").Metadata
+	expected := builtinBundleByID(t, "tooling-nmap").Metadata
 
 	if _, err := svc.Publish(ctx, skill.PublishRequest{
 		Metadata: skill.Metadata{
-			ID:          "cyberstrikeai-vulnerabilities-xss",
-			Name:        "cyberstrikeai-vulnerabilities-xss",
+			ID:          "cyberstrikeai-tooling-nmap",
+			Name:        "cyberstrikeai-tooling-nmap",
 			Description: "XSS testing",
 			Source: skill.SourceProvenance{
 				Kind:      "builtin",
@@ -257,11 +158,11 @@ func TestInstallBuiltinSkillsSanitizesOldBuiltinSourceDetails(t *testing.T) {
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("install builtins: %v", err)
 	}
-	got, err := svc.Get("vulnerabilities-xss")
+	got, err := svc.Get("tooling-nmap")
 	if err != nil {
 		t.Fatalf("get sanitized builtin: %v", err)
 	}
-	if _, err := svc.Get("cyberstrikeai-vulnerabilities-xss"); err == nil {
+	if _, err := svc.Get("cyberstrikeai-tooling-nmap"); err == nil {
 		t.Fatalf("expected legacy source-prefixed builtin ID to be removed")
 	}
 	if got.Source.Kind != "builtin" || got.Source.Package != "" || got.Source.Ref != "" || got.Source.SourceURL != "" {
@@ -270,17 +171,17 @@ func TestInstallBuiltinSkillsSanitizesOldBuiltinSourceDetails(t *testing.T) {
 	if got.Name != expected.Name || got.Description != expected.Description {
 		t.Fatalf("expected builtin metadata to be refreshed from embedded bundle, got name=%q description=%q", got.Name, got.Description)
 	}
-	files, err := svc.Files("vulnerabilities-xss")
+	files, err := svc.Files("tooling-nmap")
 	if err != nil {
 		t.Fatalf("read sanitized files: %v", err)
 	}
 	if files["SKILL.md"] != "# user edit" {
 		t.Fatalf("sanitize overwrote user edit: %q", files["SKILL.md"])
 	}
-	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "cyberstrikeai-vulnerabilities-xss")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "cyberstrikeai-tooling-nmap")); !os.IsNotExist(err) {
 		t.Fatalf("expected legacy source-prefixed bundle folder to be removed, stat err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "vulnerabilities-xss", "SKILL.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "tooling-nmap", "SKILL.md")); err != nil {
 		t.Fatalf("expected source-free builtin bundle folder, stat err=%v", err)
 	}
 	if _, ok := files["UPSTREAM.md"]; ok {
@@ -303,7 +204,7 @@ func builtinBundleByID(t *testing.T, id string) skill.ImportedBundle {
 	return skill.ImportedBundle{}
 }
 
-func TestInstallBuiltinSkillsPurgesSupersededPrunedLegacyIDs(t *testing.T) {
+func TestInstallBuiltinSkillsPurgesRetiredVendoredBuiltinIDs(t *testing.T) {
 	db := openTestStore(t)
 	skillsRoot := filepath.Join(t.TempDir(), "skills")
 	svc := skill.NewService(db, skillsRoot)
@@ -315,46 +216,49 @@ func TestInstallBuiltinSkillsPurgesSupersededPrunedLegacyIDs(t *testing.T) {
 
 	if _, err := svc.Publish(ctx, skill.PublishRequest{
 		Metadata: skill.Metadata{
-			ID:     "cyberstrikeai-business-logic-testing",
+			ID:     "reverse-skill-router",
+			Name:   "reverse-skill-router",
+			Source: skill.SourceProvenance{Kind: "builtin"},
+		},
+		Files: map[string]string{"SKILL.md": "# vendored"},
+	}); err != nil {
+		t.Fatalf("publish retired vendored builtin: %v", err)
+	}
+	if err := svc.SetOptOut(profile.ID, "reverse-skill-router", true); err != nil {
+		t.Fatalf("set retired Profile Skill Opt-Out: %v", err)
+	}
+	if err := svc.SetGlobalOptOut("reverse-skill-router", true); err != nil {
+		t.Fatalf("set retired Global Skill Opt-Out: %v", err)
+	}
+	if _, err := svc.Publish(ctx, skill.PublishRequest{
+		Metadata: skill.Metadata{
+			ID:     "business-logic-testing",
 			Name:   "business-logic-testing",
 			Source: skill.SourceProvenance{Kind: "builtin"},
 		},
-		Files: map[string]string{"SKILL.md": "# legacy"},
+		Files: map[string]string{"SKILL.md": "# retired successor-less legacy"},
 	}); err != nil {
-		t.Fatalf("publish legacy builtin: %v", err)
+		t.Fatalf("publish retired successor-less legacy builtin: %v", err)
 	}
-	if err := svc.SetOptOut(profile.ID, "cyberstrikeai-business-logic-testing", true); err != nil {
-		t.Fatalf("set legacy Profile Skill Opt-Out: %v", err)
-	}
-	if err := svc.SetGlobalOptOut("cyberstrikeai-business-logic-testing", true); err != nil {
-		t.Fatalf("set legacy Global Skill Opt-Out: %v", err)
-	}
+
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("install builtins: %v", err)
 	}
-	if _, err := svc.Get("cyberstrikeai-business-logic-testing"); err == nil {
-		t.Fatal("expected superseded legacy builtin ID to be removed")
-	}
-	got, err := svc.Get("vulnerabilities-business-logic")
-	if err != nil {
-		t.Fatalf("get successor builtin: %v", err)
-	}
-	if got.Source.Kind != "builtin" {
-		t.Fatalf("unexpected successor provenance: %#v", got.Source)
-	}
-	if !got.GloballyOptedOut {
-		t.Fatal("expected successor builtin to preserve the legacy Global Skill Opt-Out")
-	}
-	if err := svc.SetGlobalOptOut("vulnerabilities-business-logic", false); err != nil {
-		t.Fatalf("remove successor Global Skill Opt-Out: %v", err)
+	for _, retiredID := range []string{"reverse-skill-router", "business-logic-testing"} {
+		if _, err := svc.Get(retiredID); err == nil {
+			t.Fatalf("expected retired builtin ID %q to be removed", retiredID)
+		}
+		if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", retiredID)); !os.IsNotExist(err) {
+			t.Fatalf("expected retired bundle folder %q to be removed, stat err=%v", retiredID, err)
+		}
 	}
 	enabled, err := svc.EnabledSkills(profile.ID)
 	if err != nil {
 		t.Fatalf("list enabled skills: %v", err)
 	}
-	for _, skillID := range enabled {
-		if skillID.ID == "vulnerabilities-business-logic" {
-			t.Fatal("expected successor builtin to remain opted out after legacy purge")
+	for _, enabledSkill := range enabled {
+		if enabledSkill.ID == "reverse-skill-router" || enabledSkill.ID == "business-logic-testing" {
+			t.Fatalf("expected retired builtin %q to stay out of enabled skills", enabledSkill.ID)
 		}
 	}
 }
@@ -437,12 +341,12 @@ func TestInstallBuiltinSkillsRepairsMissingBuiltinBundleFiles(t *testing.T) {
 	svc := skill.NewService(db, skillsRoot)
 	ctx := context.Background()
 
-	if err := os.MkdirAll(filepath.Join(skillsRoot, "bundles", "vulnerabilities-xss"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(skillsRoot, "bundles", "tooling-nmap"), 0o700); err != nil {
 		t.Fatalf("create stale bundle dir: %v", err)
 	}
 	if _, err := svc.Publish(ctx, skill.PublishRequest{
 		Metadata: skill.Metadata{
-			ID:     "vulnerabilities-xss",
+			ID:     "tooling-nmap",
 			Name:   "XSS",
 			Source: skill.SourceProvenance{Kind: "builtin"},
 		},
@@ -450,14 +354,14 @@ func TestInstallBuiltinSkillsRepairsMissingBuiltinBundleFiles(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("publish stale builtin: %v", err)
 	}
-	if err := os.RemoveAll(filepath.Join(skillsRoot, "bundles", "vulnerabilities-xss")); err != nil {
+	if err := os.RemoveAll(filepath.Join(skillsRoot, "bundles", "tooling-nmap")); err != nil {
 		t.Fatalf("remove stale bundle files: %v", err)
 	}
 
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("install builtins: %v", err)
 	}
-	files, err := svc.Files("vulnerabilities-xss")
+	files, err := svc.Files("tooling-nmap")
 	if err != nil {
 		t.Fatalf("expected missing builtin bundle files to be repaired: %v", err)
 	}

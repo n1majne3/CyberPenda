@@ -598,7 +598,7 @@ func postSkillArchive(t *testing.T, server http.Handler, filename string, archiv
 
 func TestSkillResponsesHideBuiltinSourceDetails(t *testing.T) {
 	server := newDaemon(t)
-	putSkill(t, server, "strix-vulnerabilities-xss", `{
+	putSkill(t, server, "strix-tooling-nmap", `{
 		"name":"XSS",
 		"source_provenance":{
 			"kind":"builtin",
@@ -636,7 +636,7 @@ func TestSkillResponsesHideBuiltinSourceDetails(t *testing.T) {
 		t.Fatalf("expected builtin source details hidden in list, got %#v", listed.Skills)
 	}
 
-	getReq := httptest.NewRequest(http.MethodGet, "/api/skills/strix-vulnerabilities-xss", nil)
+	getReq := httptest.NewRequest(http.MethodGet, "/api/skills/strix-tooling-nmap", nil)
 	getResp := httptest.NewRecorder()
 	server.ServeHTTP(getResp, getReq)
 	if getResp.Code != http.StatusOK {
@@ -692,7 +692,7 @@ func TestDaemonSeedsBuiltinSkills(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
 		t.Fatalf("decode builtin skills list: %v", err)
 	}
-	if !hasBuiltinSkill(listed.Skills, "vulnerabilities-xss") {
+	if !hasBuiltinSkill(listed.Skills, "tooling-nmap") {
 		t.Fatalf("expected Strix builtin skill, got %#v", listed.Skills)
 	}
 	if !hasBuiltinSkill(listed.Skills, "scoreboard-driven-web-challenge") {

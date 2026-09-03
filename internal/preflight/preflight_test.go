@@ -488,6 +488,48 @@ func TestRunFailsWhenEnabledSkillBundleIsMissing(t *testing.T) {
 	}
 }
 
+// CapturedSkillIDs come from a historical Runtime Configuration Snapshot.
+// Retired builtins must not block a resume: unavailable captured skills are
+// skipped, the skills check still passes, and the skip is visible in the
+// check detail.
+func TestRunSkipsUnavailableCapturedSkills(t *testing.T) {
+	svc := newTestServices(t)
+	skillsRoot := filepath.Join(t.TempDir(), "skills")
+	skills := skill.NewService(svc.db, skillsRoot)
+	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).
+		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry())
+	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	if _, err := skills.Publish(context.Background(), skill.PublishRequest{
+		Metadata: skill.Metadata{
+			ID:   "recon-helper",
+			Name: "Recon Helper",
+		},
+		Files: map[string]string{"SKILL.md": "# Recon"},
+	}); err != nil {
+		t.Fatalf("publish skill: %v", err)
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID,
+		ProjectID:        "p1",
+		CapturedSkillIDs: []string{"recon-helper", "reverse-skill-router", "vulnerabilities-xss"},
+	})
+	if !checkPassed(result, "skills") {
+		t.Fatalf("expected skills check to pass with unavailable captured skills skipped, got %#v", result.Checks)
+	}
+	if len(result.Skills) != 1 || result.Skills[0].ID != "recon-helper" {
+		t.Fatalf("expected only the surviving skill in the preview, got %#v", result.Skills)
+	}
+	for _, check := range result.Checks {
+		if check.Name == "skills" && !strings.Contains(check.Detail, "2 captured skill(s) unavailable and skipped") {
+			t.Fatalf("expected skip note in skills check detail, got %q", check.Detail)
+		}
+	}
+}
+
 func TestRunListsEnabledSkillsWithoutAddingCredentialRequirements(t *testing.T) {
 	if _, err := runner.DetectEngine(context.Background(), "docker", nil); err != nil {
 		// The test asserts an overall-passing preflight, which needs a live

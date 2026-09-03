@@ -75,13 +75,6 @@ Failure recovery:
 If uncertain, query web_search with:
 `site:docs.projectdiscovery.io katana <flag> usage`
 
-Complementary crawlers / JS endpoint extractors in the sandbox:
-- `gospider -s https://target.tld -d 3 -c 10 -t 20` — alternate crawler;
-  picks up things Katana misses on weird sites; use it as a second
-  pass when Katana output looks thin.
-- `~/tools/JS-Snooper/js_snooper.sh <domain>` and
-  `~/tools/jsniper.sh/jsniper.sh <domain>` — both take a bare domain and
-  run their own JS-file discovery internally (jsniper drives httpx +
-  katana + nuclei file templates). Reach for them when you want a quick
-  "find endpoints/keys/secrets in any JS this domain serves" sweep
-  without wiring it up yourself.
+For a JS-only sweep of a domain, run katana itself with `-jc` (JS crawl)
+and grep the collected scripts for endpoints, keys, and secrets; no other
+crawler or JS extractor is preinstalled in the sandbox.
