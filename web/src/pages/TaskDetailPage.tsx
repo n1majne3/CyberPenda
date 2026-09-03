@@ -18,10 +18,9 @@ import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 import { useVirtualWindow } from "@/lib/virtualWindow";
 import { taskRuntimeOwnerAdapter, sessionRuntimeOwnerAdapter, type RuntimeOwnerAdapter } from "@/lib/runtimeOwner/adapter";
 import { canPiNativeCrossProvider, conversationModeText, conversationQueueUnavailable, conversationSendLabel, newSteerRequestID, resolveConversationAction, resolveConversationSendMode, steerPendingState } from "@/lib/runtimeOwner/conversationKernel";
+import { ACTIVE_OWNER_STATUSES, statusWord } from "@/lib/runtimeOwner/status";
 import { cn } from "@/lib/utils";
 import { emptyHistory, type ConversationSendMode, type OwnerHistory, type RuntimeOwnerKind, type RuntimeOwnerView } from "@/lib/runtimeOwner/types";
-
-const ACTIVE = new Set(["running", "paused"]);
 
 // Uniform row-height estimates used by the virtualized Runtime Owner history
 // lists. The virtual window bounds DOM size, and its measured coverage pass
@@ -405,7 +404,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   // loadAll/owner are intentionally omitted.
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
-    if (!isVisible || !owner || !ACTIVE.has(owner.status)) return;
+    if (!isVisible || !owner || !ACTIVE_OWNER_STATUSES.has(owner.status)) return;
     const id = setInterval(() => void loadAll("poll"), 1000);
     return () => clearInterval(id);
   }, [owner?.status, isVisible]);
@@ -581,11 +580,11 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     try {
       const modelPayload = continuationModelPayload();
       const action = resolveConversationAction(owner, {
-        running: ACTIVE.has(owner.status),
+        running: ACTIVE_OWNER_STATUSES.has(owner.status),
         nativeSteerAvailable: owner.runtimeControls?.native_steer_available ?? false,
         interruptSteerAvailable: owner.runtimeControls?.interrupt_steer_available ?? false,
         queueSteerAvailable: owner.runtimeControls?.queue_steer_available ?? true,
-        resumeAvailable: owner.runtimeControls?.resume_available ?? !ACTIVE.has(owner.status),
+        resumeAvailable: owner.runtimeControls?.resume_available ?? !ACTIVE_OWNER_STATUSES.has(owner.status),
         nativeResumeAvailable: owner.runtimeControls?.native_resume_available ?? false,
         precedingProviderID: owner.runtimeControls?.turn_selection?.model_provider_id?.trim() ?? "",
         selectedProviderID: continuationModelProvider.trim(),
@@ -718,13 +717,13 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const currentContinuation = owner.activeContinuation ?? owner.latestContinuation;
   const controls = owner.runtimeControls;
   const nativeResumeAvailable = controls?.native_resume_available ?? Boolean(currentContinuation?.nativeSessionID);
-  const resumeAvailable = !ACTIVE.has(owner.status) || controls?.resume_available === true;
+  const resumeAvailable = !ACTIVE_OWNER_STATUSES.has(owner.status) || controls?.resume_available === true;
   const queueSteerAvailable = controls?.queue_steer_available ?? true;
   const interruptSteerAvailable = controls?.interrupt_steer_available ?? nativeResumeAvailable;
   const nativeSteerAvailable = controls?.native_steer_available ?? false;
   const nativeSteerMode = controls?.native_steer_mode;
   const providerPermissions = controls?.provider_permissions ?? [];
-  const running = ACTIVE.has(owner.status);
+  const running = ACTIVE_OWNER_STATUSES.has(owner.status);
   // Finish gate trusts server RuntimeControls only (live+idle already applied).
   const finishAvailable = controls?.finish_available === true;
   const sendMode: ConversationSendMode = owner.kind === "session" && owner.lifecycle !== "open"
@@ -961,7 +960,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
               owner={owner}
               items={history.timeline}
               profileName={profiles.find((p) => p.id === owner.runtimeProfileID)?.name}
-              isLive={ACTIVE.has(owner.status)}
+              isLive={ACTIVE_OWNER_STATUSES.has(owner.status)}
               scrollRef={timelineViewport}
               onAtTailChange={handleTimelineAtTail}
               onSortDirectionChange={handleTimelineSortDirection}
@@ -1537,7 +1536,7 @@ function StatusBadge({ status }: { status: string }) {
     status === "running" ? "success" :
     status === "failed" ? "danger" :
     status === "paused" || status === "interrupted" ? "warning" : "neutral";
-  const label = status ? status[0]!.toUpperCase() + status.slice(1) : "Unknown";
+  const label = status ? statusWord(status) : "Unknown";
   return <Chip variant={variant} dot className="shrink-0 whitespace-nowrap">{label}</Chip>;
 }
 

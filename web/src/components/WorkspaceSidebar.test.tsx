@@ -132,6 +132,8 @@ describe("WorkspaceSidebar", () => {
           return response({
             ...session("session-archived", "Archived session", "2026-08-01T00:00:00Z"),
             lifecycle: "archived",
+            // A stale active continuation must not change archived presentation.
+            latest_continuation: { status: "running" },
           });
         }
         return response({});
@@ -518,6 +520,54 @@ describe("WorkspaceSidebar", () => {
     }
   });
 
+  // #268: the fast-poll heuristic must count owners with an active durable
+  // continuation, not only rows already rendered busy, so a turn that starts on
+  // a live idle owner surfaces within about 3 seconds.
+  it("polls fast while an owner has an active continuation even when no row is busy", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/workspace/navigation") return response({ projects: [] });
+        if (url === "/api/sessions?limit=5") {
+          return response({
+            sessions: [{
+              ...session("session-running", "Running session", "2026-08-01T00:00:00Z"),
+              runtime_activity: { liveness: "live", turn_activity: "idle" },
+              latest_continuation: { status: "running" },
+            }],
+          });
+        }
+        return response({});
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(
+        <ThemeProvider>
+          <MemoryRouter>
+            <WorkspaceSidebar />
+          </MemoryRouter>
+        </ThemeProvider>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByRole("region", { name: /non-project/i })).toBeInTheDocument();
+      const callsAfterMount = fetchMock.mock.calls.length;
+
+      // The turn is idle, so no row renders busy — but the running
+      // continuation must keep the fast cadence (a poll inside the 2s window,
+      // well under the ~3s budget), not the 30s backoff.
+      await act(async () => {
+        vi.advanceTimersByTimeAsync(2500);
+      });
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterMount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("suspends polling entirely while the tab is hidden and resumes when it returns", async () => {
     vi.useFakeTimers();
     try {
@@ -876,6 +926,115 @@ describe("WorkspaceSidebar", () => {
     expect(nonProjectLink.parentElement).toHaveTextContent("Non-project2");
     const projectsLink = screen.getByRole("link", { name: /^projects$/i });
     expect(projectsLink.parentElement).toHaveTextContent("Projects3");
+  });
+
+  // #268: the sidebar status word is durable-first. While the owner's latest
+  // continuation is active the row shows the durable status word (matching the
+  // detail header's primary badge); the colored dot keeps encoding the Runtime
+  // Activity Indicator so no activity information is lost.
+  it("shows the durable status word for active continuations while the dot keeps encoding activity", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/workspace/navigation") return response({ projects: [] });
+        if (url === "/api/sessions?limit=5") {
+          return response({
+            sessions: [
+              {
+                ...session("session-running-idle", "Quiet session", "2026-08-01T00:00:00Z"),
+                runtime_activity: { liveness: "live", turn_activity: "idle" },
+                latest_continuation: { status: "running" },
+              },
+              {
+                ...session("session-running-busy", "Working session", "2026-07-31T00:00:00Z"),
+                runtime_activity: { liveness: "live", turn_activity: "busy" },
+                latest_continuation: { status: "running" },
+              },
+              {
+                ...session("session-paused", "Paused session", "2026-07-30T00:00:00Z"),
+                runtime_activity: { liveness: "live", turn_activity: "idle" },
+                latest_continuation: { status: "paused" },
+              },
+              {
+                ...session("session-orphaned", "Orphaned session", "2026-07-29T00:00:00Z"),
+                runtime_activity: { liveness: "orphaned" },
+              },
+              {
+                ...session("session-unknown", "Undetermined session", "2026-07-28T00:00:00Z"),
+                runtime_activity: { liveness: "unknown" },
+              },
+            ],
+          });
+        }
+        return response({});
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const nonProject = await screen.findByRole("region", { name: /non-project/i });
+
+    // Active continuation + idle turn: the word is the durable status, the dot
+    // still shows the idle Runtime Activity Indicator.
+    const runningIdle = await within(nonProject).findByRole("link", { name: /quiet session session conversation\. running\./i });
+    expect(runningIdle).toHaveTextContent("· Running");
+    expect(runningIdle).not.toHaveTextContent("Idle");
+    expect(within(runningIdle).getByRole("img", { name: "Runtime live idle" }).firstElementChild).toHaveClass("bg-info");
+
+    // Active continuation + busy turn: same durable word, busy dot.
+    const runningBusy = within(nonProject).getByRole("link", { name: /working session session conversation\. running\./i });
+    expect(runningBusy).toHaveTextContent("· Running");
+    expect(within(runningBusy).getByRole("img", { name: "Runtime busy" }).firstElementChild).toHaveClass("bg-success", "animate-pulse");
+
+    // Paused is an active continuation too: durable word, activity dot kept.
+    const paused = within(nonProject).getByRole("link", { name: /paused session session conversation\. paused\./i });
+    expect(paused).toHaveTextContent("· Paused");
+    expect(within(paused).getByRole("img", { name: "Runtime live idle" }).firstElementChild).toHaveClass("bg-info");
+
+    // Without an active continuation the activity wording is unchanged
+    // (offline → "Stopped" is pinned by the activity-dots test below).
+    expect(within(nonProject).getByRole("link", { name: /orphaned session session conversation\./i })).toHaveTextContent("· Unknown");
+    expect(within(nonProject).getByRole("link", { name: /undetermined session session conversation\./i })).toHaveTextContent("· Unknown");
+  });
+
+  it("labels task rows with the durable status word while their continuation is active", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/workspace/navigation")) {
+          return response({
+            projects: [
+              navigationSummary("project-active", "Active project", "2026-08-01T00:00:00Z", [
+                { ...task("task-running", "Probe task", "2026-08-01T00:00:00Z", { liveness: "live", turn_activity: "idle" }), status: "running" },
+              ]),
+            ],
+          });
+        }
+        if (url === "/api/sessions?limit=5") return response({ sessions: [] });
+        return response({});
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/projects/project-active/tasks/task-running"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const projectRegion = await screen.findByRole("region", { name: /active project/i });
+    expect(
+      await within(projectRegion).findByRole("link", { name: /probe task task conversation\. running\./i }),
+    ).toBeInTheDocument();
   });
 
   it("renders runtime activity as colored status dots with mockup state text", async () => {

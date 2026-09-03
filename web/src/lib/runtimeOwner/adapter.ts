@@ -11,6 +11,7 @@ import {
   type TaskTranscript,
 } from "@/lib/api";
 import { newPermissionRequestID } from "./ids";
+import { sessionContinuationStatus } from "./status";
 import type {
   ConversationSelection,
   OwnerHistory,
@@ -235,7 +236,7 @@ export function sessionAsRuntimeOwner(session: Session): RuntimeOwnerView {
   const active = session.active_continuation ? sessionContinuationAsRuntimeOwner(session.active_continuation) : undefined;
   const latest = session.latest_continuation ? sessionContinuationAsRuntimeOwner(session.latest_continuation) : active;
   const continuation = active ?? latest;
-  const status = session.lifecycle === "archived" ? "archived" : active?.status ?? latest?.status ?? "stopped";
+  const status = session.lifecycle === "archived" ? "archived" : sessionContinuationStatus(session) ?? "stopped";
   const controls = session.runtime_controls;
   return {
     kind: "session",
