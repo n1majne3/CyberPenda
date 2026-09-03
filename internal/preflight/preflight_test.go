@@ -615,6 +615,49 @@ func TestRunFailsWhenRequiredRuntimeLacksModelProvider(t *testing.T) {
 	}
 }
 
+func TestRunAcceptsCapturedModelProviderSnapshotWithGlobalCredentialBinding(t *testing.T) {
+	svc := newTestServices(t)
+	const apiKeyEnv = "PREFLIGHT_CAPTURED_MODEL_API_KEY"
+	previous, existed := os.LookupEnv(apiKeyEnv)
+	if err := os.Unsetenv(apiKeyEnv); err != nil {
+		t.Fatalf("unset captured model API key env: %v", err)
+	}
+	t.Cleanup(func() {
+		if existed {
+			_ = os.Setenv(apiKeyEnv, previous)
+			return
+		}
+		_ = os.Unsetenv(apiKeyEnv)
+	})
+	if _, err := svc.creds.Upsert(apiKeyEnv, credential.ScopeGlobal, "", credential.Source{
+		Kind: credential.SourceLiteral, Value: "sk-captured",
+	}, false); err != nil {
+		t.Fatalf("bind captured model API key: %v", err)
+	}
+	profile := runtimeprofile.Profile{
+		ID: "captured-codex", Name: "Captured Codex", Provider: runtimeprofile.ProviderCodex,
+		Fields: runtimeprofile.Fields{BinaryPath: "/bin/true"},
+	}
+	snapshot := modelprovider.Snapshot{
+		ModelProviderID: "captured-provider", ModelProviderName: "Captured Provider",
+		EndpointBaseURL: "https://api.example.test/v1",
+		Protocol:        modelprovider.ProtocolOpenAIResponses,
+		Model:           "captured-model", APIKeyEnv: apiKeyEnv,
+	}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		Profile: &profile, Runner: "host", HostActivated: true,
+		ModelProviderSnapshot: &snapshot,
+	})
+
+	if !result.Pass {
+		t.Fatalf("expected captured Model Provider Snapshot to use the global Credential Binding, got %#v", result.Checks)
+	}
+	if !checkPassed(result, "model_provider") {
+		t.Fatalf("expected model_provider check to pass, got %#v", result.Checks)
+	}
+}
+
 func TestRunFailsWhenHostHermesLacksACPExtra(t *testing.T) {
 	svc := newTestServices(t)
 	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{

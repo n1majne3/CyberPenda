@@ -89,7 +89,7 @@ func Resolve(req ResolveRequest) (Snapshot, error) {
 	if model == "" || !provider.Catalog.Contains(model) {
 		return Snapshot{}, fmt.Errorf("%w: %q", ErrMissingModel, model)
 	}
-	if req.CheckEnv && !apiKeySourceAvailable(req.Credentials, req.ProjectID, provider.APIKeyEnv) {
+	if req.CheckEnv && !APIKeySourceAvailable(req.Credentials, req.ProjectID, provider.APIKeyEnv) {
 		return Snapshot{}, fmt.Errorf("%w: %s", ErrMissingAPIKeyEnv, provider.APIKeyEnv)
 	}
 	limits := ResolveLimits(model, provider.Catalog, req.CapabilityCache)
@@ -110,7 +110,10 @@ func Resolve(req ResolveRequest) (Snapshot, error) {
 	}, nil
 }
 
-func apiKeySourceAvailable(credentials *credential.Service, projectID, envName string) bool {
+// APIKeySourceAvailable reports whether the generated Model Provider API key
+// environment variable can be materialized from the process environment or a
+// matching Credential Binding.
+func APIKeySourceAvailable(credentials *credential.Service, projectID, envName string) bool {
 	if strings.TrimSpace(os.Getenv(envName)) != "" {
 		return true
 	}

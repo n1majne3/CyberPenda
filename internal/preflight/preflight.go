@@ -325,7 +325,7 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		if request.ModelProviderSnapshot != nil {
 			snapshot = *request.ModelProviderSnapshot
 			if snapshot.APIKeyEnv != "" {
-				if _, configured := os.LookupEnv(snapshot.APIKeyEnv); !configured {
+				if !modelprovider.APIKeySourceAvailable(s.creds, request.ProjectID, snapshot.APIKeyEnv) {
 					err = fmt.Errorf("model provider API key environment variable %s is not configured", snapshot.APIKeyEnv)
 				}
 			}
