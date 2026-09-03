@@ -9,7 +9,7 @@ import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { ErrorState, LoadingState, PageContainer } from "@/components/shared";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
 import { AttachmentFileRow } from "@/components/AttachmentPicker";
-import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
+import { collapsedTranscriptTitle, toolCallFields, toolInputPreview } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
 import { formatDateTime, formatRelativeTime } from "@/lib/format";
@@ -1791,6 +1791,10 @@ function TranscriptRow({
     );
   }
 
+  if (entry.kind === "subagent_block") {
+    return <SubagentBlockRow entry={entry} />;
+  }
+
   if (entry.kind === "reasoning" || entry.kind === "runtime_output") {
     return <CollapsedTranscriptRow entry={entry} autoExpand={autoExpandReasoning && entry.kind === "reasoning"} />;
   }
@@ -1838,6 +1842,49 @@ function ToolTranscriptRow({ call, result }: { call?: TaskTranscriptEntry; resul
       </div>
     </details>
   );
+}
+
+function SubagentBlockRow({ entry }: { entry: TaskTranscriptEntry }) {
+  const items = Array.isArray(entry.details?.items) ? (entry.details?.items as TaskTranscriptEntry[]) : [];
+  return (
+    <details data-testid="transcript-subagent-row" className="group">
+      <summary className={cn(
+        "-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden",
+      )}>
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+        <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-[13px] transition-colors group-hover:text-foreground group-open:text-foreground">
+          {collapsedTranscriptTitle(entry)}
+        </span>
+      </summary>
+      {items.length > 0 && (
+        <div className="ml-[1.625rem] space-y-1 border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
+          {items.map((item, index) => (
+            <div key={`${entry.id}-item-${index}`} className="text-xs leading-5">
+              {subagentItemLine(item)}
+            </div>
+          ))}
+        </div>
+      )}
+    </details>
+  );
+}
+
+function subagentItemLine(item: TaskTranscriptEntry) {
+  if (item.kind === "tool_call") {
+    const preview = toolInputPreview(item);
+    return (
+      <span className="font-mono text-foreground/80">
+        <span className="text-muted-foreground">tool</span> {item.tool_name || "Tool"}
+        {preview ? <span className="text-muted-foreground"> · {preview}</span> : null}
+      </span>
+    );
+  }
+  if (item.kind === "reasoning") {
+    return <span className="italic text-muted-foreground">{item.text}</span>;
+  }
+  const text = item.text || "…";
+  return <span className="whitespace-pre-wrap break-words text-foreground/80">{text}</span>;
 }
 
 function CollapsedTranscriptRow({ entry, autoExpand = false }: { entry: TaskTranscriptEntry; autoExpand?: boolean }) {

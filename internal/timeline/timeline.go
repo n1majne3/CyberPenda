@@ -185,6 +185,11 @@ func turnsToItems(turns []runtimeoutput.Turn) []Item {
 	items := make([]Item, 0, len(turns))
 	nextSeq := 1
 	for _, turn := range turns {
+		// Child-attributed items project through that child's Subagent
+		// Activity entry, not as main-thread rows.
+		if turn.AgentID != "" {
+			continue
+		}
 		item, ok := turnToItem(turn)
 		if !ok {
 			continue

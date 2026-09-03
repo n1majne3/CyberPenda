@@ -120,3 +120,35 @@ describe("toolCallFields", () => {
     expect(toolCallFields({ ...entry, details: {} })).toEqual([]);
   });
 });
+
+describe("subagent block collapsed title", () => {
+  it("shows the agent type and lifecycle state", () => {
+    const entry: TaskTranscriptEntry = {
+      id: "subagent-bbr05bd75",
+      seq: 12,
+      continuation: 1,
+      kind: "subagent_block",
+      role: "runtime",
+      text: "Subagent general-purpose: Exploit c-06 HugeGraph",
+      status: "completed",
+      details: { subagent_type: "general-purpose", items: [] },
+      created_at: "",
+    };
+    expect(collapsedTranscriptTitle(entry)).toBe("Subagent general-purpose · completed");
+  });
+
+  it("falls back to the header text when the agent type is absent", () => {
+    const entry: TaskTranscriptEntry = {
+      id: "subagent-thread-child-1",
+      seq: 4,
+      continuation: 1,
+      kind: "subagent_block",
+      role: "runtime",
+      text: "security/recon",
+      status: "started",
+      details: {},
+      created_at: "",
+    };
+    expect(collapsedTranscriptTitle(entry)).toBe("security/recon · started");
+  });
+});

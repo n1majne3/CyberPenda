@@ -15,11 +15,17 @@ export function collapsedTranscriptTitle(entry: TaskTranscriptEntry): string {
     const preview = entry.text ? ` · ${firstLine(entry.text)}` : "";
     return `Result${preview}`;
   }
+  if (entry.kind === "subagent_block") {
+    const subagentType = asRecord(entry.details)?.subagent_type;
+    const status = entry.status ? ` · ${entry.status}` : "";
+    if (typeof subagentType === "string" && subagentType) return `Subagent ${subagentType}${status}`;
+    return entry.text ? `${firstLine(entry.text)}${status}` : `Subagent${status}`;
+  }
   const prefix = entry.stream ? `Runtime output (${entry.stream})` : "Runtime output";
   return entry.text ? `${prefix}: ${firstLine(entry.text)}` : prefix;
 }
 
-function toolInputPreview(entry: TaskTranscriptEntry): string {
+export function toolInputPreview(entry: TaskTranscriptEntry): string {
   const input = asRecord(asRecord(entry.details)?.input);
   if (!input) return "";
   for (const key of ["command", "file_path", "path", "query", "url", "pattern", "name"]) {

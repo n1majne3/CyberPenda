@@ -536,6 +536,62 @@ describe("TaskDetailPage", () => {
     expect(rows[1]).toHaveAttribute("open");
   });
 
+  it("renders a child agent as one collapsed attributed block", async () => {
+    stubTaskDetailApi({}, [
+      {
+        id: "user-msg",
+        seq: 1,
+        continuation: 1,
+        kind: "message",
+        role: "user",
+        text: "Solve the challenges.",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "assistant-spawn",
+        seq: 2,
+        continuation: 1,
+        kind: "tool_call",
+        role: "assistant",
+        tool_call_id: "call_spawn_c06",
+        tool_name: "Agent",
+        details: { input: { description: "Exploit c-06 HugeGraph" } },
+        created_at: "2026-01-01T00:00:01Z",
+      },
+      {
+        id: "subagent-bbr05bd75",
+        seq: 12,
+        continuation: 1,
+        kind: "subagent_block",
+        role: "runtime",
+        text: "Subagent general-purpose: Exploit c-06 HugeGraph",
+        status: "completed",
+        tool_name: "claude_code",
+        details: {
+          subagent_type: "general-purpose",
+          spawn_tool_use_id: "call_spawn_c06",
+          items: [
+            { kind: "tool_call", role: "assistant", tool_name: "Bash", details: { input: { command: "curl hugegraph" } } },
+            { kind: "message", role: "assistant", text: "hugegraph exploited" },
+          ],
+        },
+        created_at: "2026-01-01T00:00:12Z",
+      },
+    ]);
+
+    renderPage();
+
+    const row = await screen.findByTestId("transcript-subagent-row");
+    expect(row).not.toHaveAttribute("open");
+    expect(screen.getByText("Subagent general-purpose · completed")).toBeInTheDocument();
+    // The header stays collapsed; child items render only inside the expanded body.
+    const childText = screen.getByText("hugegraph exploited");
+    expect(childText).not.toBeVisible();
+    await userEvent.click(screen.getByText("Subagent general-purpose · completed"));
+    expect(screen.getByText("hugegraph exploited")).toBeVisible();
+    expect(screen.getByText(/curl hugegraph/)).toBeVisible();
+  });
+
   it("keeps agent messages and tool rows tight, only spacing out new user turns", async () => {
     stubTaskDetailApi({}, [
       {
