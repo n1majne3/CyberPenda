@@ -27,6 +27,7 @@ import {
 } from "@/lib/api";
 import { ThemeToggle } from "@/components/ThemeProvider";
 import { PromptDialog } from "@/components/ConfirmDialog";
+import { activeStatusWord, isActiveStatus, sessionContinuationStatus } from "@/lib/runtimeOwner/status";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 import { cn } from "@/lib/utils";
 import { formatRelativeTime } from "@/lib/format";
@@ -78,13 +79,16 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const isVisible = useDocumentVisibility();
-  // Whether any tracked owner currently has a live, busy runtime. While true the
-  // sidebar polls fast (2s) to surface runtime progress; once idle it backs off
-  // to a slow cadence so an open-but-unused tab does not hammer the daemon.
+  // Whether any tracked owner currently has a live, busy runtime or an active
+  // durable continuation (#268). Counting active continuations — not only rows
+  // already rendered busy — keeps the fast cadence (2s) while a turn can start
+  // at any moment, so a busy/idle transition lands well within ~3s. Once
+  // nothing is active the sidebar backs off to a slow cadence so an
+  // open-but-unused tab does not hammer the daemon.
   const hasActive = useMemo(
     () =>
-      sessions.some(isSessionBusy) ||
-      navigation.some((summary) => summary.tasks.some(isTaskBusy)),
+      sessions.some(isSessionActive) ||
+      navigation.some((summary) => summary.tasks.some(isTaskActive)),
     [sessions, navigation],
   );
 
@@ -564,8 +568,9 @@ function SessionRow({
   onRename: (session: Session) => void;
   onArchive: (session: Session) => Promise<void>;
 }) {
-  const failed = session.latest_continuation?.status === "failed";
-  const state = runtimeActivityState(session.runtime_activity, failed);
+  const durableStatus = sessionContinuationStatus(session);
+  const failed = durableStatus === "failed";
+  const state = durableFirstRowState(runtimeActivityState(session.runtime_activity, failed), durableStatus);
   const time = formatRelativeTime(session.last_activity_at ?? session.updated_at);
   return (
     <div className="group flex items-start gap-1">
@@ -600,7 +605,7 @@ function TaskRow({ task, current, onNavigate }: { task: Task; current: boolean; 
     <NavLink
       to={`/projects/${encodeURIComponent(task.project_id)}/tasks/${encodeURIComponent(task.id)}`}
       end
-      aria-label={`Open ${task.goal || "Untitled task"} task conversation. ${runtimeActivityState(task.runtime_activity, task.status === "failed").label}.`}
+      aria-label={`Open ${task.goal || "Untitled task"} task conversation. ${durableFirstRowState(runtimeActivityState(task.runtime_activity, task.status === "failed"), task.status).label}.`}
       onClick={onNavigate}
       className={({ isActive }) => navItemClasses(isActive || current, "h-auto min-w-0 w-full py-1 pl-7 text-xs")}
     >
@@ -864,12 +869,35 @@ function runtimeActivityState(activity?: RuntimeActivity, failed = false) {
   return { label: "Runtime activity unavailable", text: "Stopped", dot: "bg-muted-foreground/40", busy: false };
 }
 
+// Sidebar rows are durable-first (#268): while the owner's continuation is
+// active, the visible word and row label are the durable status (from the
+// shared runtimeOwner status vocabulary, so they cannot drift from the detail
+// header's primary badge) instead of contradicting it with turn activity. The
+// dot always encodes the Runtime Activity Indicator, and owners without an
+// active continuation keep the activity wording above.
+function durableFirstRowState(activityState: ReturnType<typeof runtimeActivityState>, durableStatus: string | undefined) {
+  const word = activeStatusWord(durableStatus);
+  return word ? { ...activityState, label: word, text: word } : activityState;
+}
+
+function isRuntimeBusy(activity?: RuntimeActivity) {
+  return activity?.liveness === "live" && activity.turn_activity === "busy";
+}
+
 function isSessionBusy(session: Session) {
-  return session.runtime_activity?.liveness === "live" && session.runtime_activity.turn_activity === "busy";
+  return isRuntimeBusy(session.runtime_activity);
 }
 
 function isTaskBusy(task: Task) {
-  return task.runtime_activity?.liveness === "live" && task.runtime_activity.turn_activity === "busy";
+  return isRuntimeBusy(task.runtime_activity);
+}
+
+function isSessionActive(session: Session) {
+  return isSessionBusy(session) || isActiveStatus(sessionContinuationStatus(session));
+}
+
+function isTaskActive(task: Task) {
+  return isTaskBusy(task) || isActiveStatus(task.status);
 }
 
 function sessionActivity(session: Session) {
