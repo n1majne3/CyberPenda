@@ -56,3 +56,8 @@ pentest 2.db-wal
 .playwright-mcp
 # Unrelated scratch work (hatch-pet), not part of this repo
 /work/hatch-pet/
+
+# Daemon-owned runtime extension library (bundles/ + .staging/), materialized
+# next to pentest.db; not repo content. Built-in sources live in
+# internal/skill/builtins/assets.
+/skills/

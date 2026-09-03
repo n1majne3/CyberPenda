@@ -29,6 +29,7 @@ func TestBuiltinBundlesIncludeRequestedProjects(t *testing.T) {
 
 	assertBuiltinBundle(t, byID, "vulnerabilities-xss")
 	assertBuiltinBundle(t, byID, "scoreboard-driven-web-challenge")
+	assertBuiltinBundle(t, byID, "ctf-orchestrator")
 
 	// Vendored reverse-skill router and its methodology sub-skills.
 	for _, id := range []string{
