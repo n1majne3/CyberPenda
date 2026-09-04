@@ -232,3 +232,51 @@ func TestBuildWindowReplaysPreFixSessionUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// Each retained window builds independently, so one child must resolve to the
+// same block identity in every window that sees any of its records. Items key
+// by the spawning tool-call id; lifecycle records join through the spawn
+// linkage the bridge stamps on every follow-up record.
+func TestBuildWindowBlockIdentityStableAcrossWindows(t *testing.T) {
+	at := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	taskStarted := blockEvent("ev-1", `{"type":"system","subtype":"task_started","task_id":"a37dc4e90ed17c84b","tool_use_id":"call_spawn_b02","description":"Exploit b-02","subagent_type":"general-purpose","task_type":"local_agent"}`, at)
+	item := blockEvent("ev-2", `{"type":"assistant","parent_tool_use_id":"call_spawn_b02","subagent_type":"general-purpose","task_description":"Exploit b-02","message":{"role":"assistant","content":[{"type":"text","text":"child work"}]}}`, at.Add(time.Second))
+	settled := blockEvent("ev-3", `{"type":"system","subtype":"task_updated","task_id":"a37dc4e90ed17c84b","tool_use_id":"call_spawn_b02","patch":{"status":"failed"}}`, at.Add(2*time.Second))
+	spawnCall := blockEvent("ev-0", `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_spawn_b02","name":"Agent","input":{"description":"Exploit b-02"}}]}}`, at.Add(-1*time.Second))
+
+	subject := transcript.Subject{ID: "task-1", Title: "work", CreatedAt: at}
+	context := transcript.WindowContext{Continuation: 1, Adapter: "claude_code"}
+	// Window A (older page): spawn call, task_started, and the child item.
+	windowA := transcript.BuildWindow(subject, []transcript.Event{spawnCall, taskStarted, item}, context)
+	// Window B (delta): only the settled lifecycle record.
+	windowB := transcript.BuildWindow(subject, []transcript.Event{settled}, context)
+
+	var idA, idB string
+	for _, entry := range windowA {
+		if entry.Kind == "subagent_block" {
+			idA = entry.ID
+		}
+	}
+	for _, entry := range windowB {
+		if entry.Kind == "subagent_block" {
+			idB = entry.ID
+		}
+	}
+	if idA == "" || idA != idB {
+		t.Fatalf("block identity differs across windows: A=%q B=%q", idA, idB)
+	}
+	if !strings.HasPrefix(idA, "subagent-call_spawn_b02") {
+		t.Fatalf("block id = %q, want the spawn-keyed identity", idA)
+	}
+	// Window B's block carries the durable task id and settled state.
+	for _, entry := range windowB {
+		if entry.Kind == "subagent_block" {
+			if entry.Status != "failed" {
+				t.Fatalf("window B status = %q, want failed", entry.Status)
+			}
+			if entry.Details["agent_id"] != "a37dc4e90ed17c84b" {
+				t.Fatalf("window B agent_id = %v", entry.Details["agent_id"])
+			}
+		}
+	}
+}

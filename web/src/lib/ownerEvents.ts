@@ -72,13 +72,27 @@ export function mergeTranscriptEntries(existing: TaskTranscriptEntry[], delta: T
         // A cumulative reasoning batch or completed provider item replaces the
         // same stable row without changing its visible list position.
         const previous = updated[existingIndex]!;
-        updated[existingIndex] = {
+        let replacement: TaskTranscriptEntry = {
           ...entry,
           continuation: previous.continuation,
           text: entry.incremental ? `${previous.text ?? ""}${entry.text ?? ""}` : entry.text,
           created_at: previous.created_at ?? entry.created_at,
         };
+        if (entry.kind === "subagent_block" && previous.kind === "subagent_block") {
+          // A rebuilt window slice aggregates only its own event range; keep
+          // the items the client already loaded.
+          replacement = mergeSubagentBlock(previous, replacement);
+        }
+        updated[existingIndex] = replacement;
         changed = true;
+      } else if (entry.kind === "subagent_block" && updated[existingIndex]!.kind === "subagent_block") {
+        // A rebuilt window slice replays the block at the same Seq with only
+        // that slice's items; accumulate instead of clobbering.
+        const merged = mergeSubagentBlock(updated[existingIndex]!, entry);
+        if (merged !== updated[existingIndex]!) {
+          updated[existingIndex] = merged;
+          changed = true;
+        }
       }
       continue;
     }
@@ -93,6 +107,29 @@ export function mergeTranscriptEntries(existing: TaskTranscriptEntry[], delta: T
   }
   if (!changed && appended.length === 0) return existing;
   return appendCoalescedTranscript(updated, appended);
+}
+
+// mergeSubagentBlock unions a rebuilt block's items with the loaded ones. Each
+// window slice aggregates only the child items inside its own event range, so
+// the union (deduplicated by item id, ordered by item Seq) is the full child
+// history the client has loaded so far.
+function mergeSubagentBlock(previous: TaskTranscriptEntry, next: TaskTranscriptEntry): TaskTranscriptEntry {
+  const mergedItems = [...blockItems(previous), ...blockItems(next)];
+  const byID = new Map<string, Record<string, unknown>>();
+  for (const item of mergedItems) {
+    const key = typeof item.id === "string" && item.id ? item.id : JSON.stringify(item);
+    byID.set(key, item);
+  }
+  const ordered = [...byID.values()].sort((a, b) => (typeof a.seq === "number" ? a.seq : 0) - (typeof b.seq === "number" ? b.seq : 0));
+  const previousItemsJSON = JSON.stringify(blockItems(previous));
+  const mergedJSON = JSON.stringify(ordered);
+  if (mergedJSON === previousItemsJSON) return previous;
+  return { ...next, details: { ...next.details, items: ordered } };
+}
+
+function blockItems(entry: TaskTranscriptEntry): Array<Record<string, unknown>> {
+  const items = entry.details?.items;
+  return Array.isArray(items) ? (items as Array<Record<string, unknown>>) : [];
 }
 
 function appendCoalescedTranscript(existing: TaskTranscriptEntry[], delta: TaskTranscriptEntry[]): TaskTranscriptEntry[] {
@@ -165,14 +202,32 @@ export function timelineItemIdentity(item: TaskTimelineItem): string {
  * prependTranscriptEntries places a backward history page ahead of the loaded
  * entries. Transcript entries can share one Seq (several rows projected from
  * one provider record), so deduplication is by stable ID; the server keeps
- * same-Seq groups atomic at page boundaries.
+ * same-Seq groups atomic at page boundaries. A backward page rebuilds one
+ * Subagent block per child with only that page's items; a colliding block
+ * merges its (older) items into the loaded block instead of being dropped.
  */
 export function prependTranscriptEntries(existing: TaskTranscriptEntry[], page: TaskTranscriptEntry[]): TaskTranscriptEntry[] {
   if (page.length === 0) return existing;
   if (existing.length === 0) return page;
   const headSeq = existing[0]!.seq;
-  const older = page.filter((entry) => entry.seq < headSeq);
-  if (older.length === 0) return existing;
-  const seen = new Set(existing.map((entry) => entry.id));
-  return [...older.filter((entry) => !seen.has(entry.id)), ...existing];
+  const older: TaskTranscriptEntry[] = [];
+  const merged = new Map<string, TaskTranscriptEntry>();
+  for (const entry of page) {
+    if (entry.seq >= headSeq) continue;
+    if (entry.kind === "subagent_block") {
+      const index = existing.findIndex((loaded) => loaded.id === entry.id);
+      if (index !== -1) {
+        merged.set(entry.id, mergeSubagentBlock(entry, existing[index]!));
+        continue;
+      }
+    }
+    older.push(entry);
+  }
+  if (older.length === 0 && merged.size === 0) return existing;
+  let result: TaskTranscriptEntry[] = existing;
+  if (merged.size > 0) {
+    result = existing.map((entry) => merged.get(entry.id) ?? entry);
+  }
+  const seen = new Set(result.map((entry) => entry.id));
+  return [...older.filter((entry) => !seen.has(entry.id)), ...result];
 }

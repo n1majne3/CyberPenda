@@ -139,6 +139,61 @@ describe("mergeTranscriptEntries", () => {
   });
 });
 
+describe("subagent block accumulation", () => {
+  const block = (id: string, seq: number, items: Array<Record<string, unknown>>, status = "started"): TaskTranscriptEntry => ({
+    id,
+    seq,
+    continuation: 1,
+    kind: "subagent_block",
+    role: "runtime",
+    text: "Subagent general-purpose: Exploit b-02",
+    status,
+    details: { agent_id: "a37dc4e90ed17c84b", items },
+    created_at: "2026-01-01T00:00:00Z",
+  });
+
+  it("accumulates block items when a delta rebuild replaces the block in place", () => {
+    const existing = [
+      transcriptEntry("main-1", 10),
+      block("subagent-call-a", 20, [{ id: "item-1", seq: 11 }, { id: "item-2", seq: 12 }]),
+    ];
+    const delta: TaskTranscriptEntry[] = [
+      transcriptEntry("main-2", 21),
+      block("subagent-call-a", 30, [{ id: "item-3", seq: 22 }], "completed"),
+    ];
+    const merged = mergeTranscriptEntries(existing, delta);
+    expect(merged).toHaveLength(3);
+    const updated = merged.find((entry) => entry.id === "subagent-call-a")!;
+    expect(updated.status).toBe("completed");
+    expect((updated.details?.items as unknown[]).map((item) => (item as { id: string }).id)).toEqual(["item-1", "item-2", "item-3"]);
+    expect(updated.seq).toBe(30);
+  });
+
+  it("does not duplicate items when a delta replays the same block items", () => {
+    const items = [{ id: "item-1", seq: 11 }];
+    const existing = [block("subagent-call-a", 20, items)];
+    const delta: TaskTranscriptEntry[] = [block("subagent-call-a", 20, items)];
+    const merged = mergeTranscriptEntries(existing, delta);
+    const updated = merged.find((entry) => entry.id === "subagent-call-a")!;
+    expect(updated.details?.items).toHaveLength(1);
+  });
+
+  it("merges items from an older backward page into the loaded block", () => {
+    const existing = [
+      block("subagent-call-a", 30, [{ id: "item-5", seq: 25 }]),
+      transcriptEntry("main-2", 40),
+    ];
+    const page: TaskTranscriptEntry[] = [
+      transcriptEntry("main-1", 10),
+      block("subagent-call-a", 15, [{ id: "item-1", seq: 12 }, { id: "item-2", seq: 13 }]),
+    ];
+    const merged = prependTranscriptEntries(existing, page);
+    expect(merged).toHaveLength(3);
+    const updated = merged.find((entry) => entry.id === "subagent-call-a")!;
+    expect((updated.details?.items as unknown[]).map((item) => (item as { id: string }).id)).toEqual(["item-1", "item-2", "item-5"]);
+  });
+});
+
 describe("prependTimelineItems", () => {
   it("places a strictly older backward page ahead of the loaded items", () => {
     const existing = [timelineItem(51), timelineItem(52)];
