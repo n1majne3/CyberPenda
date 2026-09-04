@@ -37,9 +37,10 @@ type Turn struct {
 	SourceSeq      int
 	ProviderItemID string
 	LifecyclePhase string
-	// AgentID carries provider child-agent attribution for multiplexed stream
-	// items (for example a Claude async Agent-tool child). Empty means the
-	// item belongs to the main thread.
+	// AgentID carries the provider child-agent attribution key for multiplexed
+	// stream items: the per-item agent id when the runtime emits one, otherwise
+	// the spawning tool-call id (parent_tool_use_id). Empty means the item
+	// belongs to the main thread.
 	AgentID      string
 	Incremental  bool
 	Kind         Kind

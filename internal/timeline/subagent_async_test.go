@@ -16,9 +16,9 @@ func agentFleetEvents(at time.Time) []timeline.Event {
 	return []timeline.Event{
 		event("runtime_output", `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_spawn_c06","name":"Agent","input":{"description":"Exploit c-06 HugeGraph","prompt":"solve c-06"}}]}}`, at),
 		event("runtime_output", `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_spawn_c06","content":"Async agent launched successfully."}]}}`, at.Add(time.Second)),
-		event("runtime_output", `{"type":"system","subtype":"task_started","task_id":"bbr05bd75","tool_use_id":"call_spawn_c06","description":"Exploit c-06 HugeGraph","subagent_type":"general-purpose","task_type":"subagent"}`, at.Add(2*time.Second)),
-		event("runtime_output", `{"type":"assistant","agentId":"bbr05bd75","isSidechain":true,"message":{"role":"assistant","content":[{"type":"tool_use","id":"call_child_1","name":"Bash","input":{"command":"curl hugegraph"}}]}}`, at.Add(3*time.Second)),
-		event("runtime_output", `{"type":"user","agentId":"bbr05bd75","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_child_1","content":"8080 open"}]}}`, at.Add(4*time.Second)),
+		event("runtime_output", `{"type":"system","subtype":"task_started","task_id":"bbr05bd75","tool_use_id":"call_spawn_c06","description":"Exploit c-06 HugeGraph","subagent_type":"general-purpose","task_type":"local_agent"}`, at.Add(2*time.Second)),
+		event("runtime_output", `{"type":"assistant","parent_tool_use_id":"call_spawn_c06","subagent_type":"general-purpose","task_description":"Exploit c-06 HugeGraph","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_child_1","name":"Bash","input":{"command":"curl hugegraph"}}]}}`, at.Add(3*time.Second)),
+		event("runtime_output", `{"type":"user","parent_tool_use_id":"call_spawn_c06","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_child_1","content":"8080 open"}]}}`, at.Add(4*time.Second)),
 		event("runtime_output", `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Waiting for subagents."}]}}`, at.Add(5*time.Second)),
 		event("runtime_output", `{"type":"system","subtype":"task_notification","task_id":"bbr05bd75","status":"completed","summary":"Exploit c-06 HugeGraph"}`, at.Add(6*time.Second)),
 	}
@@ -79,8 +79,8 @@ func TestBuildSeparatesInterleavedAsyncChildren(t *testing.T) {
 	at := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	events := agentFleetEvents(at)
 	events = append(events,
-		event("runtime_output", `{"type":"system","subtype":"task_started","task_id":"cxx99120","tool_use_id":"call_spawn_c07","description":"telnet login","subagent_type":"general-purpose"}`, at.Add(7*time.Second)),
-		event("runtime_output", `{"type":"assistant","agentId":"cxx99120","message":{"role":"assistant","content":[{"type":"text","text":"logged in as root"}]}}`, at.Add(8*time.Second)),
+		event("runtime_output", `{"type":"system","subtype":"task_started","task_id":"cxx99120","tool_use_id":"call_spawn_c07","description":"telnet login","subagent_type":"general-purpose","task_type":"local_agent"}`, at.Add(7*time.Second)),
+		event("runtime_output", `{"type":"assistant","parent_tool_use_id":"call_spawn_c07","message":{"role":"assistant","content":[{"type":"text","text":"logged in as root"}]}}`, at.Add(8*time.Second)),
 		event("runtime_output", `{"type":"assistant","agentId":"bbr05bd75","message":{"role":"assistant","content":[{"type":"text","text":"hugegraph exploited"}]}}`, at.Add(9*time.Second)),
 		event("runtime_output", `{"type":"system","subtype":"task_notification","task_id":"cxx99120","status":"failed","summary":"telnet login"}`, at.Add(10*time.Second)),
 	)

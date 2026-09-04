@@ -156,6 +156,9 @@ func stampAgentIdentity(turns []Turn, record map[string]any) []Turn {
 	}
 	agentID := firstText(record, "agentId", "agent_id", "attributionAgent", "attribution_agent")
 	if agentID == "" {
+		agentID = firstText(record, "parent_tool_use_id", "parentToolUseId")
+	}
+	if agentID == "" {
 		return turns
 	}
 	stamped := make([]Turn, len(turns))

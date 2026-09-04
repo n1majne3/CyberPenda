@@ -87,6 +87,12 @@ func parseClaudeSubagentActivity(record map[string]any, createdAt time.Time) []T
 		return nil
 	}
 	subtype := strings.ToLower(firstText(record, "subtype"))
+	// Only agent-like background tasks are child agents. The task type is
+	// present on task_started records; the bridge suppresses the follow-up
+	// lifecycle records of non-agent tasks it has already seen.
+	if taskType := firstText(record, "task_type", "taskType"); taskType != "" && !isClaudeAgentTaskType(taskType) {
+		return nil
+	}
 	label := firstText(record, "summary", "description")
 	if label == "" {
 		label = "Subagent " + taskID
@@ -168,6 +174,19 @@ func codexCollabAgentState(status string) string {
 	default:
 		// pendingInit, running, or unknown: the child is live.
 		return SubagentActivityStarted
+	}
+}
+
+// isClaudeAgentTaskType reports whether a task_type marks a child agent rather
+// than another background task kind (for example a backgrounded shell
+// command). An absent type stays supported for the legacy sync Task-tool
+// vocabulary, which carries no task_type.
+func isClaudeAgentTaskType(taskType string) bool {
+	switch strings.ToLower(strings.TrimSpace(taskType)) {
+	case "local_agent", "subagent":
+		return true
+	default:
+		return false
 	}
 }
 

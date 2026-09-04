@@ -16,21 +16,30 @@ import (
 // childBlocks accumulates per-child observations while a window's events are
 // projected. Child-attributed items never enter the main entry flow; they are
 // held here and materialized into one block per child afterwards.
+//
+// One child carries two provider key namespaces: Subagent Activity lifecycle
+// records are keyed by the durable task id, while multiplexed stream items
+// are keyed by the spawning tool-call id (or a per-item agent id on runtimes
+// that emit one). The spawn linkage joins them: a task_started record carries
+// both ids, so bySpawn resolves either namespace to one child state.
 type childBlocks struct {
 	order []string
 	byID  map[string]*childBlockState
+	// bySpawn maps a spawning tool-call id to the child state key.
+	bySpawn map[string]string
 	// prevEntryID is the id of the last main-thread entry appended before the
 	// event currently being projected; it is the fallback anchor for a child
-	// whose spawning tool call is not identifiable.
+	// without spawn linkage.
 	prevEntryID string
 }
 
 type childBlockState struct {
-	agentID        string
+	key            string
+	durableID      string // task id, once a lifecycle record supplied it
+	spawnToolUseID string
 	label          string
 	subagentType   string
 	provider       string
-	spawnToolUseID string
 	phase          string
 	firstSeen      time.Time
 	lastSeq        int
@@ -42,7 +51,7 @@ type childBlockState struct {
 }
 
 func newChildBlocks() *childBlocks {
-	return &childBlocks{byID: map[string]*childBlockState{}}
+	return &childBlocks{byID: map[string]*childBlockState{}, bySpawn: map[string]string{}}
 }
 
 // beginEvent records the main-thread position the next observations would
@@ -51,13 +60,30 @@ func (c *childBlocks) beginEvent(lastEntryID string) {
 	c.prevEntryID = lastEntryID
 }
 
-func (c *childBlocks) state(agentID string) *childBlockState {
-	if child, ok := c.byID[agentID]; ok {
+// resolve returns the child state for one observation, joining the lifecycle
+// and item key namespaces through the spawn linkage.
+func (c *childBlocks) resolve(key, spawnToolUseID string) *childBlockState {
+	if child, ok := c.byID[key]; ok {
 		return child
 	}
-	child := &childBlockState{agentID: agentID, continuation: -1}
-	c.byID[agentID] = child
-	c.order = append(c.order, agentID)
+	if spawnToolUseID != "" {
+		if existing, ok := c.bySpawn[spawnToolUseID]; ok {
+			return c.byID[existing]
+		}
+	}
+	// An item key may itself be a spawn id that a lifecycle record registered.
+	if existing, ok := c.bySpawn[key]; ok {
+		return c.byID[existing]
+	}
+	child := &childBlockState{key: key, continuation: -1}
+	alias := spawnToolUseID
+	if alias == "" {
+		alias = key
+	}
+	child.spawnToolUseID = alias
+	c.bySpawn[alias] = key
+	c.byID[key] = child
+	c.order = append(c.order, key)
 	return child
 }
 
@@ -65,7 +91,8 @@ func (c *childBlocks) state(agentID string) *childBlockState {
 // header: identity label, agent type, provider, spawn linkage, and the latest
 // coarse lifecycle state.
 func (c *childBlocks) observeActivity(turn runtimeoutput.Turn, base Entry) {
-	child := c.state(turn.ProviderItemID)
+	spawn, _ := turn.Details["spawn_tool_use_id"].(string)
+	child := c.resolve(turn.ProviderItemID, spawn)
 	if turn.Text != "" {
 		child.label = turn.Text
 	}
@@ -76,8 +103,11 @@ func (c *childBlocks) observeActivity(turn runtimeoutput.Turn, base Entry) {
 	if turn.Tool != "" {
 		child.provider = turn.Tool
 	}
-	if spawn, ok := turn.Details["spawn_tool_use_id"].(string); ok && spawn != "" {
+	if spawn != "" {
 		child.spawnToolUseID = spawn
+	}
+	if turn.ProviderItemID != "" {
+		child.durableID = turn.ProviderItemID
 	}
 	if subagentType, ok := turn.Details["subagent_type"].(string); ok && subagentType != "" {
 		child.subagentType = subagentType
@@ -88,7 +118,7 @@ func (c *childBlocks) observeActivity(turn runtimeoutput.Turn, base Entry) {
 // observeItem holds one child-attributed entry for the child's block instead
 // of letting it render as a main-thread row.
 func (c *childBlocks) observeItem(turn runtimeoutput.Turn, entry Entry, base Entry) {
-	child := c.state(turn.AgentID)
+	child := c.resolve(turn.AgentID, "")
 	if len(child.items) == 0 {
 		child.anchorAfterID = c.prevEntryID
 	}
@@ -118,8 +148,8 @@ func appendChildBlocks(entries []Entry, children *childBlocks) []Entry {
 		return entries
 	}
 	blocksByAnchor := map[int][]Entry{}
-	for _, agentID := range children.order {
-		child := children.byID[agentID]
+	for _, key := range children.order {
+		child := children.byID[key]
 		anchor := anchorIndexForChild(entries, child)
 		blocksByAnchor[anchor] = append(blocksByAnchor[anchor], childBlockEntry(child))
 	}
@@ -164,8 +194,12 @@ func anchorIndexForChild(entries []Entry, child *childBlockState) int {
 }
 
 func childBlockEntry(child *childBlockState) Entry {
+	agentID := child.durableID
+	if agentID == "" {
+		agentID = child.key
+	}
 	details := map[string]any{
-		"agent_id": child.agentID,
+		"agent_id": agentID,
 	}
 	if child.subagentType != "" {
 		details["subagent_type"] = child.subagentType
@@ -189,7 +223,9 @@ func childBlockEntry(child *childBlockState) Entry {
 		continuation = 0
 	}
 	return Entry{
-		ID:           "subagent-" + child.agentID,
+		// The spawn tool-call id is stable from first observation in both key
+		// namespaces, so the block identity survives window boundaries.
+		ID:           "subagent-" + child.blockKey(),
 		Seq:          child.lastSeq,
 		Continuation: continuation,
 		Kind:         KindSubagentBlock,
@@ -202,10 +238,19 @@ func childBlockEntry(child *childBlockState) Entry {
 	}
 }
 
+// blockKey is the stable block identity: the spawn linkage when known,
+// otherwise the provider child id.
+func (child *childBlockState) blockKey() string {
+	if child.spawnToolUseID != "" {
+		return child.spawnToolUseID
+	}
+	return child.key
+}
+
 func childBlockHeader(child *childBlockState) string {
 	label := child.label
 	if label == "" {
-		label = "Subagent " + child.agentID
+		label = "Subagent " + child.blockKey()
 	}
 	if child.subagentType != "" {
 		return "Subagent " + child.subagentType + ": " + label

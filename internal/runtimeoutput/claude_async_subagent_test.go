@@ -8,16 +8,21 @@ import (
 )
 
 // Claude Code async Agent-tool children multiplex their transcript items into
-// the main session stream as ordinary assistant/user records marked with a
-// per-item agentId (plus isSidechain). The parser must carry that child
-// identity on every derived Turn so projections never render child work as
-// main-thread rows.
+// the main session stream as ordinary assistant/user records. The stream marks
+// every child record with the spawning tool-call id (parent_tool_use_id) plus
+// subagent_type/task_description; runtimes that emit a per-item agentId use
+// that instead. The parser must carry the child attribution key on every
+// derived Turn so projections never render child work as main-thread rows.
 func TestParseRecordStampsAsyncAgentIdentityOnMessageTurns(t *testing.T) {
 	at := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+
+	// Live wire shape (Claude Code 2.1.2xx SDK stream): child items carry
+	// parent_tool_use_id, not agentId.
 	turns := runtimeoutput.ParseRecord(map[string]any{
-		"type":        "assistant",
-		"agentId":     "accf5809249284700",
-		"isSidechain": true,
+		"type":               "assistant",
+		"parent_tool_use_id": "call_01a06c1712a57ca080ba25d8",
+		"subagent_type":      "general-purpose",
+		"task_description":   "Solve a-05 contract approval",
 		"message": map[string]any{
 			"role": "assistant",
 			"content": []any{
@@ -30,9 +35,23 @@ func TestParseRecordStampsAsyncAgentIdentityOnMessageTurns(t *testing.T) {
 		t.Fatalf("turns = %#v", turns)
 	}
 	for _, turn := range turns {
-		if turn.AgentID != "accf5809249284700" {
-			t.Fatalf("AgentID = %q, want async child id on %#v", turn.AgentID, turn)
+		if turn.AgentID != "call_01a06c1712a57ca080ba25d8" {
+			t.Fatalf("AgentID = %q, want the spawning tool-call id on %#v", turn.AgentID, turn)
 		}
+	}
+
+	// A per-item agentId, when a runtime emits one, wins over parent linkage.
+	agentIDTurns := runtimeoutput.ParseRecord(map[string]any{
+		"type":               "assistant",
+		"agentId":            "accf5809249284700",
+		"parent_tool_use_id": "call_other",
+		"message": map[string]any{
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "text", "text": "agent id marked"}},
+		},
+	}, runtimeoutput.ParseOptions{}, at)
+	if len(agentIDTurns) != 1 || agentIDTurns[0].AgentID != "accf5809249284700" {
+		t.Fatalf("agentId turns = %#v", agentIDTurns)
 	}
 
 	// snake_case and attributionAgent are accepted identity spellings; a user
@@ -75,13 +94,13 @@ func TestParseRecordStampsAsyncAgentIdentityOnMessageTurns(t *testing.T) {
 
 	// Top-level tool records from a child carry the same attribution.
 	toolTurns := runtimeoutput.ParseRecord(map[string]any{
-		"type":    "tool_use",
-		"agentId": "accf5809249284700",
-		"id":      "call_child_9",
-		"name":    "Bash",
-		"input":   map[string]any{"command": "id"},
+		"type":               "tool_use",
+		"parent_tool_use_id": "call_01a06c1712a57ca080ba25d8",
+		"id":                 "call_child_9",
+		"name":               "Bash",
+		"input":              map[string]any{"command": "id"},
 	}, runtimeoutput.ParseOptions{}, at)
-	if len(toolTurns) != 1 || toolTurns[0].AgentID != "accf5809249284700" {
+	if len(toolTurns) != 1 || toolTurns[0].AgentID != "call_01a06c1712a57ca080ba25d8" {
 		t.Fatalf("top-level tool turns = %#v", toolTurns)
 	}
 }
@@ -143,29 +162,29 @@ func TestParseRecordClaudeTaskStartedCarriesSpawnLinkage(t *testing.T) {
 	turns := runtimeoutput.ParseRecord(map[string]any{
 		"type":          "system",
 		"subtype":       "task_started",
-		"task_id":       "bbr05bd75",
-		"tool_use_id":   "call_01a067a54dba7273b1e0e0d4",
-		"description":   "Find buffer overflow bugs",
-		"subagent_type": "Explore",
-		"task_type":     "subagent",
+		"task_id":       "a3653e970f04f2dc0",
+		"tool_use_id":   "call_01a06c1712a57ca080ba25d8",
+		"description":   "Solve a-05 contract approval",
+		"subagent_type": "general-purpose",
+		"task_type":     "local_agent",
 	}, runtimeoutput.ParseOptions{}, at)
 	if len(turns) != 1 {
 		t.Fatalf("task_started turns = %#v", turns)
 	}
 	got := turns[0]
-	if got.Kind != runtimeoutput.KindSubagentActivity || got.ProviderItemID != "bbr05bd75" {
+	if got.Kind != runtimeoutput.KindSubagentActivity || got.ProviderItemID != "a3653e970f04f2dc0" {
 		t.Fatalf("task_started = %#v", got)
 	}
 	if got.LifecyclePhase != runtimeoutput.SubagentActivityStarted {
 		t.Fatalf("phase = %q, want started", got.LifecyclePhase)
 	}
-	if got.Text != "Find buffer overflow bugs" {
+	if got.Text != "Solve a-05 contract approval" {
 		t.Fatalf("label = %q", got.Text)
 	}
-	if got.Details["spawn_tool_use_id"] != "call_01a067a54dba7273b1e0e0d4" {
+	if got.Details["spawn_tool_use_id"] != "call_01a06c1712a57ca080ba25d8" {
 		t.Fatalf("spawn linkage details = %#v", got.Details)
 	}
-	if got.Details["subagent_type"] != "Explore" {
+	if got.Details["subagent_type"] != "general-purpose" {
 		t.Fatalf("subagent_type details = %#v", got.Details)
 	}
 }
@@ -215,5 +234,42 @@ func TestTaskLifecycleRecordsSurviveFiltering(t *testing.T) {
 	level := `{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"t1","task_type":"subagent","description":"d"}]}`
 	if !runtimeoutput.ShouldIgnoreForTimeline(level) {
 		t.Fatal("expected background_tasks_changed to stay timeline noise")
+	}
+}
+
+// Only agent-like background tasks are child agents. A backgrounded bash
+// command (task_type local_bash) is not Subagent Activity and must not
+// project; the type is only present on task_started, so later records are
+// filtered by the bridge's task-type tracking.
+func TestParseRecordClaudeTaskStartedFiltersNonAgentTasks(t *testing.T) {
+	at := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name     string
+		taskType string
+		present  bool
+	}{
+		{"local_agent is a child agent", "local_agent", true},
+		{"subagent is a child agent", "subagent", true},
+		{"absent type stays supported", "", true},
+		{"local_bash is not a child agent", "local_bash", false},
+		{"monitor is not a child agent", "monitor", false},
+	}
+	for _, tc := range cases {
+		record := map[string]any{
+			"type":        "system",
+			"subtype":     "task_started",
+			"task_id":     "b" + tc.taskType,
+			"description": "d",
+		}
+		if tc.taskType != "" {
+			record["task_type"] = tc.taskType
+		}
+		turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{}, at)
+		if tc.present && len(turns) != 1 {
+			t.Fatalf("%s: expected one turn, got %#v", tc.name, turns)
+		}
+		if !tc.present && len(turns) != 0 {
+			t.Fatalf("%s: expected no turns, got %#v", tc.name, turns)
+		}
 	}
 }
