@@ -228,6 +228,91 @@ const health = {
   proposals: [],
 };
 
+const runtimeProfile = {
+  id: "demo-profile",
+  name: "Codex Sandbox",
+  provider: "codex",
+  fields: {
+    model_provider_id: "demo-provider",
+    model: "gpt-5.2-codex",
+    reasoning_effort: "medium",
+    default_runner: "sandbox",
+    sandbox_image: "cyberpenda/sandbox:2026-08",
+    custom_args: [],
+  },
+  created_at: createdAt,
+  updated_at: updatedAt,
+};
+
+const builtinSource = { kind: "builtin" };
+
+const skills = [
+  {
+    id: "tooling-nmap",
+    name: "nmap",
+    description: "Canonical Nmap CLI syntax, two-pass scanning workflow, and sandbox-safe bounded scan patterns.",
+    source_provenance: builtinSource,
+    enabled: true,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  },
+  {
+    id: "tooling-httpx",
+    name: "httpx",
+    description: "httpx probing patterns for fast host, status, and technology discovery on in-scope targets.",
+    source_provenance: builtinSource,
+    enabled: true,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  },
+  {
+    id: "tooling-ffuf",
+    name: "ffuf",
+    description: "Fuzzing workflows for content and parameter discovery against authenticated endpoints.",
+    source_provenance: builtinSource,
+    enabled: true,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  },
+  {
+    id: "tooling-nuclei",
+    name: "nuclei",
+    description: "Template-driven vulnerability scanning with curated, sandbox-safe checksets.",
+    source_provenance: builtinSource,
+    enabled: false,
+    globally_opted_out: true,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  },
+  {
+    id: "tooling-sqlmap",
+    name: "sqlmap",
+    description: "SQL injection detection and data extraction playbooks for authenticated APIs.",
+    source_provenance: builtinSource,
+    enabled: false,
+    profile_opted_out: true,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  },
+  {
+    id: "ctf-orchestrator",
+    name: "ctf-orchestrator",
+    description: "Orchestrate a timed multi-target offensive/CTF session with a Decide/Execute + knowledge-graph architecture.",
+    source_provenance: builtinSource,
+    enabled: true,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  },
+  {
+    id: "acme-api-runbook",
+    name: "Acme API Runbook",
+    description: "Operator-authored runbook capturing the Acme administrative authorization test procedure.",
+    enabled: true,
+    created_at: createdAt,
+    updated_at: updatedAt,
+  },
+];
+
 const readRoutes: Array<[RegExp, unknown | ((path: string) => unknown)]> = [
   [/^\/api\/projects$/, { projects: [project] }],
   [/^\/api\/workspace\/navigation(?:\?.*)?$/, { revision: "demo-12", changed: true, projects: [{ ...project, tasks: [task] }] }],
@@ -256,13 +341,34 @@ const readRoutes: Array<[RegExp, unknown | ((path: string) => unknown)]> = [
   [new RegExp(`^/api/v2/projects/${PROJECT_ID}/blackboard/health$`), health],
   [new RegExp(`^/api/v2/projects/${PROJECT_ID}/reports/pentest\\?format=json$`), report],
   [new RegExp(`^/api/v2/projects/${PROJECT_ID}/reports/pentest\\?format=markdown$`), { schema: "report-markdown/v2", markdown: reportMarkdown }],
-  [/^\/api\/runtime-profiles$/, { profiles: [] }],
+  [/^\/api\/runtime-profiles$/, { profiles: [runtimeProfile] }],
+  [new RegExp(`^/api/runtime-profiles/${runtimeProfile.id}/merged-config-preview$`), {
+    provider: runtimeProfile.provider,
+    merged: {
+      model_provider_id: "demo-provider",
+      model: "gpt-5.2-codex",
+      reasoning_effort: "medium",
+      default_runner: "sandbox",
+      sandbox_image: "cyberpenda/sandbox:2026-08",
+    },
+  }],
+  [new RegExp(`^/api/runtime-profiles/${runtimeProfile.id}/projected-config$`), {
+    provider: runtimeProfile.provider,
+    format: "markdown",
+    text: "# Codex launch environment (redacted demo)\n\n- model_provider_id: demo-provider\n- model: gpt-5.2-codex\n- default_runner: sandbox\n",
+  }],
   [/^\/api\/runtime-plugins$/, { plugins: [] }],
   [/^\/api\/runtime-extensions$/, { extensions: [] }],
   [/^\/api\/runtime-extension-catalog$/, { items: [] }],
   [/^\/api\/model-providers$/, { providers: [] }],
   [/^\/api\/credential-bindings$/, { bindings: [] }],
-  [/^\/api\/skills(?:\?.*)?$/, { skills: [] }],
+  [/^\/api\/skills(?:\?.*)?$/, { skills }],
+  [/^\/api\/skills\/([^/?]+)$/, (path: string) => {
+    const id = decodeURIComponent(path.split("/").pop() ?? "");
+    const found = skills.find((skill) => skill.id === id);
+    if (!found) throw new Error(`Demo data is not available for ${path}`);
+    return { ...found, files: { "SKILL.md": `# ${found.name}\n\nRead-only demo instruction body for ${found.name}.\n` } };
+  }],
   [/^\/api\/health$/, { status: "ok" }],
 ];
 

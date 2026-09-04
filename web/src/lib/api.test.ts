@@ -21,6 +21,36 @@ describe("demo API", () => {
     ]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("serves the sample Skill library and Runtime Profile for the updated Skills UI", async () => {
+    vi.stubEnv("VITE_DEMO_MODE", "true");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const skills = await apiGet<{ skills: Array<{
+      id: string;
+      enabled: boolean;
+      globally_opted_out?: boolean;
+      profile_opted_out?: boolean;
+    }> }>("/api/skills?runtime_profile_id=demo-profile");
+
+    expect(skills.skills).toContainEqual(expect.objectContaining({ id: "tooling-nmap", enabled: true }));
+    expect(skills.skills).toContainEqual(
+      expect.objectContaining({ id: "tooling-nuclei", enabled: false, globally_opted_out: true }),
+    );
+    expect(skills.skills).toContainEqual(
+      expect.objectContaining({ id: "tooling-sqlmap", enabled: false, profile_opted_out: true }),
+    );
+
+    const profiles = await apiGet<{ profiles: Array<{ id: string; provider: string }> }>("/api/runtime-profiles");
+    expect(profiles.profiles).toEqual([expect.objectContaining({ id: "demo-profile", provider: "codex" })]);
+
+    const single = await apiGet<{ id: string; files?: Record<string, string> }>("/api/skills/tooling-nmap");
+    expect(single).toEqual(expect.objectContaining({ id: "tooling-nmap" }));
+    expect(single.files?.["SKILL.md"]).toContain("# nmap");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("api client auth", () => {
