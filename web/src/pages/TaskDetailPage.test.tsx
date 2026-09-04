@@ -571,8 +571,9 @@ describe("TaskDetailPage", () => {
           subagent_type: "general-purpose",
           spawn_tool_use_id: "call_spawn_c06",
           items: [
-            { kind: "tool_call", role: "assistant", tool_name: "Bash", details: { input: { command: "curl hugegraph" } } },
-            { kind: "message", role: "assistant", text: "hugegraph exploited" },
+            { kind: "tool_call", role: "assistant", id: "child-tool-1", seq: 3, continuation: 1, tool_call_id: "call_child_1", tool_name: "Bash", details: { input: { command: "curl hugegraph" } }, created_at: "2026-01-01T00:00:02Z" },
+            { kind: "tool_result", role: "tool", id: "child-result-1", seq: 4, continuation: 1, tool_call_id: "call_child_1", text: "8080 open", created_at: "2026-01-01T00:00:03Z" },
+            { kind: "message", role: "assistant", id: "child-msg-1", seq: 5, continuation: 1, text: "hugegraph exploited", created_at: "2026-01-01T00:00:04Z" },
           ],
         },
         created_at: "2026-01-01T00:00:12Z",
@@ -589,7 +590,16 @@ describe("TaskDetailPage", () => {
     expect(childText).not.toBeVisible();
     await userEvent.click(screen.getByText("Subagent general-purpose · completed"));
     expect(screen.getByText("hugegraph exploited")).toBeVisible();
-    expect(screen.getByText(/curl hugegraph/)).toBeVisible();
+    // The child's tool call renders with the same collapsed tool-row treatment
+    // as the main thread: one collapsed row pairing the call with its result,
+    // with only the summary preview visible until expanded.
+    const toolRow = within(row).getByTestId("transcript-tool-row");
+    expect(toolRow).not.toHaveAttribute("open");
+    expect(within(toolRow).getByText("Bash · curl hugegraph")).toBeVisible();
+    expect(within(toolRow).getByText(/Result · 8080 open/)).toBeVisible();
+    expect(toolRow.querySelector("pre")).not.toBeVisible();
+    await userEvent.click(within(toolRow).getByText("Bash · curl hugegraph"));
+    expect(toolRow.querySelector("pre")).toBeVisible();
   });
 
   it("keeps agent messages and tool rows tight, only spacing out new user turns", async () => {

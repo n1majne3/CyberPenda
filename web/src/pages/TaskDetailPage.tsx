@@ -9,7 +9,7 @@ import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { ErrorState, LoadingState, PageContainer } from "@/components/shared";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
 import { AttachmentFileRow } from "@/components/AttachmentPicker";
-import { collapsedTranscriptTitle, toolCallFields, toolInputPreview } from "./taskDetailView";
+import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
 import { formatDateTime, formatRelativeTime } from "@/lib/format";
@@ -1845,6 +1845,9 @@ function ToolTranscriptRow({ call, result }: { call?: TaskTranscriptEntry; resul
 
 function SubagentBlockRow({ entry }: { entry: TaskTranscriptEntry }) {
   const items = Array.isArray(entry.details?.items) ? (entry.details?.items as TaskTranscriptEntry[]) : [];
+  // The child's items render with the same row machinery as the main thread:
+  // tool calls pair with their results and collapse like every other tool row.
+  const rows = buildTranscriptRows(items);
   return (
     <details data-testid="transcript-subagent-row" className="group">
       <summary className={cn(
@@ -1856,34 +1859,15 @@ function SubagentBlockRow({ entry }: { entry: TaskTranscriptEntry }) {
           {collapsedTranscriptTitle(entry)}
         </span>
       </summary>
-      {items.length > 0 && (
+      {rows.length > 0 && (
         <div className="ml-[1.625rem] space-y-1 border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
-          {items.map((item, index) => (
-            <div key={`${entry.id}-item-${index}`} className="text-xs leading-5">
-              {subagentItemLine(item)}
-            </div>
+          {rows.map((row) => (
+            <TranscriptRow key={`${entry.id}-${row.entry.id}`} entry={row.entry} pairedResult={row.result} />
           ))}
         </div>
       )}
     </details>
   );
-}
-
-function subagentItemLine(item: TaskTranscriptEntry) {
-  if (item.kind === "tool_call") {
-    const preview = toolInputPreview(item);
-    return (
-      <span className="font-mono text-foreground/80">
-        <span className="text-muted-foreground">tool</span> {item.tool_name || "Tool"}
-        {preview ? <span className="text-muted-foreground"> · {preview}</span> : null}
-      </span>
-    );
-  }
-  if (item.kind === "reasoning") {
-    return <span className="italic text-muted-foreground">{item.text}</span>;
-  }
-  const text = item.text || "…";
-  return <span className="whitespace-pre-wrap break-words text-foreground/80">{text}</span>;
 }
 
 function CollapsedTranscriptRow({ entry, autoExpand = false }: { entry: TaskTranscriptEntry; autoExpand?: boolean }) {
