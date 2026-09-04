@@ -78,8 +78,9 @@ func parseCodexCollabAgentToolCall(record map[string]any, createdAt time.Time) [
 }
 
 // parseClaudeSubagentActivity projects a Claude Code stream-json system record
-// whose subtype is task_started / task_progress / task_failed into one
-// Subagent Activity turn keyed by task_id.
+// whose subtype is task_started / task_progress / task_failed (legacy sync
+// Task-tool vocabulary) or task_notification / task_updated (the current
+// async-agent vocabulary) into one Subagent Activity turn keyed by task_id.
 func parseClaudeSubagentActivity(record map[string]any, createdAt time.Time) []Turn {
 	taskID := firstText(record, "task_id", "taskId")
 	if taskID == "" {
@@ -90,26 +91,51 @@ func parseClaudeSubagentActivity(record map[string]any, createdAt time.Time) []T
 	if label == "" {
 		label = "Subagent " + taskID
 	}
+	phase := claudeSubagentActivityState(subtype, firstText(record, "status"))
+	if subtype == "task_updated" {
+		if patch, ok := mapValue(record, "patch"); ok {
+			phase = claudeSubagentActivityState("task_updated", firstText(patch, "status"))
+		}
+	}
+	details := map[string]any{}
+	if spawnToolUseID := firstText(record, "tool_use_id", "toolUseId"); spawnToolUseID != "" {
+		details["spawn_tool_use_id"] = spawnToolUseID
+	}
+	if subagentType := firstText(record, "subagent_type", "subagentType", "agent_type", "agentType"); subagentType != "" {
+		details["subagent_type"] = subagentType
+	}
+	if taskType := firstText(record, "task_type", "taskType"); taskType != "" {
+		details["task_type"] = taskType
+	}
 	return []Turn{{
 		ProviderItemID: taskID,
-		LifecyclePhase: claudeSubagentActivityState(subtype, firstText(record, "status")),
+		LifecyclePhase: phase,
 		Kind:           KindSubagentActivity,
 		Role:           roleAssistant,
 		Text:           label,
 		Tool:           "claude_code",
+		Details:        nilIfEmpty(details),
 		ContentIndex:   -1,
 		CreatedAt:      createdAt,
 	}}
 }
 
 // isClaudeSubagentSystemRecord reports whether a Claude system record carries
-// Task-tool subagent activity worth projecting (rather than noise to drop).
+// child-agent activity worth projecting (rather than noise to drop).
 func isClaudeSubagentSystemRecord(record map[string]any) bool {
 	if !strings.EqualFold(firstText(record, "type"), "system") {
 		return false
 	}
-	switch strings.ToLower(firstText(record, "subtype")) {
-	case "task_started", "task_progress", "task_failed":
+	return isClaudeSubagentLifecycleSubtype(firstText(record, "subtype"))
+}
+
+// isClaudeSubagentLifecycleSubtype reports whether a Claude system record
+// subtype carries child-agent lifecycle activity. task_started / task_progress
+// / task_failed are the legacy sync Task-tool vocabulary; task_notification /
+// task_updated are the current async-agent vocabulary.
+func isClaudeSubagentLifecycleSubtype(subtype string) bool {
+	switch strings.ToLower(subtype) {
+	case "task_started", "task_progress", "task_failed", "task_notification", "task_updated":
 		return true
 	default:
 		return false
@@ -145,16 +171,42 @@ func codexCollabAgentState(status string) string {
 	}
 }
 
-// claudeSubagentActivityState maps a task_* subtype onto the coarse shared
-// state. Progress keeps the subagent live; only a terminal failure settles it.
-// Claude Code's stream-json emits no task_completed signal, so a successful
-// Task-tool subagent remains "started" — that is the only terminal state the
-// wire exposes for this provider.
+// claudeSubagentActivityState maps a task_* subtype or task_notification /
+// task_updated status onto the coarse shared state. Progress keeps the
+// subagent live; task_notification status and task_updated patch statuses are
+// the current terminal vocabulary (completed / failed / stopped). Legacy
+// stream-json emitted task_failed instead; that spelling stays supported.
 func claudeSubagentActivityState(subtype, status string) string {
-	if subtype == "task_failed" || strings.EqualFold(status, "failed") {
+	switch subtype {
+	case "task_failed":
 		return SubagentActivityFailed
+	case "task_notification":
+		switch strings.ToLower(status) {
+		case "completed":
+			return SubagentActivityCompleted
+		case "failed":
+			return SubagentActivityFailed
+		case "stopped", "interrupted":
+			return SubagentActivityInterrupted
+		default:
+			return SubagentActivityStarted
+		}
+	case "task_updated":
+		switch strings.ToLower(status) {
+		case "completed":
+			return SubagentActivityCompleted
+		case "failed", "killed":
+			return SubagentActivityFailed
+		default:
+			// pending, running, paused: the child is live.
+			return SubagentActivityStarted
+		}
+	default:
+		if strings.EqualFold(status, "failed") {
+			return SubagentActivityFailed
+		}
+		return SubagentActivityStarted
 	}
-	return SubagentActivityStarted
 }
 
 // isPiSubagentRecord reports whether a Pi record carries a settled top-level

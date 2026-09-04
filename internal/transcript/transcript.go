@@ -22,6 +22,9 @@ const (
 	KindToolResult    = "tool_result"
 	KindRuntimeOutput = "runtime_output"
 	KindContinuation  = "continuation"
+	// KindSubagentBlock is the one collapsed, attributed conversation block a
+	// child agent projects as, anchored at the spawning tool-call row.
+	KindSubagentBlock = "subagent_block"
 
 	RoleAssistant = "assistant"
 	RoleRuntime   = "runtime"
@@ -112,6 +115,7 @@ func BuildWindow(subject Subject, events []Event, context WindowContext) []Entry
 
 	continuation := context.Continuation
 	adapter := context.Adapter
+	children := newChildBlocks()
 	for _, event := range events {
 		if event.Kind == "lifecycle" {
 			phase := stringValue(event.Payload, "phase")
@@ -129,9 +133,19 @@ func BuildWindow(subject Subject, events []Event, context WindowContext) []Entry
 			}
 			continue
 		}
-		entries = appendOrCoalesceTranscript(entries, entriesForEvent(event, continuation, adapter))
+		if event.Kind == "runtime_output" {
+			children.beginEvent(lastEntryID(entries))
+		}
+		entries = appendOrCoalesceTranscript(entries, entriesForEvent(event, continuation, adapter, children))
 	}
-	return entries
+	return appendChildBlocks(entries, children)
+}
+
+func lastEntryID(entries []Entry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	return entries[len(entries)-1].ID
 }
 
 // appendOrCoalesceTranscript joins adjacent assistant message chunks from one
@@ -260,7 +274,7 @@ func lifecycleEntry(event Event, continuation int) (Entry, bool) {
 	}
 }
 
-func entriesForEvent(event Event, continuation int, adapter string) []Entry {
+func entriesForEvent(event Event, continuation int, adapter string, children *childBlocks) []Entry {
 	switch event.Kind {
 	case "steering":
 		if entry, ok := nativeSteeringEntry(event, continuation); ok {
@@ -322,7 +336,7 @@ func entriesForEvent(event Event, continuation int, adapter string) []Entry {
 				parseAdapter = provider
 			}
 		}
-		if parsed, recognized := parseRuntimeOutput(event, continuation, parseAdapter, text); recognized {
+		if parsed, recognized := parseRuntimeOutput(event, continuation, parseAdapter, text, children); recognized {
 			return parsed
 		}
 		if isIgnorableUnparsedRuntimeLine(text) {
@@ -368,7 +382,7 @@ func nativeSteeringEntry(event Event, continuation int) (Entry, bool) {
 	}, true
 }
 
-func parseRuntimeOutput(event Event, continuation int, adapter, text string) ([]Entry, bool) {
+func parseRuntimeOutput(event Event, continuation int, adapter, text string, children *childBlocks) ([]Entry, bool) {
 	parser := ParserForAdapter(adapter, nil)
 	if parser == "plain_runtime_output" {
 		return nil, false
@@ -390,7 +404,7 @@ func parseRuntimeOutput(event Event, continuation int, adapter, text string) ([]
 	if len(turns) == 0 {
 		return nil, false
 	}
-	return turnsToEntries(turns, base), true
+	return splitTurns(turns, base, children), true
 }
 
 // ParserForAdapter returns the manifest-selected transcript parser for a runtime
@@ -417,25 +431,56 @@ func ParseRecord(record map[string]any, base Entry) []Entry {
 }
 
 func turnsToEntries(turns []runtimeoutput.Turn, base Entry) []Entry {
+	return splitTurns(turns, base, nil)
+}
+
+// splitTurns projects normalized turns into main-thread entries. Subagent
+// Activity observations and child-attributed items route into the child-block
+// collector instead; with a nil collector both stay dropped, preserving the
+// legacy behavior of the exported per-record parsers.
+func splitTurns(turns []runtimeoutput.Turn, base Entry, children *childBlocks) []Entry {
 	entries := make([]Entry, 0, len(turns))
 	for _, turn := range runtimeoutput.ReconcileLifecycle(turns) {
-		switch turn.Kind {
-		case runtimeoutput.KindReasoning:
-			entries = append(entries, reasoningEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "reasoning")))
-		case runtimeoutput.KindText:
-			// Provider user records are internal prompt/session frames. Operator
-			// text is projected only from durable conversation or steering Events.
-			if turn.Role == "user" {
-				continue
-			}
-			entries = append(entries, messageEntry(base, entryID(base.ID, "-message", turn.ContentIndex), mapRuntimeRole(turn.Role), turn.Text))
-		case runtimeoutput.KindToolUse:
-			entries = append(entries, toolCallEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-call")))
-		case runtimeoutput.KindToolResult:
-			entries = append(entries, toolResultEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-result")))
+		if children != nil && turn.Kind == runtimeoutput.KindSubagentActivity {
+			children.observeActivity(turn, base)
+			continue
 		}
+		entry, ok := entryFromTurn(turn, base)
+		if !ok {
+			continue
+		}
+		if children != nil && turn.AgentID != "" {
+			children.observeItem(turn, entry, base)
+			continue
+		}
+		if turn.AgentID != "" {
+			// The single-record projection has no block to hold a child turn;
+			// dropping keeps child work out of the main-thread flow.
+			continue
+		}
+		entries = append(entries, entry)
 	}
 	return entries
+}
+
+func entryFromTurn(turn runtimeoutput.Turn, base Entry) (Entry, bool) {
+	switch turn.Kind {
+	case runtimeoutput.KindReasoning:
+		return reasoningEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "reasoning")), true
+	case runtimeoutput.KindText:
+		// Provider user records are internal prompt/session frames. Operator
+		// text is projected only from durable conversation or steering Events.
+		if turn.Role == "user" {
+			return Entry{}, false
+		}
+		return messageEntry(base, entryID(base.ID, "-message", turn.ContentIndex), mapRuntimeRole(turn.Role), turn.Text), true
+	case runtimeoutput.KindToolUse:
+		return toolCallEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-call")), true
+	case runtimeoutput.KindToolResult:
+		return toolResultEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-result")), true
+	default:
+		return Entry{}, false
+	}
 }
 
 func stableTurnEntryID(turn runtimeoutput.Turn, base Entry, kind string) string {

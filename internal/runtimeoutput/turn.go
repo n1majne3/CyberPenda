@@ -37,17 +37,21 @@ type Turn struct {
 	SourceSeq      int
 	ProviderItemID string
 	LifecyclePhase string
-	Incremental    bool
-	Kind           Kind
-	Role           string
-	Text           string
-	Tool           string
-	Input          map[string]any
-	Output         string
-	ToolCallID     string
-	Details        map[string]any
-	ContentIndex   int // block index within provider content; -1 omits the numeric suffix
-	CreatedAt      time.Time
+	// AgentID carries provider child-agent attribution for multiplexed stream
+	// items (for example a Claude async Agent-tool child). Empty means the
+	// item belongs to the main thread.
+	AgentID      string
+	Incremental  bool
+	Kind         Kind
+	Role         string
+	Text         string
+	Tool         string
+	Input        map[string]any
+	Output       string
+	ToolCallID   string
+	Details      map[string]any
+	ContentIndex int // block index within provider content; -1 omits the numeric suffix
+	CreatedAt    time.Time
 }
 
 // ParseOptions controls which fragments are emitted from a provider record.

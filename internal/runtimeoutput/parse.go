@@ -86,7 +86,7 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 	}
 	if delta, ok := mapValue(record, "delta"); ok {
 		if text := firstText(delta, "text", "content"); text != "" {
-			return []Turn{{Kind: KindText, Role: roleAssistant, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+			return stampAgentIdentity([]Turn{{Kind: KindText, Role: roleAssistant, Text: text, ContentIndex: -1, CreatedAt: createdAt}}, record)
 		}
 		// Streaming reasoning deltas carry a synthesized provider item id so
 		// every batched projection replaces one stable transcript row.
@@ -108,7 +108,7 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 		}
 		return parseMessageRecord(record, opts, roleFromType(recordType), createdAt)
 	case "assistant", "user", "message", "assistant_message", "agent_message", "agentmessage", "response.output_text", "output_text", "message_delta", "content_block_delta":
-		return parseMessageRecord(record, opts, roleFromType(recordType), createdAt)
+		return stampAgentIdentity(parseMessageRecord(record, opts, roleFromType(recordType), createdAt), record)
 	case "commandexecution":
 		return parseCodexCommandExecution(record, meta, createdAt)
 	case "mcptoolcall":
@@ -118,9 +118,9 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 	case "usermessage":
 		return nil
 	case "tool_call", "function_call", "tool_use":
-		return []Turn{toolUseTurn(record, createdAt)}
+		return stampAgentIdentity([]Turn{toolUseTurn(record, createdAt)}, record)
 	case "tool_result", "function_call_output":
-		return []Turn{toolResultTurn(record, createdAt)}
+		return stampAgentIdentity([]Turn{toolResultTurn(record, createdAt)}, record)
 	case "result":
 		if opts.IncludeErrors && isTruthy(record["is_error"]) {
 			content := firstText(record, "error", "message", "content")
@@ -145,6 +145,25 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 		}
 		return nil
 	}
+}
+
+// stampAgentIdentity copies provider child-agent identity from a multiplexed
+// stream record onto every Turn it produced. Unmarked records pass through
+// unchanged.
+func stampAgentIdentity(turns []Turn, record map[string]any) []Turn {
+	if len(turns) == 0 {
+		return turns
+	}
+	agentID := firstText(record, "agentId", "agent_id", "attributionAgent", "attribution_agent")
+	if agentID == "" {
+		return turns
+	}
+	stamped := make([]Turn, len(turns))
+	copy(stamped, turns)
+	for index := range stamped {
+		stamped[index].AgentID = agentID
+	}
+	return stamped
 }
 
 func parseMessageRecord(record map[string]any, opts ParseOptions, role string, createdAt time.Time) []Turn {

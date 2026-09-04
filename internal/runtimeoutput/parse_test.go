@@ -376,6 +376,51 @@ func TestCoalesceMergesAdjacentReasoning(t *testing.T) {
 	}
 }
 
+// Streaming coalescing must not merge a child-attributed turn with a
+// main-thread turn, and when two child turns coalesce the child identity
+// survives so the merged item stays out of the main-thread flow.
+func TestCoalescePreservesChildAttribution(t *testing.T) {
+	child := []runtimeoutput.Turn{
+		{Kind: runtimeoutput.KindText, Text: "child part one", AgentID: "accf5809249284700"},
+		{Kind: runtimeoutput.KindText, Text: " child part two", AgentID: "accf5809249284700"},
+	}
+	got := runtimeoutput.CoalesceStreaming(child)
+	if len(got) != 1 {
+		t.Fatalf("expected one coalesced child turn, got %#v", got)
+	}
+	if got[0].AgentID != "accf5809249284700" {
+		t.Fatalf("child identity lost on coalesce: %#v", got[0])
+	}
+
+	main := []runtimeoutput.Turn{
+		{Kind: runtimeoutput.KindText, Text: "main", AgentID: ""},
+		{Kind: runtimeoutput.KindText, Text: "child", AgentID: "accf5809249284700"},
+	}
+	kept := runtimeoutput.CoalesceStreaming(main)
+	if len(kept) != 2 {
+		t.Fatalf("main and child turns must not coalesce: %#v", kept)
+	}
+	if kept[0].AgentID != "" || kept[1].AgentID != "accf5809249284700" {
+		t.Fatalf("attribution swapped on non-merge: %#v", kept)
+	}
+}
+
+// ReconcileLifecycle merging one child's provider item must preserve the
+// child identity even when the later record omits the marker.
+func TestReconcileLifecyclePreservesChildAttribution(t *testing.T) {
+	turns := []runtimeoutput.Turn{
+		{Kind: runtimeoutput.KindToolUse, ToolCallID: "call_child_1", AgentID: "accf5809249284700"},
+		{Kind: runtimeoutput.KindToolUse, ToolCallID: "call_child_1"},
+	}
+	got := runtimeoutput.ReconcileLifecycle(turns)
+	if len(got) != 1 {
+		t.Fatalf("expected one merged tool_use, got %#v", got)
+	}
+	if got[0].AgentID != "accf5809249284700" {
+		t.Fatalf("child identity lost on lifecycle reconcile: %#v", got[0])
+	}
+}
+
 func TestParseRecordHermesACPSessionUpdates(t *testing.T) {
 	at := time.Date(2026, 8, 14, 12, 0, 0, 0, time.UTC)
 	cases := []struct {

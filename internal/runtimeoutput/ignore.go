@@ -80,11 +80,14 @@ func isIgnorableSystemRecord(record map[string]any) bool {
 	case "thinking_tokens", "init":
 		return true
 	}
-	// Task-tool subagent activity (task_started / task_progress / task_failed)
-	// is projected onto the timeline as Subagent Activity; any other task_*
-	// subtype remains noise.
-	switch strings.ToLower(subtype) {
-	case "task_started", "task_progress", "task_failed":
+	// background_tasks_changed is a membership level signal with no per-child
+	// projection value; the per-child task lifecycle records carry identity.
+	if strings.HasPrefix(subtype, "background_tasks") {
+		return true
+	}
+	// Child-agent task lifecycle records project onto the timeline as
+	// Subagent Activity; any other task_* subtype remains noise.
+	if isClaudeSubagentLifecycleSubtype(subtype) {
 		return false
 	}
 	return strings.HasPrefix(subtype, "task_")

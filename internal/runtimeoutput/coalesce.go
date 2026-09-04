@@ -20,6 +20,7 @@ func CoalesceStreaming(turns []Turn) []Turn {
 				SourceSeq:      turn.SourceSeq,
 				ProviderItemID: prev.ProviderItemID,
 				LifecyclePhase: turn.LifecyclePhase,
+				AgentID:        prev.AgentID,
 				Incremental:    turn.Incremental,
 				Kind:           prev.Kind,
 				Role:           prev.Role,
@@ -102,6 +103,9 @@ func mergeLifecycleTurn(previous, next Turn) Turn {
 	if next.ProviderItemID == "" {
 		next.ProviderItemID = previous.ProviderItemID
 	}
+	if next.AgentID == "" {
+		next.AgentID = previous.AgentID
+	}
 	if next.ToolCallID == "" {
 		next.ToolCallID = previous.ToolCallID
 	}
@@ -123,5 +127,5 @@ func mergeLifecycleTurn(previous, next Turn) Turn {
 }
 
 func canMergeStreamingText(prev, next Turn) bool {
-	return (prev.Kind == KindReasoning || prev.Kind == KindText) && prev.Kind == next.Kind
+	return (prev.Kind == KindReasoning || prev.Kind == KindText) && prev.Kind == next.Kind && prev.AgentID == next.AgentID
 }
