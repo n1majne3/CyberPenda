@@ -392,7 +392,10 @@ func NewServer(config Config) (*Server, error) {
 	})
 	server.routes()
 	server.reconcileInterruptedTasks(nil)
-	server.reconcileInterruptedSessions(nil)
+	if err := server.reconcileInterruptedSessions(nil); err != nil {
+		_ = server.Close()
+		return nil, err
+	}
 	server.recoverAcceptedSteering(context.Background())
 
 	return server, nil
@@ -400,12 +403,14 @@ func NewServer(config Config) (*Server, error) {
 
 // reconcileInterruptedSessions closes the in-memory ownership gap after a
 // daemon restart. Provider bridges are intentionally not reopened implicitly;
-// every durable open Session continuation is marked interrupted and the next
+// Sandbox containers are removed before their Continuations become interrupted.
+// A cleanup failure leaves the Continuation active for the next startup retry.
+// Every recovered open Session continuation is marked interrupted and the next
 // user message/resume request creates a fresh continuation while retaining the
 // Session identity and prior native-runtime metadata.
-func (server *Server) reconcileInterruptedSessions(excludedIDs ...[]string) {
+func (server *Server) reconcileInterruptedSessions(excludedIDs ...[]string) error {
 	if server.sessions == nil {
-		return
+		return nil
 	}
 	excluded := map[string]bool{}
 	if len(excludedIDs) > 0 {
@@ -415,8 +420,7 @@ func (server *Server) reconcileInterruptedSessions(excludedIDs ...[]string) {
 	}
 	open, err := server.sessions.List(session.LifecycleOpen)
 	if err != nil {
-		server.logger.Printf("Session reconcile: failed to list open Sessions: %v", err)
-		return
+		return fmt.Errorf("Session recovery: list open Sessions: %w", err)
 	}
 	for _, found := range open {
 		if excluded[found.ID] {
@@ -424,15 +428,21 @@ func (server *Server) reconcileInterruptedSessions(excludedIDs ...[]string) {
 		}
 		active, activeErr := server.sessions.ActiveContinuation(found.ID)
 		if activeErr != nil {
-			server.logger.Printf("Session reconcile: failed to inspect Session %s: %v", found.ID, activeErr)
-			continue
+			return fmt.Errorf("Session recovery: inspect Session %s: %w", found.ID, activeErr)
 		}
 		if active == nil {
 			continue
 		}
+		if active.Runner == session.RunnerSandbox && strings.TrimSpace(active.ContainerID) != "" {
+			if err := runtime.StopDockerContainer(server.containerCLI, active.ContainerID, 2*time.Second); err != nil {
+				return fmt.Errorf("Session recovery: stop container %s for Session %s: %w", active.ContainerID, found.ID, err)
+			}
+			if err := runtime.RemoveDockerContainer(server.containerCLI, active.ContainerID); err != nil {
+				return fmt.Errorf("Session recovery: remove container %s for Session %s: %w", active.ContainerID, found.ID, err)
+			}
+		}
 		if _, statusErr := server.sessions.UpdateContinuationStatus(active.ID, session.RuntimeStatusInterrupted); statusErr != nil {
-			server.logger.Printf("Session reconcile: failed to interrupt continuation %s: %v", active.ID, statusErr)
-			continue
+			return fmt.Errorf("Session recovery: interrupt Continuation %s: %w", active.ID, statusErr)
 		}
 		payload := session.EventPayload{
 			"phase":           "provider_session_recovery_required",
@@ -449,6 +459,7 @@ func (server *Server) reconcileInterruptedSessions(excludedIDs ...[]string) {
 		}
 		_, _ = server.sessions.AppendEvent(found.ID, session.EventKindLifecycle, payload)
 	}
+	return nil
 }
 
 func resolveRuntimeStorage(config Config) (string, string, error) {
