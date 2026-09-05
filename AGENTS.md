@@ -1,7 +1,7 @@
 @CONTEXT.md
 
 Always read CONTEXT.md, unconditionally.
-Use TDD
+Use TDD(but some changes make be not nessary to be tested) and ASD-STE100 Simplified Technical English(or Chines if user talks in Chinese) to write code, tests, and documentation. Always use the ubiquitous language in CONTEXT.md files. Always update CONTEXT.md when the user explicitly resolves a domain ambiguity.
 
 ## Workspace file safety
 

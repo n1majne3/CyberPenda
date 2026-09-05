@@ -61,3 +61,4 @@ pentest 2.db-wal
 # next to pentest.db; not repo content. Built-in sources live in
 # internal/skill/builtins/assets.
 /skills/
+pentest.db.*
