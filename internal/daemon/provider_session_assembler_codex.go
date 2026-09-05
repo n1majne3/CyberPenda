@@ -38,7 +38,10 @@ func (a codexAssembler) SandboxCommand(assembly providerSessionAssembly) ([]stri
 }
 
 func (a codexAssembler) Setup(ctx context.Context, bridge productionBridgeTransport, assembly providerSessionAssembly) (providerSessionSetup, error) {
-	_, err := sendProviderSetupRPC(ctx, bridge, runtime.SandboxBridgeRequest{ID: "setup:initialize", Method: "initialize", Params: json.RawMessage(`{"clientInfo":{"name":"cyberpenda","version":"dev"}}`)})
+	// Codex rebrands its process-global User-Agent originator from
+	// clientInfo.name. Only codex's own non-originating client names keep the
+	// default codex_cli_rs user agent, so advertise that identity.
+	_, err := sendProviderSetupRPC(ctx, bridge, runtime.SandboxBridgeRequest{ID: "setup:initialize", Method: "initialize", Params: json.RawMessage(`{"clientInfo":{"name":"codex_app_server_daemon","version":"dev"}}`)})
 	if err != nil {
 		return providerSessionSetup{}, err
 	}

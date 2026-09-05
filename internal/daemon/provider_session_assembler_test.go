@@ -332,11 +332,17 @@ type codexSetupTestBridge struct {
 	initialize json.RawMessage
 	closed     chan struct{}
 	terminated chan struct{}
+
+	mu               sync.Mutex
+	initializeParams json.RawMessage
 }
 
 func (b *codexSetupTestBridge) Send(_ context.Context, request runtime.SandboxBridgeRequest) (runtime.SandboxBridgeResponse, error) {
 	switch request.Method {
 	case "initialize":
+		b.mu.Lock()
+		b.initializeParams = request.Params
+		b.mu.Unlock()
 		return runtime.SandboxBridgeResponse{ID: request.ID, Result: b.initialize}, nil
 	case "thread/start":
 		return runtime.SandboxBridgeResponse{ID: request.ID, Result: json.RawMessage(`{"thread":{"id":"thread-version"}}`)}, nil
@@ -384,5 +390,44 @@ func TestCodexAssemblerAdvertisesManifestSteerUntilWireNegotiation(t *testing.T)
 				t.Fatal("wire negotiation removed interrupt_then_replace fallback")
 			}
 		})
+	}
+}
+
+// Codex derives its process-global User-Agent originator from the
+// initialize clientInfo.name; only codex's own non-originating client names
+// ("codex_app_server_daemon", "codex-backend") keep the default codex_cli_rs
+// user agent instead of rebranding it to the client name.
+func TestCodexAssemblerInitializeKeepsCodexDefaultUserAgent(t *testing.T) {
+	registry := runtimeplugin.MustBuiltinRegistry()
+	bridge := &codexSetupTestBridge{
+		initialize: json.RawMessage(`{}`),
+		closed:     make(chan struct{}), terminated: make(chan struct{}),
+	}
+	_, err := (codexAssembler{plugins: registry, bridge: "bridge"}).Setup(context.Background(), bridge, providerSessionAssembly{
+		request: ProviderSessionLaunchRequest{
+			Provider:     runtimeprofile.ProviderCodex,
+			Continuation: owner.Continuation{ID: "continuation-1", OwnerID: "task-1"},
+			Facts:        ProviderSessionLaunchFacts{Workdir: "/work"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridge.mu.Lock()
+	params := bridge.initializeParams
+	bridge.mu.Unlock()
+	if len(params) == 0 {
+		t.Fatal("setup sent no initialize params")
+	}
+	var payload struct {
+		ClientInfo struct {
+			Name string `json:"name"`
+		} `json:"clientInfo"`
+	}
+	if err := json.Unmarshal(params, &payload); err != nil {
+		t.Fatalf("initialize params invalid: %v", err)
+	}
+	if payload.ClientInfo.Name != "codex_app_server_daemon" {
+		t.Fatalf("initialize clientInfo.name = %q, want a codex non-originating name that keeps the default codex_cli_rs user agent", payload.ClientInfo.Name)
 	}
 }
