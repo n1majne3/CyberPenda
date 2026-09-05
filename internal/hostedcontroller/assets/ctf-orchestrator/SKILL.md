@@ -17,11 +17,13 @@ description: Orchestrate a timed multi-target offensive/CTF session with a Decid
 | 动作 | Codex | Claude Code |
 | --- | --- | --- |
 | 派发 Execute agent | `spawn_agent` | `Agent` + `run_in_background: true` |
-| 等待/收割 | `wait_agent` | 完成通知或 `TaskOutput` |
-| 发消息 | `send_message` | `SendMessage` |
-| 强制停止 | `interrupt_agent` | `TaskStop` |
+| 等待/收割 | `wait_agent`（必须带 agent id） | 完成通知或 `TaskOutput` |
+| 发消息 | `send_input` | `SendMessage` |
+| 强制停止 | `close_agent` | `TaskStop` |
 
-Codex Profile 必须启用 multi-agent。Claude Code 使用后台 Agent。
+Codex Profile 必须启用 multi-agent。CyberPenda 投影 V1 工具（`multi_agent_v1` 命名空间）：
+`spawn_agent` 用 `fork_context`，不要 `fork_turns` / `task_name`。不要用 V2 的 `send_message` / `interrupt_agent`。
+Claude Code 使用后台 Agent。
 
 环境参数从任务说明读取。开局先执行 `WS="$(pwd -P)"; export WS`，实际 Runtime Workdir 是唯一 `$WS`。
 总时限从任务说明读取；并发容器配额默认 3。Hosted Task 使用 Disabled Blackboard Mode，

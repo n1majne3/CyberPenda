@@ -358,7 +358,7 @@ func TestProjectCodexConfigMultiAgentOnProjectsFeatureAndCaps(t *testing.T) {
 		t.Fatalf("parse projected config: %v\n%s", err, config)
 	}
 	features, ok := parsed["features"].(map[string]any)
-	if !ok || features["multi_agent"] != true {
+	if !ok || features["multi_agent"] != true || features["multi_agent_v2"] != false {
 		t.Fatalf("features = %#v", parsed["features"])
 	}
 	agents, ok := parsed["agents"].(map[string]any)
@@ -367,7 +367,7 @@ func TestProjectCodexConfigMultiAgentOnProjectsFeatureAndCaps(t *testing.T) {
 	}
 }
 
-func TestProjectCodexConfigMultiAgentExplicitOnOverridesModelMetadata(t *testing.T) {
+func TestProjectCodexConfigMultiAgentExplicitOnPinsV1AndDoesNotForceV2(t *testing.T) {
 	enabled := true
 	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{
 		Model:           "model-with-multi-agent-disabled",
@@ -379,8 +379,12 @@ func TestProjectCodexConfigMultiAgentExplicitOnOverridesModelMetadata(t *testing
 		t.Fatalf("parse projected config: %v\n%s", err, config)
 	}
 	features, ok := parsed["features"].(map[string]any)
-	if !ok || features["multi_agent_v2"] != true {
-		t.Fatalf("explicit on must force the V2 override, got %#v", parsed["features"])
+	if !ok || features["multi_agent"] != true || features["multi_agent_v2"] != false {
+		t.Fatalf("explicit on must pin V1 tools, got %#v", parsed["features"])
+	}
+	agents, ok := parsed["agents"].(map[string]any)
+	if !ok || agents["enabled"] != true {
+		t.Fatalf("explicit on must enable agents, got %#v", parsed["agents"])
 	}
 }
 

@@ -88,13 +88,13 @@ function codexWireAPI(protocol: string): string {
  * Codex-native multi-agent lines shared by every generated-config preview,
  * mirroring the daemon's appendCodexMultiAgentTOML projection. An unset
  * control projects nothing so Codex's own feature default applies; an
- * explicit choice projects the on or off keys.
+ * explicit choice projects V1 on/off keys and keeps multi_agent_v2 off.
  */
 export function codexMultiAgentTOMLLines(fields: RuntimeProfileFields): string[] {
   const settings = fields.codex_multi_agent;
   if (!settings) return [];
   const enabled = settings.enabled === true;
-  const lines = ["[features]", `multi_agent = ${enabled}`, `multi_agent_v2 = ${enabled}`];
+  const lines = ["[features]", `multi_agent = ${enabled}`, "multi_agent_v2 = false"];
   lines.push("", "[agents]", `enabled = ${enabled}`);
   if (enabled) {
     if (settings.max_concurrent_threads_per_session) {

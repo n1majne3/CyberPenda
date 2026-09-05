@@ -79,7 +79,7 @@ func TestHostedEvaluationPublishesOnlyCTFOrchestratorAndProjectsBenchmarkEnviron
 		"pentest-tsecbench-client list", "pentest-tsecbench-client start", "pentest-tsecbench-client hint",
 		"pentest-tsecbench-client submit", "pentest-tsecbench-client close", "pentest-tsecbench-client abandon",
 		"Decide", "Execute agent", "FGS", "graph/facts", "ledger.tsv", "WS=\"$(pwd -P)\"",
-		"Codex", "spawn_agent", "wait_agent", "interrupt_agent",
+		"Codex", "spawn_agent", "wait_agent", "send_input", "close_agent",
 		"Claude Code", "run_in_background", "TaskOutput", "TaskStop", "SendMessage",
 		"over_budget", "elapsed_min", "budget_min", "attempt_n", "Challenge Pass Clock",
 	} {

@@ -1182,11 +1182,10 @@ func buildCodexConfigTOML(profile runtimeprofile.Profile, mcpServers []runtimepr
 // own feature default applies (CyberPenda does not suppress native
 // multi-agent behavior); an explicit on projects `features.multi_agent =
 // true` plus `agents.enabled = true` and the caps, which turns the V1 tools
-// on for models whose metadata does not already select a multi-agent
-// version. An explicit on also enables multi_agent_v2 because Codex resolves
-// that override before model metadata; this keeps the operator's on decision
-// effective for models whose metadata disables multi-agent tools. An explicit
-// off projects both off keys because Codex releases
+// on. Explicit on also writes `multi_agent_v2 = false` so Codex keeps the V1
+// tool generation: this product does not rely on first-party GPT catalogs,
+// and V2 spawn encrypts the child task in a way custom model gateways cannot
+// read. An explicit off projects both off keys because Codex releases
 // have shipped with the feature default-on, so an absent key cannot carry an
 // operator's off decision. Off also disables multi_agent_v2 because Codex
 // resolves V2 before agents.enabled. An unset cap is not written, so a Custom Config
@@ -1200,15 +1199,10 @@ func appendCodexMultiAgentTOML(b *strings.Builder, profile runtimeprofile.Profil
 	enabled := settings.Enabled != nil && *settings.Enabled
 	b.WriteString("\n[features]\n")
 	fmt.Fprintf(b, "multi_agent = %t\n", enabled)
-	if enabled {
-		// Codex resolves the V2 config override before model metadata. The V1
-		// feature flag alone cannot force tools on for a model marked Disabled.
-		b.WriteString("multi_agent_v2 = true\n")
-	} else {
-		// Codex resolves V2 before agents.enabled, so an explicit operator off
-		// must disable both tool generations.
-		b.WriteString("multi_agent_v2 = false\n")
-	}
+	// Pin V1 for both explicit on and off. Codex treats multi_agent_v2 as an
+	// override that wins over model metadata; leaving it true on the on path
+	// would advertise encrypted V2 spawn tools.
+	b.WriteString("multi_agent_v2 = false\n")
 	b.WriteString("\n[agents]\n")
 	fmt.Fprintf(b, "enabled = %t\n", enabled)
 	if enabled {

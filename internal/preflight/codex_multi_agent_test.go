@@ -75,8 +75,8 @@ func TestRunPreviewsCodexMultiAgentToolsOnWithCaps(t *testing.T) {
 	if result.CodexMultiAgent.State != "on" {
 		t.Fatalf("expected on preview, got %#v", result.CodexMultiAgent)
 	}
-	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 4 || result.CodexMultiAgent.MaxDepth != 0 {
-		t.Fatalf("expected the V2 thread cap without the V1-only depth, got %#v", result.CodexMultiAgent)
+	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 4 || result.CodexMultiAgent.MaxDepth != 2 {
+		t.Fatalf("expected V1 thread and depth caps, got %#v", result.CodexMultiAgent)
 	}
 }
 
@@ -221,8 +221,8 @@ max_depth = 4
 	if result.CodexMultiAgent == nil || result.CodexMultiAgent.State != "on" {
 		t.Fatalf("expected structured on preview, got %#v", result.CodexMultiAgent)
 	}
-	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 9 || result.CodexMultiAgent.MaxDepth != 0 {
-		t.Fatalf("expected the V2 overlay thread cap without the V1-only depth, got %#v", result.CodexMultiAgent)
+	if result.CodexMultiAgent.MaxConcurrentThreadsPerSession != 9 || result.CodexMultiAgent.MaxDepth != 4 {
+		t.Fatalf("expected V1 overlay thread and depth caps, got %#v", result.CodexMultiAgent)
 	}
 }
 
