@@ -24,6 +24,9 @@ func TestTaskWorkingGraphSettlementCompilesOutboxBeforeLifecycleBoundary(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
 	if err != nil {
 		t.Fatal(err)

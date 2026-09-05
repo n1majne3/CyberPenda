@@ -45,9 +45,10 @@ const (
 
 // ProjectionRequest supplies task and daemon context for launch projection.
 type ProjectionRequest struct {
-	Owner         owner.Contract
-	ScopeSnapshot project.Scope
-	Credentials   *credential.Service
+	BlackboardProtocol string
+	Owner              owner.Contract
+	ScopeSnapshot      project.Scope
+	Credentials        *credential.Service
 	// MaterializedCredentials is an in-memory launch snapshot. A non-nil map
 	// prevents projection from resolving credentials through the Store again.
 	MaterializedCredentials map[string]string
@@ -169,12 +170,14 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if len(req.SkillBundles) > 0 {
 		addSkillProjectionPreview(&projection, req.SkillBundles, layout)
 	}
-	addModeSkillProjectionPreview(&projection, req.BlackboardMode, layout)
+	if req.BlackboardProtocol != "fgs" || req.BlackboardMode == modeskill.ModeDisabled {
+		addModeSkillProjectionPreview(&projection, req.BlackboardMode, layout)
+	}
 	return projection, nil
 }
 
 func projectModeAndUserSkills(layout Layout, req ProjectionRequest) error {
-	if req.BlackboardMode != "" {
+	if req.BlackboardMode != "" && (req.BlackboardProtocol != "fgs" || req.BlackboardMode == modeskill.ModeDisabled) {
 		if _, err := modeskill.Project(layout.SkillsRoot, req.BlackboardMode); err != nil {
 			return err
 		}
@@ -1002,7 +1005,7 @@ func credentialsForBlackboardProjection(credentials map[string]string, projectio
 
 func isBlackboardAuthorityEnv(key string) bool {
 	switch strings.TrimSpace(key) {
-	case "PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_SESSION_ID", "PENTEST_CONTINUATION_ID",
+	case "PENTEST_BLACKBOARD_PROTOCOL", "PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_SESSION_ID", "PENTEST_CONTINUATION_ID",
 		"PENTEST_MCP_URL", "PENTEST_API_URL", "PENTEST_AUTH_TOKEN", "PENTEST_INTERFACE_TOKEN",
 		"PENTEST_BLACKBOARD_MODE", "PENTEST_WORKING_GRAPH_ROOT", "PENTEST_WORKING_GRAPH_OUTBOX",
 		"PENTEST_WORKING_GRAPH_RECEIPTS", "PENTEST_DISABLE_TRUSTED_MCP":
@@ -1822,6 +1825,9 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	}
 	if ctx.Owner.SessionID != "" {
 		env["PENTEST_SESSION_ID"] = ctx.Owner.SessionID
+	}
+	if ctx.BlackboardProtocol != "" {
+		env["PENTEST_BLACKBOARD_PROTOCOL"] = ctx.BlackboardProtocol
 	}
 	if ctx.ContinuationID != "" {
 		env["PENTEST_CONTINUATION_ID"] = ctx.ContinuationID

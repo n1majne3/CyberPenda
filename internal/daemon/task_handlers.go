@@ -530,7 +530,7 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 				return nil
 			}
 			binding := &continuationLaunchBinding{V2Header: &launchHeader, InterfaceToken: plaintextGrant, ContinuationID: continuation.ID}
-			if created.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
+			if created.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph || (created.BlackboardProtocol == "fgs" && created.RunControls.BlackboardMode != task.BlackboardModeDisabled) {
 				projection, prepareErr := workinggraph.NewService().Prepare(context.Background(), workinggraph.OwnerContext{
 					Owner: created.OwnerContract(layout.Workdir), ContinuationID: continuation.ID, Workdir: layout.Workdir,
 				})
@@ -836,14 +836,19 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 	sandbox := created.Runner == task.RunnerSandbox
 	goal = runner.RewriteLoopbackTargets(goal, sandbox)
-	injectedGoal, injectErr := modeskill.InjectInvocation(goal, modeskill.Mode(created.RunControls.BlackboardMode))
+	injectedGoal, injectErr := goal, error(nil)
+	if created.BlackboardProtocol == "fgs" && created.RunControls.BlackboardMode != task.BlackboardModeDisabled {
+		injectedGoal = runner.FGSLaunchInstruction + "\n\n" + goal
+	} else {
+		injectedGoal, injectErr = modeskill.InjectInvocation(goal, modeskill.Mode(created.RunControls.BlackboardMode))
+	}
 	if injectErr != nil {
 		return taskLaunchPlan{}, injectErr
 	}
 	goal = injectedGoal
 	launchGoal := goal
 	if binding != nil {
-		if binding.V2Header != nil {
+		if binding.V2Header != nil && created.BlackboardProtocol != "fgs" {
 			launchGoal = blackboardv2.RenderLaunchHeader(*binding.V2Header) + "\n\nTASK GOAL:\n" + goal
 		}
 	}
@@ -900,6 +905,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 	}
 	projectionRequest := runner.ProjectionRequest{
+		BlackboardProtocol:          created.BlackboardProtocol,
 		Owner:                       created.OwnerContract(layout.Workdir),
 		ScopeSnapshot:               created.ScopeSnapshot,
 		Credentials:                 server.creds,
@@ -983,7 +989,8 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	sandboxNetwork := runner.SandboxNetworkDefault
 	sandboxImage := ""
 	launchCtx := runner.RuntimeOwnerContext{
-		Owner: created.OwnerContract(layout.Workdir), Sandbox: sandbox,
+		BlackboardProtocol: created.BlackboardProtocol,
+		Owner:              created.OwnerContract(layout.Workdir), Sandbox: sandbox,
 		BlackboardMode: string(created.RunControls.BlackboardMode),
 	}
 	if binding != nil {

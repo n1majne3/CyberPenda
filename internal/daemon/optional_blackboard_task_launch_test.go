@@ -39,6 +39,7 @@ func newOptionalBlackboardTaskFixture(t *testing.T) optionalBlackboardTaskFixtur
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil { t.Fatal(err) }
 	profile, err := server.profiles.Create("Claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
 		BinaryPath: "/bin/sh", Model: "claude-test",
 		Env: map[string]string{"PENTEST_INTERFACE_TOKEN": "profile-grant"},

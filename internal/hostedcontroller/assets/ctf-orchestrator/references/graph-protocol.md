@@ -10,6 +10,7 @@ $WS/
   deadline                # 仅在任务说明给出总时限时存在
   state.md
   graph/
+    leader.lock           # 主控心跳：单行 epoch；≤300 秒新鲜（见下方 schema）
     facts/                # 每条事实一个文件，只追加不修改
       001-端口面.md
     data/                 # 大块输出（扫描/源码/dump），fact 里引用文件名
@@ -17,6 +18,16 @@ $WS/
     goals.yaml            # 链题子目标链（可选，链题必用）
     tmux-registry.md      # 活动中的 tmux 会话清单
 ```
+
+## leader.lock（主控单例）
+
+单行 epoch（`date +%s`），代表主控最近一次心跳。
+
+- 主控在主循环每次轮转（≤2 分钟）重写该文件。
+- 开机会话（含 spawn 子线程与后续唤醒线程）：锁缺失或心跳距今 >300 秒 → 接管（写入当前 epoch）；
+  锁新鲜 → 降级为 Execute，从 steps.yaml 认领 open step。
+- spawn 消息可能投递失败：空白唤醒的线程**没有默认身份**，一切以上述分支为准。
+- 任何会话不得删除或绕过该文件；接管时原样覆盖，不追加历史。
 
 `ledger.tsv` 只管理 Execute agent 生命周期。不得写入 `elapsed_min`、`budget_min`、
 `over_budget` 或 `attempt_n`；这些 challenge pass 字段只来自 Hosted Challenge Client list

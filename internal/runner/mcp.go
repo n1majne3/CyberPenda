@@ -16,6 +16,7 @@ import (
 // RuntimeOwnerContext carries one validated owner binding into launch
 // projection. Mixed Task/Session identities cannot be represented.
 type RuntimeOwnerContext struct {
+	BlackboardProtocol   string
 	Owner                owner.Contract
 	MCPURL               string
 	APIURL               string
@@ -32,11 +33,12 @@ type RuntimeOwnerContext struct {
 
 func taskContextFromProjection(req ProjectionRequest, provider runtimeprofile.Provider, mcpURL string) RuntimeOwnerContext {
 	ctx := RuntimeOwnerContext{
-		Owner:         req.Owner,
-		MCPURL:        mcpURL,
-		Provider:      provider,
-		Sandbox:       req.Sandbox,
-		ScopeSnapshot: req.ScopeSnapshot,
+		BlackboardProtocol: req.BlackboardProtocol,
+		Owner:              req.Owner,
+		MCPURL:             mcpURL,
+		Provider:           provider,
+		Sandbox:            req.Sandbox,
+		ScopeSnapshot:      req.ScopeSnapshot,
 	}
 	return ctx
 }
@@ -177,6 +179,9 @@ func writeTaskScopeFile(dir string, scope project.Scope) error {
 }
 
 func writeRuntimeSmokeInstructions(workdir string, ctx RuntimeOwnerContext) error {
+	if ctx.BlackboardProtocol == "fgs" {
+		return writeFGSInstructions(workdir, ctx)
+	}
 	if strings.TrimSpace(ctx.Owner.ID) == "" {
 		return nil
 	}

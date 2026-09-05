@@ -1,0 +1,325 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FGS CLI update input",
+  "description": "Input for pentestctl working-graph emit. Graph references and transitions are checked by the Harness.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "operations"
+  ],
+  "properties": {
+    "operations": {
+      "type": "array",
+      "maxItems": 100,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "key",
+              "title",
+              "success_criteria"
+            ],
+            "properties": {
+              "op": {
+                "const": "goal.create"
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "success_criteria": {
+                "type": "string",
+                "minLength": 1
+              },
+              "parent_goal": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "key",
+              "expected"
+            ],
+            "properties": {
+              "op": {
+                "const": "goal.describe"
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "success_criteria": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expected": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "key",
+              "from",
+              "to"
+            ],
+            "properties": {
+              "op": {
+                "const": "goal.transition"
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              },
+              "from": {
+                "type": "string",
+                "minLength": 1
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1
+              },
+              "facts": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+                },
+                "maxItems": 100
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "key",
+              "goal",
+              "action"
+            ],
+            "properties": {
+              "op": {
+                "const": "step.create"
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              },
+              "goal": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "inputs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+                },
+                "maxItems": 100
+              },
+              "after": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+                },
+                "maxItems": 100
+              },
+              "priority": {
+                "enum": [
+                  "low",
+                  "normal",
+                  "high"
+                ]
+              },
+              "executor": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "key",
+              "expected"
+            ],
+            "properties": {
+              "op": {
+                "const": "step.describe"
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              },
+              "action": {
+                "type": "string",
+                "minLength": 1
+              },
+              "priority": {
+                "enum": [
+                  "low",
+                  "normal",
+                  "high"
+                ]
+              },
+              "expected": {
+                "type": "object",
+                "minProperties": 1,
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "key",
+              "from",
+              "to"
+            ],
+            "properties": {
+              "op": {
+                "const": "step.transition"
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              },
+              "from": {
+                "type": "string",
+                "minLength": 1
+              },
+              "to": {
+                "type": "string",
+                "minLength": 1
+              },
+              "outputs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+                },
+                "maxItems": 100
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "executor": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "op",
+              "key",
+              "step",
+              "summary"
+            ],
+            "properties": {
+              "op": {
+                "const": "fact.append"
+              },
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              },
+              "step": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "body": {
+                "type": "string"
+              },
+              "data_refs": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048
+                }
+              },
+              "corrects": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._:/-]{0,159}$"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "resolves": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "continuation_id",
+        "intent_id"
+      ],
+      "properties": {
+        "continuation_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "intent_id": {
+          "type": "string",
+          "pattern": "^intent_[0-9]{8}$"
+        }
+      }
+    },
+    "withdrawal_reason": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

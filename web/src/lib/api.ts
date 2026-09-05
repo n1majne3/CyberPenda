@@ -159,6 +159,7 @@ export interface ProjectDefaults {
 export type ProjectKind = "pentest" | "ctf_challenge" | string;
 
 export interface Project {
+  blackboard_protocol?: "legacy" | "fgs";
   id: string;
   name: string;
   description: string;
@@ -224,6 +225,7 @@ export interface WorkspaceNavigation {
 export type SessionLifecycle = "open" | "archived";
 
 export interface Session {
+  blackboard_protocol?: "legacy" | "fgs";
   id: string;
   title: string;
   lifecycle: SessionLifecycle;
@@ -620,6 +622,7 @@ export interface RuntimeActivity {
 }
 
 export interface Task {
+  blackboard_protocol?: "legacy" | "fgs";
   id: string;
   project_id: string;
   type?: ProjectKind;

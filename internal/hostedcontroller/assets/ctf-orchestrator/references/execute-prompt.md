@@ -19,8 +19,9 @@ Codex 用 `spawn_agent`；Claude Code 用 `Agent` + `run_in_background: true`。
 描述全文：{description}
 
 收束纪律（硬性）：
-1. **开工先写 fact 骨架**（front-matter + title 占位），之后**每完成一个测试组立即刷新 fact 文件**——
+1. **开工 90 秒内先写 fact 骨架**（front-matter + title 占位），之后**每完成一个测试组立即刷新 fact 文件**——
    agent 可能随时被 infra 中断，任何时刻死亡都要有留痕可收割；这比结尾一次性写盘优先级更高。
+   90 秒骨架也是主控的投递确认依据：超时未出现，主控会判定消息投递失败并重派。
 2. 结束前把结论补全到 {$WS}/graph/facts/{NNN}-{主题}.md，front-matter：
    id: fact_{NNN} / step: step_{XXX} / challenge: {code} / title: 一句话结论
    content 只写新增客观事实，新凭证新端点加粗；大输出写

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+"os"
 
 	"pentest/internal/session"
 	"pentest/internal/task"
@@ -11,7 +12,7 @@ import (
 )
 
 func (server *Server) settleTaskWorkingGraph(ctx context.Context, found task.Task, allowActionRequired bool) (bool, error) {
-	if found.RunControls.BlackboardMode != task.BlackboardModeWorkingGraph {
+	if found.RunControls.BlackboardMode != task.BlackboardModeWorkingGraph && (found.BlackboardProtocol != "fgs" || found.RunControls.BlackboardMode == task.BlackboardModeDisabled) {
 		return true, nil
 	}
 	continuation, err := server.tasks.LatestContinuation(found.ID)
@@ -23,6 +24,17 @@ func (server *Server) settleTaskWorkingGraph(ctx context.Context, found task.Tas
 	}
 	workdir := filepath.Join(server.runtimeRoot, found.ID, "workdir")
 	contract := found.OwnerContract(workdir)
+	if found.BlackboardProtocol == "fgs" {
+ if _, err := os.Stat(filepath.Join(contract.Workdir,"graph","outbox",continuation.ID)); os.IsNotExist(err) { return true,nil }
+		result, err := server.fgs.Drain(ctx, contract, continuation.ID)
+		if err != nil {
+			return false, err
+		}
+		if result.Blocked && !allowActionRequired {
+			return false, errSemanticConclusionActionRequired
+		}
+		return true, nil
+	}
 	projection, err := server.workingGraph.Prepare(ctx, workinggraph.OwnerContext{
 		Owner: contract, ContinuationID: continuation.ID, Workdir: workdir,
 	})
@@ -43,7 +55,7 @@ func (server *Server) settleTaskWorkingGraph(ctx context.Context, found task.Tas
 }
 
 func (server *Server) settleSessionWorkingGraph(ctx context.Context, found session.Session, allowActionRequired bool) (bool, error) {
-	if found.RunControls.BlackboardMode != session.BlackboardModeWorkingGraph {
+	if found.RunControls.BlackboardMode != session.BlackboardModeWorkingGraph && (found.BlackboardProtocol != "fgs" || found.RunControls.BlackboardMode == session.BlackboardModeDisabled) {
 		return true, nil
 	}
 	continuation, err := server.sessions.LatestContinuation(found.ID)
@@ -54,6 +66,17 @@ func (server *Server) settleSessionWorkingGraph(ctx context.Context, found sessi
 		return true, nil
 	}
 	contract := found.OwnerContract()
+	if found.BlackboardProtocol == "fgs" {
+ if _, err := os.Stat(filepath.Join(contract.Workdir,"graph","outbox",continuation.ID)); os.IsNotExist(err) { return true,nil }
+		result, err := server.fgs.Drain(ctx, contract, continuation.ID)
+		if err != nil {
+			return false, err
+		}
+		if result.Blocked && !allowActionRequired {
+			return false, errSemanticConclusionActionRequired
+		}
+		return true, nil
+	}
 	projection, err := server.workingGraph.Prepare(ctx, workinggraph.OwnerContext{
 		Owner: contract, ContinuationID: continuation.ID, Workdir: found.Workdir,
 	})

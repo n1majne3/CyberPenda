@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
-import { useParams, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Square, Terminal, GitBranch, MessageSquare, Play, ChevronRight, ChevronsUpDown, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip, Brain, PlugZap, Info } from "lucide-react";
 import { apiGet, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Chip, Input, Select, Textarea } from "@/components/ui";
@@ -1566,6 +1566,7 @@ function RuntimeActivityBadge({ activity }: { activity?: RuntimeActivity }) {
 }
 
 function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
+  const { projectId } = useParams();
   const mode = runtimeOwnerBlackboardMode(owner);
   if (mode === "disabled") {
     return (
@@ -1580,6 +1581,7 @@ function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
       </Chip>
     );
   }
+  if (owner.blackboardProtocol === "fgs") return <Link className="rounded border px-2 py-1 text-xs" to={owner.kind === "session" ? `/sessions/${owner.id}/blackboard` : `/projects/${projectId}/blackboard`}>Blackboard · FGS</Link>;
   const state = owner.blackboardConclusion?.state ?? "clean";
   const sourceTurn = owner.blackboardConclusion?.source_turn_id;
   const appliedRevision = owner.blackboardConclusion?.applied_revision;

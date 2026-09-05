@@ -43,6 +43,16 @@ agent-managed semantic state. The Decide process owns list, start, hint, close,
 and abandon. Execute agents may submit a candidate through the Hosted Challenge
 Client, but they do not change the challenge lifecycle.
 
+The Skill guards against Codex spawn-message delivery failures
+(ADR 0034). Every session confirms the `graph/leader.lock` heartbeat before it
+acts as Decide; a session that wakes without a fresh lock degrades to an
+Execute worker, and a stale lock is taken over with a `ledger.tsv` watchdog
+pass. Every dispatch expects the child's fact skeleton within 90 seconds and
+re-dispatches on a miss. The lead never ends its turn while `ledger.tsv` has
+unsettled agents. The real-Codex acceptance test
+(`hosted_real_codex_acceptance_test.go`) probes spawn delivery and the
+acknowledgement loop against each image build's Codex CLI.
+
 The container standard output is a sequence-ordered JSONL Hosted Transcript
 Stream. Operational logs use standard error. TSecBench owns the formal score
 and completion state. The container-local Project, Task, FGS, Evidence,

@@ -34,6 +34,7 @@ export type RuntimeOwnerView = {
   runner: string;
   runtimeProfileID: string;
   runtimeConfiguration?: RuntimeConfigurationSummary;
+  blackboardProtocol?: "legacy" | "fgs";
   blackboardMode?: BlackboardMode;
   blackboardConclusion?: BlackboardConclusionView;
   runtimeControls?: RuntimeControls;

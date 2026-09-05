@@ -610,11 +610,48 @@ _Avoid_: Blackboard Conclusion Mode, autonomous Task completion, transcript pars
 
 **Mode Skill**:
 The single system Skill projected and explicitly invoked for one Blackboard Mode. It is separate from user-selected Skills. Exactly one of the interactive, Working Graph, or disabled Mode Skills is present in a Runtime launch. Every Runtime Continuation launch injects a mandatory startup directive that invokes the selected Mode Skill before Task work.
+This describes the existing implementation. The confirmed FGS target uses **FGS Runtime Instructions** for Working Graph instead of requiring its Mode Skill invocation.
 _Avoid_: ordinary Skill toggle, mixed-mode instructions, Runtime Profile capability
 
 **Working Graph**:
 The Harness-defined file graph used in `working_graph` mode. It contains `state.md`, fact and data directories, goals, steps, a continuation-scoped Outbox, and continuation-scoped Receipts. The main Runtime is its implicit Decide process unless a selected orchestration Skill provides that role. It is Runtime working state, while the Blackboard remains the durable semantic source of truth.
+Its product purpose is to bring the Fact-Goal-Step coordination protocol from `ctf-orchestrator` into the product and show the working graph in the **Blackboard** UI. Files and Intent settlement support this purpose; they do not by themselves fulfill it.
 _Avoid_: Assisted Blackboard, transcript parser, direct Blackboard storage
+
+**FGS Model Replacement**:
+The agreed target model replaces **Exploration Objective**, **Attempt**, and **Project Fact** with **Goal**, **Step**, and **Fact**, respectively. FGS is the Blackboard model, not an additional model translated into those three legacy record types. The legacy definitions below describe existing behavior until implementation and migration are designed; they do not override this target decision. This decision does not define a conversion of existing records or change Challenge Platform operations.
+The user also confirmed that Entity, Finding, Solution, and Evidence Artifact are not retained as target Blackboard node types. The target graph has only Goal, Step, and Fact nodes. This does not authorize deletion of historical records or evidence files. Their migration, file retention, and report behavior require a separate design.
+_Avoid_: parallel graph model, FGS-to-legacy compiler, completed migration
+
+**Goal**:
+The FGS node that states an intended outcome.
+Its description can change with Semantic History retained. A terminal Goal can reopen with an explicit reason.
+_Avoid_: legacy Exploration Objective record
+
+**Step**:
+The FGS node that describes work toward a Goal, with links to input and output Facts.
+Its description can change with Semantic History retained. Retrying a terminal Step creates a new Step linked to prior Facts; it does not reopen the old Step.
+_Avoid_: legacy Attempt record, Runtime Turn
+
+**Fact**:
+The FGS node that records an observation or result for use by later Steps.
+_Avoid_: legacy Project Fact record, Transcript dump
+
+**FGS Runtime Protocol Direction**:
+The Runtime publishes structured FGS updates to its Outbox, and the Blackboard parses and stores accepted updates for graph display. The Harness validates and ingests submitted updates without requiring control of every Runtime execution action. The user has confirmed the seven FGS Protocol Principles below and instruction delivery through AGENTS.md / CLAUDE.md. Exact schemas and migration remain design work.
+_Avoid_: Harness-enforced scheduling, inferred graph from Transcript, implemented protocol
+
+**FGS Rollout**:
+The confirmed rollout starts FGS on newly created Projects and Sessions after release. Existing data stays readable and existing runs keep their legacy protocol. A new Task in an existing legacy Project uses that Project's protocol until an explicit migration; one Project does not mix two Blackboard models. Migration requires a separate preview, backup, and verification plan. This is a target rollout decision, not a claim that FGS is already implemented.
+_Avoid_: automatic migration, active Runtime conversion, legacy data deletion
+
+**FGS Runtime Instructions**:
+The Harness-projected core FGS rules in the Runtime's supported AGENTS.md or CLAUDE.md instruction file. They define reporting, Decide/Execute responsibilities, and receipt and recovery behavior without requiring an FGS Skill invocation. Detailed schemas and examples remain linked local references. These files guide Runtime behavior; they are not provider system messages or proof of Runtime compliance. CTF-specific strategy remains in `ctf-orchestrator`.
+_Avoid_: mandatory FGS Skill invocation, system-role message, enforced scheduler
+
+**FGS Protocol Principles**:
+The seven confirmed protocol choices are: (1) Blackboard stores accepted durable FGS state, local files store working state, and recovery reconciles unconfirmed Outbox updates without overwriting local work; (2) Outbox carries explicit structured graph updates; (3) ingestion runs during Runtime work and checks again at the end, while graph state means last reported state rather than agent liveness; (4) Decide publishes updates and Execute agents return result files, with one Runtime allowed to perform both roles; (5) Fact content is append-only, corrections use new Facts, and changed conditions do not invalidate an earlier accurate observation; (6) Step completion means work ended with a result, Goal completion requires its success criteria, and neither implies Task completion or Solution verification; (7) Receipts report delivery failure, a new update explicitly repairs or withdraws failed work, dependent updates wait, and independent execution can continue.
+_Avoid_: approved wire schema, completed implementation, automatic local-file replacement
 
 **Working Graph Intent**:
 A bounded Runtime request written atomically to the current Continuation Outbox. It contains a semantic operation without Blackboard versions or idempotency keys. The Harness claims it, resolves authority and versions, applies it through the Blackboard service, and writes a Receipt.

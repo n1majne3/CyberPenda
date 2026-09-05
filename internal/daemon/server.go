@@ -21,6 +21,7 @@ import (
 	"pentest/internal/blackboardv2"
 	"pentest/internal/challengeworkflow"
 	"pentest/internal/credential"
+	"pentest/internal/fgs"
 	"pentest/internal/finishreadiness"
 	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
@@ -119,6 +120,9 @@ type Server struct {
 	sessionHarness          *runtime.SessionHarness
 	canonicalStore          string
 	blackboardV2            *blackboardv2.Service
+	fgs                     *fgs.Service
+	fgsCancel               context.CancelFunc
+	fgsWG                   sync.WaitGroup
 	workingGraph            *workinggraph.Service
 	workingGraphCompiler    *workinggraph.SemanticCompiler
 	challengeWorkflow       *challengeworkflow.Service
@@ -353,6 +357,7 @@ func NewServer(config Config) (*Server, error) {
 	server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.sessions.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
+	server.fgs = fgs.NewService(db)
 	server.workingGraph = workinggraph.NewService(db)
 	server.workingGraphCompiler = workinggraph.NewSemanticCompiler(server.blackboardV2)
 	server.challengeWorkflow = challengeworkflow.NewService(db, server.projects, server.tasks, config.ChallengePlatforms, challengeworkflow.NewBlackboardRecorder(server.blackboardV2, server.tasks, runtimeRoot))
@@ -397,6 +402,7 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	server.recoverAcceptedSteering(context.Background())
+	server.startFGSReceiver()
 
 	return server, nil
 }
@@ -686,6 +692,10 @@ func (server *Server) GeneratedOperatorAccessURL() string {
 }
 
 func (server *Server) Close() error {
+	if server.fgsCancel != nil {
+		server.fgsCancel()
+		server.fgsWG.Wait()
+	}
 	server.controlMu.Lock()
 	server.closing = true
 	server.providerControlCancel()
@@ -1038,6 +1048,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/permissions/{permission_id}/respond", server.handleProviderPermissionResponse)
 	server.registerBlackboardV2Routes()
+	server.registerFGSRoutes()
 	server.registerSPA()
 }
 

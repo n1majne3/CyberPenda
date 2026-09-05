@@ -28,6 +28,8 @@ import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Badge, Card, CardDescription, CardTitle } from "@/components/ui";
 import { cn } from "@/lib/utils";
 
+import { FGSBoard } from "./FGSPage";
+
 type BlackboardTab = "work" | "knowledge" | "explorer" | "record";
 
 function useBlackboardTab(): { tab: BlackboardTab; recordKey?: string } {
@@ -43,6 +45,21 @@ function useBlackboardTab(): { tab: BlackboardTab; recordKey?: string } {
 }
 
 export function BlackboardPage() {
+ const { projectId = "" } = useParams<{ projectId: string }>();
+ const [project, setProject] = useState<Project>();
+ const [error, setError] = useState("");
+ useEffect(() => {
+  let active = true;
+  apiGet<Project>(`/api/projects/${projectId}`).then((value) => { if (active) setProject(value); }).catch((err: unknown) => { if (active) setError(err instanceof Error ? err.message : "Cannot read Project"); });
+  return () => { active = false; };
+ }, [projectId]);
+ if (error) return <p role="alert">{error}</p>;
+ if (!project || project.id !== projectId) return <p className="p-6">Loading Blackboard…</p>;
+ if (project.blackboard_protocol === "fgs") return <ProjectPageShell title="Blackboard"><FGSBoard key={projectId} scope="projects" id={projectId} /></ProjectPageShell>;
+ return <LegacyBlackboardPage />;
+}
+
+function LegacyBlackboardPage() {
   const { projectId = "" } = useParams<{ projectId: string }>();
   const { tab, recordKey } = useBlackboardTab();
 
