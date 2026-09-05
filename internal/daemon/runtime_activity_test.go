@@ -149,6 +149,32 @@ func launchActivityTask(t *testing.T, server *Server, created task.Task) {
 	waitForHarnessActive(t, server, created.ID, true)
 }
 
+func waitForActivityTaskStatus(t *testing.T, server *Server, projectID, taskID, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		resp := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+		server.ServeHTTP(resp, req)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("get task status = %d body %s", resp.Code, resp.Body.String())
+		}
+		var found struct {
+			Status string `json:"status"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&found); err != nil {
+			t.Fatalf("decode task: %v", err)
+		}
+		if found.Status == want {
+			return
+		}
+		last = found.Status
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task status %q, last %q", want, last)
+}
+
 func TestRuntimeActivityLiveIdleAndBusyForSandboxProviders(t *testing.T) {
 	for _, provider := range []runtimeprofile.Provider{
 		runtimeprofile.ProviderCodex,
@@ -499,6 +525,7 @@ func TestRuntimeActivityListDecoratesSeparatelyFromStatus(t *testing.T) {
 	factory := &activitySessionFactory{session: session, adapter: adapter, provider: runtimeprofile.ProviderCodex}
 	server, created, _ := newRuntimeActivityFixture(t, runtimeprofile.ProviderCodex, task.RunnerSandbox, factory)
 	launchActivityTask(t, server, created)
+	waitForActivityTaskStatus(t, server, created.ProjectID, created.ID, "running")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+created.ProjectID+"/tasks", nil)
 	resp := httptest.NewRecorder()
