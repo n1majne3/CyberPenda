@@ -117,9 +117,6 @@ func writeTaskContextFiles(layout Layout, ctx RuntimeOwnerContext) error {
 	if ctx.Owner.SessionID != "" {
 		payload["session_id"] = ctx.Owner.SessionID
 	}
-	if ctx.MCPURL != "" {
-		payload["mcp_url"] = ctx.MCPURL
-	}
 	raw, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return fmt.Errorf("encode task context: %w", err)
@@ -186,31 +183,23 @@ func writeRuntimeSmokeInstructions(workdir string, ctx RuntimeOwnerContext) erro
 	var b strings.Builder
 	if ctx.Owner.IsSession() {
 		b.WriteString("# Non-Project Session context\n\n")
-		b.WriteString("Trusted MCP is pre-configured for this Session. Session authority is supplied by the runtime capability; do not invent a Project identity.\n\n")
+		b.WriteString("Session authority is supplied by the runtime capability; do not invent a Project identity. The Blackboard interface is the `pentestctl` CLI, and identifiers are projected as `PENTEST_*` environment variables:\n\n")
 		fmt.Fprintf(&b, "- session_id: `%s`\n", ctx.Owner.SessionID)
 	} else {
 		b.WriteString("# Pentest task context\n\n")
-		b.WriteString("Trusted MCP is pre-configured for this task. Use these identifiers on every pentest MCP tool call:\n\n")
+		b.WriteString("This task's Blackboard interface is the `pentestctl` CLI. Owner identifiers are projected as `PENTEST_*` environment variables:\n\n")
 		fmt.Fprintf(&b, "- project_id: `%s`\n", ctx.Owner.ProjectID)
 	}
 	if ctx.Owner.TaskID != "" {
 		fmt.Fprintf(&b, "- task_id: `%s`\n", ctx.Owner.TaskID)
 	}
-	if ctx.MCPURL != "" {
-		fmt.Fprintf(&b, "- mcp_url: `%s`\n", ctx.MCPURL)
-	}
 	b.WriteString("\nRead `.pentest/context.json` or the matching `PENTEST_*` env vars if needed.\n")
-	b.WriteString("\n## Required workflow\n\n")
-	b.WriteString("Use trusted MCP on every blackboard write. Do not rely on chat alone.\n\n")
-	b.WriteString("1. Record a completed Attempt in one call with `blackboard_record_attempt_result`. Use `blackboard_change` for other semantic milestones, and use `blackboard_read` or `blackboard_history` before resolving version conflicts.\n")
-	if ctx.Owner.IsTask() {
-		b.WriteString("2. Retain reproducible proof with `blackboard_retain_evidence`.\n")
-	} else {
-		b.WriteString("2. Keep Session Facts and Attempts self-contained; Project Evidence retention is unavailable.\n")
+	b.WriteString("\n## Blackboard access\n\n")
+	b.WriteString("Follow the projected Mode Skill for the required Blackboard workflow. Use `pentestctl blackboard` as the only Blackboard interface; do not rely on chat alone.\n\n")
+	if ctx.Owner.IsSession() {
+		b.WriteString("Keep Session Facts and Attempts self-contained; Project Evidence retention is unavailable.\n\n")
 	}
-	b.WriteString("3. Checkpoint meaningful Attempt progress with `blackboard_checkpoint_attempt`.\n")
-	b.WriteString("4. Before ending a continuation, call `blackboard_finish` after every Attempt is terminal.\n")
-	b.WriteString("5. For black-box web targets, discover APIs with `curl`/httpx first (including frontend bundles); use `agent-browser` when you need DOM, cookies, or interactive flows.\n")
+	b.WriteString("For black-box web targets, discover APIs with `curl`/httpx first (including frontend bundles); use `agent-browser` when you need DOM, cookies, or interactive flows.\n")
 	if ctx.Owner.IsTask() {
 		b.WriteString("\n## Authorized scope\n\n")
 		b.WriteString("Read `.pentest/scope.json` for the task scope snapshot captured at launch. ")
