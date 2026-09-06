@@ -395,6 +395,8 @@ export interface Dashboard {
     ready: boolean;
   };
   counts: {
+    goals?: number;
+    steps?: number;
     tasks: number;
     facts: number;
     findings: number;

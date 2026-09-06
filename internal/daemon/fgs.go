@@ -18,9 +18,34 @@ import (
 func (server *Server) registerFGSRoutes() {
 	for _, scope := range []string{"projects", "sessions"} {
 		server.mux.HandleFunc("GET /api/v2/"+scope+"/{id}/fgs", server.handleFGSRead)
-server.mux.HandleFunc("GET /api/v2/"+scope+"/{id}/fgs/status", server.handleFGSRead)
+		server.mux.HandleFunc("GET /api/v2/"+scope+"/{id}/fgs/status", server.handleFGSRead)
+		server.mux.HandleFunc("GET /api/v2/"+scope+"/{id}/fgs/report", server.handleFGSRead)
 		server.mux.HandleFunc("GET /api/v2/"+scope+"/{id}/fgs/nodes/{key}/history", server.handleFGSRead)
 	}
+}
+
+func (server *Server) allowLegacyGraphWrite(w http.ResponseWriter, principal blackboardV2Principal) bool {
+	protocol := ""
+	if principal.sessionID != "" {
+		found, err := server.sessions.Get(principal.sessionID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "Session not found")
+			return false
+		}
+		protocol = found.BlackboardProtocol
+	} else {
+		found, err := server.projects.Get(principal.projectID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "Project not found")
+			return false
+		}
+		protocol = found.BlackboardProtocol
+	}
+	if protocol == "fgs" {
+		writeError(w, http.StatusConflict, "This Blackboard uses FGS. Publish Goal, Step, and Fact updates through the Runtime Outbox.")
+		return false
+	}
+	return true
 }
 
 func (server *Server) handleFGSRead(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +61,7 @@ func (server *Server) handleFGSRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var contract owner.Contract
+	var title string
 	if principal.sessionID != "" {
 		found, err := server.sessions.Get(principal.sessionID)
 		if err != nil {
@@ -47,6 +73,7 @@ func (server *Server) handleFGSRead(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		contract = found.OwnerContract()
+		title = found.Title
 	} else {
 		found, err := server.projects.Get(principal.projectID)
 		if err != nil {
@@ -57,6 +84,7 @@ func (server *Server) handleFGSRead(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "FGS is not enabled", http.StatusConflict)
 			return
 		}
+		title = found.Name
 		taskID := principal.taskID
 		if principal.operator {
 			taskID = "operator-read"
@@ -65,10 +93,20 @@ func (server *Server) handleFGSRead(w http.ResponseWriter, r *http.Request) {
 	}
 	var result any
 	var err error
-	if strings.HasSuffix(r.URL.Path,"/status") { result,err=server.fgs.Status(r.Context(),contract) } else if key := r.PathValue("key"); key != "" {
-		before:=0
- if value:=r.URL.Query().Get("cursor");value!="" {before,err=strconv.Atoi(value);if err!=nil || before<0 {http.Error(w,"invalid history cursor",http.StatusBadRequest);return}}
- result, err = server.fgs.HistoryPage(r.Context(), contract, key,before,100)
+	if strings.HasSuffix(r.URL.Path, "/report") {
+		result, err = server.fgs.Report(r.Context(), contract, title)
+	} else if strings.HasSuffix(r.URL.Path, "/status") {
+		result, err = server.fgs.Status(r.Context(), contract)
+	} else if key := r.PathValue("key"); key != "" {
+		before := 0
+		if value := r.URL.Query().Get("cursor"); value != "" {
+			before, err = strconv.Atoi(value)
+			if err != nil || before < 0 {
+				http.Error(w, "invalid history cursor", http.StatusBadRequest)
+				return
+			}
+		}
+		result, err = server.fgs.HistoryPage(r.Context(), contract, key, before, 100)
 	} else {
 		limit := 200
 		if value := r.URL.Query().Get("limit"); value != "" {
@@ -141,10 +179,14 @@ func (server *Server) startFGSReceiver() {
 					if e != nil {
 						continue
 					}
-					c = found.OwnerContract(filepath.Join(server.runtimeRoot, b.id, "workdir"))
+					workdir, e := filepath.Abs(filepath.Join(server.runtimeRoot, b.id, "workdir"))
+					if e != nil {
+						continue
+					}
+					c = found.OwnerContract(workdir)
 				}
 				if info, e := os.Stat(filepath.Join(c.Workdir, "graph", "outbox", b.continuation)); e == nil && info.IsDir() {
-					if _, drainErr := server.fgs.Drain(ctx, c, b.continuation); drainErr != nil {
+					if _, drainErr := server.fgs.ReceivePage(ctx, c, b.continuation, 64); drainErr != nil {
 						log.Printf("FGS receive owner %s: %v", b.id, drainErr)
 					}
 				}

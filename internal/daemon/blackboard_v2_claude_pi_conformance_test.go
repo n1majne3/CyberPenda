@@ -89,7 +89,9 @@ func TestClaudeAndPiV2LaunchHeaderChecklistAndExactSharedSnapshotBytes(t *testin
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil { t.Fatal(err) }
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
 	_, err = server.blackboardV2.Apply(context.Background(), createdProject.ID, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-shared-conformance",
 		Changes: []blackboardv2.Change{{
@@ -246,7 +248,9 @@ func TestClaudeAndPiV2ResumeUsesFreshPinAndSharedSnapshotBytes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("create Project: %v", err)
 			}
-	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil { t.Fatal(err) }
+			if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+				t.Fatal(err)
+			}
 			profile, err := server.profiles.Create(tc.name, tc.provider, runtimeprofile.Fields{BinaryPath: "/usr/bin/" + string(tc.provider), Model: "test-model"})
 			if err != nil {
 				t.Fatalf("create profile: %v", err)
@@ -385,7 +389,9 @@ cat .pentest/blackboard.json
 			if err != nil {
 				t.Fatalf("create Project: %v", err)
 			}
-	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil { t.Fatal(err) }
+			if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+				t.Fatal(err)
+			}
 			profile, err := server.profiles.Create(tc.name+" shim", tc.provider, runtimeprofile.Fields{BinaryPath: shim, Model: "test-model"})
 			if err != nil {
 				t.Fatalf("create profile: %v", err)
@@ -492,7 +498,9 @@ func testClaudeV2SettingsAllowExactlySixTrustedMCPToolsAndPiProjectsTrustedServe
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil { t.Fatal(err) }
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	t.Run("claude", func(t *testing.T) {
 		profile, err := server.profiles.Create("Claude tools", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{BinaryPath: "/usr/bin/claude", Model: "test-model"})

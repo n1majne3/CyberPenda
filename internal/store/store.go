@@ -961,6 +961,7 @@ func migrations() []migration {
 		newMigration(73, "working_graph_intents", migration73SQL, migration73Up),
 		newMigration(74, "fgs_graph", migration74SQL, migration74Up),
 		newMigration(75, "fgs_protocol_selection", migration75SQL, migration75Up),
+		newMigration(76, "fgs_outbox_inventory", migration76SQL, migration76Up),
 	}
 }
 

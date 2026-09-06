@@ -182,7 +182,7 @@ func TestConcurrentEmitDoesNotReuseIdentity(t *testing.T) {
 }
 
 func TestOutboxRejectsSymlinkAndMalformedJSON(t *testing.T) {
-	for _, mode := range []string{"symlink", "unknown_field", "trailing_json"} {
+	for _, mode := range []string{"symlink", "oversized", "unknown_field", "trailing_json"} {
 		t.Run(mode, func(t *testing.T) {
 			s, c := fixture(t)
 			_, err := fgs.Emit(t.Context(), c, "continuation-1", []fgs.Operation{{Op: "goal.create", Key: "goal:access", Title: "Access", SuccessCriteria: "ok"}})
@@ -194,6 +194,9 @@ func TestOutboxRejectsSymlinkAndMalformedJSON(t *testing.T) {
 			if mode == "trailing_json" {
 				raw = `{"schema":"fgs-update/v1","id":"intent_00000002","sequence":2,"operations":[]} {}`
 			}
+			if mode == "oversized" {
+				raw = string(make([]byte, fgs.MaxUpdateSize+1))
+			}
 			if mode == "symlink" {
 				err = os.Symlink(filepath.Join(t.TempDir(), "outside"), file)
 			} else {
@@ -203,11 +206,16 @@ func TestOutboxRejectsSymlinkAndMalformedJSON(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, drainErr := s.Drain(t.Context(), c, "continuation-1")
-			if mode == "symlink" && drainErr == nil { t.Fatal("unsafe file accepted") }
-			if mode != "symlink" {
-				if drainErr != nil || !result.Blocked {t.Fatalf("malformed update has no repair receipt: %+v %v",result,drainErr)}
-				if _,err=fgs.EmitResolution(t.Context(),c,"continuation-1",fgs.Identity{ContinuationID:"continuation-1",IntentID:"intent_00000002"},nil,"Withdraw malformed update");err!=nil {t.Fatal(err)}
-				if result,err=s.Drain(t.Context(),c,"continuation-1");err!=nil || result.Blocked {t.Fatalf("withdraw malformed: %+v %v",result,err)}
+			{
+				if drainErr != nil || !result.Blocked {
+					t.Fatalf("malformed update has no repair receipt: %+v %v", result, drainErr)
+				}
+				if _, err = fgs.EmitResolution(t.Context(), c, "continuation-1", fgs.Identity{ContinuationID: "continuation-1", IntentID: "intent_00000002"}, nil, "Withdraw malformed update"); err != nil {
+					t.Fatal(err)
+				}
+				if result, err = s.Drain(t.Context(), c, "continuation-1"); err != nil || result.Blocked {
+					t.Fatalf("withdraw malformed: %+v %v", result, err)
+				}
 			}
 			if _, err = fgs.Emit(t.Context(), c, "../escape", []fgs.Operation{{Op: "goal.create", Key: "goal:x", Title: "x", SuccessCriteria: "x"}}); err == nil {
 				t.Fatal("unsafe Continuation accepted")

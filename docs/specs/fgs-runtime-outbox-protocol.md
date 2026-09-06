@@ -441,7 +441,10 @@ Migration 74 adds the FGS tables. Migration 75 persists the protocol choice on
 Projects and Sessions. New owners select FGS. Existing rows default to legacy.
 Tasks inherit the Project protocol, including after a database restart.
 
-The daemon polls server-bound Continuations during work in pages of 64. It uses
+Migration 76 adds the durable Outbox inventory. The daemon polls server-bound
+Continuations during work in pages of 64. Each mailbox scan discovers at most 64
+entries per call, then settles sorted pages of at most 64 entries. Up to 64 scans
+can be active. Restart repeats discovery without losing accepted receipts. It uses
 FGS settlement at lifecycle boundaries for FGS owners. Rejected FGS updates block
 Task Finish until repaired or withdrawn. Recovery can resolve an earlier
 Continuation even when ordinary work is already queued in a new Continuation.
@@ -471,12 +474,27 @@ Verification covers the FGS service, concurrent publication, crash-safe replay,
 malformed updates, repair across Continuations, owner protocol persistence,
 continuous daemon ingestion, scoped HTTP reads, CLI publication, instruction
 preservation, Finish Readiness, frontend interactions, and a browser check with
-local example data. A real model run is still required to measure protocol
-compliance; a browser check does not establish Runtime compliance.
+local example data. An opt-in real Codex acceptance test also passed: the Runtime computed 2 + 2
+in an isolated workdir, followed projected AGENTS.md instructions, and published
+a completed Goal, completed Step, and result Fact without a Skill invocation.
+This proves one basic workflow; it does not guarantee compliance on every model
+or complex task. Run it with `CYBERPENDA_FGS_REAL_RUNTIME=1 go test ./internal/fgs
+-run TestRealRuntimeFollowsProjectedFGSInstructions -count=1`.
 
-Remaining production work includes bounded per-mailbox scans,
-durable diagnostics for unsafe or oversized files, complete legacy write-surface
-cutover, FGS report and Project dashboard projections, and end-to-end acceptance
-with an actual Runtime. Existing legacy migration and retention semantics remain
-separate design work. Do not treat the current integration as a completed
-production cutover.
+Canonical unsafe and oversized update entries produce durable rejected receipts
+without reading symlink targets or oversized bodies. Their identity can be
+withdrawn through the normal protocol. Noncanonical filenames are transport
+errors and must be corrected locally.
+
+Legacy semantic change, Attempt checkpoint, and Evidence-retain HTTP endpoints
+reject writes to FGS owners. Historical legacy owners retain these endpoints.
+FGS Project navigation, dashboard counts, and reports use the FGS model. The
+report endpoint `/fgs/report` renders one accepted graph revision as Markdown,
+including success criteria, reported state, Step results, and correction links.
+It does not infer vulnerability severity or Challenge Platform success.
+
+Existing legacy migration, retention, and platform-specific reporting policy
+remain separate design work. Explicit full-drain lifecycle and report generation
+still process a complete mailbox or graph; only background receipt polling and
+interactive read/history pages have bounded work. Longer multi-agent workloads
+and each additional Runtime provider need their own acceptance coverage.

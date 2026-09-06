@@ -3,8 +3,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
-"os"
 
 	"pentest/internal/session"
 	"pentest/internal/task"
@@ -22,10 +22,15 @@ func (server *Server) settleTaskWorkingGraph(ctx context.Context, found task.Tas
 	if continuation == nil {
 		return true, nil
 	}
-	workdir := filepath.Join(server.runtimeRoot, found.ID, "workdir")
+	workdir, err := filepath.Abs(filepath.Join(server.runtimeRoot, found.ID, "workdir"))
+	if err != nil {
+		return false, err
+	}
 	contract := found.OwnerContract(workdir)
 	if found.BlackboardProtocol == "fgs" {
- if _, err := os.Stat(filepath.Join(contract.Workdir,"graph","outbox",continuation.ID)); os.IsNotExist(err) { return true,nil }
+		if _, err := os.Stat(filepath.Join(contract.Workdir, "graph", "outbox", continuation.ID)); os.IsNotExist(err) {
+			return true, nil
+		}
 		result, err := server.fgs.Drain(ctx, contract, continuation.ID)
 		if err != nil {
 			return false, err
@@ -67,7 +72,9 @@ func (server *Server) settleSessionWorkingGraph(ctx context.Context, found sessi
 	}
 	contract := found.OwnerContract()
 	if found.BlackboardProtocol == "fgs" {
- if _, err := os.Stat(filepath.Join(contract.Workdir,"graph","outbox",continuation.ID)); os.IsNotExist(err) { return true,nil }
+		if _, err := os.Stat(filepath.Join(contract.Workdir, "graph", "outbox", continuation.ID)); os.IsNotExist(err) {
+			return true, nil
+		}
 		result, err := server.fgs.Drain(ctx, contract, continuation.ID)
 		if err != nil {
 			return false, err

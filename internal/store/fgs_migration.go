@@ -51,3 +51,13 @@ func migration75Up(tx *sql.Tx) error {
 	}
 	return nil
 }
+
+const migration76SQL = `CREATE TABLE IF NOT EXISTS fgs_outbox_inventory (
+ owner_kind TEXT NOT NULL,
+ owner_id TEXT NOT NULL,
+ continuation_id TEXT NOT NULL,
+ name TEXT NOT NULL,
+ PRIMARY KEY(owner_kind,owner_id,continuation_id,name)
+);`
+
+func migration76Up(tx *sql.Tx) error { return execStatements(tx, migration76SQL) }

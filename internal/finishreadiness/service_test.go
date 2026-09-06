@@ -8,29 +8,47 @@ import (
 
 	"pentest/internal/blackboardv2"
 	"pentest/internal/challengeworkflow"
-	"pentest/internal/finishreadiness"
 	"pentest/internal/fgs"
+	"pentest/internal/finishreadiness"
 	"pentest/internal/project"
 	"pentest/internal/store"
 	"pentest/internal/task"
 )
 
 func TestFGSRejectedUpdateBlocksFinishUntilWithdrawn(t *testing.T) {
- db,_,tasks,proj,created,_:=fixture(t)
- service:=fgs.NewService(db)
- c:=created.OwnerContract(t.TempDir())
- _,err:=service.Apply(t.Context(),c,"fgs-continuation",fgs.Update{Schema:fgs.Schema,ID:"intent_00000001",Sequence:1,Operations:[]fgs.Operation{{Op:"step.create",Key:"step:a",Goal:"goal:missing",Action:"Check"}}})
- if err!=nil {t.Fatal(err)}
- readiness,err:=finishreadiness.NewService(db,tasks).Evaluate(t.Context(),proj.ID,created.ID)
- if err!=nil {t.Fatal(err)}
- found:=false
- for _,blocker:=range readiness.Blockers {if blocker.Code=="fgs_action_required" {found=true}}
-	if !found {t.Fatalf("missing FGS blocker: %+v",readiness)}
-	_,err=service.Apply(t.Context(),c,"fgs-continuation",fgs.Update{Schema:fgs.Schema,ID:"intent_00000002",Sequence:2,Resolves:&fgs.Identity{ContinuationID:"fgs-continuation",IntentID:"intent_00000001"},WithdrawalReason:"Not needed"})
-	if err!=nil {t.Fatal(err)}
-	readiness,err=finishreadiness.NewService(db,tasks).Evaluate(t.Context(),proj.ID,created.ID)
-	if err!=nil {t.Fatal(err)}
-	for _,blocker:=range readiness.Blockers {if blocker.Code=="fgs_action_required" {t.Fatalf("withdrawn update still blocks finish: %+v",readiness)}}
+	db, _, tasks, proj, created, _ := fixture(t)
+	service := fgs.NewService(db)
+	c := created.OwnerContract(t.TempDir())
+	_, err := service.Apply(t.Context(), c, "fgs-continuation", fgs.Update{Schema: fgs.Schema, ID: "intent_00000001", Sequence: 1, Operations: []fgs.Operation{{Op: "step.create", Key: "step:a", Goal: "goal:missing", Action: "Check"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readiness, err := finishreadiness.NewService(db, tasks).Evaluate(t.Context(), proj.ID, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, blocker := range readiness.Blockers {
+		if blocker.Code == "fgs_action_required" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing FGS blocker: %+v", readiness)
+	}
+	_, err = service.Apply(t.Context(), c, "fgs-continuation", fgs.Update{Schema: fgs.Schema, ID: "intent_00000002", Sequence: 2, Resolves: &fgs.Identity{ContinuationID: "fgs-continuation", IntentID: "intent_00000001"}, WithdrawalReason: "Not needed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readiness, err = finishreadiness.NewService(db, tasks).Evaluate(t.Context(), proj.ID, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, blocker := range readiness.Blockers {
+		if blocker.Code == "fgs_action_required" {
+			t.Fatalf("withdrawn update still blocks finish: %+v", readiness)
+		}
+	}
 }
 
 type adapter struct{}

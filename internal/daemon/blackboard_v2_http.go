@@ -116,6 +116,10 @@ func (server *Server) handleBlackboardV2Change(response http.ResponseWriter, req
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	if !server.allowLegacyGraphWrite(response, principal) {
+		return
+	}
+
 	if accessErr := requireBlackboardV2WriteAccess(principal); accessErr != nil {
 		writeBlackboardV2Error(response, accessErr, nil)
 		return
@@ -222,6 +226,10 @@ func (server *Server) handleBlackboardV2EvidenceRetain(response http.ResponseWri
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	if !server.allowLegacyGraphWrite(response, principal) {
+		return
+	}
+
 	if accessErr := requireBlackboardV2WriteAccess(principal); accessErr != nil {
 		writeBlackboardV2Error(response, accessErr, nil)
 		return
@@ -319,6 +327,10 @@ func (server *Server) handleBlackboardV2Checkpoint(response http.ResponseWriter,
 		writeBlackboardV2Error(response, authErr, nil)
 		return
 	}
+	if !server.allowLegacyGraphWrite(response, principal) {
+		return
+	}
+
 	if accessErr := requireBlackboardV2WriteAccess(principal); accessErr != nil {
 		writeBlackboardV2Error(response, accessErr, nil)
 		return

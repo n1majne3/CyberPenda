@@ -45,9 +45,13 @@ func writeFGSInstructions(workdir string, ctx RuntimeOwnerContext) error {
 	if ctx.Owner.ID == "" {
 		return nil
 	}
-	schemaPath:=filepath.Join(workdir,".pentest","fgs-input.schema.json")
-	if err:=os.MkdirAll(filepath.Dir(schemaPath),0700);err!=nil {return err}
-	if err:=writeOwnerOnlyFile(schemaPath,fgsInputSchema);err!=nil {return err}
+	schemaPath := filepath.Join(workdir, ".pentest", "fgs-input.schema.json")
+	if err := os.MkdirAll(filepath.Dir(schemaPath), 0700); err != nil {
+		return err
+	}
+	if err := writeOwnerOnlyFile(schemaPath, fgsInputSchema); err != nil {
+		return err
+	}
 	const start = "<!-- cyberpenda:fgs:start -->"
 	const end = "<!-- cyberpenda:fgs:end -->"
 	section := start + "\n" + fgsInstructions + "\n" + end

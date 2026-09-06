@@ -430,8 +430,8 @@ func newDisabledOutputAuthorityFixture(t *testing.T, authToken string) disabledO
 	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
 		SessionID: "disabled-output-session",
 		Capabilities: runtimeplugin.Capabilities{
-			PersistentSession:  true,
-			SendTurn:           true,
+			PersistentSession: true,
+			SendTurn:          true,
 		},
 	})
 	recordingFactory := &recordingProviderSessionFactory{session: providerSession, adapter: &persistentTestAdapter{}}
@@ -452,6 +452,10 @@ func newDisabledOutputAuthorityFixture(t *testing.T, authToken string) disabledO
 	)
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
+	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
 	}
 	provider, err := server.modelProviders.Create(modelprovider.CreateRequest{
 		Name: "Disabled Output Provider", BaseURL: "https://api.example.test/v1",

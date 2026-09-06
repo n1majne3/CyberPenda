@@ -695,6 +695,7 @@ func (server *Server) Close() error {
 	if server.fgsCancel != nil {
 		server.fgsCancel()
 		server.fgsWG.Wait()
+		server.fgs.CloseScans()
 	}
 	server.controlMu.Lock()
 	server.closing = true
@@ -1831,6 +1832,8 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 			Ready            bool `json:"ready"`
 		} `json:"scope"`
 		Counts struct {
+			Goals    int `json:"goals"`
+			Steps    int `json:"steps"`
 			Tasks    int `json:"tasks"`
 			Facts    int `json:"facts"`
 			Findings int `json:"findings"`
@@ -1856,7 +1859,13 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 		return
 	}
 	var factCount, findingCount, evidenceCount int
-	if server.blackboardV2 != nil {
+	if found.BlackboardProtocol == "fgs" {
+		err := server.db.QueryRowContext(request.Context(), `SELECT COALESCE(SUM(json_extract(body_json,'$.type')='goal'),0),COALESCE(SUM(json_extract(body_json,'$.type')='step'),0),COALESCE(SUM(json_extract(body_json,'$.type')='fact'),0) FROM fgs_nodes WHERE board_kind='project' AND board_id=?`, found.ID).Scan(&summary.Counts.Goals, &summary.Counts.Steps, &factCount)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "count FGS nodes")
+			return
+		}
+	} else if server.blackboardV2 != nil {
 		projection, snapshotErr := server.blackboardV2.ProjectRuntimeSnapshot(request.Context(), found.ID)
 		if snapshotErr != nil {
 			writeError(response, http.StatusInternalServerError, "read Blackboard snapshot")

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-"crypto/sha256"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -100,6 +100,12 @@ func (s *Service) Drain(ctx context.Context, c owner.Contract, continuation stri
 	if err != nil {
 		return result, err
 	}
+	return s.drainFiles(ctx, c, continuation, root, outbox, files)
+}
+
+func (s *Service) drainFiles(ctx context.Context, c owner.Contract, continuation string, root *os.Root, outbox string, files []string) (DrainResult, error) {
+	result := DrainResult{Receipts: []Receipt{}}
+	var err error
 	for pass := 0; pass <= len(files); pass++ {
 		result = DrainResult{Receipts: []Receipt{}}
 		repaired := false
@@ -109,16 +115,25 @@ func (s *Service) Drain(ctx context.Context, c owner.Contract, continuation stri
 			}
 			raw, err := readRegular(root, filepath.Join(outbox, name), MaxUpdateSize)
 			if err != nil {
-				return result, err
+				info, statErr := root.Lstat(filepath.Join(outbox, name))
+				if statErr != nil {
+					return result, err
+				}
+				if info.Mode().IsRegular() && info.Size() <= MaxUpdateSize {
+					return result, err
+				}
+				// Do not read a symlink target or oversized body. Fingerprint only the
+				// entry metadata so its immutable identity can be rejected and withdrawn.
+				raw = []byte(fmt.Sprintf("invalid-file:%s:%d:%d", info.Mode(), info.Size(), info.ModTime().UnixNano()))
 			}
 			u, err := DecodeUpdate(raw)
- if err != nil || u.ID+".json" != name || u.Schema != Schema || u.ID != fmt.Sprintf("intent_%08d",u.Sequence) {
- // Retain a stable fingerprint in a rejected update. The published file
- // remains unchanged; repair and withdrawal use the normal receipt protocol.
- sequence,_:=strconv.Atoi(filenamePattern.FindStringSubmatch(name)[1])
- digest:=sha256.Sum256(raw)
- u=Update{Schema:Schema,ID:strings.TrimSuffix(name,".json"),Sequence:sequence,Operations:[]Operation{{Op:"transport.invalid",Key:"transport:invalid",Body:hex.EncodeToString(digest[:])}}}
- }
+			if err != nil || u.ID+".json" != name || u.Schema != Schema || u.ID != fmt.Sprintf("intent_%08d", u.Sequence) {
+				// Retain a stable fingerprint in a rejected update. The published file
+				// remains unchanged; repair and withdrawal use the normal receipt protocol.
+				sequence, _ := strconv.Atoi(filenamePattern.FindStringSubmatch(name)[1])
+				digest := sha256.Sum256(raw)
+				u = Update{Schema: Schema, ID: strings.TrimSuffix(name, ".json"), Sequence: sequence, Operations: []Operation{{Op: "transport.invalid", Key: "transport:invalid", Body: hex.EncodeToString(digest[:])}}}
+			}
 			r, err := s.Apply(ctx, c, continuation, u)
 			if errors.Is(err, ErrBlocked) {
 				result.Blocked = true
@@ -127,10 +142,12 @@ func (s *Service) Drain(ctx context.Context, c owner.Contract, continuation stri
 				for _, candidate := range files {
 					body, e := readRegular(root, filepath.Join(outbox, candidate), MaxUpdateSize)
 					if e != nil {
-						return result, e
+						continue
 					}
 					fix, e := DecodeUpdate(body)
-					if e != nil { continue }
+					if e != nil {
+						continue
+					}
 					if fix.Resolves == nil {
 						continue
 					}
@@ -190,10 +207,12 @@ func (s *Service) Drain(ctx context.Context, c owner.Contract, continuation stri
 					}
 					body, e := readRegular(root, filepath.Join(outbox, candidate), MaxUpdateSize)
 					if e != nil {
-						return result, e
+						continue
 					}
 					fix, e := DecodeUpdate(body)
-					if e != nil { continue }
+					if e != nil {
+						continue
+					}
 					if fix.Resolves == nil || fix.Resolves.ContinuationID != r.ContinuationID || fix.Resolves.IntentID != r.ID {
 						continue
 					}
@@ -309,7 +328,7 @@ func intentFiles(root *os.Root, path string) ([]string, error) {
 		if name == ".publish.lock" || strings.HasSuffix(name, ".tmp") {
 			continue
 		}
-		if !filenamePattern.MatchString(name) || !e.Type().IsRegular() {
+		if !filenamePattern.MatchString(name) {
 			return nil, fmt.Errorf("invalid FGS Outbox entry %s", name)
 		}
 		names = append(names, name)

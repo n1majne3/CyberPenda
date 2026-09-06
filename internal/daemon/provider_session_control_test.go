@@ -1048,6 +1048,9 @@ func TestNativeSteerReplacementCarriesBlackboardGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
 	profile := createTestRuntimeProfile(t, server)
 	created, err := server.tasks.Create(task.CreateRequest{ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "inspect target", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)})
 	if err != nil {

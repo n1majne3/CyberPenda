@@ -1,3 +1,5 @@
+import { ProjectReportProtocol } from "./FGSReport";
+import { BlackboardPage } from "./BlackboardPage";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -29,7 +31,8 @@ function severityVariant(severity: string): "destructive" | "warning" | "info" |
  * Bookmark-compatible with /findings; detail loads by Blackboard Key.
  * Grouping is presentation-only and preserves each identity/severity.
  */
-export function FindingsPage() {
+export function FindingsPage() {return <ProjectReportProtocol legacy={<LegacyFindingsPage />} fgs={<BlackboardPage />} />;}
+function LegacyFindingsPage() {
   const { projectId = "" } = useParams<{ projectId: string }>();
   const [rows, setRows] = useState<SnapshotListEntry[]>([]);
   const [error, setError] = useState<string | null>(null);

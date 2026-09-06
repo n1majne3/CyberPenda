@@ -31,6 +31,10 @@ func TestSessionReadOnlyGrantCanReadAndCannotWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE sessions SET blackboard_protocol='legacy' WHERE id=?`, found.ID); err != nil {
+		t.Fatal(err)
+	}
 	continuation, err := server.sessions.CreateContinuation(found.ID, "profile-1", "claude_code", session.RunnerSandbox, map[string]any{})
 	if err != nil {
 		t.Fatal(err)
@@ -79,13 +83,25 @@ func TestSessionBlackboardHTTPUsesOwnerLocalSharedV2Semantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first Session: %v", err)
 	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE sessions SET blackboard_protocol='legacy' WHERE id=?`, first.ID); err != nil {
+		t.Fatal(err)
+	}
 	second, err := server.sessions.Create(session.CreateRequest{Input: "Second session"})
 	if err != nil {
 		t.Fatalf("create second Session: %v", err)
 	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE sessions SET blackboard_protocol='legacy' WHERE id=?`, second.ID); err != nil {
+		t.Fatal(err)
+	}
 	projectOwner, err := server.projects.Create("Project owner", "", project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
+	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, projectOwner.ID); err != nil {
+		t.Fatal(err)
 	}
 	base := "/api/v2/sessions/" + first.ID + "/blackboard"
 	invalid := sessionBlackboardRequest(t, server, http.MethodPost, base+"/changes", "operator-secret", "session-invalid-schema",

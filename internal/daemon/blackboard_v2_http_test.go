@@ -42,6 +42,10 @@ func TestBlackboardV2HTTPRoutesServeAllCLICommandsWithTrustedContinuation(t *tes
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -138,6 +142,10 @@ func TestBlackboardV2HTTPRoutesServeAllCLICommandsWithTrustedContinuation(t *tes
 	if err != nil {
 		t.Fatalf("create foreign Project: %v", err)
 	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, foreign.ID); err != nil {
+		t.Fatal(err)
+	}
 	foreignBase := httpServer.URL + "/api/v2/projects/" + foreign.ID
 	foreignDenied := doV2HTTP(t, http.MethodGet, foreignBase+"/blackboard/records/entity:http", launch.Token, "", "", "")
 	if foreignDenied.status != http.StatusForbidden && foreignDenied.status != http.StatusUnauthorized {
@@ -181,9 +189,17 @@ func TestBlackboardV2HTTPHealthIsProjectIsolatedDeterministicAndActionable(t *te
 	if err != nil {
 		t.Fatalf("create alpha: %v", err)
 	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, alpha.ID); err != nil {
+		t.Fatal(err)
+	}
 	beta, err := server.projects.Create("Health Beta", "", project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create beta: %v", err)
+	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, beta.ID); err != nil {
+		t.Fatal(err)
 	}
 	httpServer := httptest.NewServer(server)
 	t.Cleanup(httpServer.Close)
@@ -261,6 +277,10 @@ func TestBlackboardV2HTTPRejectsQueryCredentialAndMissingIdempotency(t *testing.
 	createdProject, err := server.projects.Create("Auth", "", project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
+	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
 	}
 	httpServer := httptest.NewServer(server)
 	t.Cleanup(httpServer.Close)
@@ -428,6 +448,10 @@ func TestBlackboardV2HTTPFinishResultIsClosedTypedDTO(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -502,9 +526,17 @@ func newV2HTTPFixture(t *testing.T) v2HTTPFixture {
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
 	foreign, err := server.projects.Create("Foreign HTTP parity", "", project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create foreign Project: %v", err)
+	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, foreign.ID); err != nil {
+		t.Fatal(err)
 	}
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
 	if err != nil {
@@ -1468,9 +1500,17 @@ func TestBlackboardV2HTTPReportAndCTFSolutionConsumers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create pentest Project: %v", err)
 	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, pentestProject.ID); err != nil {
+		t.Fatal(err)
+	}
 	ctfProject, err := server.projects.CreateWithKind("Flag CTF", "Challenge", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create CTF Project: %v", err)
+	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, ctfProject.ID); err != nil {
+		t.Fatal(err)
 	}
 	httpServer := httptest.NewServer(server)
 	t.Cleanup(httpServer.Close)
@@ -1596,6 +1636,10 @@ func TestBlackboardV2HTTPReportAndCTFOmitTrustedContinuationSync(t *testing.T) {
 	ctfProject, err := fixture.server.projects.CreateWithKind("CTF sync omit", "Challenge", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create CTF Project: %v", err)
+	}
+	// This fixture verifies the retained legacy protocol.
+	if _, err := fixture.server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, ctfProject.ID); err != nil {
+		t.Fatal(err)
 	}
 	ctfTask, err := fixture.server.tasks.Create(task.CreateRequest{
 		ProjectID: ctfProject.ID, Type: task.TypeCTFChallenge, Goal: "Solve", RuntimeProfileID: fixture.profile.ID, Runner: task.RunnerSandbox,

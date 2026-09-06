@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"pentest/internal/owner"
@@ -42,8 +43,8 @@ type Identity struct {
 var ErrBlocked = errors.New("FGS updates are blocked by a rejected update")
 
 type Operation struct {
-Priority string `json:"priority,omitempty"`
-DataRefs []string `json:"data_refs,omitempty"`
+	Priority        string            `json:"priority,omitempty"`
+	DataRefs        []string          `json:"data_refs,omitempty"`
 	Op              string            `json:"op"`
 	Key             string            `json:"key"`
 	Title           string            `json:"title,omitempty"`
@@ -67,9 +68,9 @@ DataRefs []string `json:"data_refs,omitempty"`
 }
 
 type Node struct {
-Priority string `json:"priority,omitempty"`
-DataRefs []string `json:"data_refs,omitempty"`
-AcceptedAt string `json:"accepted_at"`
+	Priority        string     `json:"priority,omitempty"`
+	DataRefs        []string   `json:"data_refs,omitempty"`
+	AcceptedAt      string     `json:"accepted_at"`
 	Key             string     `json:"key"`
 	Type            string     `json:"type"`
 	Version         int        `json:"version"`
@@ -118,7 +119,11 @@ type Receipt struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
-type Service struct{ db *store.DB }
+type Service struct {
+	db     *store.DB
+	scanMu sync.Mutex
+	scans  map[string]*mailboxScan
+}
 
 func NewService(db *store.DB) *Service { return &Service{db: db} }
 
@@ -217,7 +222,7 @@ func (s *Service) Apply(ctx context.Context, c owner.Contract, continuation stri
 			break
 		}
 		n.Version++
-n.AcceptedAt = r.UpdatedAt
+		n.AcceptedAt = r.UpdatedAt
 		n.OwnerKind = c.Kind
 		n.OwnerID = c.ID
 		n.ContinuationID = continuation
@@ -499,7 +504,7 @@ func applyOperation(nodes map[string]Node, op Operation) (Node, error) {
 			fields["success_criteria"] = &n.SuccessCriteria
 		} else {
 			fields["action"] = &n.Action
-fields["priority"] = &n.Priority
+			fields["priority"] = &n.Priority
 		}
 		updates := map[string]string{"title": op.Title, "success_criteria": op.SuccessCriteria, "action": op.Action, "priority": op.Priority}
 		count := 0
@@ -528,10 +533,20 @@ fields["priority"] = &n.Priority
 }
 
 func validateOperation(op Operation) error {
-if op.Op=="transport.invalid" {return errors.New("malformed FGS envelope; publish a corrected update or withdraw this identity")}
- if op.Priority!="" && op.Priority!="low" && op.Priority!="normal" && op.Priority!="high" {return errors.New("priority must be low, normal, or high")}
- if len(op.DataRefs)>100 {return errors.New("Fact has too many data references")}
- for _,ref:=range op.DataRefs {if strings.TrimSpace(ref)=="" || len(ref)>2048 {return errors.New("invalid Fact data reference")}}
+	if op.Op == "transport.invalid" {
+		return errors.New("malformed FGS envelope; publish a corrected update or withdraw this identity")
+	}
+	if op.Priority != "" && op.Priority != "low" && op.Priority != "normal" && op.Priority != "high" {
+		return errors.New("priority must be low, normal, or high")
+	}
+	if len(op.DataRefs) > 100 {
+		return errors.New("Fact has too many data references")
+	}
+	for _, ref := range op.DataRefs {
+		if strings.TrimSpace(ref) == "" || len(ref) > 2048 {
+			return errors.New("invalid Fact data reference")
+		}
+	}
 
 	if !keyPattern.MatchString(op.Key) {
 		return errors.New("invalid Blackboard key")
@@ -616,37 +631,47 @@ func stepTransition(from, to string) bool {
 }
 
 func (s *Service) History(ctx context.Context, c owner.Contract, key string) ([]Node, error) {
- return s.historyWindow(ctx,c,key,0,0)
+	return s.historyWindow(ctx, c, key, 0, 0)
 }
-func (s *Service) HistoryPage(ctx context.Context,c owner.Contract,key string,before,limit int)([]Node,error) {
- if before<0 || limit<1 || limit>100 {return nil,errors.New("invalid FGS history page")}
- return s.historyWindow(ctx,c,key,before,limit)
+func (s *Service) HistoryPage(ctx context.Context, c owner.Contract, key string, before, limit int) ([]Node, error) {
+	if before < 0 || limit < 1 || limit > 100 {
+		return nil, errors.New("invalid FGS history page")
+	}
+	return s.historyWindow(ctx, c, key, before, limit)
 }
-func (s *Service) historyWindow(ctx context.Context,c owner.Contract,key string,before,limit int)([]Node,error) {
+func (s *Service) historyWindow(ctx context.Context, c owner.Contract, key string, before, limit int) ([]Node, error) {
 	kind, id, err := boardIdentity(c)
 	if err != nil {
 		return nil, err
 	}
-	query:=`SELECT body_json FROM fgs_history WHERE board_kind=? AND board_id=? AND node_key=?`
- args:=[]any{kind,id,key}
- if before>0 {query+=" AND version<?";args=append(args,before)}
- query+=" ORDER BY version"
- if limit>0 {query+=" DESC LIMIT ?";args=append(args,limit)}
- rows,err:=s.db.QueryContext(ctx,query,args...)
+	query := `SELECT body_json FROM fgs_history WHERE board_kind=? AND board_id=? AND node_key=?`
+	args := []any{kind, id, key}
+	if before > 0 {
+		query += " AND version<?"
+		args = append(args, before)
+	}
+	query += " ORDER BY version"
+	if limit > 0 {
+		query += " DESC LIMIT ?"
+		args = append(args, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	result := []Node{}
-bytesRead:=0
+	bytesRead := 0
 	for rows.Next() {
 		var raw string
 		if err = rows.Scan(&raw); err != nil {
 			return nil, err
 		}
-		if limit>0 && len(result)>0 && bytesRead+len(raw)>2<<20 {break}
-bytesRead+=len(raw)
-var n Node
+		if limit > 0 && len(result) > 0 && bytesRead+len(raw) > 2<<20 {
+			break
+		}
+		bytesRead += len(raw)
+		var n Node
 		if err = json.Unmarshal([]byte(raw), &n); err != nil {
 			return nil, err
 		}
