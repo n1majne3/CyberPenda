@@ -15,8 +15,7 @@ import (
 
 	"pentest/internal/fgs"
 	"pentest/internal/project"
-	"pentest/internal/projectinterface"
-	"pentest/internal/runner"
+	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
@@ -44,7 +43,12 @@ func TestSandboxFGSOutboxLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := Config{Version: "smoke", DBPath: filepath.Join(root, "test.db"), RuntimeRoot: relativeRuns, SessionRoot: filepath.Join(root, "sessions"), AuthToken: "smoke-operator", DisableBuiltinSkills: true}
+	listener, err := net.Listen("tcp4", "0.0.0.0:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	config := Config{ListenAddr: listener.Addr().String(), SandboxImage: image, Version: "smoke", DBPath: filepath.Join(root, "test.db"), RuntimeRoot: relativeRuns, SessionRoot: filepath.Join(root, "sessions"), AuthToken: "smoke-operator", DisableBuiltinSkills: true}
 	server, err := NewServer(config)
 	if err != nil {
 		t.Fatal(err)
@@ -72,58 +76,46 @@ func TestSandboxFGSOutboxLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	server = reopened
-	found, err := server.tasks.Create(task.CreateRequest{ProjectID: p.ID, Type: task.TypePentest, Goal: "Check FGS delivery", Runner: task.RunnerSandbox, RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
+	profile, err := server.profiles.Create("Smoke Runtime", runtimeprofile.ProviderPi, runtimeprofile.Fields{Model: "smoke-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found, err := server.tasks.Create(task.CreateRequest{ProjectID: p.ID, Type: task.TypePentest, Goal: "Check FGS delivery", RuntimeProfileID: profile.ID, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox), Runner: task.RunnerSandbox, RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if found.BlackboardProtocol != "fgs" {
 		t.Fatal("new Task in upgraded Project must use FGS")
 	}
-	tx, err := server.db.BeginTx(t.Context(), nil)
+	plan, err := server.buildTaskLaunchPlan(found, found.Goal, "", "", "high")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback()
-	_, cont, err := server.tasks.CreateContinuationLaunchTx(t.Context(), tx, task.ContinuationLaunchRequest{
-		TaskID: found.ID, ProjectID: p.ID, RuntimeProfileID: "smoke-profile", RuntimeProvider: "codex", Runner: task.RunnerSandbox,
-		RuntimeConfig: map[string]any{"blackboard_protocol": "fgs"},
-	})
+	cont, bound, err := server.prepareBlackboardV2ContinuationLaunch(found, plan, found.Goal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = tx.Commit(); err != nil {
-		t.Fatal(err)
+	createArgs, ok := runtime.DockerSandboxCreateArgs(bound.Adapter)
+	if !ok {
+		t.Fatal("missing sandbox adapter")
 	}
-	token, _, err := server.projectInterfaceGrants.Issue(t.Context(), projectinterface.IssueGrantRequest{
-		ProjectID: p.ID, TaskID: found.ID, ContinuationID: cont.ID,
-		RuntimeConfigVersionID: cont.RuntimeConfigVersionID, RuntimeProfileID: cont.RuntimeProfileID,
-		RuntimePluginID: cont.RuntimeProvider, Runner: string(cont.Runner), Access: projectinterface.GrantAccessReadOnly,
-	})
-	if err != nil {
-		t.Fatal(err)
+	processEnv := map[string]string{}
+	for i := 0; i+1 < len(createArgs); i++ {
+		if createArgs[i] == "-e" {
+			key, value, ok := strings.Cut(createArgs[i+1], "=")
+			if ok {
+				processEnv[key] = value
+			}
+		}
 	}
-	listener, err := net.Listen("tcp4", "0.0.0.0:0")
-	if err != nil {
-		t.Fatal(err)
+	token := processEnv["PENTEST_INTERFACE_TOKEN"]
+	if token == "" || processEnv["PENTEST_CONTINUATION_ID"] != cont.ID {
+		t.Fatal("bound Runtime is missing its Continuation capability or identity")
 	}
 	api := &http.Server{Handler: server, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = api.Serve(listener) }()
 	defer api.Close()
-	apiURL := fmt.Sprintf("http://host.docker.internal:%d", listener.Addr().(*net.TCPAddr).Port)
 	workdir := filepath.Join(root, "runs", found.ID, "workdir")
-	if err = os.MkdirAll(workdir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	layout, err := runner.PrepareTaskLayout(relativeRuns, found.ID, runtimeprofile.ProviderCodex)
-	if err != nil {
-		t.Fatal(err)
-	}
-	processEnv := runner.LaunchProcessEnv(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex}, true, runner.RuntimeOwnerContext{
-		Owner: found.OwnerContract(workdir), BlackboardProtocol: found.BlackboardProtocol,
-		BlackboardMode: "working_graph", ContinuationID: cont.ID,
-		WorkingGraphRoot: workdir, WorkingGraphOutbox: filepath.Join(workdir, "graph", "outbox", cont.ID), WorkingGraphReceipts: filepath.Join(workdir, "graph", "receipts", cont.ID),
-		APIURL: apiURL, InterfaceToken: token,
-	})
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 	run := func(input string, command ...string) []byte {
@@ -148,6 +140,15 @@ func TestSandboxFGSOutboxLive(t *testing.T) {
 			t.Fatalf("container command %v failed: %v\n%s", command, err, strings.ReplaceAll(string(output), token, "[redacted]"))
 		}
 		return output
+	}
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md"} {
+		instructions := run("", "cat", name)
+		if !strings.Contains(string(instructions), "## FGS work protocol") || strings.Contains(string(instructions), "Exploration flows through an open Attempt") {
+			t.Fatalf("container did not receive FGS instructions in %s", name)
+		}
+	}
+	if schema := run("", "cat", ".pentest/fgs-input.schema.json"); !json.Valid(schema) {
+		t.Fatal("container did not receive valid FGS schema")
 	}
 	// Emit publishes to the mounted Outbox. Only the background receiver can
 	// accept the update; this test never calls Apply or Drain.

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/runtimeprofile"
 )
@@ -78,6 +79,7 @@ func PrepareBlackboardV2TaskLayout(rootDir, taskID string, provider runtimeprofi
 		filepath.Join(taskID, "workdir", "AGENTS.md"),
 		filepath.Join(taskID, "workdir", "CLAUDE.md"),
 		filepath.Join(taskID, "workdir", ".pentest", "scope.json"),
+		filepath.Join(taskID, "workdir", ".pentest", "fgs-input.schema.json"),
 		filepath.Join(taskID, "workdir", ".pentest", "blackboard.json"),
 		filepath.Join(taskID, "workdir", ".mcp.json"),
 	}
@@ -141,7 +143,15 @@ func ProjectBlackboardV2RuntimeConfig(layout Layout, profile runtimeprofile.Prof
 	if err != nil {
 		return ConfigProjection{}, err
 	}
-	addModeSkillProjectionPreview(&projection, req.BlackboardMode, layout)
+	if req.BlackboardProtocol == "fgs" && req.BlackboardMode != modeskill.ModeDisabled {
+		// Provider config omits owner identity. Work instructions still need the
+		// original owner context after that config has been projected.
+		if err := ProjectFGSFiles(layout, taskContextFromProjection(req, profile.Provider, "")); err != nil {
+			return ConfigProjection{}, err
+		}
+	} else {
+		addModeSkillProjectionPreview(&projection, req.BlackboardMode, layout)
+	}
 	return projection, nil
 }
 

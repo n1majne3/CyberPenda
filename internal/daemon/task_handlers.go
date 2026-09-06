@@ -617,6 +617,15 @@ func (server *Server) recoverBlackboardV2ContinuationFiles(ctx context.Context) 
 		if err := server.blackboardV2Continuity.MaterializeWorkingSnapshot(ctx, snapshot.ContinuationID); err != nil {
 			return fmt.Errorf("recover Blackboard v2 Working Snapshot: %w", err)
 		}
+		if created.BlackboardProtocol == "fgs" {
+			if err := runner.ProjectFGSFiles(layout, runner.RuntimeOwnerContext{
+				Owner: created.OwnerContract(layout.Workdir), BlackboardProtocol: created.BlackboardProtocol,
+				ScopeSnapshot: created.ScopeSnapshot, Provider: provider, Sandbox: snapshot.Runner == task.RunnerSandbox,
+			}); err != nil {
+				return fmt.Errorf("recover FGS context: %w", err)
+			}
+			continue
+		}
 		header := blackboardv2.LaunchHeader{
 			Runner: string(snapshot.Runner), ScopePath: ".pentest/scope.json", BlackboardPath: ".pentest/blackboard.json",
 			Schema: snapshot.Schema, Revision: snapshot.Revision,
@@ -937,8 +946,10 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		if !runner.BlackboardV2SupportsProvider(profile.Provider) {
 			return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is unsupported for provider %q", profile.Provider)
 		}
-		if err := runner.ProjectBlackboardV2Files(layout, profile.Provider, *binding.V2Header, created.ScopeSnapshot); err != nil {
-			return taskLaunchPlan{}, err
+		if created.BlackboardProtocol != "fgs" {
+			if err := runner.ProjectBlackboardV2Files(layout, profile.Provider, *binding.V2Header, created.ScopeSnapshot); err != nil {
+				return taskLaunchPlan{}, err
+			}
 		}
 	}
 	configPath := runner.LaunchConfigPath(layout, profile.Provider, projection.ConfigPath, sandbox)

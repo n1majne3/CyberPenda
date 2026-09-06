@@ -13,6 +13,17 @@ import (
 //go:embed fgs-input.schema.json
 var fgsInputSchema []byte
 
+// ProjectFGSFiles restores work instructions and Scope in a validated layout.
+// It does not project provider config or Continuation credentials.
+func ProjectFGSFiles(layout Layout, ctx RuntimeOwnerContext) error {
+	if ctx.Owner.IsTask() {
+		if err := writeTaskScopeFile(filepath.Join(layout.Workdir, ".pentest"), ctx.ScopeSnapshot); err != nil {
+			return err
+		}
+	}
+	return writeFGSInstructions(layout.Workdir, ctx)
+}
+
 const FGSLaunchInstruction = "Read AGENTS.md or CLAUDE.md and follow the FGS work protocol."
 
 const fgsInstructions = `## FGS work protocol
