@@ -26,8 +26,13 @@ while IFS= read -r path; do
     cmd/pentest-claude-sdk-bridge/*|\
     docker/pentest-sandbox/*|\
     scripts/ci-sandbox-smoke-required.sh|\
-    scripts/smoke-sandbox-mcp-live.sh|\
+    scripts/smoke-sandbox-fgs-live.sh|\
     scripts/with-pentestd-live.sh|\
+    internal/daemon/fgs*|\
+    internal/fgs/*|\
+    internal/pentestctl/*|\
+    cmd/pentestctl/*|\
+    internal/store/fgs_migration.go|\
     internal/daemon/task_handlers.go|\
     internal/runner/runner.go|\
     internal/runtime/container.go|\

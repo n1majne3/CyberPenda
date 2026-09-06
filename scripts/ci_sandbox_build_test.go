@@ -12,7 +12,7 @@ func TestSandboxShellScriptsAreExecutable(t *testing.T) {
 	scripts := []string{
 		"scripts/build-release-binaries.sh",
 		"scripts/ci-sandbox-smoke-required.sh",
-		"scripts/smoke-sandbox-mcp-live.sh",
+		"scripts/smoke-sandbox-fgs-live.sh",
 		"scripts/with-pentestd-live.sh",
 	}
 
@@ -29,40 +29,19 @@ func TestSandboxShellScriptsAreExecutable(t *testing.T) {
 	}
 }
 
-func TestSandboxLiveSmokeUsesBlackboardV2HTTPBoundaries(t *testing.T) {
-	repoRoot := repoRoot(t)
-	scriptPath := filepath.Join(repoRoot, "scripts", "smoke-sandbox-mcp-live.sh")
-	scriptBytes, err := os.ReadFile(scriptPath)
+func TestSandboxLiveSmokeRunsFGSContainerAcceptance(t *testing.T) {
+	script, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "smoke-sandbox-fgs-live.sh"))
 	if err != nil {
-		t.Fatalf("read sandbox MCP smoke script: %v", err)
+		t.Fatal(err)
 	}
-	script := string(scriptBytes)
-
-	for _, required := range []string{
-		`"kind":"pentest"`,
-		"curl -sf -X POST \"${v2_base_url}/blackboard/changes\"",
-		"/api/v2/projects/",
-		"/blackboard/changes",
-		"/blackboard/records/",
-		"Authorization: Bearer",
-		"Idempotency-Key",
-		"semantic-change-batch/v2",
-	} {
-		assertContains(t, script, required)
+	assertContains(t, string(script), "PENTEST_SANDBOX_FGS_SMOKE=1")
+	assertContains(t, string(script), "TestSandboxFGSOutboxLive")
+	dockerfile, err := os.ReadFile(filepath.Join(repoRoot(t), "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	for _, retired := range []string{
-		"upsert_project_fact",
-		`"method":"tools/list"`,
-		`"method":"tools/call"`,
-		"/mcp",
-		"/api/projects/",
-		"/facts/",
-	} {
-		if strings.Contains(script, retired) {
-			t.Fatalf("sandbox MCP smoke script still contains retired boundary %q", retired)
-		}
-	}
+	smoke := strings.Split(strings.Split(string(dockerfile), "FROM alpine:3.22 AS smoke")[1], "FROM kalilinux/")[0]
+	assertContains(t, smoke, "COPY --from=pentestctl-build /out/pentestctl /usr/local/bin/pentestctl")
 }
 
 func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
@@ -239,9 +218,9 @@ func TestPullRequestSandboxSmokeSkipsFullKaliImageBuild(t *testing.T) {
 		t.Fatalf("read CI workflow: %v", err)
 	}
 	workflow := string(workflowBytes)
-	smokeJobStart := strings.Index(workflow, "  smoke-sandbox-mcp:")
+	smokeJobStart := strings.Index(workflow, "  smoke-sandbox-fgs:")
 	if smokeJobStart == -1 {
-		t.Fatal("CI workflow must include the Sandbox MCP smoke job")
+		t.Fatal("CI workflow must include the Sandbox FGS smoke job")
 	}
 	smokeJob := workflow[smokeJobStart:]
 	for _, forbidden := range []string{
@@ -251,13 +230,12 @@ func TestPullRequestSandboxSmokeSkipsFullKaliImageBuild(t *testing.T) {
 		"target: runtime",
 	} {
 		if strings.Contains(smokeJob, forbidden) {
-			t.Fatalf("Sandbox MCP smoke job must not build the full Kali image: found %q", forbidden)
+			t.Fatalf("Sandbox FGS smoke job must not build the full Kali image: found %q", forbidden)
 		}
 	}
 	assertContains(t, smokeJob, "make build-sandbox-smoke-image")
 	assertContains(t, smokeJob, "PENTEST_SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci")
 	assertContains(t, smokeJob, "\n          SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci")
-	assertContains(t, smokeJob, "\n          PENTEST_DAEMON_WAIT_SECONDS: \"120\"")
 }
 
 func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {

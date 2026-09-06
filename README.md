@@ -180,7 +180,7 @@ Domain terms are defined in [CONTEXT.md](CONTEXT.md).
 | `make build-tsecbench-hosted-bundle TSECBENCH_BUNDLE_VERSION=v1` | Export a Hosted upload bundle from a built image |
 | `make test` / `make test-backend` | Go unit and integration tests |
 | `make test-ci` | CI-safe tests (no Docker, no LLM credentials) |
-| `make smoke-sandbox-mcp` | Live smoke: sandbox → daemon Blackboard v2 MCP change |
+| `make smoke-sandbox-fgs` | Live smoke: sandbox → Runtime Outbox → accepted FGS |
 | `make smoke-runtime-tasks` | Live smoke for Codex / Claude / Pi (needs Docker + provider creds) |
 | `make clean` | Remove built UI artifacts and `pentestd` binary |
 

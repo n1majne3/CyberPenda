@@ -117,7 +117,7 @@ jobs:
           fi
           scripts/ci-sandbox-smoke-required.sh "$base" "$head" >> "$GITHUB_OUTPUT"
 
-  smoke-sandbox-mcp:
+  smoke-sandbox-fgs:
     needs: sandbox-smoke-changes
     if: needs.sandbox-smoke-changes.outputs.required == 'true'
     runs-on: ubuntu-latest
@@ -128,9 +128,8 @@ jobs:
           go-version-file: go.mod
       - name: Build sandbox smoke probe image
         run: make build-sandbox-smoke-image
-      - name: Smoke sandbox MCP (no LLM)
+      - name: Smoke sandbox FGS (no LLM)
         env:
           PENTEST_SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci
           SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci
-          PENTEST_DAEMON_WAIT_SECONDS: "120"
-        run: scripts/with-pentestd-live.sh make smoke-sandbox-mcp
+        run: make smoke-sandbox-fgs
