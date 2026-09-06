@@ -33,6 +33,35 @@ const codexPlugin = {
 };
 
 describe("SessionDetailPage", () => {
+  it("opens the Session Blackboard inside the Runtime workspace", async () => {
+    const fetchMock = mockApi({
+      "/api/sessions/session-fgs/transcript": { entries: [] },
+      "/api/sessions/session-fgs/timeline": { items: [] },
+      "/api/sessions/session-fgs": {
+        id: "session-fgs", title: "Inspect service", lifecycle: "open",
+        blackboard_protocol: "fgs", run_controls: { blackboard_mode: "working_graph" },
+      },
+      "/api/v2/sessions/session-fgs/fgs/status": { action_required: 0, receipts: [] },
+      "/api/v2/sessions/session-fgs/fgs": {
+        revision: 1, edges: [], nodes: [
+          { key: "goal:inspect", type: "goal", version: 1, title: "Inspect access", state: "active" },
+          { key: "step:read", type: "step", version: 1, action: "Read service response", state: "done" },
+          { key: "fact:response", type: "fact", version: 1, summary: "Service responds" },
+        ],
+      },
+    });
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/sessions/session-fgs"]}><Routes>
+      <Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
+    </Routes></MemoryRouter>);
+    await user.click(await screen.findByRole("button", { name: "Blackboard" }));
+    expect(await screen.findByText("Service responds")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Blackboard" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("textbox", { name: "Session message" })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/api/v2/projects/"))).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Conversation" }));
+    expect(screen.queryByRole("region", { name: "FGS Blackboard" })).not.toBeInTheDocument();
+  });
   it("uses the same runtime workspace surface as Project Tasks", async () => {
     mockApi({
       "/api/sessions/session-shared-ui/transcript": {
@@ -139,6 +168,7 @@ describe("SessionDetailPage", () => {
     );
 
     expect(await screen.findByTestId("blackboard-conclusion-state")).toHaveTextContent("Blackboard: Disabled");
+    expect(screen.queryByRole("button", { name: "Blackboard" })).not.toBeInTheDocument();
     expect(screen.queryByRole("alert", { name: "Blackboard conclusion requires attention" })).not.toBeInTheDocument();
     expect(screen.getByText(/non-project mode/i)).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Session message" })).toBeInTheDocument();
