@@ -207,8 +207,9 @@ func (s *Service) WithHermesACPProbe(probe func(binary string) error) *Service {
 func (s *Service) Run(ctx context.Context, request Request) Result {
 	result := Result{Pass: true}
 	if request.BlackboardMode != "" {
-		spec, err := modeskill.Resolve(request.BlackboardMode)
-		if err != nil {
+		if request.BlackboardMode == modeskill.ModeDisabled {
+			result.add(Check{Name: "mode_skill", Status: CheckPass, Detail: "no Mode Skill for disabled Blackboard Mode"})
+		} else if spec, err := modeskill.Resolve(request.BlackboardMode); err != nil {
 			result.add(Check{Name: "mode_skill", Status: CheckFail, Detail: err.Error()})
 		} else {
 			result.ModeSkill = &SkillPreview{ID: spec.ID, Name: spec.Name}

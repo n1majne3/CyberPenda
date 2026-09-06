@@ -14,7 +14,6 @@ func TestModeSkillsAreExclusiveSystemBundles(t *testing.T) {
 	wants := map[modeskill.Mode]string{
 		modeskill.ModeInteractive:  "cyberpenda-blackboard-interactive",
 		modeskill.ModeWorkingGraph: "cyberpenda-blackboard-working-graph",
-		modeskill.ModeDisabled:     "cyberpenda-blackboard-disabled",
 	}
 	for mode, wantID := range wants {
 		spec, err := modeskill.Resolve(mode)
@@ -38,6 +37,25 @@ func TestModeSkillsAreExclusiveSystemBundles(t *testing.T) {
 	}
 }
 
+// Disabled Blackboard Mode has no Mode Skill. Issue #248 gives a Disabled
+// launch only the state-file reminder, so Resolve and Project must refuse it.
+func TestDisabledModeHasNoModeSkill(t *testing.T) {
+	if _, err := modeskill.Resolve(modeskill.ModeDisabled); err == nil {
+		t.Fatal("disabled Blackboard Mode unexpectedly resolved a Mode Skill")
+	}
+	root := t.TempDir()
+	if _, err := modeskill.Project(root, modeskill.ModeDisabled); err == nil {
+		t.Fatal("disabled Blackboard Mode unexpectedly projected a Mode Skill")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("disabled projection wrote %d entries into the Skills root", len(entries))
+	}
+}
+
 func TestCTFOrchestratorBuiltinAcceptsDisabledAndWorkingGraph(t *testing.T) {
 	bundle := skill.Bundle{ID: "ctf-orchestrator", Name: "ctf-orchestrator", Path: filepath.Join("..", "..", "internal", "skill", "builtins", "assets", "ctf-orchestrator")}
 	for _, mode := range []modeskill.Mode{modeskill.ModeDisabled, modeskill.ModeWorkingGraph} {
@@ -53,14 +71,14 @@ func TestCTFOrchestratorBuiltinAcceptsDisabledAndWorkingGraph(t *testing.T) {
 func TestInjectInvocationRequiresModeSkillBeforeAdditionalSystemSkills(t *testing.T) {
 	goal, err := modeskill.InjectInvocation(
 		"solve every eligible challenge",
-		modeskill.ModeDisabled,
+		modeskill.ModeWorkingGraph,
 		"ctf-orchestrator",
 		"ctf-orchestrator",
 	)
 	if err != nil {
 		t.Fatalf("inject invocation: %v", err)
 	}
-	modeIndex := strings.Index(goal, "`cyberpenda-blackboard-disabled`")
+	modeIndex := strings.Index(goal, "`cyberpenda-blackboard-working-graph`")
 	orchestratorIndex := strings.Index(goal, "`ctf-orchestrator`")
 	if modeIndex < 0 || orchestratorIndex < 0 || modeIndex >= orchestratorIndex {
 		t.Fatalf("Skill invocation order is not mode-first: %s", goal)
@@ -71,6 +89,44 @@ func TestInjectInvocationRequiresModeSkillBeforeAdditionalSystemSkills(t *testin
 	for _, required := range []string{
 		"REQUIRED SKILL INVOCATION",
 		"invoke and follow these projected Skills in order",
+		"TASK GOAL:\nsolve every eligible challenge",
+	} {
+		if !strings.Contains(goal, required) {
+			t.Fatalf("injected goal missing %q: %s", required, goal)
+		}
+	}
+}
+
+// Disabled mode has no Mode Skill, and the state-file reminder lives on the
+// owner launch boundary. With no additional system Skills the goal is
+// returned unchanged.
+func TestInjectInvocationDisabledModeAddsNoSkillInvocation(t *testing.T) {
+	goal, err := modeskill.InjectInvocation("inspect the standalone target", modeskill.ModeDisabled)
+	if err != nil {
+		t.Fatalf("inject invocation: %v", err)
+	}
+	if goal != "inspect the standalone target" {
+		t.Fatalf("Disabled injection changed the goal: %s", goal)
+	}
+}
+
+// Disabled launches still invoke additional system Skills, such as the hosted
+// orchestrator, but never name a Mode Skill.
+func TestInjectInvocationDisabledModeStillInvokesAdditionalSystemSkills(t *testing.T) {
+	goal, err := modeskill.InjectInvocation(
+		"solve every eligible challenge",
+		modeskill.ModeDisabled,
+		"ctf-orchestrator",
+	)
+	if err != nil {
+		t.Fatalf("inject invocation: %v", err)
+	}
+	if strings.Contains(goal, "cyberpenda-blackboard-disabled") {
+		t.Fatalf("Disabled injection named a Mode Skill: %s", goal)
+	}
+	for _, required := range []string{
+		"REQUIRED SKILL INVOCATION",
+		"`ctf-orchestrator`",
 		"TASK GOAL:\nsolve every eligible challenge",
 	} {
 		if !strings.Contains(goal, required) {

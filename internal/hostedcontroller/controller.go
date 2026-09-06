@@ -42,7 +42,8 @@ const (
 )
 
 // HostedTaskGoal is the required Task Goal for one Hosted Evaluation Run.
-// It invokes the disabled Mode Skill before the hosted orchestrator.
+// It invokes the hosted orchestrator Skill. Disabled Blackboard Mode has no
+// Mode Skill.
 var HostedTaskGoal = mustHostedTaskGoal()
 
 func mustHostedTaskGoal() string {

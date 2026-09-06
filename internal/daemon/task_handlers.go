@@ -127,12 +127,14 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
-	modeSkill, err := modeskill.Resolve(modeskill.Mode(input.RunControls.BlackboardMode))
-	if err != nil {
-		writeError(response, http.StatusBadRequest, err.Error())
-		return
+	if blackboardMode := modeskill.Mode(input.RunControls.BlackboardMode); blackboardMode != modeskill.ModeDisabled {
+		modeSkill, err := modeskill.Resolve(blackboardMode)
+		if err != nil {
+			writeError(response, http.StatusBadRequest, err.Error())
+			return
+		}
+		resolvedConfiguration.Snapshot.ModeSkillID = modeSkill.ID
 	}
-	resolvedConfiguration.Snapshot.ModeSkillID = modeSkill.ID
 	launchModelOverride := launchModel
 	launchReasoningEffort, err := normalizeLaunchReasoningEffort(input.ReasoningEffort)
 	if err != nil {

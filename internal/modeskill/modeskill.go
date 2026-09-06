@@ -1,6 +1,8 @@
-// Package modeskill owns the single system-controlled Blackboard Mode Skill
-// projected into every Runtime. These bundles are not stored in the ordinary
-// Skill catalog and cannot be edited or opted out by a Runtime Profile.
+// Package modeskill owns the system-controlled Blackboard Mode Skills
+// projected into interactive and Working Graph Runtimes. These bundles are
+// not stored in the ordinary Skill catalog and cannot be edited or opted out
+// by a Runtime Profile. Disabled Blackboard Mode has no Mode Skill: its only
+// launch content is the owner launch boundary's state-file reminder.
 package modeskill
 
 import (
@@ -31,18 +33,37 @@ type Spec struct {
 
 var errInvalidMode = errors.New("invalid Blackboard Mode Skill")
 
+// ErrDisabledHasNoSkill reports that Disabled Blackboard Mode has no Mode
+// Skill. It is an expected resolution result, not a malformed mode value.
+var ErrDisabledHasNoSkill = errors.New("disabled Blackboard Mode has no Mode Skill")
+
 //go:embed bundles/*/SKILL.md
 var embedded embed.FS
 
 var specs = map[Mode]Spec{
 	ModeInteractive:  {Mode: ModeInteractive, ID: "cyberpenda-blackboard-interactive", Name: "CyberPenda Blackboard Interactive"},
 	ModeWorkingGraph: {Mode: ModeWorkingGraph, ID: "cyberpenda-blackboard-working-graph", Name: "CyberPenda Blackboard Working Graph"},
-	ModeDisabled:     {Mode: ModeDisabled, ID: "cyberpenda-blackboard-disabled", Name: "CyberPenda Blackboard Disabled"},
+}
+
+// domainModes holds every valid Blackboard Mode value. Disabled stays valid
+// even though no Mode Skill exists for it.
+var domainModes = map[Mode]bool{
+	ModeInteractive:  true,
+	ModeWorkingGraph: true,
+	ModeDisabled:     true,
+}
+
+// Valid reports whether mode is a Blackboard Mode value.
+func Valid(mode Mode) bool {
+	return domainModes[mode]
 }
 
 func Resolve(mode Mode) (Spec, error) {
 	spec, ok := specs[mode]
 	if !ok {
+		if mode == ModeDisabled {
+			return Spec{}, ErrDisabledHasNoSkill
+		}
 		return Spec{}, fmt.Errorf("%w: %q", errInvalidMode, mode)
 	}
 	return spec, nil
@@ -52,20 +73,30 @@ func Resolve(mode Mode) (Spec, error) {
 // system-selected Mode Skill and any additional system-managed Skills. It
 // deliberately excludes ordinary catalog Skills, which remain available for
 // task-driven selection instead of being invoked as an indiscriminate batch.
+// Disabled Blackboard Mode has no Mode Skill: with no additional Skills the
+// goal is returned unchanged, because the owner launch boundary already adds
+// the state-file reminder.
 func InjectInvocation(goal string, mode Mode, additionalSkillIDs ...string) (string, error) {
-	spec, err := Resolve(mode)
-	if err != nil {
+	ids := make([]string, 0, 1+len(additionalSkillIDs))
+	if spec, err := Resolve(mode); err == nil {
+		ids = append(ids, spec.ID)
+	} else if !errors.Is(err, ErrDisabledHasNoSkill) {
 		return "", err
 	}
-	ids := make([]string, 0, 1+len(additionalSkillIDs))
 	seen := map[string]bool{}
-	for _, id := range append([]string{spec.ID}, additionalSkillIDs...) {
+	for _, id := range ids {
+		seen[id] = true
+	}
+	for _, id := range additionalSkillIDs {
 		id = strings.TrimSpace(id)
 		if id == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
 		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return goal, nil
 	}
 	var prompt strings.Builder
 	prompt.WriteString("REQUIRED SKILL INVOCATION\n\nBefore any task work, invoke and follow these projected Skills in order:\n")
@@ -107,8 +138,8 @@ func Project(skillsRoot string, mode Mode) (skill.Bundle, error) {
 }
 
 func ValidateBundleCompatibility(mode Mode, bundle skill.Bundle) error {
-	if _, err := Resolve(mode); err != nil {
-		return err
+	if !Valid(mode) {
+		return fmt.Errorf("%w: %q", errInvalidMode, mode)
 	}
 	for _, spec := range specs {
 		if skill.DisplayID(bundle.ID, bundle.Source) == spec.ID {
@@ -183,8 +214,8 @@ func parseBlackboardModes(document string) ([]Mode, bool, error) {
 	seen := map[Mode]bool{}
 	for _, raw := range values {
 		mode := Mode(strings.Trim(strings.TrimSpace(raw), "'\""))
-		if _, err := Resolve(mode); err != nil {
-			return nil, true, err
+		if !Valid(mode) {
+			return nil, true, fmt.Errorf("unknown Blackboard Mode %q", mode)
 		}
 		if !seen[mode] {
 			seen[mode] = true

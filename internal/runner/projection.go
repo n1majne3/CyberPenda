@@ -65,8 +65,9 @@ type ProjectionRequest struct {
 	ModelSnapshot               *modelprovider.Snapshot
 	LaunchModelOverride         string
 	SkillBundles                []skill.Bundle
-	// BlackboardMode selects the one system-owned Mode Skill projected before
-	// ordinary user Skills. Empty is allowed only for legacy/test projections.
+	// BlackboardMode selects the system-owned Mode Skill projected before
+	// ordinary user Skills. Disabled mode has no Mode Skill. Empty is allowed
+	// only for legacy/test projections.
 	BlackboardMode modeskill.Mode
 	// BlackboardProjectionOmitted keeps ordinary Runtime configuration, Skills,
 	// external MCP servers, credentials, and Task Scope while withholding every
@@ -174,7 +175,7 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 }
 
 func projectModeAndUserSkills(layout Layout, req ProjectionRequest) error {
-	if req.BlackboardMode != "" {
+	if req.BlackboardMode != "" && req.BlackboardMode != modeskill.ModeDisabled {
 		if _, err := modeskill.Project(layout.SkillsRoot, req.BlackboardMode); err != nil {
 			return err
 		}
@@ -193,7 +194,7 @@ func projectModeAndUserSkills(layout Layout, req ProjectionRequest) error {
 }
 
 func addModeSkillProjectionPreview(projection *ConfigProjection, mode modeskill.Mode, layout Layout) {
-	if mode == "" {
+	if mode == "" || mode == modeskill.ModeDisabled {
 		return
 	}
 	spec, err := modeskill.Resolve(mode)
