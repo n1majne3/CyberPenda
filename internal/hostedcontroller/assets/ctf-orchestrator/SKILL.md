@@ -21,8 +21,10 @@ description: Orchestrate a timed multi-target offensive/CTF session with a Decid
 | 发消息 | `send_input` | `SendMessage` |
 | 强制停止 | `close_agent` | `TaskStop` |
 
-Codex Profile 必须启用 multi-agent。CyberPenda 投影 V1 工具（`multi_agent_v1` 命名空间）：
-`spawn_agent` 用 `fork_context`，不要 `fork_turns` / `task_name`。不要用 V2 的 `send_message` / `interrupt_agent`。
+Codex Profile 必须启用 multi-agent。CyberPenda 投影 V1 工具（`multi_agent_v1` 命名空间）。
+`spawn_agent` **必须** `fork_context: false`：只投递本 step 正文，禁止把主控历史拷进子线程。
+不要传 `fork_turns` 或 `task_name`。不要用 V2 的 `send_message` / `interrupt_agent`。
+Execute 子线程禁止调用 ctf-orchestrator，禁止当 Decide；只执行派发模板里的那一个 step。
 Claude Code 使用后台 Agent。
 
 环境参数从任务说明读取。开局先执行 `WS="$(pwd -P)"; export WS`，实际 Runtime Workdir 是唯一 `$WS`。
