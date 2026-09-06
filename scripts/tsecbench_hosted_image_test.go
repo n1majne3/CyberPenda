@@ -86,7 +86,6 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	for _, required := range []string{
 		"@earendil-works/pi-coding-agent@latest",
 		"@tintinweb/pi-subagents@latest",
-		"pi-subagents@latest",
 		"@openai/codex@latest",
 		"@anthropic-ai/claude-code@latest",
 		"hermes-agent.nousresearch.com/install.sh",
@@ -185,6 +184,12 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	assertContains(t, dockerfile, "--no-deps")
 	assertContains(t, dockerfile, `ln -s "$base" "/usr/bin/${base}-static"`)
 	assertContains(t, dockerfile, "missing hosted tool")
+	// Only the async-capable tintinweb subagents extension may be enabled; the
+	// unscoped pi-subagents product registers a conflicting Agent tool and its
+	// detached async children are invisible to the parent-session observer.
+	if strings.Contains(dockerfile, `"npm:pi-subagents"`) {
+		t.Fatal("Hosted Image must enable only the @tintinweb/pi-subagents Pi extension")
+	}
 	// Kali qemu-user ships qemu-x86_64. Do not treat qemu-x86_64-static as that name.
 	assertContains(t, dockerfile, "command -v qemu-x86_64 ||")
 
