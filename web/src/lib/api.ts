@@ -6,6 +6,18 @@ import { demoApiGet, demoApiWrite } from "@/demo/demoApi";
 const base = "";
 const authTokenParam = "token";
 const authTokenStorageKey = "pentest.authToken";
+let browserSessionRequest: Promise<boolean> | undefined;
+
+function refreshBrowserSession(): Promise<boolean> {
+  if (!browserSessionRequest) {
+    browserSessionRequest = fetch("/api/operator-session", {
+      method: "POST", credentials: "same-origin",
+    }).then((response) => response.ok).catch(() => false).finally(() => {
+      browserSessionRequest = undefined;
+    });
+  }
+  return browserSessionRequest;
+}
 
 export class ApiError extends Error {
   status: number;
@@ -29,10 +41,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // Let the browser set multipart/form-data together with its boundary.
     delete headers["Content-Type"];
   }
-  const res = await fetch(base + path, {
+  let res = await fetch(base + path, {
     ...init,
     headers,
   });
+  // A direct link or daemon restart can leave this tab without a valid login.
+  // The daemon establishes the browser session; never retry a mutation or
+  // replace credentials explicitly supplied by an API caller.
+  if ((res.status === 401 || res.status === 403) && (init?.method ?? "GET") === "GET" &&
+      !new Headers(init?.headers).has("Authorization") && await refreshBrowserSession()) {
+    try { window.sessionStorage.removeItem(authTokenStorageKey); } catch { /* Storage can be disabled. */ }
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === "authorization") delete headers[key];
+    }
+    res = await fetch(base + path, { ...init, headers, credentials: "same-origin" });
+  }
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
     let body: unknown;

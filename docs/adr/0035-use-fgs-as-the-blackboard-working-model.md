@@ -37,6 +37,12 @@ structured FGS updates through its continuation-scoped Outbox. The Harness
 validates transport and authority. The Blackboard service validates and stores
 FGS updates. The UI displays that accepted state and its receipt time.
 
+The launch message gives an explicit startup sequence: read the instructions,
+read accepted state, publish the Goal and first Step, then check the receipt.
+The instructions remain in AGENTS.md / CLAUDE.md. This is a Runtime reporting
+requirement, not a Harness-enforced tool scheduler. Real Runtime acceptance can
+run against sandbox Pi with an explicitly selected Provider and model.
+
 Accepted Blackboard state is the durable shared graph. Runtime files are local
 working state. An unsubmitted local edit is not a Blackboard update. The Runtime
 can continue independent work while receipt delivery is pending. The Harness

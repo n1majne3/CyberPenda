@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -28,8 +27,7 @@ func (server *Server) authenticateSessionBlackboardV2(request *http.Request) (bl
 		return blackboardV2Principal{}, blackboardV2HTTPError("invalid_schema", "session id is required", "path.session_id")
 	}
 	token := projectinterface.BearerToken(request)
-	operator := token != "" &&
-		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) == 1
+	operator := server.operatorRequest(request)
 	if operator {
 		actorID := strings.TrimSpace(request.Header.Get(projectinterface.OperatorActorHeader))
 		if actorID == "" {

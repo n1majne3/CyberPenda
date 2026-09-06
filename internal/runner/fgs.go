@@ -24,7 +24,15 @@ func ProjectFGSFiles(layout Layout, ctx RuntimeOwnerContext) error {
 	return writeFGSInstructions(layout.Workdir, ctx)
 }
 
-const FGSLaunchInstruction = "Read AGENTS.md or CLAUDE.md and follow the FGS work protocol."
+const FGSLaunchInstruction = `FGS startup: complete these steps before executing the Task Goal below.
+1. Read AGENTS.md or CLAUDE.md for the FGS work protocol.
+2. Run pentestctl working-graph read to inspect accepted state.
+3. Publish a Goal and the first Step with pentestctl working-graph emit --input update.json. Reuse existing nodes after resume.
+4. Run pentestctl working-graph status and confirm the update was applied.
+Then execute the Step. Publish a Fact and the Step result before moving to the next Step. Continue reporting at each result or change of plan, including during long tool loops. Before your final reply, publish the result and check its receipt.
+These reports are part of the Task, even for a small task. Do not substitute chat text, private notes, or a Skill's local files for accepted Blackboard updates. If reporting fails, report the exact blocker and follow the recovery rules in the instruction file.
+
+Task Goal:`
 
 const fgsInstructions = `## FGS work protocol
 

@@ -1,8 +1,11 @@
 package fgs_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,11 +22,18 @@ import (
 
 // This opt-in test makes real model calls. It checks protocol compliance with
 // an isolated arithmetic task, without ctf-orchestrator or any other Skill.
+// Set CYBERPENDA_FGS_PI_AGENT_DIR, CYBERPENDA_FGS_PI_PROVIDER,
+// CYBERPENDA_FGS_PI_MODEL, and PENTEST_SANDBOX_IMAGE to use sandbox Pi.
 func TestRealRuntimeFollowsProjectedFGSInstructions(t *testing.T) {
 	if os.Getenv("CYBERPENDA_FGS_REAL_RUNTIME") != "1" {
-		t.Skip("set CYBERPENDA_FGS_REAL_RUNTIME=1 for real Codex acceptance")
+		t.Skip("set CYBERPENDA_FGS_REAL_RUNTIME=1 for real Runtime acceptance")
 	}
-	codex, err := exec.LookPath("codex")
+	piAgentDir := os.Getenv("CYBERPENDA_FGS_PI_AGENT_DIR")
+	program := "codex"
+	if piAgentDir != "" {
+		program = "docker"
+	}
+	codex, err := exec.LookPath(program)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +52,7 @@ func TestRealRuntimeFollowsProjectedFGSInstructions(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build CLI: %v: %s", err, output)
 	}
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	api := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer fgs-test-token" {
 			http.Error(w, "unauthorized", 401)
 			return
@@ -64,6 +74,15 @@ func TestRealRuntimeFollowsProjectedFGSInstructions(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(value)
 	}))
+	if piAgentDir != "" {
+		listener, err := net.Listen("tcp4", "0.0.0.0:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = api.Listener.Close()
+		api.Listener = listener
+	}
+	api.Start()
 	defer api.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 	defer cancel()
@@ -85,6 +104,48 @@ func TestRealRuntimeFollowsProjectedFGSInstructions(t *testing.T) {
 	}()
 	defer func() { cancel(); <-receiverDone; s.CloseScans() }()
 	cmd := exec.CommandContext(ctx, codex, "exec", "--ephemeral", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "-c", "shell_environment_policy.inherit=\"all\"", "Compute 2 + 2 with a local command and complete this small task. Follow the work protocol in AGENTS.md, including accepted durable progress. Do not invoke Skills or delegate. Do not inspect credentials or contact external targets.")
+	if piAgentDir != "" {
+		image := os.Getenv("PENTEST_SANDBOX_IMAGE")
+		if image == "" {
+			t.Fatal("PENTEST_SANDBOX_IMAGE is required")
+		}
+		provider, model := os.Getenv("CYBERPENDA_FGS_PI_PROVIDER"), os.Getenv("CYBERPENDA_FGS_PI_MODEL")
+		if provider == "" || model == "" {
+			t.Fatal("Pi provider and model are required")
+		}
+		agentDir := t.TempDir()
+		for _, name := range []string{"models.json", "auth.json"} {
+			raw, err := os.ReadFile(filepath.Join(piAgentDir, name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &document); err != nil {
+				t.Fatal(err)
+			}
+			if name == "models.json" {
+				var providers map[string]json.RawMessage
+				if err := json.Unmarshal(document["providers"], &providers); err != nil {
+					t.Fatal(err)
+				}
+				raw, err = json.Marshal(map[string]any{"providers": map[string]json.RawMessage{provider: providers[provider]}})
+			} else {
+				raw, err = json.Marshal(map[string]json.RawMessage{provider: document[provider]})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(agentDir, name), raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		args := []string{"run", "--rm", "--add-host=host.docker.internal:host-gateway", "--mount", "type=bind,src=" + layout.Workdir + ",dst=/task/workdir", "--mount", "type=bind,src=" + agentDir + ",dst=/task/agent", "--workdir", "/task/workdir"}
+		for _, value := range []string{"PI_CODING_AGENT_DIR=/task/agent", "PENTEST_BLACKBOARD_PROTOCOL=fgs", "PENTEST_BLACKBOARD_MODE=working_graph", "PENTEST_SESSION_ID=" + c.ID, "PENTEST_CONTINUATION_ID=real-1", "PENTEST_WORKING_GRAPH_ROOT=/task/workdir", fmt.Sprintf("PENTEST_API_URL=http://host.docker.internal:%d/api", api.Listener.Addr().(*net.TCPAddr).Port), "PENTEST_INTERFACE_TOKEN=fgs-test-token"} {
+			args = append(args, "-e", value)
+		}
+		args = append(args, image, "pi", "--no-session", "--provider", provider, "--model", model, "--mode", "json", "--print", runner.FGSLaunchInstruction+"\n\nCompute 2 + 2 with a local command, then compute 3 + 3 with a local command. Report both results and finish. Do not invoke Skills or delegate. Do not inspect credentials or contact external targets.")
+		cmd = exec.CommandContext(ctx, codex, args...)
+	}
 	cmd.Dir = layout.Workdir
 	for _, env := range os.Environ() {
 		if !strings.HasPrefix(env, "PENTEST_") && !strings.HasPrefix(env, "PATH=") {
@@ -92,6 +153,8 @@ func TestRealRuntimeFollowsProjectedFGSInstructions(t *testing.T) {
 		}
 	}
 	cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"), "PENTEST_BLACKBOARD_PROTOCOL=fgs", "PENTEST_BLACKBOARD_MODE=working_graph", "PENTEST_SESSION_ID="+c.ID, "PENTEST_CONTINUATION_ID=real-1", "PENTEST_WORKING_GRAPH_ROOT="+c.Workdir, "PENTEST_API_URL="+api.URL, "PENTEST_INTERFACE_TOKEN=fgs-test-token")
+	var runtimeOutput bytes.Buffer
+	cmd.Stdout = &runtimeOutput
 	// Do not put raw Runtime output into the test log: native configuration or
 	// tool output can contain credentials unrelated to this acceptance task.
 	if err = cmd.Run(); err != nil {
@@ -112,6 +175,32 @@ func TestRealRuntimeFollowsProjectedFGSInstructions(t *testing.T) {
 		fact = fact || (node.Type == "fact" && (strings.Contains(value, "4") || strings.Contains(value, "four")))
 	}
 	if !goal || !step || !fact {
-		t.Fatalf("Runtime did not report a completed FGS result: goal=%v step=%v fact=%v", goal, step, fact)
+		toolCalls, reportingCalls := 0, 0
+		stops := map[string]int{}
+		for _, line := range bytes.Split(runtimeOutput.Bytes(), []byte("\n")) {
+			var event struct {
+				Type     string `json:"type"`
+				ToolName string `json:"toolName"`
+				Args     struct {
+					Command string `json:"command"`
+				} `json:"args"`
+				Message struct {
+					StopReason string `json:"stopReason"`
+				} `json:"message"`
+			}
+			if json.Unmarshal(line, &event) != nil {
+				continue
+			}
+			if event.Type == "tool_execution_start" {
+				toolCalls++
+				if strings.Contains(event.Args.Command, "working-graph") {
+					reportingCalls++
+				}
+			}
+			if event.Type == "message_end" && event.Message.StopReason != "" {
+				stops[event.Message.StopReason]++
+			}
+		}
+		t.Fatalf("Runtime did not report a completed FGS result: goal=%v step=%v fact=%v tools=%d reporting=%d stop_reasons=%v", goal, step, fact, toolCalls, reportingCalls, stops)
 	}
 }

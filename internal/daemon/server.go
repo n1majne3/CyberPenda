@@ -786,6 +786,9 @@ func (server *Server) authorized(request *http.Request) bool {
 	if server.authToken == "" {
 		return true
 	}
+	if server.operatorRequest(request) {
+		return true
+	}
 	if header := strings.TrimSpace(request.Header.Get("Authorization")); header != "" {
 		if scheme, token, ok := strings.Cut(header, " "); ok && strings.EqualFold(scheme, "Bearer") {
 			if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(token)), []byte(server.authToken)) == 1 {
@@ -814,9 +817,7 @@ func (server *Server) authorized(request *http.Request) bool {
 // Blackboard outside the versioned Project Interface. The Actor header is
 // provenance only; it never authenticates the caller.
 func (server *Server) requireOperatorAuthority(response http.ResponseWriter, request *http.Request) bool {
-	token := projectinterface.BearerToken(request)
-	if token == "" || server.operatorToken == "" ||
-		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) != 1 {
+	if !server.operatorRequest(request) {
 		writeError(response, http.StatusUnauthorized, "unauthorized")
 		return false
 	}
@@ -1050,6 +1051,7 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/permissions/{permission_id}/respond", server.handleProviderPermissionResponse)
 	server.registerBlackboardV2Routes()
 	server.registerFGSRoutes()
+	server.mux.HandleFunc("POST /api/operator-session", server.handleOperatorSession)
 	server.registerSPA()
 }
 

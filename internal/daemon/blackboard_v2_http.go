@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -77,8 +76,7 @@ func (server *Server) authenticateBlackboardV2(request *http.Request, requireCon
 		return blackboardV2Principal{}, blackboardV2HTTPError("invalid_schema", "project id is required", "path.project_id")
 	}
 	token := projectinterface.BearerToken(request)
-	operatorRequest := token != "" &&
-		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) == 1
+	operatorRequest := server.operatorRequest(request)
 	if operatorRequest {
 		if requireContinuation {
 			return blackboardV2Principal{}, blackboardV2HTTPError("authority_denied", "this Blackboard capability requires a trusted Continuation", "authority")
