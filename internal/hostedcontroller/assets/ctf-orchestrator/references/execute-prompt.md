@@ -3,6 +3,9 @@
 Codex 用 `spawn_agent`；Claude Code 用 `Agent` + `run_in_background: true`。prompt 结构固定三段：
 背景图 → 单 step → 收束纪律。**图放最前、step 放最后**（前缀稳定，命中缓存）。
 
+Codex 派发参数硬性：`fork_context: false`。禁止 `fork_context: true`。子线程只要本 step 正文，不要主控历史、不要 Skill 开局指令。
+Execute 只做这一个 step，禁止调用 ctf-orchestrator，禁止 list/start/hint/close/abandon。
+
 模板（`{}` 为占位符，其余逐字保留）：
 
 ```text
@@ -42,6 +45,7 @@ Codex 用 `spawn_agent`；Claude Code 用 `Agent` + `run_in_background: true`。
 
 ## 派发检查单（每次 spawn 前过一遍）
 
+- [ ] Codex：`spawn_agent` 带 `fork_context: false`（禁止 true）
 - [ ] step 足够小（≤15 分钟可完成一轮试探）
 - [ ] 互斥范围写明（同资源其他 agent 在做什么）
 - [ ] fact 编号 NNN 已分配且不冲突

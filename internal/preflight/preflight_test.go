@@ -515,6 +515,39 @@ func TestRunShowsModeSkillSeparatelyAndRejectsIncompatibleUserSkill(t *testing.T
 	}
 }
 
+// Disabled Blackboard Mode has no Mode Skill: the mode_skill check passes
+// without a Mode Skill preview, and a Disabled-only Skill stays acceptable.
+func TestRunDisabledModeNeedsNoModeSkill(t *testing.T) {
+	svc := newTestServices(t)
+	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
+	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).
+		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry())
+	profile, err := svc.profiles.Create("fake-disabled", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skills.Publish(context.Background(), skill.PublishRequest{
+		Metadata: skill.Metadata{ID: "disabled-only", Name: "Disabled Only"},
+		Files:    map[string]string{"SKILL.md": "---\nname: disabled-only\nblackboard_modes: [disabled]\n---\n# Disabled only\n"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID: profile.ID, ProjectID: "p1", BlackboardMode: modeskill.ModeDisabled,
+	})
+	if !result.Pass {
+		t.Fatalf("Disabled Preflight failed: %#v", result.Checks)
+	}
+	if result.ModeSkill != nil {
+		t.Fatalf("Disabled Preflight kept a Mode Skill preview: %#v", result.ModeSkill)
+	}
+	for _, check := range result.Checks {
+		if check.Name == "mode_skill" && check.Status != preflight.CheckPass {
+			t.Fatalf("mode_skill check = %#v", check)
+		}
+	}
+}
+
 // CapturedSkillIDs come from a historical Runtime Configuration Snapshot.
 // Retired builtins must not block a resume: unavailable captured skills are
 // skipped, the skills check still passes, and the skip is visible in the

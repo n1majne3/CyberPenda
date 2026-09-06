@@ -41,9 +41,9 @@ func TestHostedConfigurationAcceptsOnlyTheRuntimeProtocolMatrix(t *testing.T) {
 		runtime, protocol string
 		valid             bool
 	}{
-		{"pi", "openai_chat_completions", false},
-		{"pi", "openai_responses", false},
-		{"pi", "anthropic_messages", false},
+		{"pi", "openai_chat_completions", true},
+		{"pi", "openai_responses", true},
+		{"pi", "anthropic_messages", true},
 		{"codex", "openai_chat_completions", false},
 		{"codex", "openai_responses", true},
 		{"codex", "anthropic_messages", false},
@@ -106,6 +106,7 @@ func TestHostedStartProjectsEachRuntimeThroughNormalProviderAndCredentialInputs(
 	}{
 		{"codex", "openai_responses", "/opt/bin/codex", nil},
 		{"claude_code", "anthropic_messages", "/opt/bin/claude", nil},
+		{"pi", "openai_chat_completions", "/opt/bin/pi", []any{"--approve"}},
 	}
 	for _, test := range tests {
 		t.Run(test.runtime, func(t *testing.T) {
@@ -169,8 +170,8 @@ func TestHostedStartProjectsEachRuntimeThroughNormalProviderAndCredentialInputs(
 			if test.runtime == "codex" && (!hasMultiAgent || multiAgent["enabled"] != true) {
 				t.Fatalf("Codex Hosted Profile did not enable multi-agent: %#v", fields)
 			}
-			if test.runtime == "claude_code" && hasMultiAgent {
-				t.Fatalf("Claude Hosted Profile received Codex multi-agent config: %#v", fields)
+			if test.runtime != "codex" && hasMultiAgent {
+				t.Fatalf("Hosted Profile received Codex multi-agent config: %#v", fields)
 			}
 			if !maps.Equal(fields["env"].(map[string]any), map[string]any{"BENCHMARK_BASE_URL": env["BENCHMARK_BASE_URL"]}) {
 				t.Fatalf("Runtime Profile env = %#v", fields["env"])

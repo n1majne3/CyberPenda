@@ -140,9 +140,11 @@ COPY docker/tsecbench-hosted/tsecbench-local-validate.py /usr/local/bin/tsecbenc
 RUN chmod 0755 /usr/local/bin/tsecbench-local-validate \
   && ln -s /usr/local/bin/pentest-tsecbench-client /usr/local/bin/pentest-challenge-client
 
-# Keep Chromium headless and use no runtime browser download.
+# Keep Chromium headless and use no runtime browser download. Pi enables only
+# the async-capable tintinweb subagents extension; its background Agent tool
+# writes the parent-session subagents:record entries CyberPenda observes.
 RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
-  && printf '%s\n' '{"packages":["npm:@tintinweb/pi-subagents","npm:pi-subagents"]}' > /root/.pi/agent/settings.json \
+  && printf '%s\n' '{"packages":["npm:@tintinweb/pi-subagents"]}' > /root/.pi/agent/settings.json \
   && printf '%s\n' '{"executablePath":"/usr/bin/chromium"}' > /root/.agent-browser/config.json \
   && HERMES_VERSION="$(hermes --version 2>/dev/null | sed -n '1p' | awk '{print $NF}')" \
   && test -n "${HERMES_VERSION}" \

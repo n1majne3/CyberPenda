@@ -101,7 +101,8 @@ func TestSessionLaunchPlanCanOmitBlackboardProjection(t *testing.T) {
 		t.Fatalf("Session plan did not represent omitted Blackboard projection: %#v", plan)
 	}
 	if !strings.Contains(plan.LaunchGoal, fixture.goal) ||
-		strings.Count(plan.LaunchGoal, "`cyberpenda-blackboard-disabled`") != 1 ||
+		strings.Contains(plan.LaunchGoal, "cyberpenda-blackboard-disabled") ||
+		strings.Contains(plan.LaunchGoal, "REQUIRED SKILL INVOCATION") ||
 		plan.Profile.ID != fixture.profile.ID || plan.Runner != session.RunnerHost {
 		t.Fatalf("ordinary Session launch context changed: %#v", plan)
 	}
@@ -153,7 +154,8 @@ func TestSessionLaunchWithoutBlackboardStartsOrdinaryContinuation(t *testing.T) 
 	request := requests[0]
 	if request.Owner.ID != fixture.found.ID || request.Continuation.ID != continuation.ID ||
 		!strings.Contains(request.LaunchGoal, fixture.goal) ||
-		strings.Count(request.LaunchGoal, "`cyberpenda-blackboard-disabled`") != 1 ||
+		strings.Contains(request.LaunchGoal, "cyberpenda-blackboard-disabled") ||
+		strings.Contains(request.LaunchGoal, "REQUIRED SKILL INVOCATION") ||
 		request.Facts.Workdir != fixture.found.Workdir {
 		t.Fatalf("provider launch lost ordinary Session context: %#v", request)
 	}

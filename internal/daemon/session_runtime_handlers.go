@@ -593,11 +593,13 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 	if err != nil {
 		return sessionRuntimePreparation{}, err
 	}
-	modeSkill, err := modeskill.Resolve(modeskill.Mode(mode))
-	if err != nil {
-		return sessionRuntimePreparation{}, err
+	if blackboardMode := modeskill.Mode(mode); blackboardMode != modeskill.ModeDisabled {
+		modeSkill, err := modeskill.Resolve(blackboardMode)
+		if err != nil {
+			return sessionRuntimePreparation{}, err
+		}
+		runtimeConfig["mode_skill_id"] = modeSkill.ID
 	}
-	runtimeConfig["mode_skill_id"] = modeSkill.ID
 	return sessionRuntimePreparation{
 		Profile: profile, Runner: run, RuntimeConfig: runtimeConfig,
 	}, nil

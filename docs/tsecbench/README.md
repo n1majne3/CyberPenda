@@ -24,9 +24,12 @@ The strict Runtime and protocol matrix is:
 
 - Codex: `openai_responses`
 - Claude Code: `anthropic_messages`
+- Pi: `openai_chat_completions`, `openai_responses`, or `anthropic_messages`
 
-Pi and Hermes remain installed as image tools, but Hosted bootstrap rejects them
-as the selected Runtime.
+Pi projects through the same hosted bootstrap as Codex and Claude Code and
+trusts only this run's projected project resources through `--approve`. Hermes
+remains installed as an image tool, but Hosted bootstrap rejects it as the
+selected Runtime.
 
 Enter the converted HTTP gateway Base URL with the `.tsecbench.gw` host. Enter
 a protocol Base URL. Do not append `/chat/completions`, `/responses`, or

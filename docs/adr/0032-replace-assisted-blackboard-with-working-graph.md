@@ -22,8 +22,10 @@ Blackboard Mode has exactly three values: `interactive`, `working_graph`, and
 to `disabled`. Historical `assisted` rows migrate to `working_graph`; the old
 public JSON key and value are rejected.
 
-Every launch projects exactly one system Mode Skill, separate from ordinary
-Skills. Interactive mode receives a full CLI grant. Working Graph mode receives
+Interactive and Working Graph launches project exactly one system Mode Skill,
+separate from ordinary Skills. Disabled mode projects no Mode Skill; its
+launch carries only the concise state-file reminder. Interactive mode receives
+a full CLI grant. Working Graph mode receives
 a read-only CLI grant plus `PENTEST_WORKING_GRAPH_ROOT`,
 `PENTEST_WORKING_GRAPH_OUTBOX`, and `PENTEST_WORKING_GRAPH_RECEIPTS`. Disabled
 mode receives no Blackboard authority. Authentication uses process environment

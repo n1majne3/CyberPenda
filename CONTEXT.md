@@ -609,9 +609,8 @@ A **Run Controls** choice of `interactive`, `working_graph`, or `disabled`. Inte
 _Avoid_: Blackboard Conclusion Mode, autonomous Task completion, transcript parsing mode, Blackboard write permission
 
 **Mode Skill**:
-The single system Skill projected and explicitly invoked for one Blackboard Mode. It is separate from user-selected Skills. Exactly one of the interactive, Working Graph, or disabled Mode Skills is present in a Runtime launch. Every Runtime Continuation launch injects a mandatory startup directive that invokes the selected Mode Skill before Task work.
-This describes the existing implementation. The confirmed FGS target uses **FGS Runtime Instructions** for Working Graph instead of requiring its Mode Skill invocation.
-_Avoid_: ordinary Skill toggle, mixed-mode instructions, Runtime Profile capability
+The single system Skill projected and explicitly invoked for a legacy Blackboard Mode that has Blackboard authority. It is separate from user-selected Skills. A legacy interactive or Working Graph launch invokes its selected Mode Skill before Task work. FGS launches use **FGS Runtime Instructions** instead. Disabled mode has no Mode Skill; a Disabled launch carries only the state-file reminder.
+_Avoid_: ordinary Skill toggle, mixed-mode instructions, Runtime Profile capability, Disabled Mode Skill
 
 **Working Graph**:
 The Harness-defined file graph used in `working_graph` mode. It contains `state.md`, fact and data directories, goals, steps, a continuation-scoped Outbox, and continuation-scoped Receipts. The main Runtime is its implicit Decide process unless a selected orchestration Skill provides that role. It is Runtime working state, while the Blackboard remains the durable semantic source of truth.
@@ -738,7 +737,7 @@ The bounded set of general-purpose tools preinstalled in the **TSecBench Hosted 
 _Avoid_: full Sandbox image, runtime package installation, per-challenge image
 
 **Hosted Model Configuration**:
-The operator-supplied Runtime family, model protocol, converted gateway base URL, model identifier, model API key, optional **Reasoning Effort**, optional **Hosted Auto Compact Threshold**, optional **Hosted Auto Compact Window**, optional **Hosted Max Output Tokens**, and optional **Model Context Window** used by one **Hosted Evaluation Run**. These values enter through stable `CYBERPENDA_*` environment names and are translated into normal Model Provider, Credential Binding, and Runtime Profile inputs during bootstrap. Compatibility is strict: Codex accepts only `openai_responses`, and Claude Code accepts only `anthropic_messages`. Pi and Hermes remain in the **Hosted Tool Baseline** but are not valid Hosted Runtime selections.
+The operator-supplied Runtime family, model protocol, converted gateway base URL, model identifier, model API key, optional **Reasoning Effort**, optional **Hosted Auto Compact Threshold**, optional **Hosted Auto Compact Window**, optional **Hosted Max Output Tokens**, and optional **Model Context Window** used by one **Hosted Evaluation Run**. These values enter through stable `CYBERPENDA_*` environment names and are translated into normal Model Provider, Credential Binding, and Runtime Profile inputs during bootstrap. Compatibility is strict: Codex accepts only `openai_responses`, Claude Code accepts only `anthropic_messages`, and Pi accepts `openai_chat_completions`, `openai_responses`, or `anthropic_messages`. Hermes remains in the **Hosted Tool Baseline** but is not a valid Hosted Runtime selection.
 _Avoid_: vendor-specific environment contract, model discovery, persisted hosted profile
 
 **Hosted Auto Compact Threshold**:
@@ -758,7 +757,7 @@ Optional operator-supplied text appended to the required hosted **Task Goal**. I
 _Avoid_: replacement Task Goal, Skill rewrite, vendor prompt file
 
 **Hosted Acceptance Configuration**:
-The reference Runtime and model configuration used for hosted bootstrap, model-call, and fake-platform validation: Codex with `openai_responses`, plus the deployer-supplied gateway base URL, model identifier, and dedicated evaluation API key. Real TSecBench local-mode acceptance validates the platform API separately and does not require challenge solving.
+The reference Runtime and model configuration used for hosted bootstrap, model-call, and fake-platform validation: Pi with `openai_chat_completions`, plus the deployer-supplied gateway base URL, model identifier, and dedicated evaluation API key. The default Hosted Runtime selection stays Codex. Real TSecBench local-mode acceptance validates the platform API separately and does not require challenge solving.
 _Avoid_: only supported hosted configuration, build-time model selection, production credential
 
 **Hosted Delivery Bundle**:
@@ -1168,7 +1167,7 @@ _Avoid_: transcript, export, source of truth
 - Project **Task** and Non-Project **Session** Run Controls support the same `interactive`, `working_graph`, and `disabled` **Blackboard Mode** values.
 - New Tasks default to `working_graph`. New Sessions default to `disabled`.
 - A Runtime Owner captures one immutable Blackboard Mode at creation, and every later Resume and Runtime Continuation inherits it.
-- Every Runtime Continuation launch injects a mandatory prompt that invokes the selected **Mode Skill** before Task work. Hosted CTF launches then invoke `ctf-orchestrator`. Ordinary catalog Skills remain task-selected and are not invoked as one batch.
+- Every Runtime Continuation launch with a Mode Skill injects a mandatory prompt that invokes the selected **Mode Skill** before Task work. Hosted CTF launches invoke `ctf-orchestrator` without a Mode Skill because Disabled Blackboard Mode has none. Ordinary catalog Skills remain task-selected and are not invoked as one batch.
 - A Runtime Owner in `disabled` Blackboard Mode receives no Blackboard context or authority and creates no Blackboard conclusion or reconciliation obligations.
 - A disabled Runtime receives a concise reminder to use a state file at its initial launch and at each replacement Runtime launch, but not on ordinary Runtime Turns; the reminder does not explain file lifecycle or handoff limits.
 - A disabled Runtime receives no built-in **Project Interface**; its Task Goal, Scope Snapshot, and Task Policy Snapshot remain launch context, and it asks the operator in conversation for Scope Expansion or file-retention actions.
@@ -1698,8 +1697,8 @@ _Avoid_: transcript, export, source of truth
 - The hosted container does not establish a TSecBench VPN; resolved: hosted execution uses the isolated network supplied by TSecBench, while the real local-mode acceptance run requires the deployer to connect the TSecBench VPN on the host before starting the container.
 - Pi unattended execution does not need a synthetic YOLO mode; resolved: Pi's built-in tools have no permission popups and execute with the Pi process permissions, while bootstrap deterministically trusts the projected CyberPenda project resources required by the hosted run.
 - Container root is not permission to require elevated platform capabilities; resolved: the **Container Host Runner** uses only normal default container capabilities, does not request TUN, `NET_ADMIN`, privileged mode, or a Docker Socket, and challenge tools must fall back to normal TCP or HTTP methods when a capability is unavailable.
-- Hosted Runtime and model protocol compatibility is not approximate OpenAI compatibility; resolved: validate Codex with `openai_responses` and Claude Code with `anthropic_messages`, and reject Pi or Hermes as Hosted Runtime selections.
-- The **Hosted Acceptance Configuration** is not a requirement to solve a real local-mode challenge; resolved: use Codex with `openai_responses` for hosted bootstrap, model-call, and fake-platform validation, while real TSecBench local mode validates only the platform API.
+- Hosted Runtime and model protocol compatibility is not approximate OpenAI compatibility; resolved: validate Codex with `openai_responses`, Claude Code with `anthropic_messages`, and Pi with one of its supported protocols, and reject Hermes as a Hosted Runtime selection.
+- The **Hosted Acceptance Configuration** is not a requirement to solve a real local-mode challenge; resolved: use Pi with `openai_chat_completions` for hosted bootstrap, model-call, and fake-platform validation, while real TSecBench local mode validates only the platform API.
 - TSecBench challenge access is not performed through direct Runtime-built curl chains; resolved: the **Hosted Challenge Client** provides separate structured list, start, hint, submit, and guarded close commands while preserving Runtime-owned scheduling and process isolation from the host lifecycle.
 - Hosted Challenge Client access is not all-or-nothing for Execute agents; resolved: Execute agents may submit candidates directly through `submit` on standard input, while the `ctf-orchestrator` Decide process exclusively serializes `list`, `start`, `hint`, `close`, and `abandon` and retains Challenge lifecycle and hint authority.
 - An active Benchmark Challenge is not kept open after success or explicit abandonment; resolved: the hosted Skill requires immediate close in those cases, preserves the platform limit of three active challenges, and leaves other scheduling choices to the Runtime.
@@ -1719,3 +1718,4 @@ _Avoid_: transcript, export, source of truth
 - The hosted TSecBench Skill is not a strict API-version compatibility gate; resolved: document the known `/openapi/v1` contract, but allow the Runtime to inspect unexpected platform responses and try a compatible request shape at its own discretion.
 - Persistent Codex App Server is not covered by the exec-only `--dangerously-bypass-approvals-and-sandbox` flag; resolved: the **Runtime Harness** also projects **Runtime Non-Interactive Defaults** as `approvalPolicy=never` and `sandbox=danger-full-access` so hosted tool commands can use platform DNS and network.
 - The Codex multi-agent control default is not an explicit off projection; resolved: an unset control projects no multi-agent keys so Codex's own feature default applies without CyberPenda suppression, an explicit on projects the feature flag and agent caps, and an explicit off projects the off keys.
+- An explicit Codex multi-agent on is not a V2 force for first-party GPT model metadata; resolved: explicit on projects V1 tools (`multi_agent = true`, `multi_agent_v2 = false`) because this product does not rely on first-party GPT catalogs, and V2 spawn encrypts the child task so a custom model gateway cannot read it. Explicit off still disables both generations.

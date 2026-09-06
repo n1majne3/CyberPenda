@@ -43,8 +43,8 @@ func TestHostedAcceptanceConfigurationCompletesTheRuntimeManagedChallengeLoop(t 
 	if !result.hostedSkillProjected {
 		t.Fatal("hosted-only ctf-orchestrator Skill was not projected into the real Host Runner layout")
 	}
-	if !reflect.DeepEqual(result.projectedSkillIDs, []string{"ctf-orchestrator", "cyberpenda-blackboard-disabled"}) {
-		t.Fatalf("Hosted Task projected Skills = %#v, want orchestrator plus the disabled Mode Skill", result.projectedSkillIDs)
+	if !reflect.DeepEqual(result.projectedSkillIDs, []string{"ctf-orchestrator"}) {
+		t.Fatalf("Hosted Task projected Skills = %#v, want only the orchestrator Skill (Disabled mode has no Mode Skill)", result.projectedSkillIDs)
 	}
 	if result.modelAPI != "openai-completions" || !result.modelCalled {
 		t.Fatalf("Hosted Acceptance Configuration model projection = API %q called=%v", result.modelAPI, result.modelCalled)

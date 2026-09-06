@@ -2,6 +2,13 @@
 
 Date: 2026-08-29
 
+Update 2026-09-06: CyberPenda now enables only `@tintinweb/pi-subagents` in
+both images. The unscoped `pi-subagents` product was removed because it
+registers a conflicting `Agent` tool and its detached async children write no
+parent-session record that the CyberPenda observer can read. The tintinweb
+extension supplies the async background Agent tool, and all `subagents:record`
+parsing in this document refers to it.
+
 Wire facts for the Runtime Owner Timeline subagent projection: what the Pi
 subagents extensions emit when a Pi Work Runtime Turn delegates to subagents,
 in both Pi persistent RPC mode and Pi one-shot session JSONL mode.

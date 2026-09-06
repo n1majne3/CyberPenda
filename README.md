@@ -141,8 +141,8 @@ TSecBench injects `BENCHMARK_BASE_URL` and the one-use `BENCHMARK_TOKEN` in Host
 
 | Variable | Meaning |
 | --- | --- |
-| `CYBERPENDA_RUNTIME` | `codex` (default) or `claude_code` |
-| `CYBERPENDA_MODEL_PROTOCOL` | `openai_responses` for Codex; `anthropic_messages` for Claude Code |
+| `CYBERPENDA_RUNTIME` | `codex` (default), `claude_code`, or `pi` |
+| `CYBERPENDA_MODEL_PROTOCOL` | `openai_responses` for Codex; `anthropic_messages` for Claude Code; `openai_chat_completions`, `openai_responses`, or `anthropic_messages` for Pi |
 | `CYBERPENDA_MODEL_BASE_URL` | Gateway base URL ending in `.tsecbench.gw`; do not append an operation suffix |
 | `CYBERPENDA_MODEL` | Model ID served by the gateway |
 | `CYBERPENDA_MODEL_API_KEY` | Dedicated, revocable evaluation model API key |

@@ -79,7 +79,7 @@ func TestHostedEvaluationPublishesOnlyCTFOrchestratorAndProjectsBenchmarkEnviron
 		"pentest-tsecbench-client list", "pentest-tsecbench-client start", "pentest-tsecbench-client hint",
 		"pentest-tsecbench-client submit", "pentest-tsecbench-client close", "pentest-tsecbench-client abandon",
 		"Decide", "Execute agent", "FGS", "graph/facts", "ledger.tsv", "WS=\"$(pwd -P)\"",
-		"Codex", "spawn_agent", "wait_agent", "interrupt_agent",
+		"Codex", "spawn_agent", "wait_agent", "send_input", "close_agent",
 		"Claude Code", "run_in_background", "TaskOutput", "TaskStop", "SendMessage",
 		"over_budget", "elapsed_min", "budget_min", "attempt_n", "Challenge Pass Clock",
 	} {
@@ -154,6 +154,23 @@ func TestTSecBenchSkillUsesSeparateGuardedOperations(t *testing.T) {
 	}
 }
 
+func TestTSecBenchSkillPinsCodexSpawnWithoutParentHistory(t *testing.T) {
+	files := captureHostedSkillFiles(t)
+	instruction := files["SKILL.md"]
+	executePrompt := files["references/execute-prompt.md"]
+	for _, required := range []string{
+		"fork_context: false",
+		"禁止调用 ctf-orchestrator",
+	} {
+		if !strings.Contains(instruction, required) {
+			t.Errorf("hosted Skill missing Codex spawn-token guard %q", required)
+		}
+	}
+	if !strings.Contains(executePrompt, "fork_context: false") {
+		t.Fatal("execute-prompt.md must require fork_context: false")
+	}
+}
+
 func TestTSecBenchSkillTreatsClientFailureAsLocalAndRecoverable(t *testing.T) {
 	instruction := captureHostedSkillInstruction(t)
 	for _, required := range []string{
@@ -208,7 +225,16 @@ func (transport hostedSkillRoundTripper) RoundTrip(request *http.Request) (*http
 
 func captureHostedSkillInstruction(t *testing.T) string {
 	t.Helper()
-	var instruction string
+	instruction := captureHostedSkillFiles(t)["SKILL.md"]
+	if strings.TrimSpace(instruction) == "" {
+		t.Fatal("hosted Skill instruction is empty")
+	}
+	return instruction
+}
+
+func captureHostedSkillFiles(t *testing.T) map[string]string {
+	t.Helper()
+	var files map[string]string
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		switch request.Method + " " + request.URL.Path {
@@ -217,7 +243,7 @@ func captureHostedSkillInstruction(t *testing.T) string {
 				Files map[string]string `json:"files"`
 			}
 			_ = json.NewDecoder(request.Body).Decode(&body)
-			instruction = body.Files["SKILL.md"]
+			files = body.Files
 			response.WriteHeader(http.StatusCreated)
 			_, _ = io.WriteString(response, `{}`)
 		case "POST /api/model-providers":
@@ -249,10 +275,10 @@ func captureHostedSkillInstruction(t *testing.T) string {
 	if _, err := app.Start(context.Background(), hostedcontroller.EvaluationForConfig(config)); err != nil {
 		t.Fatalf("Start error = %v", err)
 	}
-	if strings.TrimSpace(instruction) == "" {
-		t.Fatal("hosted Skill instruction is empty")
+	if len(files) == 0 {
+		t.Fatal("hosted Skill files are empty")
 	}
-	return instruction
+	return files
 }
 
 func newHostedSkillTestServer(t *testing.T, handler http.Handler) *httptest.Server {
