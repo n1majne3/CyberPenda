@@ -146,7 +146,7 @@ func launchActivityTask(t *testing.T, server *Server, created task.Task) {
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 }
 
 func TestRuntimeActivityLiveIdleAndBusyForSandboxProviders(t *testing.T) {

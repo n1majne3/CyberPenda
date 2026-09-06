@@ -162,7 +162,7 @@ func TestResumeWaitsForTerminalHarnessReleaseThenLaunchesOnce(t *testing.T) {
 	if afterCont.ID == beforeCont.ID || afterCont.Number != beforeCont.Number+1 {
 		t.Fatalf("want one new Continuation after resume, before=%#v after=%#v", beforeCont, afterCont)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 }
 
 func TestResumeTimesOutWhenTerminalHarnessStaysActive(t *testing.T) {

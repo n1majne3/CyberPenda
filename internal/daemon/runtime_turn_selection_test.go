@@ -85,7 +85,7 @@ func TestCodexNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testin
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	waitForProviderRequests(t, session, 1)
 
 	versionsBefore, err := server.tasks.RuntimeConfigVersions(created.ID)
@@ -271,7 +271,7 @@ func TestCodexNativeSteerAlwaysSendsCompleteResolvedSelection(t *testing.T) {
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	waitForProviderRequests(t, session, 1)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks/"+created.ID+"/steer", strings.NewReader(`{
@@ -865,7 +865,7 @@ func TestClaudeNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testi
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	waitForProviderRequests(t, session, 1)
 
 	versionsBefore, err := server.tasks.RuntimeConfigVersions(created.ID)
@@ -1020,7 +1020,7 @@ func TestClaudeNativeSteerAlwaysSendsCompleteResolvedSelection(t *testing.T) {
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	waitForProviderRequests(t, session, 1)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks/"+created.ID+"/steer", strings.NewReader(`{
@@ -1767,8 +1767,10 @@ func TestResumeReasoningEffortOnlyUpdatesTurnSelection(t *testing.T) {
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusCompleted); err != nil {
 		t.Fatal(err)
 	}
-	// Ensure conversation timestamp is strictly older than the resume config.
-	time.Sleep(5 * time.Millisecond)
+	// Pin the prior conversation time instead of depending on wall-clock resolution.
+	if _, err := server.db.Exec(`UPDATE task_events SET created_at=? WHERE task_id=? AND kind=?`, "2000-01-01T00:00:00Z", created.ID, task.EventKindConversation); err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks/"+created.ID+"/resume", strings.NewReader(`{
 		"reasoning_effort":"xhigh"
@@ -1880,7 +1882,9 @@ func TestResumeFullSelectionKeepsXHighOverOlderConversation(t *testing.T) {
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusCompleted); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(5 * time.Millisecond)
+	if _, err := server.db.Exec(`UPDATE task_events SET created_at=? WHERE task_id=? AND kind=?`, "2000-01-01T00:00:00Z", created.ID, task.EventKindConversation); err != nil {
+		t.Fatal(err)
+	}
 
 	body := fmt.Sprintf(`{
 		"model_provider_id":%q,

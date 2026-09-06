@@ -98,7 +98,7 @@ func TestLaunchAssemblyBindsAndReusesTaskOwnedProviderSessionAcrossContinuations
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	first, err := server.tasks.ActiveContinuation(created.ID)
 	if err != nil || first == nil {
 		t.Fatalf("first active Continuation = %#v, err=%v", first, err)
@@ -111,7 +111,7 @@ func TestLaunchAssemblyBindsAndReusesTaskOwnedProviderSessionAcrossContinuations
 	if !server.harness.StopAndWait(created.ID, 2*time.Second) {
 		t.Fatal("first persistent adapter did not stop")
 	}
-	waitForHarnessActive(t, server, created.ID, false)
+	waitForHarnessReleased(t, server, created.ID)
 	updated, err := server.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -123,7 +123,7 @@ func TestLaunchAssemblyBindsAndReusesTaskOwnedProviderSessionAcrossContinuations
 	if err := server.launchTaskInBackground(updated, secondPlan, "continue"); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	var second *task.TaskContinuation
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -212,7 +212,7 @@ func TestLaunchBoundNativeSteerRebindsHarnessAndFinalizesReplacement(t *testing.
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	first, err := server.tasks.ActiveContinuation(created.ID)
 	if err != nil || first == nil {
 		t.Fatalf("first Continuation = %#v, err=%v", first, err)
@@ -341,14 +341,14 @@ func newProviderSessionLaunchFixture(t *testing.T, factory ProviderSessionFactor
 	return server, created
 }
 
-func waitForHarnessActive(t *testing.T, server *Server, taskID string, want bool) {
+func waitForHarnessReleased(t *testing.T, server *Server, taskID string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if server.harness.IsActive(taskID) == want {
+		if !server.harness.IsActive(taskID) {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("harness active = %v, want %v", server.harness.IsActive(taskID), want)
+	t.Fatalf("Task %s Harness did not release ownership", taskID)
 }

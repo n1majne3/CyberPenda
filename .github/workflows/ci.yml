@@ -17,6 +17,17 @@ jobs:
       - name: Go tests
         run: make test-ci
 
+  concurrency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Runtime concurrency contracts
+        run: make test-concurrency
+
   web:
     runs-on: ubuntu-latest
     steps:

@@ -147,7 +147,7 @@ func TestHostCodexLaunchBindsPersistentSessionAcrossTurns(t *testing.T) {
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	waitForProviderRequests(t, session, 1)
 
 	// Initial launch must carry complete Runtime Turn Selection.
@@ -264,7 +264,7 @@ func TestHostCodexProviderChangeQueuesMessageAndCreatesConfigVersion(t *testing.
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	waitForProviderRequests(t, session, 1)
 
 	body := `{
