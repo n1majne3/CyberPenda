@@ -181,7 +181,7 @@ func ConfigFromEnv(env map[string]string) (Config, error) {
 			return Config{}, ErrInvalidConfig
 		}
 	}
-	if config.Runtime != RuntimeCodex && config.Runtime != RuntimeClaudeCode {
+	if config.Runtime != RuntimePi && config.Runtime != RuntimeCodex && config.Runtime != RuntimeClaudeCode {
 		return Config{}, ErrInvalidConfig
 	}
 	if !runtimeplugin.BuiltinSupportsModelProtocol(config.Runtime, config.ModelProtocol) {
