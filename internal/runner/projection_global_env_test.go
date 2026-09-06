@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,6 +12,31 @@ import (
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
 )
+
+func TestLaunchProcessEnvMapsAbsoluteGraphWithRelativeLayout(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := runner.Layout{TaskRoot: filepath.Join("runs", "task-relative"), Workdir: filepath.Join("runs", "task-relative", "workdir")}
+	root := filepath.Join(cwd, layout.Workdir)
+	env := runner.LaunchProcessEnv(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex}, true, runner.RuntimeOwnerContext{
+		Owner:                owner.NewTaskContract("task-relative", "project", root),
+		BlackboardProtocol:   "fgs",
+		WorkingGraphRoot:     root,
+		WorkingGraphOutbox:   filepath.Join(root, "graph", "outbox", "continuation"),
+		WorkingGraphReceipts: filepath.Join(root, "graph", "receipts", "continuation"),
+	})
+	for key, want := range map[string]string{
+		"PENTEST_WORKING_GRAPH_ROOT":     "/task/workdir",
+		"PENTEST_WORKING_GRAPH_OUTBOX":   "/task/workdir/graph/outbox/continuation",
+		"PENTEST_WORKING_GRAPH_RECEIPTS": "/task/workdir/graph/receipts/continuation",
+	} {
+		if env[key] != want {
+			t.Errorf("%s = %q, want %q", key, env[key], want)
+		}
+	}
+}
 
 // newGlobalEnvTestService opens an isolated credential service for global-env
 // projection tests.

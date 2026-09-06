@@ -16,6 +16,8 @@ import (
 	"pentest/internal/fgs"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
+	"pentest/internal/runner"
+	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
 
@@ -34,11 +36,20 @@ func TestSandboxFGSOutboxLive(t *testing.T) {
 		cli = "docker"
 	}
 	root := t.TempDir()
-	server, err := NewServer(Config{Version: "smoke", DBPath: filepath.Join(root, "test.db"), RuntimeRoot: filepath.Join(root, "runs"), SessionRoot: filepath.Join(root, "sessions"), AuthToken: "smoke-operator", DisableBuiltinSkills: true})
+	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer server.Close()
+	relativeRuns, err := filepath.Rel(cwd, filepath.Join(root, "runs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := Config{Version: "smoke", DBPath: filepath.Join(root, "test.db"), RuntimeRoot: relativeRuns, SessionRoot: filepath.Join(root, "sessions"), AuthToken: "smoke-operator", DisableBuiltinSkills: true}
+	server, err := NewServer(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
 	p, err := server.projects.Create("Sandbox FGS smoke", "", project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatal(err)
@@ -46,9 +57,27 @@ func TestSandboxFGSOutboxLive(t *testing.T) {
 	if p.BlackboardProtocol != "fgs" {
 		t.Fatal("new Project must use FGS")
 	}
+	// Reproduce upgrading an existing Project before starting a new Task.
+	if _, err = server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = server.db.Exec(`DELETE FROM schema_migrations WHERE version=77`); err != nil {
+		t.Fatal(err)
+	}
+	if err = server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewServer(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server = reopened
 	found, err := server.tasks.Create(task.CreateRequest{ProjectID: p.ID, Type: task.TypePentest, Goal: "Check FGS delivery", Runner: task.RunnerSandbox, RunControls: task.RunControls{BlackboardMode: task.BlackboardModeWorkingGraph}})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if found.BlackboardProtocol != "fgs" {
+		t.Fatal("new Task in upgraded Project must use FGS")
 	}
 	tx, err := server.db.BeginTx(t.Context(), nil)
 	if err != nil {
@@ -85,12 +114,27 @@ func TestSandboxFGSOutboxLive(t *testing.T) {
 	if err = os.MkdirAll(workdir, 0700); err != nil {
 		t.Fatal(err)
 	}
+	layout, err := runner.PrepareTaskLayout(relativeRuns, found.ID, runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	processEnv := runner.LaunchProcessEnv(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex}, true, runner.RuntimeOwnerContext{
+		Owner: found.OwnerContract(workdir), BlackboardProtocol: found.BlackboardProtocol,
+		BlackboardMode: "working_graph", ContinuationID: cont.ID,
+		WorkingGraphRoot: workdir, WorkingGraphOutbox: filepath.Join(workdir, "graph", "outbox", cont.ID), WorkingGraphReceipts: filepath.Join(workdir, "graph", "receipts", cont.ID),
+		APIURL: apiURL, InterfaceToken: token,
+	})
 	ctx, cancel := context.WithTimeout(t.Context(), 90*time.Second)
 	defer cancel()
 	run := func(input string, command ...string) []byte {
 		t.Helper()
-		args := []string{"run", "--rm", "-i", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "--add-host=host.docker.internal:host-gateway", "--mount", "type=bind,src=" + workdir + ",dst=/workspace", "--workdir", "/workspace"}
-		env := []string{"PENTEST_BLACKBOARD_PROTOCOL=fgs", "PENTEST_BLACKBOARD_MODE=working_graph", "PENTEST_WORKING_GRAPH_ROOT=/workspace", "PENTEST_TASK_ID=" + found.ID, "PENTEST_PROJECT_ID=" + p.ID, "PENTEST_CONTINUATION_ID=" + cont.ID, "PENTEST_API_URL=" + apiURL, "PENTEST_INTERFACE_TOKEN=" + token}
+		args := []string{"run", "--rm", "-i", "--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), "--add-host=host.docker.internal:host-gateway", "--mount", "type=bind,src=" + workdir + ",dst=/task/workdir", "--workdir", "/task/workdir"}
+		var env []string
+		for key, value := range processEnv {
+			if strings.HasPrefix(key, "PENTEST_") {
+				env = append(env, key+"="+value)
+			}
+		}
 		for _, value := range env {
 			args = append(args, "-e", strings.SplitN(value, "=", 2)[0])
 		}

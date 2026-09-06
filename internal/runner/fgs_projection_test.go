@@ -3,6 +3,7 @@ package runner_test
 import (
 	"os"
 	"path/filepath"
+	"pentest/internal/blackboardv2"
 	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/runner"
@@ -10,6 +11,36 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestFGSProjectionReplacesGeneratedLegacyChecklist(t *testing.T) {
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "upgraded", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := modeskill.Project(layout.SkillsRoot, modeskill.ModeWorkingGraph); err != nil {
+		t.Fatal(err)
+	}
+	legacy := "# Blackboard workflow\n\n" + blackboardv2.CodexChecklist() + "\n"
+	if err := os.WriteFile(filepath.Join(layout.Workdir, "AGENTS.md"), []byte(legacy+"Operator note: keep this.\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex}, runner.ProjectionRequest{
+		Owner: owner.NewTaskContract("upgraded", "project", layout.Workdir), BlackboardMode: modeskill.ModeWorkingGraph, BlackboardProtocol: "fgs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(layout.Workdir, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), legacy) || !strings.Contains(string(raw), "Operator note: keep this.") || !strings.Contains(string(raw), "## FGS work protocol") {
+		t.Fatalf("upgraded instructions: %s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(layout.SkillsRoot, "cyberpenda-blackboard-working-graph", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatal("upgraded Runtime can still discover the legacy Mode Skill")
+	}
+}
 
 func TestFGSProjectionPreservesUserInstructionsAcrossResume(t *testing.T) {
 	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-fgs", runtimeprofile.ProviderClaudeCode)

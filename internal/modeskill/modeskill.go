@@ -4,6 +4,7 @@
 package modeskill
 
 import (
+	"bytes"
 	"embed"
 	"errors"
 	"fmt"
@@ -104,6 +105,51 @@ func Project(skillsRoot string, mode Mode) (skill.Bundle, error) {
 		return skill.Bundle{}, err
 	}
 	return bundle, nil
+}
+
+// RetireGenerated removes only byte-identical system projections from discovery.
+// Modified Skill files require operator repair instead of being overwritten.
+func RetireGenerated(skillsRoot string) error {
+	for _, mode := range []Mode{ModeInteractive, ModeWorkingGraph, ModeDisabled} {
+		spec := specs[mode]
+		dir := filepath.Join(skillsRoot, spec.ID)
+		info, err := os.Lstat(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("Mode Skill root must be a directory: %s", dir)
+		}
+		path := filepath.Join(dir, "SKILL.md")
+		info, err = os.Lstat(path)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("Mode Skill must be a regular file: %s", path)
+		}
+		actual, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		expected, err := embedded.ReadFile("bundles/" + spec.ID + "/SKILL.md")
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(actual, expected) {
+			return fmt.Errorf("modified Mode Skill blocks FGS upgrade: %s", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ValidateBundleCompatibility(mode Mode, bundle skill.Bundle) error {

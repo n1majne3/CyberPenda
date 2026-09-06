@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"pentest/internal/blackboardv2"
 )
 
 //go:embed fgs-input.schema.json
@@ -17,6 +19,7 @@ const fgsInstructions = `## FGS work protocol
 
 You decide how to do the work. Record durable progress as Goal, Step, and Fact.
 The update input schema is in .pentest/fgs-input.schema.json. Use low, normal, or high for optional Step priority. Fact data_refs are references only; they do not retain files.
+If a reporting command fails, use the supplied schema and error to correct the input. Do not reverse engineer the CLI or guess undocumented types. If reporting remains unavailable, keep local result files, report the blocker, and continue independent authorized work toward the user's goal. Do not write under the read-only .pentest directory. PENTEST_API_URL is the CyberPenda API, not a Challenge Platform API.
 Read accepted state with ` + "`pentestctl working-graph read`" + ` before planning and after resume. Local graph files are working state. Reconcile accepted state and Receipts without replacing local drafts.
 
 - Goal: state the desired result and success criteria. Use goal.create, goal.describe, and goal.transition.
@@ -66,6 +69,10 @@ func writeFGSInstructions(workdir string, ctx RuntimeOwnerContext) error {
 			return err
 		}
 		text := string(raw)
+		// Replace only the exact checklist produced by ProjectBlackboardV2Files.
+		// Operator additions and modified text remain intact.
+		legacy := "# Blackboard workflow\n\n" + blackboardv2.CodexChecklist() + "\n"
+		text = strings.TrimPrefix(text, legacy)
 		a, b := strings.Index(text, start), strings.Index(text, end)
 		if a >= 0 || b >= 0 {
 			if a < 0 || b < a || strings.Count(text, start) != 1 || strings.Count(text, end) != 1 {

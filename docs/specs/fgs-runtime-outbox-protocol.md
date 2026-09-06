@@ -406,13 +406,11 @@ Implementation slices, each with a failing behavior test before code:
 
 ## 10. Decisions required before production cutover
 
-Confirmed rollout: after release, newly created Projects and Sessions use FGS.
-Existing data stays readable and existing runs keep their legacy protocol. New
-Tasks in an existing legacy Project keep its protocol until explicit migration;
-do not mix FGS and legacy graph writes in the same Project. New Continuations do
-not silently change a Runtime Owner's graph protocol. Store the protocol choice
-durably so a restart cannot select a new model from a changed global default.
-Disabled Blackboard Mode continues to omit Blackboard behavior.
+Confirmed rollout: Store migration 77 upgrades existing Projects and Sessions to
+FGS. Tasks inherit the upgraded Project protocol. New and resumed Runtime
+Continuations receive FGS instructions; already running processes need a restart.
+Disabled Blackboard Mode stays disabled. Historical records and evidence files
+remain intact and are not converted into FGS nodes by this protocol upgrade.
 
 The seven principles in section 1 are confirmed. Specific limits, commands,
 schemas, transition guards, and migration details remain proposals. Instruction
@@ -438,7 +436,7 @@ repaired or withdrawn. Data references identify data; they do not retain files.
 Step priority accepts `low`, `normal`, or `high`.
 
 Migration 74 adds the FGS tables. Migration 75 persists the protocol choice on
-Projects and Sessions. New owners select FGS. Existing rows default to legacy.
+Projects and Sessions. New owners select FGS. Migration 77 upgrades existing rows to FGS without deleting historical records.
 Tasks inherit the Project protocol, including after a database restart.
 
 Migration 76 adds the durable Outbox inventory. The daemon polls server-bound
@@ -487,7 +485,7 @@ withdrawn through the normal protocol. Noncanonical filenames are transport
 errors and must be corrected locally.
 
 Legacy semantic change, Attempt checkpoint, and Evidence-retain HTTP endpoints
-reject writes to FGS owners. Historical legacy owners retain these endpoints.
+reject writes to FGS owners. Upgraded owners use FGS; historical records remain stored.
 FGS Project navigation, dashboard counts, and reports use the FGS model. The
 report endpoint `/fgs/report` renders one accepted graph revision as Markdown,
 including success criteria, reported state, Step results, and correction links.

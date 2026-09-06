@@ -61,3 +61,10 @@ const migration76SQL = `CREATE TABLE IF NOT EXISTS fgs_outbox_inventory (
 );`
 
 func migration76Up(tx *sql.Tx) error { return execStatements(tx, migration76SQL) }
+
+// Change the Runtime protocol without converting or deleting historical records.
+// Task reads inherit the Project protocol, including resumed Tasks.
+const migration77SQL = `UPDATE projects SET blackboard_protocol='fgs' WHERE blackboard_protocol != 'fgs';
+UPDATE sessions SET blackboard_protocol='fgs' WHERE blackboard_protocol != 'fgs';`
+
+func migration77Up(tx *sql.Tx) error { return execStatements(tx, migration77SQL) }

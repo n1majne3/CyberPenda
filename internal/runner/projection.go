@@ -177,6 +177,11 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 }
 
 func projectModeAndUserSkills(layout Layout, req ProjectionRequest) error {
+	if req.BlackboardProtocol == "fgs" && req.BlackboardMode != modeskill.ModeDisabled {
+		if err := modeskill.RetireGenerated(layout.SkillsRoot); err != nil {
+			return err
+		}
+	}
 	if req.BlackboardMode != "" && (req.BlackboardProtocol != "fgs" || req.BlackboardMode == modeskill.ModeDisabled) {
 		if _, err := modeskill.Project(layout.SkillsRoot, req.BlackboardMode); err != nil {
 			return err
@@ -1888,6 +1893,16 @@ func launchVisiblePath(layout Layout, hostPath string, sandbox bool) string {
 }
 
 func sandboxMountedPath(hostRoot, sandboxRoot, hostPath string) (string, bool) {
+	// Layouts may use the daemon's relative runs directory, while the graph
+	// receiver resolves its paths to absolute names. Compare the same form.
+	if hostRoot == "" {
+		return "", false
+	}
+	var err error
+	hostRoot, err = filepath.Abs(hostRoot)
+	if err != nil {
+		return "", false
+	}
 	rel, err := filepath.Rel(hostRoot, hostPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false

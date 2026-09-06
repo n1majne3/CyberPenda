@@ -642,7 +642,7 @@ The Runtime publishes structured FGS updates to its Outbox, and the Blackboard p
 _Avoid_: Harness-enforced scheduling, inferred graph from Transcript, implemented protocol
 
 **FGS Rollout**:
-The confirmed rollout starts FGS on newly created Projects and Sessions after release. Existing data stays readable and existing runs keep their legacy protocol. A new Task in an existing legacy Project uses that Project's protocol until an explicit migration; one Project does not mix two Blackboard models. Migration requires a separate preview, backup, and verification plan. This is a target rollout decision, not a claim that FGS is already implemented.
+The confirmed rollout upgrades existing Projects and Sessions to the FGS Runtime protocol when the Store opens. New Tasks and resumed Runtime Continuations use FGS, including in older Projects. Disabled Blackboard Mode remains disabled. Historical records and evidence files are preserved without converting them into FGS nodes; historical data conversion remains separate work. An already running process does not receive new instructions until its Runtime restarts.
 _Avoid_: automatic migration, active Runtime conversion, legacy data deletion
 
 **FGS Runtime Instructions**:

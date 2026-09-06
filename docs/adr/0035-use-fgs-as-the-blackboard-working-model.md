@@ -71,10 +71,11 @@ schemas, authority, recovery, Runtime instructions, UI, and acceptance slices.
 ## Consequences
 
 The user confirmed description edits with history, Goal reopening with a reason,
-and a new Step for retrying completed work. The rollout starts with newly created
-Projects and Sessions. Existing data remains readable and existing runs retain
-their legacy protocol. Legacy migration needs its own preview, backup, and
-verification plan; no active owner is silently converted.
+and a new Step for retrying completed work. Store migration 77 upgrades existing Projects and Sessions to the FGS Runtime
+protocol. New Tasks and resumed Continuations use FGS even in older Projects.
+Disabled mode remains disabled. Historical records and evidence files remain
+intact; this protocol upgrade does not convert them into FGS nodes. A running
+Runtime receives the new protocol only after restart.
 
 The Runtime and operator see the same accepted FGS model. A Runtime needs no
 CTF-specific Skill to report normal FGS work. CTF selection, budgets, platform
