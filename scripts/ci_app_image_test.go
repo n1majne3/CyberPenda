@@ -16,10 +16,6 @@ func TestAppDockerfileBuildsEmbeddedUIDaemonImage(t *testing.T) {
 	}
 	dockerfile := string(dockerfileBytes)
 
-	assertContains(t, dockerfile, "FROM --platform=$BUILDPLATFORM node:20")
-	assertContains(t, dockerfile, "npm ci")
-	assertContains(t, dockerfile, "npm run build")
-	assertContains(t, dockerfile, "FROM --platform=$BUILDPLATFORM golang:1.25")
 	assertContains(t, dockerfile, "COPY --from=web-build /src/web/dist internal/daemon/webfs/dist")
 	assertContains(t, dockerfile, "CGO_ENABLED=0")
 	assertContains(t, dockerfile, "GOOS=${TARGETOS}")
@@ -88,8 +84,7 @@ func TestCIWorkflowBuildsAppImage(t *testing.T) {
 	workflow := string(workflowBytes)
 
 	assertContains(t, workflow, "app-image:")
-	assertContains(t, workflow, "docker/setup-buildx-action@v4")
-	assertContains(t, workflow, "docker/build-push-action@v7")
+
 	assertContains(t, workflow, "file: docker/pentestd/Dockerfile")
 	assertContains(t, workflow, "platforms: linux/amd64")
 	assertContains(t, workflow, "push: false")

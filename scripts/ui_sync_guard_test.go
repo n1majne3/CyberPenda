@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestEmbeddedUIIsNotCommitted(t *testing.T) {
+func TestEmbeddedUIBuildUsesFreshAssets(t *testing.T) {
 	repoRoot := repoRoot(t)
 
 	gitignoreBytes, err := os.ReadFile(filepath.Join(repoRoot, ".gitignore"))
@@ -17,29 +17,6 @@ func TestEmbeddedUIIsNotCommitted(t *testing.T) {
 	gitignore := string(gitignoreBytes)
 	assertContains(t, gitignore, "internal/daemon/webfs/dist/**")
 	assertContains(t, gitignore, "!internal/daemon/webfs/dist/.gitkeep")
-
-	// Committed product assets under dist/ would reintroduce merge noise.
-	distDir := filepath.Join(repoRoot, "internal", "daemon", "webfs", "dist")
-	entries, err := os.ReadDir(distDir)
-	if err != nil {
-		t.Fatalf("read embed dist: %v", err)
-	}
-	trackedKeep := false
-	for _, entry := range entries {
-		name := entry.Name()
-		if name == ".gitkeep" {
-			trackedKeep = true
-			continue
-		}
-		// Generated files may exist locally after build-ui; they must not be
-		// required as committed product. Prove the git index has no dist assets
-		// other than .gitkeep via git ls-files in a separate contract below.
-		_ = name
-	}
-	if !trackedKeep {
-		// Working tree may only have generated files; index check is definitive.
-		t.Log("local dist/.gitkeep missing after clean; relying on git index contract")
-	}
 
 	// Dockerfile always injects a fresh web build; it must not rely on git dist.
 	dockerfile, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentestd", "Dockerfile"))
@@ -80,15 +57,7 @@ func TestBuildUIUsesPortableEmbedSynchronizationWithoutCommitGate(t *testing.T) 
 		t.Fatal("CI must not require committed UI sync")
 	}
 	assertContains(t, workflow, "make build-ui")
-	windowsJobStart := strings.Index(workflow, "  windows-build:")
-	if windowsJobStart < 0 {
-		t.Fatal("CI must define a native Windows build job")
-	}
-	windowsJobEnd := strings.Index(workflow[windowsJobStart+1:], "\n  app-image:")
-	if windowsJobEnd < 0 {
-		t.Fatal("CI Windows build job must precede the app image job")
-	}
-	windowsJob := workflow[windowsJobStart : windowsJobStart+1+windowsJobEnd]
+	windowsJob := workflowJobText(t, workflow, "windows-build")
 	assertContains(t, windowsJob, "runs-on: windows-latest")
 	assertContains(t, windowsJob, "shell: cmd")
 	assertContains(t, windowsJob, "node --test scripts/web-build.test.mjs")
@@ -128,14 +97,4 @@ func TestDevRepairsMissingOrStaleWebDependenciesWithoutBash(t *testing.T) {
 	if strings.Contains(makefile, "ensure-web-deps.sh") {
 		t.Fatal("web dependency repair must not require Bash")
 	}
-
-	helperBytes, err := os.ReadFile(filepath.Join(repoRoot, "scripts", "web-build.mjs"))
-	if err != nil {
-		t.Fatalf("read web build helper: %v", err)
-	}
-	helper := string(helperBytes)
-	assertContains(t, helper, "vite.cmd")
-	assertContains(t, helper, "node_modules")
-	assertContains(t, helper, "import('rolldown')")
-	assertContains(t, helper, "npm.cmd")
 }

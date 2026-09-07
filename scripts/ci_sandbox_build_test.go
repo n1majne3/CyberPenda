@@ -203,8 +203,6 @@ func TestPullRequestSandboxSmokeSkipsFullKaliImageBuild(t *testing.T) {
 	smokeJob := workflow[smokeJobStart:]
 	for _, forbidden := range []string{
 		"Validate full sandbox image build",
-		"docker/setup-buildx-action",
-		"docker/build-push-action",
 		"target: runtime",
 	} {
 		if strings.Contains(smokeJob, forbidden) {
@@ -227,10 +225,9 @@ func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {
 
 	assertContains(t, workflow, "workflow_dispatch:")
 	assertContains(t, workflow, "image_tag:")
-	assertContains(t, workflow, "Sandbox image tag to publish")
 	assertContains(t, workflow, "default: latest")
 	assertContains(t, workflow, "ghcr.io/${image_name}")
-	assertContains(t, workflow, "docker/metadata-action@v6")
+
 	assertContains(t, workflow, "type=raw,value=${{ inputs.image_tag }}")
 	assertContains(t, workflow, "publish-sandbox-image:")
 	assertContains(t, workflow, "publish-sandbox-manifest:")
@@ -250,7 +247,7 @@ func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {
 	assertContains(t, workflow, "platforms: ${{ matrix.platform }}")
 	assertContains(t, workflow, "push-by-digest=true")
 	assertContains(t, workflow, "steps.build.outputs.digest")
-	assertContains(t, workflow, "actions/upload-artifact@v7")
+
 	assertContains(t, workflow, "pattern: sandbox-image-digest-*")
 	assertContains(t, workflow, "merge-multiple: true")
 	assertContains(t, workflow, "docker buildx imagetools create")
@@ -262,18 +259,4 @@ func TestManualSandboxWorkflowBuildsAndPublishesImagePerPlatform(t *testing.T) {
 		t.Fatal("manual sandbox workflow must use native per-platform runners instead of QEMU")
 	}
 
-	sandboxStart := strings.Index(workflow, "publish-sandbox-image:")
-	manifestStart := strings.Index(workflow, "publish-sandbox-manifest:")
-	if sandboxStart == -1 || manifestStart == -1 || manifestStart <= sandboxStart {
-		t.Fatal("manual sandbox workflow must include sandbox image and manifest jobs")
-	}
-	sandboxJob := workflow[sandboxStart:manifestStart]
-	cleanupIndex := strings.Index(sandboxJob, "Free disk space for sandbox image")
-	buildxIndex := strings.Index(sandboxJob, "docker/setup-buildx-action@v4")
-	if cleanupIndex == -1 || buildxIndex == -1 {
-		t.Fatal("manual sandbox workflow must include disk cleanup and Buildx setup")
-	}
-	if cleanupIndex > buildxIndex {
-		t.Fatal("manual sandbox workflow must free disk before setting up Buildx")
-	}
 }

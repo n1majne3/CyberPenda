@@ -1,0 +1,29 @@
+name: Smoke runtime tasks (manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke-runtime-tasks:
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - name: Require Runtime smoke credentials
+        run: |
+          if [ -z "${ANTHROPIC_AUTH_TOKEN}" ] || [ -z "${OPENAI_API_KEY}" ]; then
+            echo "ANTHROPIC_AUTH_TOKEN and OPENAI_API_KEY are required for Runtime smoke." >&2
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build sandbox image
+        run: make build-sandbox-image
+      - name: Runtime smoke
+        run: scripts/with-pentestd-live.sh make smoke-runtime-tasks
