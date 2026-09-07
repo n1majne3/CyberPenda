@@ -176,17 +176,39 @@ func (s *Service) Apply(ctx context.Context, c owner.Contract, continuation stri
 	var blockerRaw string
 	blockerErr := tx.QueryRowContext(ctx, `SELECT receipt_json FROM fgs_receipts WHERE owner_kind=? AND owner_id=? AND json_extract(receipt_json,'$.state')='action_required' AND json_extract(payload_json,'$.resolves') IS NULL ORDER BY rowid LIMIT 1`, c.Kind, c.ID).Scan(&blockerRaw)
 	var blocker Receipt
+	var resolutionError string
 	if blockerErr == nil {
 		if err = json.Unmarshal([]byte(blockerRaw), &blocker); err != nil {
 			return Receipt{}, err
 		}
-		if u.Resolves == nil || u.Resolves.ContinuationID != blocker.ContinuationID || u.Resolves.IntentID != blocker.ID {
+		if u.Resolves == nil {
 			return Receipt{}, ErrBlocked
+		}
+		if u.Resolves.ContinuationID != blocker.ContinuationID || u.Resolves.IntentID != blocker.ID {
+			resolutionError = fmt.Sprintf("Repair must target the original rejected update %s/%s, not a failed repair", blocker.ContinuationID, blocker.ID)
 		}
 	} else if !errors.Is(blockerErr, sql.ErrNoRows) {
 		return Receipt{}, blockerErr
 	} else if u.Resolves != nil {
-		return Receipt{}, errors.New("resolution target is not the current rejected update")
+		resolutionError = "Resolution target is not the current rejected update; read accepted state and status before publishing a fresh update"
+	}
+	if u.Resolves == nil {
+		// A repair on a later scan page cannot let newer ordinary updates
+		// overtake earlier files that are still waiting for their first receipt.
+		var pending bool
+		err = tx.QueryRowContext(ctx, `SELECT EXISTS (
+            SELECT 1 FROM fgs_outbox_inventory i
+            WHERE i.owner_kind=? AND i.owner_id=? AND i.continuation_id=? AND i.name<?
+            AND NOT EXISTS (SELECT 1 FROM fgs_receipts r
+                WHERE r.owner_kind=i.owner_kind AND r.owner_id=i.owner_id
+                AND r.continuation_id=i.continuation_id
+                AND r.intent_id=substr(i.name,1,length(i.name)-5)))`, c.Kind, c.ID, continuation, u.ID+".json").Scan(&pending)
+		if err != nil {
+			return Receipt{}, err
+		}
+		if pending {
+			return Receipt{}, ErrBlocked
+		}
 	}
 	graph, err := readGraph(ctx, tx, kind, id)
 	if err != nil {
@@ -202,6 +224,12 @@ func (s *Service) Apply(ctx context.Context, c owner.Contract, continuation stri
 		r.State = "action_required"
 		r.Code = "invalid_update"
 		r.Message = "update requires 1 to 100 operations and at most 1 MiB"
+		r.Revision = graph.Revision
+	}
+	if resolutionError != "" {
+		r.State = "action_required"
+		r.Code = "invalid_resolution"
+		r.Message = resolutionError
 		r.Revision = graph.Revision
 	}
 	changed := []Node{}
@@ -264,6 +292,9 @@ func (s *Service) Apply(ctx context.Context, c owner.Contract, continuation stri
 				return Receipt{}, err
 			}
 		}
+	}
+	if r.State == "action_required" {
+		r.Message += ". No operations from this update were applied. Read accepted state and resend the complete corrected batch."
 	}
 	receiptRaw, err := json.Marshal(r)
 	if err != nil {

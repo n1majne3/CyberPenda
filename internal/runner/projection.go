@@ -1843,6 +1843,11 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	}
 	if ctx.APIURL != "" {
 		env["PENTEST_API_URL"] = ctx.APIURL
+		if ctx.BlackboardProtocol == "fgs" {
+			// Older sandbox CLIs append /api/v2 without normalizing the base.
+			// A daemon root is accepted by both old and current FGS clients.
+			env["PENTEST_API_URL"] = strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(ctx.APIURL), "/"), "/api")
+		}
 	}
 	if ctx.BlackboardMode != "" {
 		env["PENTEST_BLACKBOARD_MODE"] = ctx.BlackboardMode

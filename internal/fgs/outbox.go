@@ -106,6 +106,7 @@ func (s *Service) Drain(ctx context.Context, c owner.Contract, continuation stri
 func (s *Service) drainFiles(ctx context.Context, c owner.Contract, continuation string, root *os.Root, outbox string, files []string) (DrainResult, error) {
 	result := DrainResult{Receipts: []Receipt{}}
 	var err error
+	replayedRepairs := map[string]bool{}
 	for pass := 0; pass <= len(files); pass++ {
 		result = DrainResult{Receipts: []Receipt{}}
 		repaired := false
@@ -137,47 +138,8 @@ func (s *Service) drainFiles(ctx context.Context, c owner.Contract, continuation
 			r, err := s.Apply(ctx, c, continuation, u)
 			if errors.Is(err, ErrBlocked) {
 				result.Blocked = true
-				// A new Continuation can have ordinary work queued before its
-				// explicit repair of an earlier Continuation's rejected update.
-				for _, candidate := range files {
-					body, e := readRegular(root, filepath.Join(outbox, candidate), MaxUpdateSize)
-					if e != nil {
-						continue
-					}
-					fix, e := DecodeUpdate(body)
-					if e != nil {
-						continue
-					}
-					if fix.Resolves == nil {
-						continue
-					}
-					if fix.ID+".json" != candidate {
-						return result, errors.New("resolution filename does not match envelope")
-					}
-					fixed, e := s.Apply(ctx, c, continuation, fix)
-					if errors.Is(e, ErrBlocked) {
-						continue
-					}
-					if e != nil {
-						return result, e
-					}
-					receipts := filepath.Join("graph", "receipts", continuation)
-					if e = mkdirUnder(root, receipts); e != nil {
-						return result, e
-					}
-					encoded, e := json.Marshal(fixed)
-					if e != nil {
-						return result, e
-					}
-					if e = publish(root, filepath.Join(receipts, candidate), encoded, true); e != nil {
-						return result, e
-					}
-					if fixed.State == "applied" {
-						repaired = true
-						break
-					}
-				}
-				break
+				// Keep scanning: a later file can repair this rejected head.
+				continue
 			}
 			if err != nil {
 				return result, err
@@ -195,46 +157,14 @@ func (s *Service) drainFiles(ctx context.Context, c owner.Contract, continuation
 				return result, err
 			}
 			result.Receipts = append(result.Receipts, r)
-			if r.State == "action_required" {
-				if u.Resolves != nil {
-					continue
-				}
+			if r.State == "action_required" && u.Resolves == nil {
 				result.Blocked = true
-				// Only an explicit resolution may pass the rejected head.
-				for _, candidate := range files {
-					if candidate == name {
-						continue
-					}
-					body, e := readRegular(root, filepath.Join(outbox, candidate), MaxUpdateSize)
-					if e != nil {
-						continue
-					}
-					fix, e := DecodeUpdate(body)
-					if e != nil {
-						continue
-					}
-					if fix.Resolves == nil || fix.Resolves.ContinuationID != r.ContinuationID || fix.Resolves.IntentID != r.ID {
-						continue
-					}
-					if fix.ID+".json" != candidate {
-						return result, errors.New("resolution filename does not match envelope")
-					}
-					fixed, e := s.Apply(ctx, c, continuation, fix)
-					if e != nil {
-						return result, e
-					}
-					encoded, e := json.Marshal(fixed)
-					if e != nil {
-						return result, e
-					}
-					if e = publish(root, filepath.Join(receipts, candidate), encoded, true); e != nil {
-						return result, e
-					}
-					if fixed.State == "applied" {
-						repaired = true
-						break
-					}
-				}
+			}
+			if r.State == "applied" && u.Resolves != nil && !replayedRepairs[r.ID] {
+				// Repeat once per applied repair to retry earlier queued work
+				// and refresh the original rejected receipt after supersession.
+				replayedRepairs[r.ID] = true
+				repaired = true
 				break
 			}
 		}

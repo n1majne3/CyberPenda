@@ -56,7 +56,11 @@ Publish an object with an operations array through ` + "`pentestctl working-grap
 
 Publish before work starts and when execution, a blocker, a result, or a decision changes. The Harness reads graph/outbox/<continuation>/ during work. Emit allocates the immutable update ID and sequence. Do not edit published files. Publication is not acceptance: inspect graph/receipts/<continuation>/ for applied or action_required, or use ` + "`pentestctl working-graph status`" + `.
 
-For action_required, publish a new update with resolves: {continuation_id, intent_id} and corrected operations. To withdraw it, use resolves, an empty operations array, and withdrawal_reason. Later dependent updates wait for repair. Independent work can continue. After resume, repair unresolved earlier Continuation updates before dependent updates.
+Updates are atomic: if any operation fails, NONE of that update's operations were applied. The receipt operation index identifies the error, not a partially applied prefix. Read accepted state again and resend the COMPLETE corrected batch, including its Facts and Step results. Use the accepted node state for from; creating a Goal leaves it open, not active.
+
+For action_required, publish a new update with resolves: {continuation_id, intent_id} naming the ORIGINAL rejected update and the complete corrected operations. If that repair also fails, the original update remains the blocker: target it again, not the failed repair. To withdraw the original update, use resolves, an empty operations array, and withdrawal_reason. Withdrawal discards the whole batch; it does not preserve its earlier operations. After withdrawal, read accepted state before a fresh update. Never withdraw a missing receipt as if it were a rejected update.
+
+Later dependent updates wait for repair. Independent work can continue. After resume, repair unresolved earlier Continuation updates before dependent updates. If a receipt is still missing after a bounded check, run status and report the blocker; do not spend repeated minutes sleeping or create speculative repair chains. Preserve result files so reporting can resume without repeating platform actions.
 
 When using multiple agents, Decide publishes updates. Execute writes a Step-specific result file for Decide to inspect. One Runtime can perform both roles. A done Goal does not finish the Task or submit a platform result.
 

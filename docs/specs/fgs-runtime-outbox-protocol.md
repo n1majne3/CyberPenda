@@ -249,6 +249,12 @@ Successful resolution and superseding the rejected update commit atomically;
 failed resolution leaves the original blocker unchanged and returns its own
 validation Receipt. Do not make that failed resolution a second queue blocker.
 Then resume queued ordinary envelopes, validating each against current state.
+Invalid resolution targets also get durable rejection Receipts. They must not
+abort the scan before a later valid repair or withdrawal. A repair of a failed
+repair still targets the original rejected update. No operation from a rejected
+batch was applied; a replacement must contain the complete corrected batch.
+Withdrawal discards the batch, including any Fact and Step operations before the
+failed operation. Missing receipts are not proof of rejection.
 
 A new Continuation can resolve an earlier blocker for the same Owner through
 this explicit identity. Ordinary newer writes wait until older pending updates

@@ -122,6 +122,10 @@ func TestRejectedHeadCanBeReplacedWithoutEditingPublishedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This update depends on the earlier queued open -> running transition.
+	if _, err = fgs.Emit(t.Context(), c, "continuation-1", []fgs.Operation{{Op: "step.transition", Key: "step:check", From: "running", To: "blocked", Reason: "Need access"}}); err != nil {
+		t.Fatal(err)
+	}
 	result, err = s.Drain(t.Context(), c, "continuation-1")
 	if err != nil || result.Blocked {
 		t.Fatalf("repair: %+v %v", result, err)
@@ -135,11 +139,11 @@ func TestRejectedHeadCanBeReplacedWithoutEditingPublishedFiles(t *testing.T) {
 		t.Fatalf("old receipt: %+v %v", old, err)
 	}
 	g, err := s.Read(t.Context(), c)
-	if err != nil || g.Revision != 2 || len(g.Nodes) != 2 {
+	if err != nil || g.Revision != 3 || len(g.Nodes) != 2 {
 		t.Fatalf("graph: %+v %v", g, err)
 	}
 	for _, n := range g.Nodes {
-		if n.Type == "step" && n.State != "running" {
+		if n.Type == "step" && n.State != "blocked" {
 			t.Fatalf("later update did not resume: %+v", n)
 		}
 	}
@@ -254,5 +258,83 @@ func TestFailedResolutionDoesNotBecomeAnotherQueueBlocker(t *testing.T) {
 	g, err := s.Read(t.Context(), c)
 	if err != nil || g.Revision != 0 || len(g.Nodes) != 0 {
 		t.Fatalf("withdrawal changed graph: %+v %v", g, err)
+	}
+}
+
+func TestInvalidRepairTargetGetsReceiptAndDoesNotStopLaterRecovery(t *testing.T) {
+	for _, mode := range []string{"drain", "paged"} {
+		t.Run(mode, func(t *testing.T) {
+			s, c := fixture(t)
+			const continuation = "continuation-1"
+			settle := func() (fgs.DrainResult, error) {
+				if mode == "drain" {
+					return s.Drain(t.Context(), c, continuation)
+				}
+				for i := 0; i < 20; i++ {
+					result, err := s.ReceivePage(t.Context(), c, continuation, 2)
+					if err != nil || result.Complete {
+						return result.DrainResult, err
+					}
+				}
+				t.Fatal("paged scan did not complete")
+				return fgs.DrainResult{}, nil
+			}
+			emit := func(target string, ops []fgs.Operation, reason string) fgs.Update {
+				t.Helper()
+				var u fgs.Update
+				var err error
+				if target == "" {
+					u, err = fgs.Emit(t.Context(), c, continuation, ops)
+				} else {
+					u, err = fgs.EmitResolution(t.Context(), c, continuation, fgs.Identity{ContinuationID: continuation, IntentID: target}, ops, reason)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				return u
+			}
+			bad := []fgs.Operation{{Op: "step.create", Key: "step:missing", Goal: "goal:missing", Action: "Check"}}
+			first := emit("", bad, "")
+			failedRepair := emit(first.ID, bad, "")
+			nested := emit(failedRepair.ID, nil, "Wrong repair target")
+			result, err := settle()
+			status, statusErr := s.Status(t.Context(), c)
+			if err != nil || statusErr != nil || status.ActionRequired != 1 {
+				t.Fatalf("blocked head: %+v %v", result, err)
+			}
+			receipt, err := s.Receipt(t.Context(), c, continuation, nested.ID)
+			if err != nil || receipt.State != "action_required" || receipt.Code != "invalid_resolution" {
+				t.Fatalf("wrong target needs a durable error, not a missing receipt: %+v %v", receipt, err)
+			}
+			emit(first.ID, nil, "Withdraw original batch")
+			stale := emit(first.ID, nil, "Already withdrawn")
+			next := emit("", []fgs.Operation{{Op: "goal.create", Key: "goal:next", Title: "Next", SuccessCriteria: "Checked"}}, "")
+			result, err = settle()
+			status, statusErr = s.Status(t.Context(), c)
+			if err != nil || statusErr != nil || status.ActionRequired != 0 {
+				t.Fatalf("recovery: %+v %v", result, err)
+			}
+			for _, id := range []string{nested.ID, stale.ID, next.ID} {
+				raw, err := os.ReadFile(filepath.Join(c.Workdir, "graph", "receipts", continuation, id+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				var r fgs.Receipt
+				if err := json.Unmarshal(raw, &r); err != nil {
+					t.Fatal(err)
+				}
+				want := "action_required"
+				if id == next.ID {
+					want = "applied"
+				}
+				if r.State != want {
+					t.Fatalf("receipt %s: %+v", id, r)
+				}
+			}
+			graph, err := s.Read(t.Context(), c)
+			if err != nil || len(graph.Nodes) != 1 || graph.Nodes[0].Key != "goal:next" {
+				t.Fatalf("graph: %+v %v", graph, err)
+			}
+		})
 	}
 }

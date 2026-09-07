@@ -72,3 +72,36 @@ func TestMailboxPagesFindRepairBeyondBlockedPageAfterScanRestart(t *testing.T) {
 	}
 	t.Fatal("repair beyond the blocked page did not release queued updates")
 }
+
+func TestMailboxRepairKeepsQueuedWorkBeforeLaterPageUpdates(t *testing.T) {
+	s, c := fixture(t)
+	t.Cleanup(s.CloseScans)
+	const continuation = "scan"
+	first, err := fgs.Emit(t.Context(), c, continuation, []fgs.Operation{{Op: "step.create", Key: "step:bad", Goal: "goal:missing", Action: "Bad"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = fgs.Emit(t.Context(), c, continuation, []fgs.Operation{{Op: "goal.create", Key: "goal:queued", Title: "Queued", SuccessCriteria: "Checked"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = fgs.EmitResolution(t.Context(), c, continuation, fgs.Identity{ContinuationID: continuation, IntentID: first.ID}, nil, "Withdraw"); err != nil {
+		t.Fatal(err)
+	}
+	last, err := fgs.Emit(t.Context(), c, continuation, []fgs.Operation{{Op: "goal.transition", Key: "goal:queued", From: "open", To: "active"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 30; i++ {
+		if _, err = s.ReceivePage(t.Context(), c, continuation, 2); err != nil {
+			t.Fatal(err)
+		}
+		r, err := s.Receipt(t.Context(), c, continuation, last.ID)
+		if err == nil {
+			if r.State != "applied" {
+				t.Fatalf("later update overtook queued work: %+v", r)
+			}
+			return
+		}
+	}
+	t.Fatal("queued work did not settle")
+}

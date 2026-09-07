@@ -257,3 +257,17 @@ func TestProfileCredentialRefOverridesGlobalEnv(t *testing.T) {
 		t.Fatalf("profile credential_ref must override global env; got SHARED_VAR=%q", env["SHARED_VAR"])
 	}
 }
+
+func TestFGSLaunchAPIBaseWorksWithOlderSandboxCLI(t *testing.T) {
+	for _, sandbox := range []bool{false, true} {
+		for _, suffix := range []string{"", "/", "/api", "/api/"} {
+			env := runner.LaunchProcessEnv(runner.Layout{}, runtimeprofile.Profile{Provider: runtimeprofile.ProviderPi}, sandbox, runner.RuntimeOwnerContext{
+				BlackboardProtocol: "fgs", APIURL: "http://daemon.test:8787" + suffix,
+			})
+			// Older images append /api/v2 directly. Project a root both old and new CLIs accept.
+			if got := env["PENTEST_API_URL"] + "/api/v2/sessions/s/fgs"; got != "http://daemon.test:8787/api/v2/sessions/s/fgs" {
+				t.Errorf("sandbox=%v suffix=%q endpoint=%q", sandbox, suffix, got)
+			}
+		}
+	}
+}
