@@ -33,6 +33,75 @@ const codexPlugin = {
 };
 
 describe("SessionDetailPage", () => {
+  it.each(["success", "stop", "messages"])("preserves attachments when switching Model Provider: %s", async (outcome) => {
+    const fetchMock = mockApi({
+      "/api/sessions/session-switch/transcript": { entries: [] },
+      "/api/sessions/session-switch/timeline": { items: [] },
+      "/api/sessions/session-switch": {
+        id: "session-switch", title: "Review evidence", lifecycle: "open",
+        runtime_controls: {
+          runtime_provider: "codex", native_steer_available: true, queue_steer_available: true,
+          turn_selection: { model_provider_id: "original", model: "original-model" },
+        },
+        active_continuation: {
+          id: "continuation-1", session_id: "session-switch", number: 1,
+          runtime_provider: "codex", runner: "host", status: "running",
+        },
+      },
+      "/api/model-providers": { providers: [
+        { ...mimoProvider, id: "original", name: "Original", catalog: { manual: ["original-model"], default_model: "original-model" } },
+        mimoProvider,
+      ] },
+      "/api/runtime-plugins": { plugins: [codexPlugin] },
+    });
+    const defaultFetch = fetchMock.getMockImplementation()!;
+    const requests: { url: string; body: BodyInit | null | undefined }[] = [];
+    fetchMock.mockImplementation(async (input, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        requests.push({ url, body: init.body });
+        if (outcome !== "success" && url.endsWith(`/${outcome}`)) {
+          return new Response(JSON.stringify({ error: "Provider switch failed" }), { status: 500 });
+        }
+      }
+      return defaultFetch(input);
+    });
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/sessions/session-switch"]}><Routes>
+      <Route path="/sessions/:sessionId" element={<SessionDetailPage />} />
+    </Routes></MemoryRouter>);
+    await screen.findByRole("option", { name: "MiMo" });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Continuation model provider" }), "mimo");
+    const file = new File(["evidence for the new provider"], "evidence.txt", { type: "text/plain" });
+    const upload = screen.getByLabelText<HTMLInputElement>("Attach files to Session message");
+    await user.upload(upload, file);
+    const composer = screen.getByRole("textbox", { name: "Session message" });
+    await user.type(composer, "Review this evidence");
+    await user.click(screen.getByRole("button", { name: "Switch provider and resume" }));
+
+    if (outcome === "success") {
+      await waitFor(() => expect(composer).toHaveValue(""));
+      expect(upload.files).toHaveLength(0);
+    } else {
+      expect(await screen.findByText("Provider switch failed")).toBeInTheDocument();
+      expect(composer).toHaveValue("Review this evidence");
+      expect(upload.files?.[0]).toBe(file);
+      expect(screen.getByText("1 attached")).toBeInTheDocument();
+    }
+    expect(requests.map(({ url }) => url)).toEqual(outcome === "stop"
+      ? ["/api/sessions/session-switch/stop"]
+      : ["/api/sessions/session-switch/stop", "/api/sessions/session-switch/messages"]);
+    if (outcome !== "stop") {
+      const form = requests[1]!.body;
+      expect(form).toBeInstanceOf(FormData);
+      if (!(form instanceof FormData)) throw new Error("Expected a multipart Session message");
+      expect(JSON.parse(String(form.get("payload")))).toMatchObject({
+        message: "Review this evidence", model_provider_id: "mimo", model: "mimo-v2",
+      });
+      expect(form.getAll("attachments")).toEqual([file]);
+    }
+  });
+
   it("opens the Session Blackboard inside the Runtime workspace", async () => {
     const fetchMock = mockApi({
       "/api/sessions/session-fgs/transcript": { entries: [] },

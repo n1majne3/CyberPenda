@@ -48,9 +48,9 @@ export function resolveConversationAction(
     // stop → message on the fresh continuation.
     if (switchingProvider) {
       return {
-        run: async (message, selection, adapter) => {
+        run: async (message, selection, adapter, attachments) => {
           await adapter.stop();
-          await adapter.sendMessage(message, selection, []);
+          await adapter.sendMessage(message, selection, attachments);
         },
       };
     }
