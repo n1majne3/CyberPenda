@@ -69,6 +69,34 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	}
 }
 
+func TestSandboxDockerfileProvidesQemuUserEmulation(t *testing.T) {
+	repoRoot := repoRoot(t)
+	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read sandbox Dockerfile: %v", err)
+	}
+	dockerfile := string(dockerfileBytes)
+
+	for _, required := range []string{
+		// User-mode emulators for foreign-architecture binaries.
+		"qemu-user-static",
+		// Kali qemu-user 11 ships qemu-<arch>, not qemu-<arch>-static.
+		// The image must provide both name forms.
+		`"/usr/bin/${base}-static"`,
+		// The build must fail when a pinned emulator is missing. Keep the
+		// >/dev/null suffix so this cannot match qemu-x86_64-static.
+		"command -v qemu-x86_64 >/dev/null",
+		"command -v qemu-x86_64-static",
+		"command -v qemu-aarch64-static",
+		"command -v qemu-arm-static",
+		"command -v qemu-i386-static",
+	} {
+		if !strings.Contains(dockerfile, required) {
+			t.Fatalf("sandbox Dockerfile must keep qemu user-mode emulation; missing %q", required)
+		}
+	}
+}
+
 func TestSandboxRuntimeImageProvidesPentestctlOnPath(t *testing.T) {
 	repoRoot := repoRoot(t)
 	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))
