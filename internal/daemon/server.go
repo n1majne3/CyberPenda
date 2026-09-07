@@ -1008,7 +1008,6 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("GET /api/runtime-plugins", server.handleListRuntimePlugins)
 	server.mux.HandleFunc("GET /api/runtime-plugins/{plugin_id}", server.handleGetRuntimePlugin)
 	server.mux.HandleFunc("GET /api/runtime-extensions", server.handleListRuntimeExtensions)
-	server.mux.HandleFunc("GET /api/runtime-extension-catalog", server.handleListRuntimeExtensionCatalog)
 	server.mux.HandleFunc("GET /api/runtime-extensions/{extension_id}", server.handleGetRuntimeExtension)
 	server.mux.HandleFunc("GET /api/skills", server.handleListSkills)
 	server.mux.HandleFunc("POST /api/skills/import", server.handleImportSkill)

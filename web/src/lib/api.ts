@@ -594,16 +594,6 @@ export interface RuntimeExtension {
   config?: Record<string, string>;
 }
 
-export interface RuntimeExtensionCatalogItem {
-  id: string;
-  name: string;
-  description?: string;
-  provider: string;
-  registry: string;
-  registry_url: string;
-  install_ref?: string;
-  source_url?: string;
-}
 
 export interface CredentialBinding {
   id: string;
@@ -647,6 +637,7 @@ export interface RuntimeActivity {
 }
 
 export interface Task {
+  challenge_platforms?: string[];
   blackboard_protocol?: "legacy" | "fgs";
   id: string;
   project_id: string;

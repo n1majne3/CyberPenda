@@ -14,6 +14,7 @@ import (
 
 	"pentest/internal/challengeworkflow"
 	"pentest/internal/project"
+	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
 
@@ -87,6 +88,17 @@ func TestChallengeWorkflowHTTPAndFinishReadiness(t *testing.T) {
 		t.Fatalf("Disabled Challenge action changed public Blackboard: %d %s", disabledSnapshot.Code, disabledSnapshot.Body.String())
 	}
 
+	available := serveChallenge(t, server, http.MethodGet, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/challenges", operatorToken, "")
+	var workflow struct {
+		Platforms []string `json:"platforms"`
+	}
+	if err := json.NewDecoder(available.Body).Decode(&workflow); err != nil {
+		t.Fatal(err)
+	}
+	if len(workflow.Platforms) != 1 || workflow.Platforms[0] != "arena" {
+		t.Fatalf("available platforms = %v, want arena", workflow.Platforms)
+	}
+
 	claimPath := "/api/projects/" + proj.ID + "/tasks/" + created.ID + "/challenges/claim"
 	denied := serveChallenge(t, server, http.MethodPost, claimPath, "", `{"platform":"arena","operation_id":"tokenless-claim","challenge_id":"3121"}`)
 	if denied.Code != http.StatusUnauthorized {
@@ -158,4 +170,68 @@ func serveChallenge(t *testing.T, server *Server, method, path, token, body stri
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 	return response
+}
+
+func TestChallengeWorkflowAvailabilityHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		kind       string
+		mode       task.BlackboardMode
+		configured bool
+		want       int
+	}{
+		{"configured CTF", project.KindCTFChallenge, task.BlackboardModeWorkingGraph, true, 1},
+		{"unconfigured CTF", project.KindCTFChallenge, task.BlackboardModeWorkingGraph, false, 0},
+		{"disabled CTF", project.KindCTFChallenge, task.BlackboardModeDisabled, true, 0},
+		{"pentest", project.KindPentest, task.BlackboardModeWorkingGraph, true, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			platforms := map[string]challengeworkflow.PlatformAdapter{}
+			if tc.configured {
+				platforms["arena"] = challengePlatformFixture{}
+			}
+			server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "db.sqlite"), DisableBuiltinSkills: true, ChallengePlatforms: platforms})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+			proj, err := server.projects.CreateWithKind("Scope", "", tc.kind, project.Scope{}, project.Defaults{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile, err := server.profiles.Create("Fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			created, err := server.tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.Type(tc.kind), Goal: "Inspect", Runner: task.RunnerSandbox, RuntimeProfileID: profile.ID, RunControls: task.RunControls{BlackboardMode: tc.mode}, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			accessURL, err := url.Parse(server.GeneratedOperatorAccessURL())
+			if err != nil {
+				t.Fatal(err)
+			}
+			base := "/api/projects/" + proj.ID + "/tasks/" + created.ID
+			for _, suffix := range []string{"", "/challenges"} {
+				response := serveChallenge(t, server, http.MethodGet, base+suffix, accessURL.Query().Get("token"), "")
+				if response.Code != http.StatusOK {
+					t.Fatalf("%s: %d %s", suffix, response.Code, response.Body.String())
+				}
+				var body struct {
+					Platforms          []string `json:"platforms"`
+					ChallengePlatforms []string `json:"challenge_platforms"`
+				}
+				if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				got := body.Platforms
+				if suffix == "" {
+					got = body.ChallengePlatforms
+				}
+				if len(got) != tc.want {
+					t.Fatalf("%s platforms = %v, want count %d", suffix, got, tc.want)
+				}
+			}
+		})
+	}
 }

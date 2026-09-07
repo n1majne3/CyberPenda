@@ -29,7 +29,7 @@ describe("RuntimeProfilesPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows runtime profiles without waiting for the remote extension catalog", async () => {
+  it("shows runtime profiles without fetching a remote extension catalog", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -46,7 +46,7 @@ describe("RuntimeProfilesPage", () => {
                     id: "profile-1",
                     name: "Fast Codex",
                     provider: "codex",
-                    fields: { model: "gpt-5" },
+                    fields: { model: "gpt-5", runtime_extensions: [{ id: "npm:pi-tools", enabled: true, config: { install_ref: "npm:pi-tools", registry: "pi.dev/packages" } }] },
                     created_at: "",
                     updated_at: "2026-06-19T00:00:00Z",
                   },
@@ -84,13 +84,22 @@ describe("RuntimeProfilesPage", () => {
     const { findByText } = renderPage();
 
     expect(await findByText("Fast Codex")).toBeInTheDocument();
-    expect(fetch).toHaveBeenCalledWith("/api/runtime-extension-catalog", expect.anything());
+    expect(screen.queryByRole("button", { name: "Add package" })).not.toBeInTheDocument();
     expect(
       vi.mocked(fetch).mock.calls.filter(([input]) => {
         const url = typeof input === "string" ? input : input.toString();
         return url.includes("/api/runtime-extension-catalog");
       }),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
+    await userEvent.click(screen.getByRole("button", { name: /Fast Codex/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /^save$/i }));
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "PATCH");
+      expect(call).toBeDefined();
+      expect(JSON.parse(String(call?.[1]?.body)).fields.runtime_extensions).toEqual([
+        { id: "npm:pi-tools", enabled: true, config: { install_ref: "npm:pi-tools", registry: "pi.dev/packages" } },
+      ]);
+    });
   });
 
   it("shows the published sandbox image in the sandbox profile guidance", async () => {

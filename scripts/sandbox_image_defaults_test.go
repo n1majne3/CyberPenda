@@ -22,7 +22,6 @@ func TestRuntimeSandboxImageDefaultsUsePublishedImage(t *testing.T) {
 		{"Makefile", "SANDBOX_IMAGE ?= " + canonicalSandboxImage},
 		{"docker-compose.yaml", "PENTEST_SANDBOX_IMAGE: ${PENTEST_SANDBOX_IMAGE:-" + canonicalSandboxImage + "}"},
 		{"scripts/with-pentestd-live.sh", "SANDBOX_IMAGE=\"${PENTEST_SANDBOX_IMAGE:-" + canonicalSandboxImage + "}\""},
-		{"scripts/run-juice-shop-live.py", `os.environ.get("PENTEST_SANDBOX_IMAGE", "` + canonicalSandboxImage + `")`},
 		{"scripts/smoke-sandbox-fgs-live.sh", "IMAGE=\"${PENTEST_SANDBOX_IMAGE:-" + canonicalSandboxImage + "}\""},
 		{"README.md", "| `-sandbox-image` | `PENTEST_SANDBOX_IMAGE` | `" + canonicalSandboxImage + "` |"},
 	} {
@@ -43,7 +42,6 @@ func TestSourceBuildTargetsForwardConfiguredSandboxImage(t *testing.T) {
 	}
 	assertContains(t, string(makefile), "smoke-sandbox-fgs:\n\t@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) bash scripts/smoke-sandbox-fgs-live.sh")
 	assertContains(t, string(makefile), "smoke-runtime-tasks:\n\t@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) python3 scripts/smoke-runtime-tasks-live.py")
-	assertContains(t, string(makefile), "juice-shop-live:\n\t@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) python3 scripts/run-juice-shop-live.py")
 }
 
 func TestRetiredSandboxImageDefaultsAreAbsent(t *testing.T) {

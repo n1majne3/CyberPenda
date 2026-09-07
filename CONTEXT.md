@@ -2,6 +2,25 @@
 
 This context defines the product and security-testing language for the local-first pentest agent. It is a glossary for shared domain terms, not an implementation spec.
 
+## Current product boundary
+
+Enabled Blackboard work in current Projects and Sessions uses Goal, Step, and
+Fact through the FGS Runtime Outbox. Migration 77 updates the Runtime protocol
+without converting historical records or deleting Evidence files. The legacy
+record definitions and relationships below describe retained interfaces and
+history; they do not select the new Runtime protocol. Disabled mode remains
+available. New Tasks default to Working Graph; new Sessions default to Disabled.
+
+Runtime Extension discovery uses the local registry and explicit references.
+Skills retain managed import. Remote plugin catalog browsing is retired.
+Challenge Workflow controls are available only for a CTF Challenge Project and
+Task with enabled Blackboard and a configured Platform. Historical Challenge
+Attempts remain readable when controls are unavailable. Hosted evaluation uses
+its separate Hosted Challenge Client.
+
+The Assisted experiment launchers and built-in Blackboard MCP endpoint are
+retired. Historical reports remain data, not current execution instructions.
+
 ## Language
 
 **Pentest Agent**:
@@ -1447,7 +1466,7 @@ _Avoid_: transcript, export, source of truth
 - A disabled Blackboard state is not `clean` or `empty`; resolved: label it `Disabled`, hide inapplicable Blackboard controls in the Runtime Owner Workspace, and retain the Project Dashboard's project-level Blackboard.
 - Disabled Runtime output is not permanently barred from Project Knowledge; resolved: the operator may explicitly retain a file as Evidence or start Reconciliation outside the Runtime without feeding Blackboard state back to it.
 - Disabled Runtime output is not an automatic Report source; resolved: Reports remain Blackboard-based, and Transcript or workdir content enters that source only through explicit operator retention or Reconciliation.
-- Disabled Blackboard is not the new default or a Task-only option; resolved: `interactive` remains the default, and both Project Tasks and Non-Project Sessions may explicitly select `disabled`.
+- Blackboard defaults differ by Runtime Owner; resolved: new Tasks default to `working_graph`, new Sessions default to `disabled`, and both support an explicit Blackboard Mode.
 - **Blackboard Mode** is not a per-Continuation toggle; resolved: the Runtime Owner captures it at creation and every Resume or Continuation inherits it.
 - Disabled Task Finish is not blocked by state the Runtime is forbidden to settle; resolved: **Finish Readiness** skips Blackboard-specific blockers and retains ordinary lifecycle and policy checks.
 - **Accepted Steering** is not durable message storage alone; resolved: the Runtime Harness owns eventual settlement as `applied`, `failed`, or `action_required`, including after daemon restart.
@@ -1674,7 +1693,7 @@ _Avoid_: transcript, export, source of truth
 - The Hosted Controller does not prescribe serial Benchmark Challenge execution; resolved: the Runtime may manage between one and three active platform instances and remains responsible for closing them.
 - Hosted Runtime completion is not converted into normal **Task Finish** or container exit; resolved: the Runtime remains available and the **Hosted Controller** waits until TSecBench terminates the container.
 - The one-use `BENCHMARK_TOKEN` is not guaranteed to be redacted from persistent Runtime output; resolved: direct Runtime access is retained and this evaluation-time disclosure risk is accepted without a new redaction mechanism.
-- Runtime family selection is not inferred only from model protocol; resolved: Codex is the default, Hosted bootstrap accepts Codex or Claude Code, and startup validation rejects Pi, Hermes, or an incompatible model protocol. All four Runtime CLIs remain in the **Hosted Tool Baseline**.
+- Runtime family selection is explicit; resolved: Codex is the default, Hosted bootstrap accepts Codex, Claude Code, or Pi with a compatible model protocol and rejects Hermes as the selected Runtime. All four Runtime CLIs remain in the **Hosted Tool Baseline**.
 - A hosted Model Protocol Base URL is not transformed by the **Hosted Controller**; resolved: the operator enters the already converted `.tsecbench.gw` HTTP URL on the TSecBench environment-variable page.
 - A missing hosted model protocol is not inferred or defaulted; resolved: startup fails unless the operator supplies it explicitly.
 - The **TSecBench Hosted Image** does not depend on launching a nested Sandbox Runner; resolved: selected Runtimes and tools execute through the **Container Host Runner** and the image assumes no Docker Socket, privileged mode, or nested container engine.

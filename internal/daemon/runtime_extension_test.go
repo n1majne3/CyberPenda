@@ -66,3 +66,16 @@ func TestRuntimeExtensionDirectoryExtendsRegistry(t *testing.T) {
 		t.Fatalf("unexpected extensions response: %#v", body.Extensions)
 	}
 }
+
+func TestRemoteRuntimeExtensionCatalogIsRetired(t *testing.T) {
+	server, err := daemon.NewServer(daemon.Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/runtime-extension-catalog", nil))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("catalog status = %d, want 404", response.Code)
+	}
+}

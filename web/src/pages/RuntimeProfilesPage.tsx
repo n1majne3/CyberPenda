@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { CheckCircle2, Plus, Search, Trash2 } from "lucide-react";
-import { apiGet, apiPost, apiPatch, apiDelete, mergedConfigPreview, projectedConfig, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, mergedConfigPreview, projectedConfig, type ModelProvider, type RuntimeExtension, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
 import { codexMultiAgentTOMLLines, enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
 import {
@@ -59,18 +59,6 @@ const DEFAULT_API_KEY_ENV: Record<string, string> = {
 const API_KEY_CONFIGURED = "[configured]";
 
 const DEFAULT_DAEMON_MCP_PORT = "8787";
-
-let runtimeExtensionCatalogRequest: Promise<{ items: RuntimeExtensionCatalogItem[] }> | null = null;
-
-function loadRuntimeExtensionCatalog() {
-  if (!runtimeExtensionCatalogRequest) {
-    runtimeExtensionCatalogRequest = apiGet<{ items: RuntimeExtensionCatalogItem[] }>("/api/runtime-extension-catalog").catch((error) => {
-      runtimeExtensionCatalogRequest = null;
-      throw error;
-    });
-  }
-  return runtimeExtensionCatalogRequest;
-}
 
 type RuntimeProfileFields = RuntimeProfile["fields"];
 type RuntimeExtensionFormRef = {
@@ -165,7 +153,6 @@ export function RuntimeProfilesPage() {
   const [plugins, setPlugins] = useState<RuntimePlugin[]>([]);
   const [extensions, setExtensions] = useState<RuntimeExtension[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
-  const [extensionCatalog, setExtensionCatalog] = useState<RuntimeExtensionCatalogItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(() => searchParams.get("profile"));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -241,9 +228,6 @@ export function RuntimeProfilesPage() {
         return loaded[0]?.id ?? null;
       });
       setError(null);
-      void loadRuntimeExtensionCatalog()
-        .then((catalogData) => setExtensionCatalog(catalogData.items ?? []))
-        .catch(() => setExtensionCatalog([]));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -569,7 +553,6 @@ export function RuntimeProfilesPage() {
               plugins={effectivePlugins}
               modelProviders={modelProviders}
               extensions={extensions}
-              extensionCatalog={extensionCatalog}
             />
           </SettingsDetailPane>
         ) : selected && draft ? (
@@ -617,7 +600,6 @@ export function RuntimeProfilesPage() {
               plugins={effectivePlugins}
               modelProviders={modelProviders}
               extensions={extensions}
-              extensionCatalog={extensionCatalog}
             />
             <div className="min-w-0">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -841,7 +823,6 @@ function ProfileEditor({
   plugins,
   modelProviders,
   extensions,
-  extensionCatalog,
 }: {
   title?: string;
   form: ProfileForm;
@@ -855,10 +836,8 @@ function ProfileEditor({
   plugins: RuntimePlugin[];
   modelProviders: ModelProvider[];
   extensions: RuntimeExtension[];
-  extensionCatalog: RuntimeExtensionCatalogItem[];
 }) {
   const [extensionToAdd, setExtensionToAdd] = useState("");
-  const [catalogItemToAdd, setCatalogItemToAdd] = useState("");
   const [manualExtensionID, setManualExtensionID] = useState("");
   const plugin = pluginFor(plugins, form.provider);
   const selectableProviders = selectableModelProviders(modelProviders, plugin, form.model_provider_id);
@@ -892,22 +871,9 @@ function ProfileEditor({
   const availableExtensions = compatibleExtensions.filter(
     (extension) => !form.runtime_extensions.some((ref) => ref.id === extension.id)
   );
-  const compatibleCatalogItems = extensionCatalog.filter((item) => item.provider === form.provider);
-  const catalogItemID = (item: RuntimeExtensionCatalogItem) => item.install_ref || item.id;
-  const catalogByRefID = new Map<string, RuntimeExtensionCatalogItem>();
-  for (const item of extensionCatalog) {
-    catalogByRefID.set(item.id, item);
-    if (item.install_ref) catalogByRefID.set(item.install_ref, item);
-  }
-  const availableCatalogItems = compatibleCatalogItems.filter(
-    (item) => !form.runtime_extensions.some((ref) => ref.id === catalogItemID(item))
-  );
   const selectedExtensionID = availableExtensions.some((extension) => extension.id === extensionToAdd)
     ? extensionToAdd
     : availableExtensions[0]?.id || "";
-  const selectedCatalogItemID = availableCatalogItems.some((item) => catalogItemID(item) === catalogItemToAdd)
-    ? catalogItemToAdd
-    : availableCatalogItems[0] ? catalogItemID(availableCatalogItems[0]) : "";
   const trimmedManualExtensionID = manualExtensionID.trim();
   const manualRegistryExtension = extensionByID.get(trimmedManualExtensionID);
   const manualExtensionIncompatible = Boolean(
@@ -927,23 +893,6 @@ function ProfileEditor({
       ],
     });
     setExtensionToAdd("");
-  };
-  const addCatalogRuntimeExtension = () => {
-    const item = availableCatalogItems.find((candidate) => catalogItemID(candidate) === selectedCatalogItemID);
-    if (!item) return;
-    const config = {
-      registry: item.registry,
-      ...(item.install_ref ? { install_ref: item.install_ref } : {}),
-      ...(item.source_url ? { source_url: item.source_url } : {}),
-    };
-    onChange({
-      ...form,
-      runtime_extensions: [
-        ...form.runtime_extensions,
-        { id: catalogItemID(item), enabled: true, config: formatEnv(config) },
-      ],
-    });
-    setCatalogItemToAdd("");
   };
   const addManualRuntimeExtension = () => {
     if (!canAddManualExtension) return;
@@ -1361,36 +1310,12 @@ function ProfileEditor({
             </Button>
           </div>
           <div className="mt-2 flex gap-2">
-            <Select
-              id="profile-catalog-extension"
-              name="catalog_extension"
-              className="flex-1"
-              value={selectedCatalogItemID}
-              onChange={(e) => setCatalogItemToAdd(e.target.value)}
-              disabled={availableCatalogItems.length === 0}
-            >
-              {availableCatalogItems.length === 0 ? (
-                <option value="">No catalog packages available</option>
-              ) : (
-                availableCatalogItems.map((item) => (
-                  <option key={`${item.registry}:${catalogItemID(item)}`} value={catalogItemID(item)}>
-                    {item.name || catalogItemID(item)}
-                  </option>
-                ))
-              )}
-            </Select>
-            <Button type="button" size="sm" variant="outline" onClick={addCatalogRuntimeExtension} disabled={!selectedCatalogItemID}>
-              <Plus className="h-4 w-4" />
-              Add package
-            </Button>
-          </div>
-          <div className="mt-2 flex gap-2">
             <Input
               id="profile-manual-extension-id"
               name="manual_extension_id"
               value={manualExtensionID}
               onChange={(e) => setManualExtensionID(e.target.value)}
-              placeholder="manual_extension_id…"
+              placeholder="npm:@scope/package or local extension ID…"
               autoComplete="off"
               spellCheck={false}
             />
@@ -1401,7 +1326,7 @@ function ProfileEditor({
           </div>
           {extensions.length === 0 && (
             <p className="mt-1 text-[11px] text-muted-foreground">
-              No registry extensions loaded. Manual refs can be saved, but launch requires the daemon registry to resolve them.
+              No registry extensions loaded. Local IDs require a registry entry. For packages, set install_ref in Config.
             </p>
           )}
           {manualExtensionIncompatible && (
@@ -1415,7 +1340,6 @@ function ProfileEditor({
             )}
             {form.runtime_extensions.map((ref, index) => {
               const extension = extensionByID.get(ref.id);
-              const catalogItem = catalogByRefID.get(ref.id);
               return (
                 <div key={`${ref.id}-${index}`} className="rounded-md border border-border p-3 space-y-2">
                   <div className="flex items-start justify-between gap-3">
@@ -1429,17 +1353,13 @@ function ProfileEditor({
                       />
                       <span>
                         <span className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-medium">{extension?.name || catalogItem?.name || ref.id}</span>
+                          <span className="font-medium">{extension?.name || ref.id}</span>
                           <Badge variant="outline">{ref.id}</Badge>
-                          {catalogItem && <Badge variant="outline">{catalogItem.registry}</Badge>}
-                          {!extension && !catalogItem && <Badge variant="outline">manual</Badge>}
+                          {!extension && <Badge variant="outline">manual</Badge>}
                           {!ref.enabled && <Badge variant="default">disabled</Badge>}
                         </span>
                         {extension?.description && (
                           <span className="mt-1 block text-xs text-muted-foreground">{extension.description}</span>
-                        )}
-                        {!extension && catalogItem?.description && (
-                          <span className="mt-1 block text-xs text-muted-foreground">{catalogItem.description}</span>
                         )}
                         {extension?.projection && (
                           <span className="mt-1 block text-[11px] text-muted-foreground">
@@ -1452,7 +1372,7 @@ function ProfileEditor({
                       type="button"
                       size="icon"
                       variant="ghost"
-                      aria-label={`Remove ${extension?.name || catalogItem?.name || ref.id} runtime extension`}
+                      aria-label={`Remove ${extension?.name || ref.id} runtime extension`}
                       onClick={() => removeRuntimeExtension(index)}
                     >
                       <Trash2 className="h-4 w-4 text-destructive" />

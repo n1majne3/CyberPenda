@@ -1637,6 +1637,10 @@ func (server *Server) decorateTask(found task.Task) (task.Task, error) {
 		return task.Task{}, err
 	}
 	found.RuntimeControls = controls
+	found.ChallengePlatforms, err = server.challengeWorkflow.AvailablePlatforms(found)
+	if err != nil {
+		return task.Task{}, err
+	}
 	if versions, versionErr := server.tasks.RuntimeConfigVersions(found.ID); versionErr == nil && len(versions) > 0 {
 		if snapshot, snapshotErr := decodeRuntimeSnapshot(versions[len(versions)-1].Config); snapshotErr == nil {
 			summary := runtimeconfig.Summarize(snapshot)

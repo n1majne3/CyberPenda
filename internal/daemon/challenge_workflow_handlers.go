@@ -20,8 +20,14 @@ type challengeOperationInput struct {
 }
 
 func (server *Server) handleChallengeAttempts(response http.ResponseWriter, request *http.Request) {
-	projectID, taskID := request.PathValue("id"), request.PathValue("task_id")
-	if !server.requireProject(response, projectID) {
+	found, ok := server.requireProjectTask(response, request)
+	if !ok {
+		return
+	}
+	projectID, taskID := found.ProjectID, found.ID
+	platforms, err := server.challengeWorkflow.AvailablePlatforms(found)
+	if err != nil {
+		writeChallengeWorkflowError(response, err)
 		return
 	}
 	attempts, err := server.challengeWorkflow.ListAttempts(request.Context(), projectID, taskID)
@@ -30,8 +36,9 @@ func (server *Server) handleChallengeAttempts(response http.ResponseWriter, requ
 		return
 	}
 	writeJSON(response, http.StatusOK, struct {
-		Attempts []challengeworkflow.Attempt `json:"attempts"`
-	}{Attempts: attempts})
+		Attempts  []challengeworkflow.Attempt `json:"attempts"`
+		Platforms []string                    `json:"platforms"`
+	}{Attempts: attempts, Platforms: platforms})
 }
 
 func (server *Server) handleChallengeClaim(response http.ResponseWriter, request *http.Request) {

@@ -528,6 +528,8 @@ type RuntimeActivity struct {
 
 // Task is a single user-goal-driven run within a project.
 type Task struct {
+	// ChallengePlatforms is a read-only daemon projection, not stored Task state.
+	ChallengePlatforms   []string               `json:"challenge_platforms,omitempty"`
 	BlackboardProtocol   string                 `json:"blackboard_protocol"`
 	ID                   string                 `json:"id"`
 	ProjectID            string                 `json:"project_id"`

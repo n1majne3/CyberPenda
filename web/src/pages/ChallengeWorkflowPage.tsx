@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, CheckCircle2, Flag, RotateCcw, Send, XCircle } from "lucide-react";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { Badge, Button, Card, CardHeader, CardTitle, Input, Label, Textarea } from "@/components/ui";
+import { Badge, Button, Card, CardHeader, CardTitle, Input, Label, Select, Textarea } from "@/components/ui";
 import { ErrorState, LoadingState } from "@/components/shared";
 import { apiGet, apiPost, type ChallengeAttempt, type FinishReadiness, type Project } from "@/lib/api";
 
@@ -12,7 +12,8 @@ export function ChallengeWorkflowPage() {
   const [project, setProject] = useState<Project | null>(null);
   const [attempts, setAttempts] = useState<ChallengeAttempt[]>([]);
   const [readiness, setReadiness] = useState<FinishReadiness | null>(null);
-  const [platform, setPlatform] = useState("arena");
+  const [platforms, setPlatforms] = useState<string[]>([]);
+  const [platform, setPlatform] = useState("");
   const [challengeId, setChallengeId] = useState("");
   const [externalAttemptId, setExternalAttemptId] = useState("");
   const [candidate, setCandidate] = useState("");
@@ -25,11 +26,14 @@ export function ChallengeWorkflowPage() {
     if (!projectId || !taskId) return;
     const [loadedProject, attemptData, finishData] = await Promise.all([
       apiGet<Project>(`/api/projects/${projectId}`),
-      apiGet<{ attempts: ChallengeAttempt[] }>(`/api/projects/${projectId}/tasks/${taskId}/challenges`),
+      apiGet<{ attempts: ChallengeAttempt[]; platforms: string[] }>(`/api/projects/${projectId}/tasks/${taskId}/challenges`),
       apiGet<FinishReadiness>(`/api/projects/${projectId}/tasks/${taskId}/finish-readiness`),
     ]);
     setProject(loadedProject);
     setAttempts(attemptData.attempts ?? []);
+    const available = attemptData.platforms ?? [];
+    setPlatforms(available);
+    setPlatform((current) => available.includes(current) ? current : available[0] ?? "");
     setReadiness(finishData);
 	setExternalAttemptId((current) => current || attemptData.attempts?.[0]?.external_attempt_id || "");
 	}, [projectId, taskId]);
@@ -39,7 +43,7 @@ export function ChallengeWorkflowPage() {
 	/* eslint-enable react-hooks/set-state-in-effect */
 
   async function run(operation: "claim" | "submit" | "abandon" | "finalize") {
-    if (!projectId || !taskId) return;
+    if (!projectId || !taskId || !platforms.includes(platform)) return;
     setBusy(operation); setError(null);
     try {
       const response = await apiPost<Record<string, unknown>>(`/api/projects/${projectId}/tasks/${taskId}/challenges/${operation}`, {
@@ -66,22 +70,22 @@ export function ChallengeWorkflowPage() {
       actions={<Button size="sm" variant="outline" onClick={() => navigate(`/projects/${projectId}/tasks/${taskId}`)}><ArrowLeft className="h-4 w-4" /> Task</Button>}
       bodyClassName="space-y-4"
     >
-      {project.kind !== "ctf_challenge" && <p role="alert" className="rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">Challenge Workflow requires a CTF Challenge Project.</p>}
-      <Card as="section">
+      {platforms.length === 0 && <p role="status" className="text-sm text-muted-foreground">Challenge operations are unavailable. They require a CTF Challenge Project and Task, enabled Blackboard, and a configured Platform. Retained Attempts remain readable.</p>}
+      {platforms.length > 0 && <Card as="section">
         <CardHeader><CardTitle>Platform operation</CardTitle></CardHeader>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-          <div><Label htmlFor="challenge-platform">Platform</Label><Input id="challenge-platform" value={platform} onChange={(event) => setPlatform(event.target.value)} /></div>
+          <div><Label htmlFor="challenge-platform">Platform</Label><Select id="challenge-platform" value={platform} onChange={(event) => setPlatform(event.target.value)}>{platforms.map((name) => <option key={name} value={name}>{name}</option>)}</Select></div>
           <div><Label htmlFor="challenge-id">Challenge ID</Label><Input id="challenge-id" value={challengeId} onChange={(event) => setChallengeId(event.target.value)} /></div>
-          <div className="md:col-span-2"><Button onClick={() => void run("claim")} disabled={busy !== "" || project.kind !== "ctf_challenge" || !challengeId.trim()}><Flag className="h-4 w-4" /> {busy === "claim" ? "Claiming…" : "Claim"}</Button></div>
+          <div className="md:col-span-2"><Button onClick={() => void run("claim")} disabled={busy !== "" || !platforms.includes(platform) || !challengeId.trim()}><Flag className="h-4 w-4" /> {busy === "claim" ? "Claiming…" : "Claim"}</Button></div>
           <div className="md:col-span-2"><Label htmlFor="external-attempt">External Attempt ID</Label><Input id="external-attempt" value={externalAttemptId} onChange={(event) => setExternalAttemptId(event.target.value)} /></div>
           <div className="md:col-span-2"><Label htmlFor="candidate">Candidate</Label><Input id="candidate" type="password" value={candidate} onChange={(event) => setCandidate(event.target.value)} autoComplete="off" /></div>
-          <div className="flex flex-wrap gap-2 md:col-span-2"><Button onClick={() => void run("submit")} disabled={busy !== "" || !externalAttemptId || !candidate}><Send className="h-4 w-4" /> Submit</Button><Button variant="outline" onClick={() => void run("finalize")} disabled={busy !== "" || !externalAttemptId}><CheckCircle2 className="h-4 w-4" /> Finalize</Button></div>
+          <div className="flex flex-wrap gap-2 md:col-span-2"><Button onClick={() => void run("submit")} disabled={busy !== "" || !platforms.includes(platform) || !externalAttemptId || !candidate}><Send className="h-4 w-4" /> Submit</Button><Button variant="outline" onClick={() => void run("finalize")} disabled={busy !== "" || !platforms.includes(platform) || !externalAttemptId}><CheckCircle2 className="h-4 w-4" /> Finalize</Button></div>
           <div className="md:col-span-2"><Label htmlFor="abandon-reason">Abandon reason</Label><Textarea id="abandon-reason" value={reason} onChange={(event) => setReason(event.target.value)} /></div>
-          <div className="md:col-span-2"><Button variant="destructive" onClick={() => void run("abandon")} disabled={busy !== "" || !externalAttemptId || !reason.trim()}><XCircle className="h-4 w-4" /> Abandon</Button></div>
+          <div className="md:col-span-2"><Button variant="destructive" onClick={() => void run("abandon")} disabled={busy !== "" || !platforms.includes(platform) || !externalAttemptId || !reason.trim()}><XCircle className="h-4 w-4" /> Abandon</Button></div>
         </div>
         {error && <p role="alert" className="mt-3 text-sm text-destructive">{error}</p>}
         {result && <pre className="mt-3 overflow-auto rounded-md border border-border bg-muted/20 p-3 text-xs">{result}</pre>}
-      </Card>
+      </Card>}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         <Card as="section"><CardHeader><CardTitle>Attempts</CardTitle></CardHeader><div className="space-y-2">{attempts.map((attempt) => <button type="button" key={`${attempt.platform}:${attempt.external_attempt_id}`} onClick={() => { setPlatform(attempt.platform); setExternalAttemptId(attempt.external_attempt_id); }} className="flex w-full items-center justify-between rounded-md border border-border p-2 text-left"><span><span className="font-mono text-sm">{attempt.external_attempt_id}</span><span className="block text-xs text-muted-foreground">Challenge {attempt.challenge_id} · wrong {attempt.wrong_submissions}</span></span><Badge variant={attempt.status === "succeeded" ? "success" : attempt.status === "open" ? "warning" : "outline"}>{attempt.status}</Badge></button>)}{attempts.length === 0 && <p className="text-sm text-muted-foreground">No Challenge Attempts.</p>}</div></Card>

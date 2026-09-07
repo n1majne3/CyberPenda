@@ -1,5 +1,10 @@
 # Implementation Plan
 
+> Historical document. This describes the earlier Blackboard model and release plan.
+> For the current FGS workflow, read [the documentation index](../README.md).
+> Retained legacy interfaces and data remain supported where implemented; this
+> document does not define the current Runtime launch defaults.
+
 > **Historical MVP implementation record.** This document predates the Blackboard v2 replacement and does not define a current public Blackboard route, tool, CLI, or DTO. The current contract is [Blackboard v2](../specs/blackboard-v2-spec.md).
 
 ## Reader And Action

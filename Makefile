@@ -69,16 +69,12 @@ build-tsecbench-hosted-bundle:
 	@test -n "$(TSECBENCH_BUNDLE_VERSION)" || (echo "TSECBENCH_BUNDLE_VERSION is required" >&2; exit 2)
 	scripts/build-tsecbench-hosted-bundle.sh "$(TSECBENCH_BUNDLE_VERSION)" "$(TSECBENCH_HOSTED_IMAGE)"
 
-# Prove the configured sandbox image can reach the daemon Blackboard v2 HTTP
-# boundary and write a semantic fact.
+# Prove sandbox Runtime Outbox delivery and accepted FGS reads.
 smoke-sandbox-fgs:
 	@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) bash scripts/smoke-sandbox-fgs-live.sh
 
 smoke-runtime-tasks:
 	@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) python3 scripts/smoke-runtime-tasks-live.py
-
-juice-shop-live:
-	@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) python3 scripts/run-juice-shop-live.py
 
 # Repair first-checkout, stale-lockfile, and npm optional-native-dependency
 # installs before starting Vite or building the embedded UI.

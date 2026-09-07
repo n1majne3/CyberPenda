@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -321,6 +322,29 @@ func (service *Service) ListAttempts(ctx context.Context, projectID, taskID stri
 
 func NewService(db *store.DB, projects *project.Service, tasks *task.Service, platforms map[string]PlatformAdapter, recorder Recorder) *Service {
 	return &Service{db: db, projects: projects, tasks: tasks, platforms: platforms, recorder: recorder, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// AvailablePlatforms lists configured operations for this Task. It does not
+// grant authority or replace operation validation.
+func (service *Service) AvailablePlatforms(found task.Task) ([]string, error) {
+	platforms := []string{}
+	if found.Type != task.TypeCTFChallenge || found.RunControls.BlackboardMode == task.BlackboardModeDisabled {
+		return platforms, nil
+	}
+	proj, err := service.projects.Get(found.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if proj.Kind != project.KindCTFChallenge {
+		return platforms, nil
+	}
+	for name, adapter := range service.platforms {
+		if adapter != nil {
+			platforms = append(platforms, name)
+		}
+	}
+	sort.Strings(platforms)
+	return platforms, nil
 }
 
 func (service *Service) Claim(ctx context.Context, request ClaimRequest) (ClaimResult, error) {

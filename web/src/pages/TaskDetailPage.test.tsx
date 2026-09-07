@@ -2724,3 +2724,22 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
     expect(screen.queryByTestId("load-older-timeline")).not.toBeInTheDocument();
   });
 });
+
+
+describe("Challenge Workflow entry", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+  it("hides Challenges when the Task has no available platforms", async () => {
+    stubTaskDetailApi({ type: "pentest", challenge_platforms: [] });
+    renderPage();
+    expect(await screen.findByText("Inspect task view")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Challenge Workflow" })).not.toBeInTheDocument();
+  });
+  it("shows Challenges for a Task with a configured platform", async () => {
+    stubTaskDetailApi({ type: "ctf_challenge", challenge_platforms: ["arena"] });
+    renderPage();
+    expect(await screen.findByRole("button", { name: "Challenge Workflow" })).toBeInTheDocument();
+  });
+});

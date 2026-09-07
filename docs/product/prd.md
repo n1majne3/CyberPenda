@@ -1,5 +1,10 @@
 # Local-First Pentest Agent PRD
 
+> Historical document. This describes the earlier Blackboard model and release plan.
+> For the current FGS workflow, read [the documentation index](../README.md).
+> Retained legacy interfaces and data remain supported where implemented; this
+> document does not define the current Runtime launch defaults.
+
 ## Reader And Action
 
 Reader: an engineer or product owner preparing to implement the first local-first pentest agent.
