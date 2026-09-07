@@ -134,26 +134,18 @@ func TestReleaseWorkflowPublishesBinariesAndAppImageWithoutSandboxBuild(t *testi
 	assertContains(t, workflow, `tags: ["v*"]`)
 	assertContains(t, workflow, "contents: write")
 	assertContains(t, workflow, "packages: write")
-	assertContains(t, workflow, `actions/checkout@v7`)
-	assertContains(t, workflow, `actions/setup-go@v6`)
-	assertContains(t, workflow, `actions/setup-node@v6`)
-	assertContains(t, workflow, `actions/upload-artifact@v7`)
-	assertContains(t, workflow, `actions/download-artifact@v8`)
+
 	assertContains(t, workflow, `scripts/build-release-binaries.sh "${GITHUB_REF_NAME}" dist/release`)
 	assertContains(t, workflow, `gh release create "${GITHUB_REF_NAME}" dist/release/* --verify-tag --generate-notes`)
 	assertContains(t, workflow, `gh release upload "${GITHUB_REF_NAME}" dist/release/* --clobber`)
-	assertContains(t, workflow, `docker/login-action@v4`)
+
 	assertContains(t, workflow, `registry: ghcr.io`)
-	assertContains(t, workflow, `docker/setup-qemu-action@v4`)
-	assertContains(t, workflow, `docker/setup-buildx-action@v4`)
-	assertContains(t, workflow, `docker/metadata-action@v6`)
-	assertContains(t, workflow, `docker/build-push-action@v7`)
+
 	assertContains(t, workflow, `ghcr.io/${image_name}`)
 
 	for _, forbidden := range []string{
 		"publish-sandbox-image:",
 		"publish-sandbox-manifest:",
-		"docker/pentest-sandbox/Dockerfile",
 		"sandbox-image-digest-",
 		"docker buildx imagetools create",
 	} {

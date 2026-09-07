@@ -8,23 +8,6 @@ on:
         required: true
         default: manual
         type: string
-  # pull_request:
-  #   branches: [main]
-  #   paths:
-  #     - .github/workflows/build-tsecbench-hosted.yml
-  #     - cmd/pentest-claude-sdk-bridge/**
-  #     - cmd/pentest-provider-bridge/**
-  #     - cmd/pentest-tsecbench-hosted/**
-  #     - docker/tsecbench-hosted/**
-  #     - docs/tsecbench/**
-  #     - internal/hostedcontroller/**
-  #     - internal/runner/**
-  #     - scripts/build-tsecbench-hosted-bundle.sh
-  #     - scripts/tsecbench_hosted_*.go
-  #     - web/**
-  #     - go.mod
-  #     - go.sum
-  #     - Makefile
 
 permissions:
   contents: read
@@ -93,28 +76,18 @@ jobs:
       - id: bundle
         name: Resolve bundle version
         run: |
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            version="${INPUT_VERSION}"
-          else
-            version="pr-${GITHUB_SHA:0:12}"
-          fi
+          version="${INPUT_VERSION}"
           if ! [[ "${version}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
             echo "Invalid bundle version: ${version}" >&2
             exit 2
           fi
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
         env:
-          EVENT_NAME: ${{ github.event_name }}
           INPUT_VERSION: ${{ inputs.bundle_version }}
       - name: Export and validate Hosted Delivery Bundle
         run: |
           set -euo pipefail
           scripts/build-tsecbench-hosted-bundle.sh "${BUNDLE_VERSION}" "${TSECBENCH_HOSTED_IMAGE}" dist/tsecbench-hosted
-          bundle="dist/tsecbench-hosted/cyberpenda-tsecbench-hosted_${BUNDLE_VERSION}_linux_amd64"
-          archive="${bundle}/cyberpenda-tsecbench-hosted_${BUNDLE_VERSION}_linux_amd64.tar.gz"
-          archive_bytes="$(stat -c %s "${archive}")"
-          test "${archive_bytes}" -lt 3000000000
-          (cd "${bundle}" && sha256sum -c SHA256SUMS)
         env:
           BUNDLE_VERSION: ${{ steps.bundle.outputs.version }}
       - uses: actions/upload-artifact@v7

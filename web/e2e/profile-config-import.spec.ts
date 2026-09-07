@@ -1,9 +1,7 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
-// Profile Config Import flow for issue #226: the config editor opens on the
-// provider-native projected file, an import maps structured keys back into
-// fields, the remainder lands on the Custom Config File, and the merged
-// preview shows the final result.
+// Browser contract: load saved configuration on demand, import, and reopen.
+// Field validation and import errors are covered by component and daemon tests.
 
 const claudeProfile = {
   id: "profile-1",
@@ -42,28 +40,11 @@ function projectedText() {
   );
 }
 
-function mergedPreview() {
-  return {
-    provider: "claude_code",
-    merged: {
-      env: {
-        ANTHROPIC_BASE_URL: "https://api.anthropic.com",
-        ANTHROPIC_MODEL: "claude-opus-4-6",
-        ANTHROPIC_API_KEY: "REDACTED",
-        OVERLAY_FLAG: "adds",
-      },
-      enabledPlugins: { "warp@claude-code-warp": true },
-    },
-  };
-}
-
 async function routeProfileConfigImport(page: Page) {
   const requests: string[] = [];
   const importBodies: string[] = [];
   const projectedSeed = projectedText();
-  // The profiles list is stateful: after the import lands, the stored profile
-  // carries the overlay and a fresh updated_at, which is what re-triggers the
-  // merged preview read in the app.
+  // A successful import changes the saved Profile and its configuration.
   let imported = false;
   await page.route("**/api/**", async (route: Route) => {
     const requestURL = new URL(route.request().url());
@@ -95,11 +76,6 @@ async function routeProfileConfigImport(page: Page) {
           : projectedSeed,
         custom_config_file: imported ? importedProfile.fields.custom_config_file : "",
       });
-    } else if (path === `/api/runtime-profiles/${claudeProfile.id}/merged-config-preview` && requests.filter((p) => p === path).length > 1) {
-      // Second and later reads happen after the import refreshed the profile.
-      body = JSON.stringify(mergedPreview());
-    } else if (path === `/api/runtime-profiles/${claudeProfile.id}/merged-config-preview`) {
-      body = JSON.stringify({ provider: "claude_code", merged: {} });
     } else if (path === `/api/runtime-profiles/${claudeProfile.id}/import-config`) {
       imported = true;
       importBodies.push(route.request().postData() ?? "");
@@ -123,77 +99,33 @@ async function routeProfileConfigImport(page: Page) {
   return { requests, importBodies };
 }
 
-test("Profile Config Import maps env and keeps the remainder on the Custom Config File", async ({ page }) => {
+test("Profile Config Import retains custom settings after reopening", async ({ page }) => {
   const { requests, importBodies } = await routeProfileConfigImport(page);
-
   await page.goto("/profiles");
-
-  // The profile is selected; its merged preview exists but holds no overlay yet.
   await expect(page.getByRole("button", { name: "Claude Warp" }).first()).toBeVisible();
-  await expect(page.getByTestId("merged-config-preview")).not.toContainText("warp@claude-code-warp");
+  await expect(page.getByRole("region", { name: "Actual runtime config" })).toHaveCount(0);
+  expect(requests).not.toContain(`/api/runtime-profiles/${claudeProfile.id}/projected-config`);
 
-  // The editor opens on the provider-native projected file, never a preview envelope.
-  await page.getByRole("button", { name: "Edit config" }).click();
+  await page.getByRole("button", { name: "View actual config" }).click();
+  const config = page.getByRole("region", { name: "Actual runtime config" });
+  await expect(config).toContainText("ANTHROPIC_MODEL");
+  await config.getByRole("button", { name: "Edit config" }).click();
   const editor = page.getByLabel("Runtime config editor");
   await expect(editor).toHaveValue(/ANTHROPIC_MODEL/);
-  await expect(editor).not.toHaveValue(/launch_preview/);
-
-  // Add an overlay-only plugin key and a new env var, then import.
-  const draft = JSON.stringify(
-    {
-      env: { ANTHROPIC_MODEL: "claude-opus-4-6", OVERLAY_FLAG: "adds" },
-      enabledPlugins: { "warp@claude-code-warp": true },
-    },
-    null,
-    2,
-  );
+  const draft = JSON.stringify({
+    env: { ANTHROPIC_MODEL: "claude-opus-4-6", OVERLAY_FLAG: "adds" },
+    enabledPlugins: { "warp@claude-code-warp": true },
+  }, null, 2);
   await editor.fill(draft);
-  await page.getByRole("button", { name: "Import config" }).click();
+  await config.getByRole("button", { name: "Import config" }).click();
+  await expect(editor).toHaveCount(0);
+  expect(importBodies).toHaveLength(1);
+  expect(JSON.parse(importBodies[0])).toEqual({ config_text: draft });
 
-  // The import request carried the edited text verbatim.
-  await expect(page.getByTestId("merged-config-preview")).toContainText("warp@claude-code-warp");
-  // Editor closed after a successful import.
-  await expect(page.getByLabel("Runtime config editor")).toHaveCount(0);
-  // The remainder is shown as the Custom Config File.
-  await expect(page.getByText("Custom config file (remainder, deep-merged on projection)")).toBeVisible();
-
-  expect(requests).toContain(`/api/runtime-profiles/${claudeProfile.id}/projected-config`);
-  expect(requests).toContain(`/api/runtime-profiles/${claudeProfile.id}/import-config`);
-  expect(requests).toContain(`/api/runtime-profiles/${claudeProfile.id}/merged-config-preview`);
-
-  // The import carries only the edited text; the daemon derives the
-  // Managed Config Key baseline itself.
-  const importPayload = JSON.parse(importBodies[0] ?? "{}");
-  expect(importPayload.config_text).toContain("OVERLAY_FLAG");
-  expect(importPayload.projected_text).toBeUndefined();
-});
-
-test("re-opening the config editor shows the Custom Config File remainder", async ({ page }) => {
-  const { requests } = await routeProfileConfigImport(page);
-
-  await page.goto("/profiles");
-
-  // Import once so the profile carries a Custom Config File remainder.
-  await page.getByRole("button", { name: "Edit config" }).click();
-  const editor = page.getByLabel("Runtime config editor");
-  await editor.fill(
-    JSON.stringify(
-      {
-        env: { ANTHROPIC_MODEL: "claude-opus-4-6", OVERLAY_FLAG: "adds" },
-        enabledPlugins: { "warp@claude-code-warp": true },
-      },
-      null,
-      2,
-    ),
-  );
-  await page.getByRole("button", { name: "Import config" }).click();
-  await expect(page.getByLabel("Runtime config editor")).toHaveCount(0);
-
-  // Re-open the editor: the seed now includes the stored remainder, so
-  // nothing the operator wrote silently disappears.
-  await page.getByRole("button", { name: "Edit config" }).click();
-  await expect(page.getByLabel("Runtime config editor")).toHaveValue(/warp@claude-code-warp/);
-  await expect(page.getByLabel("Runtime config editor")).toHaveValue(/ANTHROPIC_MODEL/);
-
-  expect(requests).toContain(`/api/runtime-profiles/${claudeProfile.id}/import-config`);
+  await expect(config).toHaveCount(0);
+  await page.getByRole("button", { name: "View actual config" }).click();
+  await config.getByRole("button", { name: "Edit config" }).click();
+  await expect(editor).toHaveValue(/warp@claude-code-warp/);
+  await expect(editor).toHaveValue(/OVERLAY_FLAG/);
+  await expect(editor).toHaveValue(/ANTHROPIC_MODEL/);
 });
