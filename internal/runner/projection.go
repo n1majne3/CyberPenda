@@ -190,7 +190,11 @@ func projectModeAndUserSkills(layout Layout, req ProjectionRequest) error {
 	}
 	for _, bundle := range req.SkillBundles {
 		if req.BlackboardMode != "" {
-			if err := modeskill.ValidateBundleCompatibility(req.BlackboardMode, bundle); err != nil {
+			validate := modeskill.ValidateBundleCompatibility
+			if req.BlackboardProtocol == "fgs" {
+				validate = modeskill.ValidateFGSBundleCompatibility
+			}
+			if err := validate(req.BlackboardMode, bundle); err != nil {
 				return err
 			}
 		}

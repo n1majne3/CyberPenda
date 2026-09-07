@@ -159,6 +159,9 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 	if mode == "" {
 		mode = session.BlackboardModeDisabled
 	}
+	if mode == session.BlackboardModeInteractive {
+		mode = session.BlackboardModeWorkingGraph
+	}
 	runtimeInput := sessionRuntimeInputFromCreate(input)
 	prepared, err := server.prepareSessionRuntime(request.Context(), mode, runtimeInput, nil)
 	if err != nil {

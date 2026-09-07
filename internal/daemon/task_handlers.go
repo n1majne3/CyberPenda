@@ -96,7 +96,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	if input.RunControls.Extras == nil && input.Extras != nil {
 		input.RunControls.Extras = input.Extras
 	}
-	if input.RunControls.BlackboardMode == "" {
+	if input.RunControls.BlackboardMode == "" || input.RunControls.BlackboardMode == task.BlackboardModeInteractive {
 		input.RunControls.BlackboardMode = task.BlackboardModeWorkingGraph
 	}
 	if input.Type != task.TypePentest && input.Type != task.TypeCTFChallenge {
@@ -127,14 +127,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
-	if blackboardMode := modeskill.Mode(input.RunControls.BlackboardMode); blackboardMode != modeskill.ModeDisabled {
-		modeSkill, err := modeskill.Resolve(blackboardMode)
-		if err != nil {
-			writeError(response, http.StatusBadRequest, err.Error())
-			return
-		}
-		resolvedConfiguration.Snapshot.ModeSkillID = modeSkill.ID
-	}
+
 	launchModelOverride := launchModel
 	launchReasoningEffort, err := normalizeLaunchReasoningEffort(input.ReasoningEffort)
 	if err != nil {
@@ -532,7 +525,7 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 				return nil
 			}
 			binding := &continuationLaunchBinding{V2Header: &launchHeader, InterfaceToken: plaintextGrant, ContinuationID: continuation.ID}
-			if created.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph || (created.BlackboardProtocol == "fgs" && created.RunControls.BlackboardMode != task.BlackboardModeDisabled) {
+			if created.BlackboardProtocol == "fgs" && created.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 				projection, prepareErr := workinggraph.NewService().Prepare(context.Background(), workinggraph.OwnerContext{
 					Owner: created.OwnerContract(layout.Workdir), ContinuationID: continuation.ID, Workdir: layout.Workdir,
 				})
@@ -2063,7 +2056,7 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 		return
 	}
 	blackboardDisabled := found.RunControls.BlackboardMode == task.BlackboardModeDisabled
-	if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
+	if found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 		if err := server.acquireTaskControlAfterWorkingGraphSettlement(request.Context(), found, false, false); err != nil {
 			if errors.Is(err, errSemanticConclusionActionRequired) {
 				writeError(response, http.StatusConflict, "semantic_conclusion_action_required")
@@ -2213,7 +2206,7 @@ func (server *Server) waitForWorkingGraphDrain(ctx context.Context, found task.T
 }
 
 func (server *Server) waitForWorkingGraphSettlement(ctx context.Context, found task.Task, allowActionRequired bool) error {
-	if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
+	if found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 		_, err := server.settleTaskWorkingGraph(ctx, found, allowActionRequired)
 		return err
 	}
@@ -2225,7 +2218,7 @@ func (server *Server) waitForWorkingGraphSettlement(ctx context.Context, found t
 // became pending between the optimistic drain and acquisition, it releases
 // control so the Harness coordinator can run, drains again, and retries.
 func (server *Server) acquireTaskControlAfterWorkingGraphSettlement(ctx context.Context, found task.Task, allowActionRequired, providerControl bool) error {
-	if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
+	if found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 		acquired := server.acquireTaskControl(found.ID)
 		if providerControl {
 			acquired = server.acquireProviderTaskControl(found.ID)
@@ -3230,7 +3223,7 @@ type nativeSteerOperationFunc func(context.Context, runtime.ProviderSessionReque
 // pending can yield control to its own coordinator.
 func (server *Server) taskConclusionSettlement(found task.Task) providerControlSettlement {
 	return func(ctx context.Context, wait bool) (bool, error) {
-		if found.RunControls.BlackboardMode == task.BlackboardModeWorkingGraph {
+		if found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 			return server.settleTaskWorkingGraph(ctx, found, true)
 		}
 		return true, nil

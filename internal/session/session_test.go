@@ -771,3 +771,24 @@ func TestSessionOwnerContractRemainsProjectFree(t *testing.T) {
 		t.Fatalf("Session owner contract leaked Project capabilities: %#v", contract)
 	}
 }
+
+func TestNewSessionCanonicalizesEnabledInputWithoutRewritingHistoricalMode(t *testing.T) {
+	root := t.TempDir()
+	db, err := store.Open(filepath.Join(root, "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := NewService(db, filepath.Join(root, "sessions"))
+	created, err := service.Create(CreateRequest{Input: "Inspect", BlackboardMode: BlackboardModeInteractive})
+	if err != nil || created.RunControls.BlackboardMode != BlackboardModeWorkingGraph {
+		t.Fatalf("new mode = %s, err=%v", created.RunControls.BlackboardMode, err)
+	}
+	if _, err := db.Exec(`UPDATE sessions SET blackboard_mode='interactive' WHERE id=?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	historical, err := service.Get(created.ID)
+	if err != nil || historical.RunControls.BlackboardMode != BlackboardModeInteractive {
+		t.Fatalf("historical mode = %s, err=%v", historical.RunControls.BlackboardMode, err)
+	}
+}

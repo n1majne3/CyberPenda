@@ -206,15 +206,8 @@ func (s *Service) WithHermesACPProbe(probe func(binary string) error) *Service {
 // Run executes all preflight checks for a launch request.
 func (s *Service) Run(ctx context.Context, request Request) Result {
 	result := Result{Pass: true}
-	if request.BlackboardMode != "" {
-		if request.BlackboardMode == modeskill.ModeDisabled {
-			result.add(Check{Name: "mode_skill", Status: CheckPass, Detail: "no Mode Skill for disabled Blackboard Mode"})
-		} else if spec, err := modeskill.Resolve(request.BlackboardMode); err != nil {
-			result.add(Check{Name: "mode_skill", Status: CheckFail, Detail: err.Error()})
-		} else {
-			result.ModeSkill = &SkillPreview{ID: spec.ID, Name: spec.Name}
-			result.add(Check{Name: "mode_skill", Status: CheckPass, Detail: spec.ID})
-		}
+	if request.BlackboardMode != "" && !modeskill.Valid(request.BlackboardMode) {
+		result.add(Check{Name: "blackboard_mode", Status: CheckFail, Detail: "invalid Blackboard Mode"})
 	}
 
 	// Check 1: a source-neutral Runtime configuration is loadable.
@@ -634,7 +627,7 @@ func validateEnabledSkillBundles(bundles []skill.Bundle, mode modeskill.Mode) er
 			return err
 		}
 		if mode != "" {
-			if err := modeskill.ValidateBundleCompatibility(mode, bundle); err != nil {
+			if err := modeskill.ValidateFGSBundleCompatibility(mode, bundle); err != nil {
 				return err
 			}
 		}

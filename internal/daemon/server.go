@@ -39,7 +39,6 @@ import (
 	"pentest/internal/steering"
 	"pentest/internal/store"
 	"pentest/internal/task"
-	"pentest/internal/workinggraph"
 
 	"pentest/internal/daemon/webfs"
 )
@@ -123,8 +122,6 @@ type Server struct {
 	fgs                     *fgs.Service
 	fgsCancel               context.CancelFunc
 	fgsWG                   sync.WaitGroup
-	workingGraph            *workinggraph.Service
-	workingGraphCompiler    *workinggraph.SemanticCompiler
 	challengeWorkflow       *challengeworkflow.Service
 	finishReadiness         *finishreadiness.Service
 	blackboardV2Continuity  *blackboardv2.ContinuityService
@@ -358,8 +355,6 @@ func NewServer(config Config) (*Server, error) {
 	server.sessions.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
 	server.fgs = fgs.NewService(db)
-	server.workingGraph = workinggraph.NewService(db)
-	server.workingGraphCompiler = workinggraph.NewSemanticCompiler(server.blackboardV2)
 	server.challengeWorkflow = challengeworkflow.NewService(db, server.projects, server.tasks, config.ChallengePlatforms, challengeworkflow.NewBlackboardRecorder(server.blackboardV2, server.tasks, runtimeRoot))
 	server.finishReadiness = finishreadiness.NewService(db, server.tasks)
 	server.tasks.SetContinuationReconciler(server.blackboardV2)

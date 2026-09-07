@@ -701,6 +701,10 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
+	// Canonicalize new input only; stored snapshots retain their original mode.
+	if mode == BlackboardModeInteractive {
+		mode = BlackboardModeWorkingGraph
+	}
 	req.RunControls.BlackboardMode = mode
 	if err := req.RunControls.validate(); err != nil {
 		return Task{}, err

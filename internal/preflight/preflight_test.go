@@ -485,7 +485,7 @@ func TestRunFailsWhenEnabledSkillBundleIsMissing(t *testing.T) {
 	}
 }
 
-func TestRunShowsModeSkillSeparatelyAndRejectsIncompatibleUserSkill(t *testing.T) {
+func TestRunFGSOmitsLegacyModeSkillAndRejectsDisabledOnlySkill(t *testing.T) {
 	svc := newTestServices(t)
 	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
 	svc.preflight = svc.newPreflight(skills)
@@ -502,7 +502,7 @@ func TestRunShowsModeSkillSeparatelyAndRejectsIncompatibleUserSkill(t *testing.T
 	result := svc.preflight.Run(context.Background(), preflight.Request{
 		RuntimeProfileID: profile.ID, ProjectID: "p1", BlackboardMode: modeskill.ModeWorkingGraph,
 	})
-	if result.ModeSkill == nil || result.ModeSkill.ID != "cyberpenda-blackboard-working-graph" {
+	if result.ModeSkill != nil {
 		t.Fatalf("Mode Skill preview = %#v", result.ModeSkill)
 	}
 	if !checkFailed(result, "skills") {

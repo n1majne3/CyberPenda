@@ -9,7 +9,14 @@ Fact through the FGS Runtime Outbox. Migration 77 updates the Runtime protocol
 without converting historical records or deleting Evidence files. The legacy
 record definitions and relationships below describe retained interfaces and
 history; they do not select the new Runtime protocol. Disabled mode remains
-available. New Tasks default to Working Graph; new Sessions default to Disabled.
+available. New Tasks default to FGS enabled; new Sessions default to Disabled.
+New launch controls expose only FGS and Disabled. New `interactive` inputs map
+to the enabled wire value `working_graph`. Historical snapshots keep their
+original mode; either enabled value uses FGS during Resume and Continuation.
+Skill compatibility treats both enabled values equally for FGS and keeps
+Disabled separate. Legacy Intent publication, compilation, and settlement are
+retired. Retained legacy records, receipts, Outbox files, and Evidence remain
+unchanged. FGS directory preparation and lifecycle draining remain active.
 
 Runtime Extension discovery uses the local registry and explicit references.
 Skills retain managed import. Remote plugin catalog browsing is retired.
@@ -624,7 +631,7 @@ The project-local memory that stores durable semantic records and relationships 
 _Avoid_: chat history, notes database
 
 **Blackboard Mode**:
-A **Run Controls** choice of `interactive`, `working_graph`, or `disabled`. Interactive mode gives the Runtime a full CLI Blackboard grant. Working Graph mode gives the Runtime read-only CLI Blackboard access and a continuation-scoped file graph for write intents. Disabled mode gives the Runtime no Blackboard context or authority.
+A **Run Controls** choice of FGS enabled or Disabled. New enabled owners store `working_graph`; new `interactive` inputs are a compatibility alias. Historical snapshots retain their original values. Both enabled values use FGS Outbox publication and accepted-state reads. Disabled gives the Runtime no Blackboard context or authority.
 _Avoid_: Blackboard Conclusion Mode, autonomous Task completion, transcript parsing mode, Blackboard write permission
 
 **Mode Skill**:
@@ -672,11 +679,11 @@ The seven confirmed protocol choices are: (1) Blackboard stores accepted durable
 _Avoid_: approved wire schema, completed implementation, automatic local-file replacement
 
 **Working Graph Intent**:
-A bounded Runtime request written atomically to the current Continuation Outbox. It contains a semantic operation without Blackboard versions or idempotency keys. The Harness claims it, resolves authority and versions, applies it through the Blackboard service, and writes a Receipt.
+A retired legacy Runtime request retained in historical Outbox files and Store records. New Runtimes publish FGS updates. CyberPenda no longer publishes, compiles, or settles legacy Intents.
 _Avoid_: direct database command, provider tool result, lifecycle instruction
 
 **Working Graph Receipt**:
-The continuation-scoped file projection of a durable Working Graph Intent state. States include `pending`, `applying`, `retry_pending`, `applied`, `noop`, `action_required`, and `superseded`. An `action_required` Receipt blocks later Intents in sequence order.
+The retained continuation-scoped file projection of a legacy Working Graph Intent state. Historical states include `pending`, `applying`, `retry_pending`, `applied`, `noop`, `action_required`, and `superseded`. Legacy receipt states describe past delivery; they do not drive FGS settlement.
 _Avoid_: model acknowledgement, transient stdout, Blackboard record
 
 **Agent-Managed Trace**:

@@ -172,8 +172,11 @@ TSecBench injects `BENCHMARK_BASE_URL` and the one-use `BENCHMARK_TOKEN` in Host
    through its Outbox. The Harness records accepted state and Receipts.
 7. Inspect the Blackboard and export accepted FGS state as Markdown from Report.
 
-New Tasks default to Working Graph; new Non-Project Sessions default to Disabled.
-The current FGS protocol handles both enabled mode values. Disabled Runtime
+New launch controls offer FGS or Disabled. Tasks default to FGS; Non-Project
+Sessions default to Disabled. The enabled wire value remains `working_graph`;
+new `interactive` inputs map to it without rewriting historical snapshots.
+FGS handles both historical enabled mode values. Legacy Working Graph Intent
+publication, compilation, and settlement are retired. Disabled Runtime
 Owners receive no Blackboard context or authority. Historical Blackboard records
 and Evidence files are preserved without conversion to FGS.
 

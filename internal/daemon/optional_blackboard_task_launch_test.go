@@ -143,8 +143,12 @@ func TestTaskLaunchWithoutBlackboardKeepsOrdinaryOwnerContext(t *testing.T) {
 	}
 }
 
-func TestWorkingGraphTaskLaunchProjectsContinuationScopedMailboxEnv(t *testing.T) {
+func TestFGSTaskLaunchProjectsContinuationScopedMailboxEnv(t *testing.T) {
 	fixture := newOptionalBlackboardTaskFixture(t)
+	if _, err := fixture.server.db.Exec(`UPDATE projects SET blackboard_protocol='fgs' WHERE id=?`, fixture.created.ProjectID); err != nil {
+		t.Fatal(err)
+	}
+	fixture.created.BlackboardProtocol = "fgs"
 	plan, err := fixture.server.buildTaskLaunchPlanForBlackboardProjection(
 		fixture.created, fixture.created.Goal, "", "", "high", runner.BlackboardProjectionRequired,
 	)

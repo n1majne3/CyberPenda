@@ -285,7 +285,7 @@ func TestCreateDefaultsToWorkingGraphAndPersistsBlackboardMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if interactive.RunControls.BlackboardMode != task.BlackboardModeInteractive || interactive.BlackboardConclusion.Mode != task.BlackboardModeInteractive {
+	if interactive.RunControls.BlackboardMode != task.BlackboardModeWorkingGraph || interactive.BlackboardConclusion.Mode != task.BlackboardModeWorkingGraph {
 		t.Fatalf("interactive Task = %#v", interactive)
 	}
 }

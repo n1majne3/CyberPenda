@@ -7,13 +7,13 @@ import (
 	"testing"
 
 	"pentest/internal/blackboardv2"
+	"pentest/internal/fgs"
 	"pentest/internal/project"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
-	"pentest/internal/workinggraph"
 )
 
-func TestTaskWorkingGraphSettlementCompilesOutboxBeforeLifecycleBoundary(t *testing.T) {
+func TestTaskFGSSettlementPreservesLegacyOutboxAtLifecycleBoundary(t *testing.T) {
 	runtimeRoot := filepath.Join(t.TempDir(), "runs")
 	server, err := NewServer(Config{Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: runtimeRoot, DisableBuiltinSkills: true})
 	if err != nil {
@@ -22,9 +22,6 @@ func TestTaskWorkingGraphSettlementCompilesOutboxBeforeLifecycleBoundary(t *test
 	t.Cleanup(func() { _ = server.Close() })
 	createdProject, err := server.projects.Create("Working Graph", "", project.Scope{}, project.Defaults{})
 	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
 		t.Fatal(err)
 	}
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
@@ -37,6 +34,14 @@ func TestTaskWorkingGraphSettlementCompilesOutboxBeforeLifecycleBoundary(t *test
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	// Model a retained pre-upgrade snapshot without changing new-input rules.
+	if _, err := server.db.Exec(`UPDATE tasks SET run_controls_json='{"blackboard_mode":"interactive"}' WHERE id=?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	created, err = server.tasks.Get(created.ID)
+	if err != nil || created.RunControls.BlackboardMode != task.BlackboardModeInteractive {
+		t.Fatalf("historical mode = %s, err=%v", created.RunControls.BlackboardMode, err)
 	}
 	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: createdProject.ID, TaskID: created.ID, RuntimeProfileID: profile.ID,
@@ -53,30 +58,28 @@ func TestTaskWorkingGraphSettlementCompilesOutboxBeforeLifecycleBoundary(t *test
 	if err := os.MkdirAll(workdir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	projection, err := server.workingGraph.Prepare(context.Background(), workinggraph.OwnerContext{
-		Owner: created.OwnerContract(workdir), ContinuationID: launch.Continuation.ID, Workdir: workdir,
-	})
-	if err != nil {
+	contract := created.OwnerContract(workdir)
+	legacy := []byte(`{"schema":"working-graph-intent/v1","id":"intent_00000001","kind":"semantic_changes","payload":{"changes":[]}}`)
+	legacyPath := filepath.Join(workdir, "graph", "outbox", "historical-continuation", "intent_00000001.json")
+	if err := os.MkdirAll(filepath.Dir(legacyPath), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := workinggraph.Emit(projection.Outbox, workinggraph.OwnerKindTask, workinggraph.IntentInput{
-		Kind: workinggraph.IntentSemanticChanges,
-		Payload: map[string]any{"changes": []any{map[string]any{
-			"op": "upsert", "key": "fact:settled", "type": "fact",
-			"record": map[string]any{"category": "asset", "summary": "settled from outbox", "confidence": "tentative", "scope_status": "in_scope"},
-		}}},
-	}); err != nil {
+	if err := os.WriteFile(legacyPath, legacy, 0600); err != nil {
 		t.Fatal(err)
 	}
-	settled, err := server.settleTaskWorkingGraph(context.Background(), created, false)
+	if _, err := fgs.Emit(t.Context(), contract, launch.Continuation.ID, []fgs.Operation{{Op: "goal.create", Key: "goal:check", Title: "Check", SuccessCriteria: "Checked"}}); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := server.settleTaskWorkingGraph(t.Context(), created, false)
 	if err != nil || !settled {
 		t.Fatalf("settled=%v err=%v", settled, err)
 	}
-	detail, err := server.blackboardV2.ReadCurrent(context.Background(), createdProject.ID, "fact:settled")
-	if err != nil || detail.Version != 1 || detail.Record.Summary != "settled from outbox" {
-		t.Fatalf("detail=%#v err=%v", detail, err)
+	graph, err := server.fgs.Read(t.Context(), contract)
+	if err != nil || len(graph.Nodes) != 1 {
+		t.Fatalf("graph=%+v err=%v", graph, err)
 	}
-	if _, err := os.Stat(filepath.Join(projection.Receipts, "intent_00000001.json")); err != nil {
-		t.Fatal(err)
+	retained, err := os.ReadFile(legacyPath)
+	if err != nil || string(retained) != string(legacy) {
+		t.Fatalf("legacy intent changed: %s %v", retained, err)
 	}
 }

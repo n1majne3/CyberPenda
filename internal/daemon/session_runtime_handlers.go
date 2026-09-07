@@ -593,13 +593,7 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 	if err != nil {
 		return sessionRuntimePreparation{}, err
 	}
-	if blackboardMode := modeskill.Mode(mode); blackboardMode != modeskill.ModeDisabled {
-		modeSkill, err := modeskill.Resolve(blackboardMode)
-		if err != nil {
-			return sessionRuntimePreparation{}, err
-		}
-		runtimeConfig["mode_skill_id"] = modeSkill.ID
-	}
+
 	return sessionRuntimePreparation{
 		Profile: profile, Runner: run, RuntimeConfig: runtimeConfig,
 	}, nil
@@ -686,7 +680,7 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 		}
 	}
 	var graphProjection *workinggraph.Projection
-	if found.RunControls.BlackboardMode == session.BlackboardModeWorkingGraph || (found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != session.BlackboardModeDisabled) {
+	if found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != session.BlackboardModeDisabled {
 		preparedGraph, prepareErr := workinggraph.NewService().Prepare(ctx, workinggraph.OwnerContext{
 			Owner: found.OwnerContract(), ContinuationID: continuation.ID, Workdir: found.Workdir,
 		})

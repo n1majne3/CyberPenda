@@ -309,7 +309,7 @@ func TestSessionSandboxProjectsWorkingGraphPathsThroughWorkdirMount(t *testing.T
 		t.Fatalf("create profile: %v", err)
 	}
 	continuationID := "session-continuation-1"
-	graph, err := server.workingGraph.Prepare(t.Context(), workinggraph.OwnerContext{
+	graph, err := workinggraph.NewService().Prepare(t.Context(), workinggraph.OwnerContext{
 		Owner: found.OwnerContract(), ContinuationID: continuationID, Workdir: found.Workdir,
 	})
 	if err != nil {
