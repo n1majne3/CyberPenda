@@ -8,7 +8,7 @@ import (
 
 func TestManagedConfigKeysAreDeclaredPerBuiltinPlugin(t *testing.T) {
 	registry := runtimeplugin.MustBuiltinRegistry()
-	for _, id := range []string{"codex", "claude_code", "hermes", "pi"} {
+	for _, id := range []string{"codex", "claude_code", "pi"} {
 		plugin, ok := registry.Get(id)
 		if !ok {
 			t.Fatalf("builtin plugin %q missing", id)
@@ -68,7 +68,7 @@ func TestCodexPluginDeclaresMultiAgentManagedKeysAndField(t *testing.T) {
 	}
 
 	// The multi-agent control is Codex-specific: no other plugin exposes it.
-	for _, id := range []string{"claude_code", "pi", "hermes", "fake"} {
+	for _, id := range []string{"claude_code", "pi", "fake"} {
 		other, ok := registry.Get(id)
 		if !ok {
 			continue

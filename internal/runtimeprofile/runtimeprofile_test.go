@@ -111,7 +111,6 @@ func TestCreateAcceptsEverySupportedProvider(t *testing.T) {
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.ProviderClaudeCode,
 		runtimeprofile.ProviderPi,
-		runtimeprofile.ProviderHermes,
 	}
 	for _, provider := range providers {
 		service := newTestService(t)

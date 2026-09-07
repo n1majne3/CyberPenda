@@ -221,8 +221,6 @@ func importConfigFormat(provider Provider) string {
 	switch provider {
 	case ProviderCodex:
 		return "toml"
-	case ProviderHermes:
-		return "yaml"
 	case ProviderClaudeCode, ProviderPi:
 		return "json"
 	default:
@@ -504,9 +502,6 @@ func parseConfigDocument(format, raw string) (map[string]any, error) {
 	case "toml":
 		doc = map[string]any{}
 		err = toml.Unmarshal([]byte(trimmed), &doc)
-	case "yaml":
-		doc = map[string]any{}
-		err = yaml.Unmarshal([]byte(trimmed), &doc)
 	default:
 		return nil, fmt.Errorf("unknown config format %q", format)
 	}
@@ -548,29 +543,7 @@ func managedValueUnchanged(baseline map[string]any, path string, value any) bool
 }
 
 // valuesMatchBaseline compares an edited value against its baseline.
-// Arrays compare by deep equality except for the Hermes plugins.enabled
-// list, which locks only harness-derived entries (Story 21).
 func valuesMatchBaseline(path string, baselineValue, editedValue any) bool {
-	baseArr, baseOK := baselineValue.([]any)
-	editArr, editOK := editedValue.([]any)
-	if baseOK && editOK && path == "plugins.enabled" {
-		for _, base := range baseArr {
-			found := false
-			for _, edited := range editArr {
-				if reflect.DeepEqual(normalizeComparable(base), normalizeComparable(edited)) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return false
-			}
-		}
-		return true
-	}
-	if baseOK != editOK {
-		return false
-	}
 	return reflect.DeepEqual(normalizeComparable(baselineValue), normalizeComparable(editedValue))
 }
 
@@ -605,35 +578,6 @@ func stripUnchangedManagedKeys(remaining map[string]any, declarations []managedK
 			}
 			if declaration, matched := managedKeyForPath(declarations, path, resolved); matched && managedKeyActive(declaration, baseline, path) {
 				if managedValueUnchanged(baseline, path, value) {
-					// Hermes plugins.enabled keeps operator-added entries
-					// in the remainder. Every other managed array is a
-					// whole leaf: unchanged means strip it entirely.
-					if arr, ok := value.([]any); ok && path == "plugins.enabled" {
-						baseArr, _ := lookupPath(baseline, path)
-						if baseList, ok := baseArr.([]any); ok {
-							kept := make([]any, 0, len(arr))
-							for _, entry := range arr {
-								derived := false
-								for _, base := range baseList {
-									if reflect.DeepEqual(normalizeComparable(base), normalizeComparable(entry)) {
-										derived = true
-										break
-									}
-								}
-								if !derived {
-									kept = append(kept, entry)
-								}
-							}
-							if len(kept) == 0 {
-								delete(node, key)
-							} else {
-								node[key] = kept
-							}
-							strippedKeys = append(strippedKeys, path)
-							stripped = true
-							continue
-						}
-					}
 					delete(node, key)
 					strippedKeys = append(strippedKeys, path)
 					stripped = true
@@ -862,207 +806,7 @@ func (s *Service) renderRemainderVerbatim(provider Provider, remaining map[strin
 		}
 		return renderRemainder(provider, remaining)
 	}
-	if edited, ok := surgicalRemainder(provider, dropped, rawText, baseline); ok {
-		return edited
-	}
 	return renderRemainder(provider, remaining)
-}
-
-// surgicalRemainder removes the lines of top-level keys that moved into
-// structured fields, and the lines of harness-derived array entries under a
-// managed list. It reports false when the text's shape defeats line-based
-// edits (a mapped key whose span cannot be located).
-func surgicalRemainder(provider Provider, dropped []string, rawText string, baseline map[string]any) (string, bool) {
-	if importConfigFormat(provider) == "json" {
-		return "", false
-	}
-	if importConfigFormat(provider) != "toml" && importConfigFormat(provider) != "yaml" {
-		return "", false
-	}
-	lines := strings.Split(rawText, "\n")
-	keep := make([]bool, len(lines))
-	for i := range keep {
-		keep[i] = true
-	}
-	// Harness-derived array entries under a managed list path: their lines
-	// drop out while operator entries survive.
-	managedListEntries := map[string][]any{}
-	for _, key := range dropped {
-		if value, ok := lookupPath(baseline, key); ok {
-			if list, ok := value.([]any); ok {
-				managedListEntries[key] = list
-			}
-		}
-	}
-	// Track whether scanned lines sit at the document root or under a
-	// section header: mapped keys ("model", "env") are root-level only, so
-	// same-named keys inside sections must survive. currentList names a
-	// managed list whose "- entry" lines may need dropping; sectionPath is
-	// the dotted YAML section prefix ("plugins" → "plugins.enabled").
-	inSection := false
-	currentList := ""
-	sectionPath := ""
-	currentTable := ""
-	managedLists := map[string]bool{}
-	for key := range managedListEntries {
-		managedLists[key] = true
-	}
-	removed := 0
-	// Whole-subtree drops: managed keys whose baseline value is a map (or a
-	// dotted declaration like model_providers.*) must remove their complete
-	// syntactic span — the TOML table through the next table, the YAML
-	// subtree by indentation. Single-line removal would leave the harness
-	// content in the overlay where deep merge can resurrect it.
-	subtreeDrops := map[string]bool{}
-	for _, key := range dropped {
-		if managedListEntries[key] != nil {
-			continue
-		}
-		if base, ok := lookupPath(baseline, key); ok {
-			if _, isMap := base.(map[string]any); isMap || strings.Contains(key, "*") || strings.HasSuffix(key, ".*") {
-				subtreeDrops[key] = true
-			}
-		} else if strings.Contains(key, "*") {
-			subtreeDrops[key] = true
-		}
-	}
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if importConfigFormat(provider) == "toml" && strings.HasPrefix(trimmed, "[") {
-			inSection = true
-			currentList = ""
-			// A TOML table header opens a whole-table span: when the table
-			// belongs to a managed subtree, drop it through the next header.
-			tableName := strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")
-			currentTable = tableName
-			for drop := range subtreeDrops {
-				prefix := strings.TrimSuffix(drop, ".*")
-				if tableName == prefix || strings.HasPrefix(tableName, prefix+".") {
-					keep[i] = false
-					removed++
-					break
-				}
-			}
-			continue
-		}
-		if importConfigFormat(provider) == "yaml" && !strings.HasPrefix(line, " ") && strings.HasSuffix(trimmed, ":") {
-			inSection = true
-			currentList = ""
-			sectionPath = strings.TrimSuffix(trimmed, ":")
-			// A top-level YAML key with a map baseline drops its entire
-			// subtree (indentation scope), not just the header line.
-			if subtreeDrops[sectionPath] {
-				keep[i] = false
-				removed++
-				continue
-			}
-			continue
-		}
-		// YAML: indented lines under a dropped managed subtree vanish with it.
-		if importConfigFormat(provider) == "yaml" && strings.HasPrefix(line, " ") && sectionPath != "" && subtreeDrops[sectionPath] {
-			if trimmed != "" {
-				keep[i] = false
-				removed++
-			}
-			continue
-		}
-		if importConfigFormat(provider) == "yaml" && strings.HasPrefix(trimmed, "- ") {
-			if currentList != "" {
-				entry := strings.TrimSpace(strings.TrimPrefix(trimmed, "- "))
-				for _, base := range managedListEntries[currentList] {
-					if baseText, ok := base.(string); ok && baseText == entry {
-						keep[i] = false
-						removed++
-						break
-					}
-				}
-			}
-			continue
-		}
-		// A "key:" line inside a section can open a managed list context
-		// when the section path plus key matches a managed list path.
-		// Nested managed keys (approvals.mode, agent.*, model.*) drop too.
-		if importConfigFormat(provider) == "yaml" && strings.Contains(trimmed, ":") && !strings.HasPrefix(trimmed, "- ") {
-			candidate, rest, _ := strings.Cut(trimmed, ":")
-			candidate = strings.TrimSpace(candidate)
-			rest = strings.TrimSpace(rest)
-			path := candidate
-			if strings.HasPrefix(line, " ") && sectionPath != "" {
-				path = sectionPath + "." + candidate
-			}
-			droppedHere := false
-			for _, mappedKey := range dropped {
-				if mappedKey == path || mappedKey == candidate {
-					// A managed list container ("enabled:") must survive:
-					// only its harness-derived entries drop, so the
-					// remainder stays valid YAML.
-					if managedLists[path] || managedLists[candidate] {
-						break
-					}
-					keep[i] = false
-					removed++
-					droppedHere = true
-					break
-				}
-			}
-			if rest == "" {
-				if managedLists[path] {
-					currentList = path
-				} else if !droppedHere {
-					currentList = ""
-				}
-			}
-			if droppedHere {
-				continue
-			}
-			if rest == "" {
-				continue
-			}
-		}
-		// TOML: lines inside a dropped managed table vanish with it.
-		if importConfigFormat(provider) == "toml" && inSection {
-			for drop := range subtreeDrops {
-				prefix := strings.TrimSuffix(drop, ".*")
-				if currentTable == prefix || strings.HasPrefix(currentTable, prefix+".") {
-					if trimmed != "" {
-						keep[i] = false
-						removed++
-					}
-					break
-				}
-			}
-			continue
-		}
-		key, _, found := strings.Cut(trimmed, "=")
-		if found && !inSection {
-			candidate := strings.TrimSpace(key)
-			for _, mappedKey := range dropped {
-				if mappedKey == candidate {
-					keep[i] = false
-					removed++
-					continue
-				}
-			}
-		}
-	}
-	if removed == 0 {
-		// Nothing dropped: either nothing mapped at root level or the
-		// mapped keys all lived under sections; the raw text stands.
-		return rawText, true
-	}
-	var b strings.Builder
-	for i, line := range lines {
-		if keep[i] {
-			b.WriteString(line)
-			if i < len(lines)-1 {
-				b.WriteString("\n")
-			}
-		}
-	}
-	return b.String(), true
 }
 
 // pluginIDFromInstallRef derives a stable Runtime Extension ID from a
@@ -1098,15 +842,6 @@ func renderRemainder(provider Provider, remaining map[string]any) string {
 		if err := toml.NewEncoder(&b).Encode(remaining); err != nil {
 			return ""
 		}
-		return b.String()
-	case "yaml":
-		var b strings.Builder
-		encoder := yaml.NewEncoder(&b)
-		encoder.SetIndent(2)
-		if err := encoder.Encode(remaining); err != nil {
-			return ""
-		}
-		_ = encoder.Close()
 		return b.String()
 	default:
 		return ""

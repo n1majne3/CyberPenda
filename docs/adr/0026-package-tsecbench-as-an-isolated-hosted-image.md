@@ -1,5 +1,10 @@
 # Package TSecBench as an isolated hosted image
 
+Status update (2026-09-08): Hermes Runtime execution and image installation are
+retired. The Hermes parts below describe the earlier decision. Retained
+Profiles and Transcripts remain readable; see [current boundary](../../CONTEXT.md).
+
+
 > Later product change: normal Project Challenge Workflow is retired. The
 > independent Hosted Challenge Client and Hosted Controller remain active.
 > The requirement below to preserve normal Challenge Workflow describes the

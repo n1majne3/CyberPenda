@@ -1,5 +1,9 @@
 # Hermes ACP Delegation / Child-Agent Events
 
+Historical research: Hermes Runtime was retired on 2026-09-08. The execution
+components described below have been removed.
+
+
 Date: 2026-08-29
 
 Issue: n1majne3/CyberPenda#247 (parent: #237, Timeline projection of delegated

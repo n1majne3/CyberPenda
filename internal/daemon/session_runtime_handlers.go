@@ -919,6 +919,8 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 		// provider-native SendTurn capability below.
 		QueueSteerAvailable: found.Lifecycle == session.LifecycleOpen,
 	}
+	_, runtimeSupported := server.runtimePlugins.Get(provider)
+	controls.QueueSteerAvailable = controls.QueueSteerAvailable && runtimeSupported
 	if latest != nil {
 		controls.NativeSessionCaptured = latest.NativeSessionID != "" || latest.NativeSessionPath != ""
 		selection, selectionErr := server.sessionCurrentSelection(*latest)
@@ -928,7 +930,7 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 				ReasoningEffort: selection.RequestedReasoningEffort,
 			}
 		}
-		controls.NativeResumeAvailable = active == nil && controls.NativeSessionCaptured && provider != string(runtimeprofile.ProviderFake)
+		controls.NativeResumeAvailable = runtimeSupported && active == nil && controls.NativeSessionCaptured && provider != string(runtimeprofile.ProviderFake)
 	}
 	steeringControl, steeringControlErr := server.latestSteeringControl(owner.KindSession, found.ID)
 	if steeringControlErr == nil {
@@ -1150,6 +1152,17 @@ func (server *Server) handleSessionMessageInput(response http.ResponseWriter, re
 	if found.Lifecycle != session.LifecycleOpen {
 		writeSessionError(response, session.ErrSessionNotOpen)
 		return
+	}
+	latest, err := server.sessions.LatestContinuation(id)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	if latest != nil {
+		if _, supported := server.runtimePlugins.Get(latest.RuntimeProvider); !supported {
+			writeError(response, http.StatusBadRequest, fmt.Sprintf("runtime %q is not supported", latest.RuntimeProvider))
+			return
+		}
 	}
 	if err := server.waitForSessionWorkingGraphSettlement(request.Context(), id, false); err != nil {
 		if errors.Is(err, errSemanticConclusionActionRequired) {

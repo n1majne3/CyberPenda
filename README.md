@@ -2,7 +2,7 @@
 
 CyberPenda is a **local-first pentest agent** for coordinating **authorized** security testing inside a scoped project.
 
-It combines a Go daemon, React dashboard, agent runtimes (Codex, Claude Code, Pi, Hermes), project scope controls, a Goal/Step/Fact Blackboard, skills and runtime extensions, and Markdown result export.
+It combines a Go daemon, React dashboard, agent runtimes (Codex, Claude Code, Pi), project scope controls, a Goal/Step/Fact Blackboard, skills and runtime extensions, and Markdown result export.
 
 The daemon is the control plane, memory plane, task lifecycle plane, and reporting plane. Pentest tools run inside the selected runtime environment — not as a tool proxy through the daemon.
 
@@ -28,7 +28,7 @@ changes are disabled.
 | Host runner | Explicit opt-in; never an automatic fallback from sandbox |
 | Runtime Outbox | Continuation-scoped FGS updates with durable Receipts |
 | `pentestctl` | FGS publication and reads inside a projected Runtime; retained legacy commands |
-| Runtime plugins | Declarative adapters (Codex, Claude Code, Pi, Hermes, fake) |
+| Runtime plugins | Declarative adapters (Codex, Claude Code, Pi, fake) |
 | Skills / extensions | Runtime-agnostic skill bundles + runtime-specific extension packs |
 
 Data lives on the machine by default: SQLite (`pentest.db`), task run directories, and managed artifact roots.
@@ -182,6 +182,11 @@ and Evidence files are preserved without conversion to FGS.
 
 The FGS export describes accepted Goals, Steps, and Facts. It does not assert
 CVSS scoring, a verified Finding, or Challenge Platform acceptance.
+
+In Settings → Runtime Profiles, **View actual config** loads the saved profile's
+redacted native configuration on demand. The same view provides config editing
+and import. Save form changes before importing config. Legacy Model Provider
+migration appears only for eligible profiles.
 
 Skills support managed import. Runtime Profiles support local registry
 extensions, explicit extension references, and external MCP configuration.

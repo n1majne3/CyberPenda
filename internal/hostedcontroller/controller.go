@@ -304,7 +304,7 @@ func Run(ctx context.Context, dataRoot string, env map[string]string, stdout, di
 
 // startHostedLoopback binds the loopback daemon and records the concrete
 // listen address. Runtime MCP projection uses that address; port 0 is treated
-// as HTTP port 80 by Hermes and other clients.
+// as HTTP port 80 by HTTP clients.
 func startHostedLoopback(dataRoot string, factory daemon.ProviderSessionFactory, logger *log.Logger) (*daemon.Server, net.Listener, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)

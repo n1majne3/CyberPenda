@@ -399,13 +399,6 @@ export function listRuntimeProfiles() {
   return apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles");
 }
 
-/** Final merged result the runtime receives (structured + Custom Config File overlay). */
-export function mergedConfigPreview(profileId: string) {
-  return apiGet<{ provider: string; merged: Record<string, unknown> }>(
-    `/api/runtime-profiles/${encodeURIComponent(profileId)}/merged-config-preview`,
-  );
-}
-
 /** Provider-native seed text the config editor opens on (redacted). */
 export function projectedConfig(profileId: string) {
   return apiGet<{ provider: string; format: string; text: string; custom_config_file?: string }>(

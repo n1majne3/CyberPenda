@@ -569,12 +569,15 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
     ).toBe(false);
   });
 
-  it("keeps long Codex generated config preview from widening the page", async () => {
+  it("loads the saved native config only when requested and keeps long lines bounded", async () => {
     const longEndpoint = `https://${"very-long-host-segment-".repeat(12)}example.test/v1`;
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
         const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/projected-config")) {
+          return Promise.resolve(new Response(JSON.stringify({ provider: "codex", format: "toml", text: `base_url = "${longEndpoint}"` })));
+        }
         if (url.includes("/api/runtime-profiles")) {
           return Promise.resolve(
             new Response(
@@ -640,12 +643,13 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
     renderPage();
 
     expect(await screen.findByText("Codex with long config")).toBeInTheDocument();
-    const label = await screen.findByText("Generated config preview");
-    const previewSection = label.closest("div.min-w-0");
-    const preview = previewSection?.querySelector("pre") ?? null;
-    expect(preview).toHaveTextContent(longEndpoint);
+    expect(screen.queryByText("Generated config preview")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Actual runtime config" })).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "View actual config" }));
+    const previewSection = await screen.findByRole("region", { name: "Actual runtime config" });
+    await waitFor(() => expect(previewSection.querySelector("pre")).toHaveTextContent(longEndpoint));
     expect(previewSection).toHaveClass("min-w-0");
-    expect(preview).toHaveClass("w-full", "max-w-full", "overflow-x-auto");
+    expect(previewSection.querySelector("pre")).toHaveClass("w-full", "max-w-full", "overflow-x-auto");
   });
 
   it("reflects the selected profile in the URL", async () => {
@@ -953,6 +957,9 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
             ),
           );
         }
+        if (url.endsWith("/projected-config")) {
+          return Promise.resolve(new Response(JSON.stringify({ provider: "claude_code", format: "json", text: importCalls.length ? '{"env":{"MY_TOOL_TAG":"abc"},"enabledPlugins":{"warp@claude-code-warp":true}}' : "{}" })));
+        }
         if (url.includes("/api/runtime-profiles")) {
           // After a successful import the refreshed list carries the imported
           // env plus the Custom Config File remainder.
@@ -988,12 +995,15 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
 
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Claude Edit/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "View actual config" }));
     await userEvent.click(await screen.findByRole("button", { name: /Edit config/i }));
 
     const editor = await screen.findByLabelText(/config editor/i);
     await userEvent.type(editor, "MY_TOOL_TAG");
     await userEvent.click(await screen.findByRole("button", { name: /Import config/i }));
 
+    await waitFor(() => expect(screen.queryByLabelText(/config editor/i)).not.toBeInTheDocument());
+    await userEvent.click(await screen.findByRole("button", { name: "View actual config" }));
     expect(await screen.findByText(/warp@claude-code-warp/)).toBeInTheDocument();
     expect(importCalls).toHaveLength(1);
     expect(importCalls[0]).toContain("MY_TOOL_TAG");
@@ -1014,6 +1024,9 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
               { status: 400, headers: { "Content-Type": "application/json" } },
             ),
           );
+        }
+        if (url.endsWith("/projected-config")) {
+          return Promise.resolve(new Response(JSON.stringify({ provider: "claude_code", format: "json", text: "{}" })));
         }
         if (url.includes("/api/runtime-profiles")) {
           return Promise.resolve(
@@ -1045,6 +1058,7 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
 
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Claude Reject/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "View actual config" }));
     await userEvent.click(await screen.findByRole("button", { name: /Edit config/i }));
     await userEvent.click(await screen.findByRole("button", { name: /Import config/i }));
 
@@ -1126,6 +1140,46 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
     expect(patchCalls[1]).toMatchObject({ confirm_provider_switch_clears_overlay: true });
     expect(patchCalls[1].fields.custom_config_file ?? "").toBe("");
   });
+  it("keeps config loading on demand and exposes a read error without an editable fallback", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/projected-config")) return Promise.resolve(new Response(JSON.stringify({ error: "Projection unavailable" }), { status: 503 }));
+      const body = url.endsWith("/api/runtime-profiles")
+        ? { profiles: [{ id: "saved", name: "Saved profile", provider: "codex", fields: {}, updated_at: "1" }] }
+        : url.endsWith("/model-provider-migration-preview") ? { eligible: false }
+        : { plugins: [], extensions: [], providers: [] };
+      return Promise.resolve(new Response(JSON.stringify(body)));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    renderPage();
+    const view = await screen.findByRole("button", { name: "View actual config" });
+    expect(fetchMock.mock.calls.some(([input]) => /projected-config|merged-config-preview/.test(String(input)))).toBe(false);
+    expect(screen.queryByRole("region", { name: "Model provider migration" })).not.toBeInTheDocument();
+    await userEvent.click(view);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Projection unavailable");
+    expect(screen.queryByRole("button", { name: "Edit config" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Runtime config editor")).not.toBeInTheDocument();
+  });
+
+  it("keeps unsaved form changes out of the saved config and prevents import over them", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      const body = url.endsWith("/api/runtime-profiles")
+        ? { profiles: [{ id: "saved", name: "Saved profile", provider: "codex", fields: {}, updated_at: "1" }] }
+        : url.endsWith("/projected-config") ? { provider: "codex", format: "toml", text: 'model = "saved-model"' }
+        : url.endsWith("/model-provider-migration-preview") ? { eligible: false }
+        : { plugins: [], extensions: [], providers: [] };
+      return Promise.resolve(new Response(JSON.stringify(body)));
+    }));
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "View actual config" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit config" }));
+    await userEvent.type(screen.getByLabelText("Name"), " changed");
+    expect(screen.getByRole("button", { name: "Import config" })).toBeDisabled();
+    expect(screen.getByText("Save profile changes before editing the runtime config.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Runtime config editor")).toHaveValue('model = "saved-model"');
+  });
+
 });
 
   it("shows the final merged config after import", async () => {
@@ -1153,19 +1207,8 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
             ),
           );
         }
-        if (url.includes("/merged-config-preview")) {
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                provider: "claude_code",
-                merged: {
-                  provider: "claude_code",
-                  enabledPlugins: { "warp@claude-code-warp": true },
-                },
-              }),
-              { status: 200, headers: { "Content-Type": "application/json" } },
-            ),
-          );
+        if (url.endsWith("/projected-config")) {
+          return Promise.resolve(new Response(JSON.stringify({ provider: "claude_code", format: "json", text: imported ? '{"enabledPlugins":{"warp@claude-code-warp":true}}' : '{}' })));
         }
         if (url.includes("/api/runtime-profiles")) {
           return Promise.resolve(
@@ -1199,11 +1242,13 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
 
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Claude Merge/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "View actual config" }));
     await userEvent.click(await screen.findByRole("button", { name: /Edit config/i }));
     await userEvent.click(await screen.findByRole("button", { name: /Import config/i }));
 
-    const merged = await screen.findByTestId("merged-config-preview");
-    expect(merged).toHaveTextContent("warp@claude-code-warp");
+    await waitFor(() => expect(screen.queryByLabelText(/config editor/i)).not.toBeInTheDocument());
+    await userEvent.click(await screen.findByRole("button", { name: "View actual config" }));
+    expect(await screen.findByText(/warp@claude-code-warp/)).toBeInTheDocument();
   });
 
   it("seeds the config editor with the provider-native projected config", async () => {
@@ -1262,6 +1307,7 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
 
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Codex Seed/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "View actual config" }));
     await userEvent.click(await screen.findByRole("button", { name: /Edit config/i }));
 
     const editor = await screen.findByLabelText(/config editor/i);
@@ -1336,6 +1382,7 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
 
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Claude Warp/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "View actual config" }));
     await userEvent.click(await screen.findByRole("button", { name: /Edit config/i }));
 
     const editor = await screen.findByLabelText(/config editor/i);

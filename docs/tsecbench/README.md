@@ -28,8 +28,7 @@ The strict Runtime and protocol matrix is:
 
 Pi projects through the same hosted bootstrap as Codex and Claude Code and
 trusts only this run's projected project resources through `--approve`. Hermes
-remains installed as an image tool, but Hosted bootstrap rejects it as the
-selected Runtime.
+is retired and is not installed in the image.
 
 Enter the converted HTTP gateway Base URL with the `.tsecbench.gw` host. Enter
 a protocol Base URL. Do not append `/chat/completions`, `/responses`, or

@@ -8,7 +8,8 @@ Evidence files remain stored without conversion to FGS nodes.
 ## Current product
 
 - [Quick start and workflow](../README.md): build, configure, launch, and inspect results.
-- [Domain glossary](../CONTEXT.md): shared language and current domain decisions.
+- [Domain glossary](../CONTEXT.md): canonical terms and definitions only.
+- [Current product boundary](./product/current-boundary.md): supported behavior, retired features, and links to detailed constraints.
 - [FGS Runtime protocol](./specs/fgs-runtime-outbox-protocol.md): confirmed principles, protocol design, and implementation status.
 - [FGS decision](./adr/0035-use-fgs-as-the-blackboard-working-model.md): model replacement and historical-data boundary.
 - [Platform engines](./platform-engines.md): Sandbox Runner support.
@@ -38,6 +39,7 @@ launch instructions.
 - [Legacy Blackboard v2 specification](./specs/blackboard-v2-spec.md) and [replacement plan](./specs/blackboard-v2-tdd-plan.md).
 - [Original design](./superpowers/specs/2026-06-17-pentest-agent-design.md).
 - [Architecture decisions](./adr/): check each document's status and later decisions.
+- [Pre-compression domain snapshot](./history/2026-09-08-context-before-compression.md): prior definitions, relationships, and resolved questions; mixed current and superseded material for decision tracing only.
 
 The Assisted-versus-Interactive experiment launchers are retired. Their saved
 results remain historical data. Use `make smoke-sandbox-fgs`,

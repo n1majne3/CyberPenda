@@ -7,6 +7,10 @@ implementation scope. Proposed details below are not a promise of CLI support.
 Decision: [ADR 0035](../adr/0035-use-fgs-as-the-blackboard-working-model.md).
 Domain terms: [CONTEXT.md](../../CONTEXT.md).
 
+Current feature boundary: [supported and retired behavior](../product/current-boundary.md).
+Normal Project Task Policy enforcement and legacy Intent settlement are retired;
+older references to them below do not apply to current launches.
+
 ## 1. Purpose and confirmed scope
 
 FGS replaces Exploration Objective, Attempt, and Project Fact with Goal, Step,

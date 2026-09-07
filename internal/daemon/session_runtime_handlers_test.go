@@ -630,6 +630,19 @@ func TestRejectedResumeAttachmentDoesNotCreateAContinuationOrEvent(t *testing.T)
 		t.Fatal("created Session has no continuation")
 	}
 
+	// Stop must run after startup owns the Session and records its state.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		latest, err := server.sessions.LatestContinuation(created.ID)
+		if err == nil && latest != nil && latest.Status == session.RuntimeStatusRunning && server.sessionHarness.IsActive(created.ID) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Session startup did not settle: continuation=%#v err=%v", latest, err)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
 	stop := httptest.NewRecorder()
 	server.ServeHTTP(stop, httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/stop", nil))
 	if stop.Code != http.StatusOK {
@@ -924,7 +937,7 @@ func TestResolveSessionRuntimeProfileHonorsNewModelProviderAfterPreviousContinua
 	t.Setenv(glm.APIKeyEnv, "sk-glm")
 	t.Setenv(hub.APIKeyEnv, "sk-hub")
 
-	glmProfile, err := server.profiles.Create("Hermes · GLM · glm-5.2", runtimeprofile.ProviderHermes, runtimeprofile.Fields{
+	glmProfile, err := server.profiles.Create("Pi · GLM · glm-5.2", runtimeprofile.ProviderPi, runtimeprofile.Fields{
 		ModelProviderID: glm.ID, ModelOverride: "glm-5.2", DefaultRunner: "sandbox",
 	})
 	if err != nil {
@@ -933,7 +946,7 @@ func TestResolveSessionRuntimeProfileHonorsNewModelProviderAfterPreviousContinua
 	created, err := server.sessions.Create(session.CreateRequest{
 		Input: "switch provider",
 		InitialRuntime: &session.CreateContinuationRequest{
-			RuntimeProfileID: glmProfile.ID, RuntimeProvider: "hermes", Runner: session.RunnerSandbox,
+			RuntimeProfileID: glmProfile.ID, RuntimeProvider: "pi", Runner: session.RunnerSandbox,
 			RuntimeConfig: testSessionProfileRuntimeSnapshot(t, server, glmProfile, session.RunnerSandbox),
 		},
 	})

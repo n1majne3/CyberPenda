@@ -710,6 +710,9 @@ func (server *Server) buildTaskLaunchPlanForBlackboardProjection(created task.Ta
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
+	if _, supported := server.runtimePlugins.Get(string(profile.Provider)); !supported {
+		return taskLaunchPlan{}, fmt.Errorf("%w: %s", runtimeprofile.ErrUnknownProvider, profile.Provider)
+	}
 	if blackboardProjection == runner.BlackboardProjectionOmitted {
 		seed := &taskLaunchPlan{ResolvedProfile: profile, BlackboardProjection: blackboardProjection}
 		return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, seed)
@@ -1683,9 +1686,9 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 
 	activity := server.computeRuntimeActivity(found)
 	controls := task.RuntimeControls{
-		ResumeAvailable:         !active,
+		ResumeAvailable:         ok && !active,
 		FinishAvailable:         activity.Liveness == runtimeLivenessLive && activity.TurnActivity == runtimeTurnIdle,
-		QueueSteerAvailable:     true,
+		QueueSteerAvailable:     ok,
 		NativeSessionCaptured:   sessionCaptured,
 		SameRuntimeProviderOnly: true,
 		RuntimeProvider:         string(profile.Provider),
@@ -4110,6 +4113,7 @@ func writeTaskError(response http.ResponseWriter, err error) {
 func writeTaskAdapterError(response http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, skill.ErrInvalidSkill),
+		errors.Is(err, runtimeprofile.ErrUnknownProvider),
 		errors.Is(err, modelprovider.ErrMissingAPIKeyEnv),
 		errors.Is(err, modelprovider.ErrMissingProvider),
 		errors.Is(err, modelprovider.ErrMissingModel),

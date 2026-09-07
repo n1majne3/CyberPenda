@@ -15,7 +15,7 @@ import (
 
 // ProductionProviderSessionFactory is the daemon's concrete non-PTY bridge
 // assembly. It is a thin shell over the per-family providerSessionAssembler
-// seam: Codex App Server, Claude Agent SDK, Pi headless RPC, and Hermes ACP
+// seam: Codex App Server, Claude Agent SDK, Pi headless RPC, and Pi RPC
 // each own their durable process argv and bridge handshake, while this module
 // owns owner-scoped binding, bridge registries, and the shared finish.
 // Capabilities come from the Runtime Plugin manifest and provider bridge
@@ -160,7 +160,6 @@ func NewProductionProviderSessionFactory(config ProductionProviderSessionFactory
 	factory.assemblers[runtimeprofile.ProviderPi] = piAssembler{
 		plugins: plugins, sandboxBridge: config.BridgeCommand, resolveHostBridge: factory.resolveHostBridgeCommand,
 	}
-	factory.assemblers[runtimeprofile.ProviderHermes] = hermesAssembler{plugins: plugins}
 	return factory
 }
 
@@ -168,7 +167,7 @@ func NewProductionProviderSessionFactory(config ProductionProviderSessionFactory
 func (f *ProductionProviderSessionFactory) assemblerFor(provider runtimeprofile.Provider) (providerSessionAssembler, error) {
 	assembler, ok := f.assemblers[provider]
 	if !ok {
-		return nil, fmt.Errorf("provider session factory supports codex, claude_code, pi, and hermes only")
+		return nil, fmt.Errorf("provider session factory supports codex, claude_code, and pi only")
 	}
 	return assembler, nil
 }

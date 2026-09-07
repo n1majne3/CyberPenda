@@ -30,7 +30,7 @@ const (
 	ProviderClaudeCode Provider = "claude_code"
 	// ProviderPi is the Pi runtime.
 	ProviderPi Provider = "pi"
-	// ProviderHermes is the Hermes Agent runtime.
+	// ProviderHermes identifies retained history from the retired Hermes Runtime.
 	ProviderHermes Provider = "hermes"
 )
 
@@ -40,7 +40,6 @@ var providers = map[Provider]bool{
 	ProviderCodex:      true,
 	ProviderClaudeCode: true,
 	ProviderPi:         true,
-	ProviderHermes:     true,
 }
 
 // MCPServerMode marks an MCP server as trusted (a project interface) or
@@ -535,7 +534,7 @@ func normalizeFields(provider Provider, fields Fields) (Fields, error) {
 }
 
 func defaultProviderSet() map[Provider]bool {
-	return providerSet([]Provider{ProviderFake, ProviderCodex, ProviderClaudeCode, ProviderPi, ProviderHermes})
+	return providerSet([]Provider{ProviderFake, ProviderCodex, ProviderClaudeCode, ProviderPi})
 }
 
 func providerSet(providerList []Provider) map[Provider]bool {

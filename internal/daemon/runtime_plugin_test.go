@@ -44,7 +44,10 @@ func TestListRuntimePluginsReturnsBuiltIns(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"fake", "codex", "claude_code", "pi", "hermes"} {
+	if ids["hermes"] {
+		t.Fatal("retired Hermes Runtime must not be available")
+	}
+	for _, want := range []string{"fake", "codex", "claude_code", "pi"} {
 		if !ids[want] {
 			t.Fatalf("expected builtin plugin %q in %#v", want, ids)
 		}

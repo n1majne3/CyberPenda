@@ -241,66 +241,6 @@ func BuiltinPlugins() []Plugin {
 			CredentialEnv: []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY"},
 			Transcript:    Transcript{Parser: "pi_json_session"},
 		},
-		{
-			SchemaVersion: SchemaVersion,
-			ID:            "hermes",
-			Name:          "Hermes",
-			Description:   "Nous Hermes Agent runtime provider.",
-			Binary:        Binary{Default: "hermes", ProfileField: "binary_path"},
-			Capabilities: Capabilities{
-				Sandbox:              true,
-				Host:                 true,
-				MCPConfig:            true,
-				StreamingTranscript:  true,
-				Resume:               true,
-				PersistentSession:    true,
-				SendTurn:             true,
-				InterruptTurn:        true,
-				InterruptThenReplace: true,
-				PermissionResponse:   true,
-				ResumeSession:        true,
-			},
-			ModelProvider: ModelProvider{
-				Requirement:        "required",
-				SupportedProtocols: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
-				ProtocolPreference: []string{"openai_chat_completions", "openai_responses", "anthropic_messages"},
-			},
-			ProfileSchema: commonProfileSchema(commonFields),
-			ConfigProjection: ConfigProjection{
-				Primitive:  "hermes_home",
-				ConfigPath: "runtime-home/hermes/config.yaml",
-				ManagedKeys: []ManagedKey{
-					{Key: "approvals.mode", Field: "non-interactive defaults"},
-					{Key: "agent.*", Field: "reasoning_effort"},
-					{Key: "delegation.*", Field: "reasoning_effort"},
-					{Key: "model.*", Field: "model_provider_id"},
-					{Key: "model_overrides.*", Field: "model_provider_id", Condition: "model_provider_resolved"},
-					{Key: "providers", Field: "model providers (ADR 0026 global projection)"},
-					// Entry-level: only the harness-derived iteration-budget
-					// entry is managed; operator-added Hermes plugins coexist
-					// freely in the same list (Story 21, finest re-derived key).
-					{Key: "plugins.enabled", Field: "runtime extensions"},
-					{Key: "terminal.backend", Field: "non-interactive defaults"},
-				},
-			},
-			Launch: LaunchTemplate{
-				Args: []string{"{{binary}}", "--yolo", "acp", "{{custom_args}}"},
-				SingletonOptions: []SingletonOption{
-					{Options: []string{"--yolo"}, Arity: 0},
-				},
-			},
-			NativeResume: NativeResume{
-				Supported:     true,
-				SessionSource: "hermes_acp",
-				Args:          []string{"{{binary}}", "--resume", "{{native_session}}", "acp", "{{custom_args}}"},
-			},
-			ProcessEnv: map[string]string{
-				"HERMES_HOME":      "{{runtime_home}}/hermes",
-				"HERMES_YOLO_MODE": "1",
-			},
-			CredentialEnv: []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY"},
-			Transcript:    Transcript{Parser: "hermes_acp"},
-		},
 	}
 }
 
