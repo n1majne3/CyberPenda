@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { apiGet } from "./api";
+import { apiGet, apiPost } from "./api";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -54,6 +54,35 @@ describe("demo API", () => {
 });
 
 describe("api client auth", () => {
+  it("does not replay mutations or replace explicit credentials", async () => {
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 403 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(apiPost("/api/projects", {name:"test"})).rejects.toThrow();
+    await expect(apiGet("/api/v2/projects/p/fgs", {headers:{Authorization:"Bearer explicit"}})).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it("keeps the original error if browser session setup is denied", async () => {
+    window.sessionStorage.setItem("pentest.authToken", "configured-token");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({error:"original denial"}), {status:403}))
+      .mockResolvedValueOnce(new Response(null, {status:401}));
+    vi.stubGlobal("fetch",fetchMock);
+    await expect(apiGet("/api/v2/projects/p/fgs")).rejects.toThrow("original denial");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(window.sessionStorage.getItem("pentest.authToken")).toBe("configured-token");
+  });
+  it("opens a direct Blackboard link and replaces a stale tab token with the browser session", async () => {
+    window.sessionStorage.setItem("pentest.authToken", "old-daemon-token");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({error:{code:"authority_denied",message:"Continuation Interface capability is invalid"}}), {status:403}))
+      .mockResolvedValueOnce(new Response(null, {status:204}))
+      .mockResolvedValueOnce(new Response(JSON.stringify({nodes:[]}), {status:200}));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await apiGet("/api/v2/projects/project-1/fgs")).toEqual({nodes:[]});
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/operator-session");
+    expect(fetchMock.mock.calls[2][1].headers.Authorization).toBeUndefined();
+    expect(window.sessionStorage.getItem("pentest.authToken")).toBeNull();
+  });
   it("sends the dashboard URL token as a bearer token", async () => {
     window.history.replaceState(null, "", "/?view=tasks&token=secret#activity");
     const fetchMock = vi.fn(async () => {

@@ -21,6 +21,7 @@ import (
 	"pentest/internal/blackboardv2"
 	"pentest/internal/challengeworkflow"
 	"pentest/internal/credential"
+	"pentest/internal/fgs"
 	"pentest/internal/finishreadiness"
 	"pentest/internal/modelprovider"
 	"pentest/internal/preflight"
@@ -119,6 +120,9 @@ type Server struct {
 	sessionHarness          *runtime.SessionHarness
 	canonicalStore          string
 	blackboardV2            *blackboardv2.Service
+	fgs                     *fgs.Service
+	fgsCancel               context.CancelFunc
+	fgsWG                   sync.WaitGroup
 	workingGraph            *workinggraph.Service
 	workingGraphCompiler    *workinggraph.SemanticCompiler
 	challengeWorkflow       *challengeworkflow.Service
@@ -353,6 +357,7 @@ func NewServer(config Config) (*Server, error) {
 	server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.sessions.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
+	server.fgs = fgs.NewService(db)
 	server.workingGraph = workinggraph.NewService(db)
 	server.workingGraphCompiler = workinggraph.NewSemanticCompiler(server.blackboardV2)
 	server.challengeWorkflow = challengeworkflow.NewService(db, server.projects, server.tasks, config.ChallengePlatforms, challengeworkflow.NewBlackboardRecorder(server.blackboardV2, server.tasks, runtimeRoot))
@@ -397,6 +402,7 @@ func NewServer(config Config) (*Server, error) {
 		return nil, err
 	}
 	server.recoverAcceptedSteering(context.Background())
+	server.startFGSReceiver()
 
 	return server, nil
 }
@@ -686,6 +692,11 @@ func (server *Server) GeneratedOperatorAccessURL() string {
 }
 
 func (server *Server) Close() error {
+	if server.fgsCancel != nil {
+		server.fgsCancel()
+		server.fgsWG.Wait()
+		server.fgs.CloseScans()
+	}
 	server.controlMu.Lock()
 	server.closing = true
 	server.providerControlCancel()
@@ -775,6 +786,9 @@ func (server *Server) authorized(request *http.Request) bool {
 	if server.authToken == "" {
 		return true
 	}
+	if server.operatorRequest(request) {
+		return true
+	}
 	if header := strings.TrimSpace(request.Header.Get("Authorization")); header != "" {
 		if scheme, token, ok := strings.Cut(header, " "); ok && strings.EqualFold(scheme, "Bearer") {
 			if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(token)), []byte(server.authToken)) == 1 {
@@ -803,9 +817,7 @@ func (server *Server) authorized(request *http.Request) bool {
 // Blackboard outside the versioned Project Interface. The Actor header is
 // provenance only; it never authenticates the caller.
 func (server *Server) requireOperatorAuthority(response http.ResponseWriter, request *http.Request) bool {
-	token := projectinterface.BearerToken(request)
-	if token == "" || server.operatorToken == "" ||
-		subtle.ConstantTimeCompare([]byte(token), []byte(server.operatorToken)) != 1 {
+	if !server.operatorRequest(request) {
 		writeError(response, http.StatusUnauthorized, "unauthorized")
 		return false
 	}
@@ -1038,6 +1050,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/permissions/{permission_id}/respond", server.handleProviderPermissionResponse)
 	server.registerBlackboardV2Routes()
+	server.registerFGSRoutes()
+	server.mux.HandleFunc("POST /api/operator-session", server.handleOperatorSession)
 	server.registerSPA()
 }
 
@@ -1820,6 +1834,8 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 			Ready            bool `json:"ready"`
 		} `json:"scope"`
 		Counts struct {
+			Goals    int `json:"goals"`
+			Steps    int `json:"steps"`
 			Tasks    int `json:"tasks"`
 			Facts    int `json:"facts"`
 			Findings int `json:"findings"`
@@ -1845,7 +1861,13 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 		return
 	}
 	var factCount, findingCount, evidenceCount int
-	if server.blackboardV2 != nil {
+	if found.BlackboardProtocol == "fgs" {
+		err := server.db.QueryRowContext(request.Context(), `SELECT COALESCE(SUM(json_extract(body_json,'$.type')='goal'),0),COALESCE(SUM(json_extract(body_json,'$.type')='step'),0),COALESCE(SUM(json_extract(body_json,'$.type')='fact'),0) FROM fgs_nodes WHERE board_kind='project' AND board_id=?`, found.ID).Scan(&summary.Counts.Goals, &summary.Counts.Steps, &factCount)
+		if err != nil {
+			writeError(response, http.StatusInternalServerError, "count FGS nodes")
+			return
+		}
+	} else if server.blackboardV2 != nil {
 		projection, snapshotErr := server.blackboardV2.ProjectRuntimeSnapshot(request.Context(), found.ID)
 		if snapshotErr != nil {
 			writeError(response, http.StatusInternalServerError, "read Blackboard snapshot")

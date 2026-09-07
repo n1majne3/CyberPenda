@@ -58,11 +58,16 @@ See [ADR 0025](docs/adr/0025-container-engine-support-matrix.md) and
 make dev
 ```
 
+`make dev` builds the embedded UI before starting the daemon, then starts Vite.
+Both ports therefore start with current UI code. Vite updates UI edits immediately;
+restart `make dev` to refresh the daemon’s embedded UI.
+
 Open the Vite URL printed by the frontend (API and health proxy to `http://127.0.0.1:8787`).
-When `PENTEST_AUTH_TOKEN` is not configured, the backend prints a generated
-Blackboard operator access URL. Copy its `?token=...` query to the Vite URL.
-The UI stores the bearer capability in browser session storage and removes it
-from the visible URL.
+When `PENTEST_AUTH_TOKEN` is not configured and the daemon binds to loopback,
+the local UI obtains an HttpOnly browser session automatically. Direct Blackboard
+links also work after a daemon restart. With configured authentication, open the
+UI with `?token=...`; it stores the token in session storage and removes it from
+the visible URL.
 
 ### Build a self-contained daemon
 
@@ -83,8 +88,9 @@ make build      # builds UI into the local embed path, then pentestd.exe
 The React build under `internal/daemon/webfs/dist` is **not** committed. Docker and `make build` regenerate it. A tracked `dist/.gitkeep` only keeps `//go:embed` valid for bare Go tests.
 
 Default listen address: `http://127.0.0.1:8787`. On loopback without a
-configured auth token, use the generated Blackboard operator access URL printed
-at startup. Tokenless Runtime requests do not receive operator authority.
+configured auth token, open this address or a direct Blackboard link. The UI
+obtains operator access through a same-origin browser session. Runtime clients
+still use their Continuation Interface capability.
 
 ### Docker Compose
 
@@ -180,7 +186,8 @@ Domain terms are defined in [CONTEXT.md](CONTEXT.md).
 | `make build-tsecbench-hosted-bundle TSECBENCH_BUNDLE_VERSION=v1` | Export a Hosted upload bundle from a built image |
 | `make test` / `make test-backend` | Go unit and integration tests |
 | `make test-ci` | CI-safe tests (no Docker, no LLM credentials) |
-| `make smoke-sandbox-mcp` | Live smoke: sandbox → daemon Blackboard v2 MCP change |
+| `make test-concurrency` | Runtime lifecycle race checks with shuffled order and one/four CPUs |
+| `make smoke-sandbox-fgs` | Live smoke: sandbox → Runtime Outbox → accepted FGS |
 | `make smoke-runtime-tasks` | Live smoke for Codex / Claude / Pi (needs Docker + provider creds) |
 | `make clean` | Remove built UI artifacts and `pentestd` binary |
 

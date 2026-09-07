@@ -3,9 +3,11 @@ package daemon_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/pprof"
 	"testing"
 	"time"
 
@@ -21,13 +23,15 @@ func TestLaunchPiTaskWithModelProviderReturnsWithoutDeadlock(t *testing.T) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// Process startup, Store migrations, and cleanup have their own bound.
+	// The child starts the deadlock watchdog only at the HTTP operation below.
+	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 	defer cancel()
 	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLaunchPiTaskWithModelProviderReturnsWithoutDeadlock$", "-test.count=1")
 	command.Env = append(os.Environ(), piModelProviderLaunchHelper+"=1")
 	output, err := command.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		t.Fatalf("POST /tasks deadlocked after preflight passed; helper exceeded 2s\n%s", output)
+		t.Fatalf("launch helper setup or cleanup exceeded one minute\n%s", output)
 	}
 	if err != nil {
 		t.Fatalf("launch helper failed: %v\n%s", err, output)
@@ -69,10 +73,22 @@ esac
 		ModelProviderID: providerID,
 	})
 
+	// This is a deadlock check, not a two-second latency contract. The normal
+	// launch can exceed two seconds under concurrent Store migration or race
+	// instrumentation. A stalled operation must still fail with useful stacks.
+	watchdog := time.AfterFunc(30*time.Second, func() {
+		fmt.Fprintln(os.Stderr, "POST /tasks did not return within 30s after fixture setup")
+		_ = pprof.Lookup("goroutine").WriteTo(os.Stderr, 2)
+		// Only this isolated helper process exits; a deadlocked handler must
+		// not hang server cleanup or leak into the parent test process.
+		os.Exit(2)
+	})
+	defer watchdog.Stop()
 	taskID := createTask(t, server, projectID, `{
 		"type":"pentest","goal":"inspect example.test",
 		"runtime_profile_id":`+quoteJSON(profileID)+`,
 		"runner":"sandbox"
 	}`)
+	watchdog.Stop()
 	waitForTaskStatus(t, server, projectID, taskID, "completed")
 }

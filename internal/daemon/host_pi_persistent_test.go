@@ -183,7 +183,7 @@ func TestHostPiLaunchBindsPersistentRPCSessionAcrossTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanupHostPersistentRuntime(t, server, created.ID, closed)
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	waitForProviderRequests(t, session, 1)
 
 	// Fixed startup projection (after Config Projection) includes every
@@ -310,7 +310,7 @@ func TestHostPiOutsideProjectedSetRequiresRestartPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleanupHostPersistentRuntime(t, server, created.ID, closed)
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	waitForProviderRequests(t, session, 1)
 
 	versions, err := server.tasks.RuntimeConfigVersions(created.ID)

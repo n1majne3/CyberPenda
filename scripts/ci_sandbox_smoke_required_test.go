@@ -29,7 +29,22 @@ func TestCISandboxSmokeRequired(t *testing.T) {
 		},
 		{
 			name:    "requires smoke for sandbox harness changes",
-			files:   "scripts/smoke-sandbox-mcp-live.sh\n",
+			files:   "scripts/smoke-sandbox-fgs-live.sh\n",
+			wantOut: "required=true",
+		},
+		{
+			name:    "requires smoke for FGS receiver changes",
+			files:   "internal/daemon/fgs.go\n",
+			wantOut: "required=true",
+		},
+		{
+			name:    "requires smoke for FGS protocol changes",
+			files:   "internal/fgs/outbox.go\n",
+			wantOut: "required=true",
+		},
+		{
+			name:    "requires smoke for Runtime CLI changes",
+			files:   "internal/pentestctl/fgs.go\n",
 			wantOut: "required=true",
 		},
 		{

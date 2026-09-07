@@ -43,22 +43,19 @@ func newTestServices(t *testing.T) services {
 	profiles := runtimeprofile.NewService(db)
 	creds := credential.NewService(db)
 	providers := modelprovider.NewService(db)
-	plugins := runtimeplugin.MustBuiltinRegistry()
-	// Default sandbox engine probe is fake so unit tests do not require a live
-	// Docker/OrbStack/Podman daemon. Tests that care about engine behaviour
-	// replace this runner.
-	fakeEngine := func(ctx context.Context, name string, args ...string) ([]byte, error) {
-		return []byte("Server:\n Name: test-engine\n Operating System: test\n"), nil
-	}
-	return services{
-		preflight: preflight.NewService(profiles, creds).
-			WithModelProviders(providers, plugins).
-			WithContainerRunner(fakeEngine),
-		db:             db,
-		profiles:       profiles,
-		creds:          creds,
-		modelProviders: providers,
-	}
+	svc := services{db: db, profiles: profiles, creds: creds, modelProviders: providers}
+	svc.preflight = svc.newPreflight()
+	return svc
+}
+
+// Every fixture Service uses a fake engine, including replacements that add
+// Skills. Engine-specific tests can still inject their own container runner.
+func (svc services) newPreflight(skills ...preflight.SkillGetter) *preflight.Service {
+	return preflight.NewService(svc.profiles, svc.creds, skills...).
+		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry()).
+		WithContainerRunner(func(context.Context, string, ...string) ([]byte, error) {
+			return []byte("Server:\n Name: test-engine\n Operating System: test\n"), nil
+		})
 }
 
 func TestRunFailsWhenProfileMissing(t *testing.T) {
@@ -457,8 +454,7 @@ func TestRunFailsWhenEnabledSkillBundleIsMissing(t *testing.T) {
 	svc := newTestServices(t)
 	skillsRoot := filepath.Join(t.TempDir(), "skills")
 	skills := skill.NewService(svc.db, skillsRoot)
-	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).
-		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry())
+	svc.preflight = svc.newPreflight(skills)
 	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -492,8 +488,7 @@ func TestRunFailsWhenEnabledSkillBundleIsMissing(t *testing.T) {
 func TestRunShowsModeSkillSeparatelyAndRejectsIncompatibleUserSkill(t *testing.T) {
 	svc := newTestServices(t)
 	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
-	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).
-		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry())
+	svc.preflight = svc.newPreflight(skills)
 	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatal(err)
@@ -518,10 +513,11 @@ func TestRunShowsModeSkillSeparatelyAndRejectsIncompatibleUserSkill(t *testing.T
 // Disabled Blackboard Mode has no Mode Skill: the mode_skill check passes
 // without a Mode Skill preview, and a Disabled-only Skill stays acceptable.
 func TestRunDisabledModeNeedsNoModeSkill(t *testing.T) {
+	// Mode validation must not depend on tools installed on the test host.
+	t.Setenv("PATH", t.TempDir())
 	svc := newTestServices(t)
 	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
-	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).
-		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry())
+	svc.preflight = svc.newPreflight(skills)
 	profile, err := svc.profiles.Create("fake-disabled", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatal(err)
@@ -556,8 +552,7 @@ func TestRunSkipsUnavailableCapturedSkills(t *testing.T) {
 	svc := newTestServices(t)
 	skillsRoot := filepath.Join(t.TempDir(), "skills")
 	skills := skill.NewService(svc.db, skillsRoot)
-	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).
-		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry())
+	svc.preflight = svc.newPreflight(skills)
 	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -600,8 +595,7 @@ func TestRunListsEnabledSkillsWithoutAddingCredentialRequirements(t *testing.T) 
 	}
 	svc := newTestServices(t)
 	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
-	svc.preflight = preflight.NewService(svc.profiles, svc.creds, skills).
-		WithModelProviders(svc.modelProviders, runtimeplugin.MustBuiltinRegistry())
+	svc.preflight = svc.newPreflight(skills)
 	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)

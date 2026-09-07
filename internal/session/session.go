@@ -322,6 +322,7 @@ type CreateContinuationRequest struct {
 // the JSON representation because it is a server-local path, not operator
 // state or a Project artifact reference.
 type Session struct {
+	BlackboardProtocol   string                 `json:"blackboard_protocol"`
 	ID                   string                 `json:"id"`
 	Title                string                 `json:"title"`
 	Lifecycle            Lifecycle              `json:"lifecycle"`
@@ -571,7 +572,8 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 	}
 	now := time.Now().UTC()
 	created := Session{
-		ID: id, Title: title, Lifecycle: LifecycleOpen, Workdir: workdir,
+		BlackboardProtocol: "fgs",
+		ID:                 id, Title: title, Lifecycle: LifecycleOpen, Workdir: workdir,
 		RunControls:          RunControls{BlackboardMode: mode},
 		BlackboardConclusion: BlackboardConclusion{Mode: mode, State: BlackboardConclusionStateClean},
 		CreatedAt:            now, UpdatedAt: now, LastActivityAt: now,
@@ -581,7 +583,7 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 		return Session{}, fmt.Errorf("begin Session create: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`INSERT INTO sessions (id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at) VALUES (?,?,?,?,?,?,?,?)`,
+	if _, err := tx.Exec(`INSERT INTO sessions (id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at,blackboard_protocol) VALUES (?,?,?,?,?,?,?,?,'fgs')`,
 		created.ID, created.Title, string(created.Lifecycle), created.Workdir,
 		string(created.RunControls.BlackboardMode),
 		formatTime(created.CreatedAt), formatTime(created.UpdatedAt), formatTime(created.LastActivityAt)); err != nil {
@@ -638,7 +640,7 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 
 // Get loads one Session by its own durable identity.
 func (s *Service) Get(id string) (Session, error) {
-	return scanSession(s.db.QueryRow(`SELECT id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at FROM sessions WHERE id=?`, id))
+	return scanSession(s.db.QueryRow(`SELECT id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at,blackboard_protocol FROM sessions WHERE id=?`, id))
 }
 
 // List returns Sessions for one lifecycle in most-recent-activity order.
@@ -656,7 +658,7 @@ func (s *Service) ListLimited(lifecycle Lifecycle, limit int) ([]Session, error)
 	if limit < 0 {
 		return nil, ErrInvalidLimit
 	}
-	query := `SELECT id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at FROM sessions WHERE lifecycle=? ORDER BY last_activity_at DESC, created_at DESC, id ASC`
+	query := `SELECT id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at,blackboard_protocol FROM sessions WHERE lifecycle=? ORDER BY last_activity_at DESC, created_at DESC, id ASC`
 	args := []any{string(lifecycle)}
 	if limit > 0 {
 		query += ` LIMIT ?`
@@ -1974,7 +1976,7 @@ type scanner interface{ Scan(dest ...any) error }
 func scanSession(row scanner) (Session, error) {
 	var found Session
 	var lifecycle, mode, created, updated, activity string
-	if err := row.Scan(&found.ID, &found.Title, &lifecycle, &found.Workdir, &mode, &created, &updated, &activity); err != nil {
+	if err := row.Scan(&found.ID, &found.Title, &lifecycle, &found.Workdir, &mode, &created, &updated, &activity, &found.BlackboardProtocol); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
 		}

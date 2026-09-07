@@ -123,6 +123,26 @@ func TestHostedEvaluationPublishesOnlyCTFOrchestratorAndProjectsBenchmarkEnviron
 	}
 }
 
+func TestTSecBenchSkillGuardsSpawnDeliveryAndSingleOrchestrator(t *testing.T) {
+	instruction := captureHostedSkillInstruction(t)
+	for _, required := range []string{
+		// First-light identity check: every session confirms the leader lock
+		// before assuming the Decide role, so a spawn child that woke without
+		// its task message degrades to a worker instead of self-appointing.
+		"身份确认", "graph/leader.lock", "降级为 Execute", "接管",
+		// Spawn acknowledgement: the lead verifies each child produced its fact
+		// skeleton within the ack window and re-dispatches on a missed delivery.
+		"90 秒", "fact 骨架", "投递失败",
+		// Turn discipline: the lead never ends a turn while agents are live,
+		// because the notification loop is the only thing that wakes it again.
+		"禁止结束当前回合",
+	} {
+		if !strings.Contains(instruction, required) {
+			t.Errorf("hosted Skill missing spawn-delivery guard %q", required)
+		}
+	}
+}
+
 func TestTSecBenchSkillUsesSeparateGuardedOperations(t *testing.T) {
 	instruction := captureHostedSkillInstruction(t)
 	for _, forbiddenChain := range []string{

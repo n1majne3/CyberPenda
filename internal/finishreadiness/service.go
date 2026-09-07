@@ -62,6 +62,7 @@ func (service *Service) Evaluate(ctx context.Context, projectID, taskID string) 
 		args                       []any
 		blackboardOnly             bool
 	}{
+		{"fgs_action_required", "FGS updates need repair or withdrawal.", "blackboard", `SELECT COUNT(*) FROM fgs_receipts WHERE owner_kind='task' AND owner_id=? AND json_extract(receipt_json,'$.state')='action_required' AND json_extract(payload_json,'$.resolves') IS NULL`, []any{taskID}, true},
 		{BlockerPendingConclusions, "Blackboard conclusions are not settled.", "blackboard", `SELECT COUNT(*) FROM pending_blackboard_conclusions WHERE task_id=? AND state NOT IN ('clean','applied','action_required')`, []any{taskID}, true},
 		{BlockerConclusionActionRequired, "A Blackboard conclusion needs operator action.", "blackboard", `SELECT COUNT(*) FROM pending_blackboard_conclusions WHERE task_id=? AND state='action_required'`, []any{taskID}, true},
 		{BlockerOpenAttempts, "Task-owned Blackboard Attempts are still open.", "blackboard", `SELECT COUNT(*) FROM blackboard_v2_attempt_origins origins JOIN task_continuations continuations ON continuations.id=origins.continuation_id JOIN blackboard_v2_records records ON records.project_id=origins.project_id AND records.key=origins.key WHERE continuations.task_id=? AND records.type='attempt' AND json_extract(records.record_json,'$.status')='open'`, []any{taskID}, true},

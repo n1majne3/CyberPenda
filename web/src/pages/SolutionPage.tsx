@@ -1,3 +1,4 @@
+import { ProjectReportProtocol } from "./FGSReport";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Flag, Download } from "lucide-react";
@@ -19,7 +20,9 @@ import { ErrorState, LoadingState, SectionHeading } from "@/components/shared";
  * Solved state comes only from current verified flag Solutions. Structured v2
  * JSON supplies Blackboard Keys for detail/history navigation.
  */
-export function SolutionPage() {
+export function SolutionPage() { return <ProjectReportProtocol legacy={<LegacySolutionPage />} />; }
+
+function LegacySolutionPage() {
   const { projectId = "" } = useParams<{ projectId: string }>();
   const [solution, setSolution] = useState<CTFSolutionProjection | null>(null);
   const [markdown, setMarkdown] = useState<string | null>(null);

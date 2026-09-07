@@ -262,15 +262,15 @@ export function ProjectDashboardPage() {
           chip={runningCount > 0 ? `${runningCount} running` : undefined}
           sub={latestTask ? `Latest: ${latestTask.goal} · ${formatRelativeTime(latestTask.updated_at)}` : undefined}
         />
-        <StatCard icon={<FileText className="h-3.5 w-3.5" />} label="Facts" n={dash.counts.facts} to={`${base}/facts`} />
+        <StatCard icon={<FileText className="h-3.5 w-3.5" />} label="Facts" n={dash.counts.facts} to={`${base}/blackboard`} />
         <StatCard
           icon={<FlaskConical className="h-3.5 w-3.5" />}
-          label="Findings"
-          n={dash.counts.findings}
-          to={`${base}/findings`}
-          zeroHint="No Findings yet — generated from Task conclusions"
+          label={project.blackboard_protocol === "fgs" ? "Goals" : "Findings"}
+          n={project.blackboard_protocol === "fgs" ? dash.counts.goals ?? 0 : dash.counts.findings}
+          to={project.blackboard_protocol === "fgs" ? `${base}/blackboard` : `${base}/findings`}
+          zeroHint={project.blackboard_protocol === "fgs" ? "No accepted Goals yet" : "No Findings yet — generated from Task conclusions"}
         />
-        <StatCard icon={<FolderLock className="h-3.5 w-3.5" />} label="Evidence" n={dash.counts.evidence} to={`${base}/evidence`} />
+        <StatCard icon={<FolderLock className="h-3.5 w-3.5" />} label={project.blackboard_protocol === "fgs" ? "Steps" : "Evidence"} n={project.blackboard_protocol === "fgs" ? dash.counts.steps ?? 0 : dash.counts.evidence} to={project.blackboard_protocol === "fgs" ? `${base}/blackboard` : `${base}/evidence`} />
       </div>
 
       <div className="grid min-w-0 max-w-full gap-5 lg:grid-cols-5">
@@ -313,22 +313,22 @@ export function ProjectDashboardPage() {
           <div className="space-y-3 px-4 py-3.5 text-sm">
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
-                <Compass className="h-4 w-4 text-muted-foreground" /> Exploration objectives
+                <Compass className="h-4 w-4 text-muted-foreground" /> {project.blackboard_protocol === "fgs" ? "Goals" : "Exploration objectives"}
               </span>
-              <span className="font-semibold">{openTaskCount} open</span>
+              <span className="font-semibold">{project.blackboard_protocol === "fgs" ? `${dash.counts.goals ?? 0} reported` : `${openTaskCount} open`}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
-                <FlaskConical className="h-4 w-4 text-muted-foreground" /> Attempts
+                <FlaskConical className="h-4 w-4 text-muted-foreground" /> {project.blackboard_protocol === "fgs" ? "Steps" : "Attempts"}
               </span>
-              <span className="font-semibold">{runningCount} in progress</span>
+              <span className="font-semibold">{project.blackboard_protocol === "fgs" ? `${dash.counts.steps ?? 0} reported` : `${runningCount} in progress`}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
                 <CheckCircle2 className="h-4 w-4 text-muted-foreground" />{" "}
-                {isCTF ? "Solutions" : "Findings"}
+                {project.blackboard_protocol === "fgs" ? "Facts" : isCTF ? "Solutions" : "Findings"}
               </span>
-              <span className="font-semibold">{dash.counts.findings} current</span>
+              <span className="font-semibold">{project.blackboard_protocol === "fgs" ? dash.counts.facts : dash.counts.findings} current</span>
             </div>
             <Link
               to={`${base}/blackboard`}

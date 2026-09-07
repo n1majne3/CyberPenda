@@ -1798,9 +1798,9 @@ func TestSteerTaskInterruptsActiveRunAndLaunchesResumedContinuation(t *testing.T
 	binary := filepath.Join(t.TempDir(), "codex-slow")
 	script := "#!/bin/sh\n" +
 		"echo codex-provider:$*\n" +
-		"case \"$*\" in\n" +
-		"  *resume*) exit 0 ;;\n" +
-		"esac\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ \"$arg\" = \"resume\" ]; then exit 0; fi\n" +
+		"done\n" +
 		"exec sleep 5\n"
 	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
 		t.Fatalf("write provider binary: %v", err)
@@ -1996,9 +1996,7 @@ func TestSandboxSteerConfirmsContainerExitBeforeNativeResume(t *testing.T) {
 		"  id=\"$3\"\n" +
 		"  create_file=" + shellQuote(dir) + "/$id.create\n" +
 		"  echo sandbox-command:$(cat \"$create_file\")\n" +
-		"  case \"$(cat \"$create_file\")\" in\n" +
-		"    *resume*) exit 0 ;;\n" +
-		"  esac\n" +
+		"  if [ \"$id\" = \"ctr-2\" ]; then exit 0; fi\n" +
 		"  while [ ! -f " + shellQuote(stoppedPath) + " ]; do sleep 0.05; done\n" +
 		"  exit 0\n" +
 		"fi\n" +

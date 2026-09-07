@@ -526,6 +526,7 @@ type RuntimeActivity struct {
 
 // Task is a single user-goal-driven run within a project.
 type Task struct {
+	BlackboardProtocol   string                 `json:"blackboard_protocol"`
 	ID                   string                 `json:"id"`
 	ProjectID            string                 `json:"project_id"`
 	Type                 Type                   `json:"type"`
@@ -706,6 +707,7 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	// providing scope out-of-band, e.g. the HTTP layer).
 	var snapshot ScopeSnapshot
 	var projectKind string
+	var blackboardProtocol string
 	if s.projects != nil {
 		proj, err := s.projects.Get(req.ProjectID)
 		if err != nil {
@@ -716,6 +718,7 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 		}
 		snapshot = proj.Scope
 		projectKind = proj.Kind
+		blackboardProtocol = proj.BlackboardProtocol
 	}
 	if req.Type != TypePentest && req.Type != TypeCTFChallenge {
 		return Task{}, ErrInvalidTaskType
@@ -726,6 +729,7 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 
 	now := time.Now().UTC()
 	created := Task{
+		BlackboardProtocol:   blackboardProtocol,
 		ID:                   newID(),
 		ProjectID:            req.ProjectID,
 		Type:                 req.Type,
@@ -788,7 +792,7 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 // Get loads a single task by id.
 func (s *Service) Get(id string) (Task, error) {
 	return scanTask(s.db.QueryRow(
-		`SELECT id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at FROM tasks WHERE id = ? AND deleted_at = ''`,
+		`SELECT id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at, (SELECT blackboard_protocol FROM projects WHERE projects.id=tasks.project_id) FROM tasks WHERE id = ? AND deleted_at = ''`,
 		id,
 	))
 }
@@ -796,7 +800,7 @@ func (s *Service) Get(id string) (Task, error) {
 // ListForProject returns tasks for a project ordered by creation time.
 func (s *Service) ListForProject(projectID string) ([]Task, error) {
 	rows, err := s.db.Query(
-		`SELECT id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
+		`SELECT id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at, (SELECT blackboard_protocol FROM projects WHERE projects.id=tasks.project_id)
 		 FROM tasks WHERE project_id = ? AND deleted_at = '' ORDER BY created_at ASC`,
 		projectID,
 	)
@@ -821,7 +825,7 @@ func (s *Service) ListForProject(projectID string) ([]Task, error) {
 
 // taskSelectColumns lists the columns scanned by the shared Task projections.
 // Keep it in sync with the table columns used by scanTask.
-const taskSelectColumns = `id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at`
+const taskSelectColumns = `id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at, (SELECT blackboard_protocol FROM projects WHERE projects.id=tasks.project_id)`
 
 // recentPerProjectSQL builds the bounded per-Project recent Task query. The
 // exclusion placeholders keep busy Tasks out of the ordinary summary; the
@@ -952,7 +956,7 @@ func scanTask(row scanner) (Task, error) {
 	var createdAt string
 	var updatedAt string
 
-	err := row.Scan(&found.ID, &found.ProjectID, &found.Type, &found.Goal, &status, &runner, &found.RuntimeProfileID, &runControlsJSON, &scopeJSON, &createdAt, &updatedAt)
+	err := row.Scan(&found.ID, &found.ProjectID, &found.Type, &found.Goal, &status, &runner, &found.RuntimeProfileID, &runControlsJSON, &scopeJSON, &createdAt, &updatedAt, &found.BlackboardProtocol)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, ErrNotFound
 	}
@@ -2061,7 +2065,7 @@ func (s *Service) ReconcileInterruptedStateExcept(ownedTaskIDs []string) (Reconc
 		}
 	}
 	rows, err := s.db.Query(
-		`SELECT id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at
+		`SELECT id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at, (SELECT blackboard_protocol FROM projects WHERE projects.id=tasks.project_id)
 		 FROM tasks WHERE status IN (?, ?, ?)`,
 		string(StatusRunning), string(StatusPending), string(StatusPaused))
 	if err != nil {

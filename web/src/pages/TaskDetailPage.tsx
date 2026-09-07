@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { flushSync } from "react-dom";
-import { useParams, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { Square, Terminal, GitBranch, MessageSquare, Play, ChevronRight, ChevronsUpDown, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip, Brain, PlugZap, Info } from "lucide-react";
 import { apiGet, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type TaskTranscriptEntry } from "@/lib/api";
 import { Button, Badge, Chip, Input, Select, Textarea } from "@/components/ui";
@@ -20,6 +20,7 @@ import { taskRuntimeOwnerAdapter, sessionRuntimeOwnerAdapter, type RuntimeOwnerA
 import { canPiNativeCrossProvider, conversationModeText, conversationQueueUnavailable, conversationSendLabel, newSteerRequestID, resolveConversationAction, resolveConversationSendMode, steerPendingState } from "@/lib/runtimeOwner/conversationKernel";
 import { ACTIVE_OWNER_STATUSES, statusWord } from "@/lib/runtimeOwner/status";
 import { cn } from "@/lib/utils";
+import { FGSBoard } from "./FGSPage";
 import { emptyHistory, type ConversationSendMode, type OwnerHistory, type RuntimeOwnerKind, type RuntimeOwnerView } from "@/lib/runtimeOwner/types";
 
 // Uniform row-height estimates used by the virtualized Runtime Owner history
@@ -42,9 +43,11 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const isVisible = useDocumentVisibility();
   const [owner, setOwner] = useState<RuntimeOwnerView | null>(null);
   const [finishReadiness, setFinishReadiness] = useState<FinishReadiness | null>(null);
-  const [activeView, setActiveView] = useState<"conversation" | "timeline">(
-    () => searchParams.get("view") === "timeline" ? "timeline" : "conversation",
+  const [requestedView, setActiveView] = useState<"conversation" | "timeline" | "blackboard">(
+    () => searchParams.get("view") === "blackboard" ? "blackboard" : searchParams.get("view") === "timeline" ? "timeline" : "conversation",
   );
+  const hasSessionBlackboard = isSession && owner !== null && owner.id === ownerID && owner.blackboardProtocol === "fgs" && runtimeOwnerBlackboardMode(owner) !== "disabled";
+  const activeView = requestedView === "blackboard" && !hasSessionBlackboard ? "conversation" : requestedView;
   const [autoFollow, setAutoFollow] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -672,7 +675,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     return payload;
   }
 
-  function selectView(view: "conversation" | "timeline") {
+  function selectView(view: "conversation" | "timeline" | "blackboard") {
     setActiveView(view);
     const next = new URLSearchParams(searchParams);
     next.set("view", view);
@@ -941,12 +944,20 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         >
           Timeline
         </button>
+        {hasSessionBlackboard && <button
+          type="button"
+          className={tabClass(activeView === "blackboard")}
+          aria-pressed={activeView === "blackboard"}
+          onClick={() => selectView("blackboard")}
+        >
+          Blackboard
+        </button>}
         <div className="ml-auto">
           {activeView === "conversation" ? (
             <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />
-          ) : (
+          ) : activeView === "timeline" ? (
             <TimelineScrollControls onTop={scrollTimelineToTop} onBottom={scrollTimelineToBottom} />
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -954,7 +965,11 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         data-testid="task-workspace"
         className="flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible rounded-b-xl border border-border bg-card/30 md:overflow-hidden lg:min-h-0"
       >
-        {activeView === "timeline" ? (
+        {activeView === "blackboard" ? (
+          <div className="min-h-0 flex-1 overflow-auto p-3 pb-44 sm:p-5 md:pb-5">
+            <FGSBoard key={owner.id} scope="sessions" id={owner.id} />
+          </div>
+        ) : activeView === "timeline" ? (
           <div className="min-h-0 flex-1 overflow-hidden p-2 pb-44 sm:p-3 md:pb-5">
             <AgentTranscriptView
               owner={owner}
@@ -1566,6 +1581,7 @@ function RuntimeActivityBadge({ activity }: { activity?: RuntimeActivity }) {
 }
 
 function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
+  const { projectId } = useParams();
   const mode = runtimeOwnerBlackboardMode(owner);
   if (mode === "disabled") {
     return (
@@ -1580,6 +1596,7 @@ function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
       </Chip>
     );
   }
+  if (owner.blackboardProtocol === "fgs") return <Link className="rounded border px-2 py-1 text-xs" to={owner.kind === "session" ? `/sessions/${owner.id}/blackboard` : `/projects/${projectId}/blackboard`}>Blackboard · FGS</Link>;
   const state = owner.blackboardConclusion?.state ?? "clean";
   const sourceTurn = owner.blackboardConclusion?.source_turn_id;
   const appliedRevision = owner.blackboardConclusion?.applied_revision;

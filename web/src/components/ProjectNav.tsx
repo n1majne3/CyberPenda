@@ -11,6 +11,7 @@ type NavItem = { to: string; label: string; end?: boolean; count?: number };
  */
 export function ProjectNav() {
   const { projectId } = useParams<{ projectId: string }>();
+  const [fgs, setFGS] = useState(false);
   const [kind, setKind] = useState<string>("pentest");
   const [counts, setCounts] = useState<Record<string, number>>({});
 
@@ -28,6 +29,7 @@ export function ProjectNav() {
         ]);
         if (cancelled) return;
         setKind(project.kind || "pentest");
+setFGS(project.blackboard_protocol === "fgs");
         setCounts({
           tasks: dashboard.counts?.tasks ?? 0,
           findings: dashboard.counts?.findings ?? 0,
@@ -44,7 +46,7 @@ export function ProjectNav() {
 
   const base = `/projects/${projectId}`;
   const isCTF = kind === "ctf_challenge";
-  const links: NavItem[] = [
+  const links: NavItem[] = fgs ? [{to:"",label:"Overview",end:true},{to:"/tasks",label:"Tasks",count:counts.tasks},{to:"/blackboard",label:"Blackboard"},{to:"/report",label:"Report"},{to:"/scope",label:"Scope"}] : [
     { to: "", label: "Overview", end: true },
     { to: "/tasks", label: "Tasks", count: counts.tasks },
     { to: "/blackboard", label: "Blackboard" },

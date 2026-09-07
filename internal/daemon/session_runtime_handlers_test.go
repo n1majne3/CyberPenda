@@ -322,9 +322,8 @@ func TestSessionSandboxProjectsWorkingGraphPathsThroughWorkdirMount(t *testing.T
 	if err != nil {
 		t.Fatalf("build Session plan: %v", err)
 	}
-	if strings.Count(plan.LaunchGoal, "`cyberpenda-blackboard-working-graph`") != 1 ||
-		!strings.Contains(plan.LaunchGoal, "TASK GOAL:\ninspect") {
-		t.Fatalf("Session launch goal did not invoke Working Graph Skill: %s", plan.LaunchGoal)
+	if !strings.Contains(plan.LaunchGoal, runner.FGSLaunchInstruction) || !strings.Contains(plan.LaunchGoal, "inspect") {
+		t.Fatalf("Session launch goal did not require FGS instructions: %s", plan.LaunchGoal)
 	}
 	args, ok := runtime.DockerSandboxCreateArgs(plan.Adapter)
 	if !ok {

@@ -1,6 +1,7 @@
 package runner_test
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -11,6 +12,31 @@ import (
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
 )
+
+func TestLaunchProcessEnvMapsAbsoluteGraphWithRelativeLayout(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	layout := runner.Layout{TaskRoot: filepath.Join("runs", "task-relative"), Workdir: filepath.Join("runs", "task-relative", "workdir")}
+	root := filepath.Join(cwd, layout.Workdir)
+	env := runner.LaunchProcessEnv(layout, runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex}, true, runner.RuntimeOwnerContext{
+		Owner:                owner.NewTaskContract("task-relative", "project", root),
+		BlackboardProtocol:   "fgs",
+		WorkingGraphRoot:     root,
+		WorkingGraphOutbox:   filepath.Join(root, "graph", "outbox", "continuation"),
+		WorkingGraphReceipts: filepath.Join(root, "graph", "receipts", "continuation"),
+	})
+	for key, want := range map[string]string{
+		"PENTEST_WORKING_GRAPH_ROOT":     "/task/workdir",
+		"PENTEST_WORKING_GRAPH_OUTBOX":   "/task/workdir/graph/outbox/continuation",
+		"PENTEST_WORKING_GRAPH_RECEIPTS": "/task/workdir/graph/receipts/continuation",
+	} {
+		if env[key] != want {
+			t.Errorf("%s = %q, want %q", key, env[key], want)
+		}
+	}
+}
 
 // newGlobalEnvTestService opens an isolated credential service for global-env
 // projection tests.
@@ -229,5 +255,19 @@ func TestProfileCredentialRefOverridesGlobalEnv(t *testing.T) {
 	}
 	if env["SHARED_VAR"] != "profile-value" {
 		t.Fatalf("profile credential_ref must override global env; got SHARED_VAR=%q", env["SHARED_VAR"])
+	}
+}
+
+func TestFGSLaunchAPIBaseWorksWithOlderSandboxCLI(t *testing.T) {
+	for _, sandbox := range []bool{false, true} {
+		for _, suffix := range []string{"", "/", "/api", "/api/"} {
+			env := runner.LaunchProcessEnv(runner.Layout{}, runtimeprofile.Profile{Provider: runtimeprofile.ProviderPi}, sandbox, runner.RuntimeOwnerContext{
+				BlackboardProtocol: "fgs", APIURL: "http://daemon.test:8787" + suffix,
+			})
+			// Older images append /api/v2 directly. Project a root both old and new CLIs accept.
+			if got := env["PENTEST_API_URL"] + "/api/v2/sessions/s/fgs"; got != "http://daemon.test:8787/api/v2/sessions/s/fgs" {
+				t.Errorf("sandbox=%v suffix=%q endpoint=%q", sandbox, suffix, got)
+			}
+		}
 	}
 }

@@ -749,7 +749,7 @@ func TestStopClosesProviderSessionBeforeWaitingForRuntimeResources(t *testing.T)
 			},
 		})
 	}()
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks/"+created.ID+"/stop", nil)
 	response := httptest.NewRecorder()
@@ -816,7 +816,7 @@ func TestStopWaitsForActiveProviderControlBeforeClosingSession(t *testing.T) {
 			TaskID: created.ID, Goal: created.Goal, ContinuationID: continuation.ID, Adapter: adapter,
 		})
 	}()
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 	select {
 	case <-session.started:
 	case <-time.After(time.Second):
@@ -1046,6 +1046,9 @@ func TestNativeSteerReplacementCarriesBlackboardGrant(t *testing.T) {
 
 	createdProject, err := server.projects.Create("Project", "", project.Scope{}, project.Defaults{})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
 		t.Fatal(err)
 	}
 	profile := createTestRuntimeProfile(t, server)

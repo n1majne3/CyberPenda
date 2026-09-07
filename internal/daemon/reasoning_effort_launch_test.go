@@ -78,7 +78,7 @@ func TestCodexLaunchSendsResolvedRequestedReasoningEffort(t *testing.T) {
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 
 	deadline := time.Now().Add(2 * time.Second)
 	var requests []runtime.ProviderSessionRequest
@@ -178,7 +178,7 @@ func TestCodexLaunchDefaultsRequestedReasoningEffortToHighWhenMissing(t *testing
 	if err := server.launchTaskInBackground(created, plan, created.Goal); err != nil {
 		t.Fatal(err)
 	}
-	waitForHarnessActive(t, server, created.ID, true)
+	waitForTaskRunning(t, server, created.ID)
 
 	deadline := time.Now().Add(2 * time.Second)
 	var requests []runtime.ProviderSessionRequest
@@ -248,7 +248,7 @@ func TestTaskCreateHTTPAcceptsLaunchReasoningEffortOverrideWithoutMutatingProfil
 		t.Fatalf("create task status %d body %s", resp.Code, resp.Body.String())
 	}
 
-	waitForHarnessActive(t, server, jsonTaskID(t, resp.Body.Bytes()), true)
+	waitForTaskRunning(t, server, jsonTaskID(t, resp.Body.Bytes()))
 	deadline := time.Now().Add(2 * time.Second)
 	var requests []runtime.ProviderSessionRequest
 	for time.Now().Before(deadline) {

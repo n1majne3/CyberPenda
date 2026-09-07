@@ -959,6 +959,10 @@ func migrations() []migration {
 		newMigration(71, "working_graph_blackboard_modes", migration71SQL, migration71Up),
 		newMigration(72, "continuation_grant_access", migration72SQL, migration72Up),
 		newMigration(73, "working_graph_intents", migration73SQL, migration73Up),
+		newMigration(74, "fgs_graph", migration74SQL, migration74Up),
+		newMigration(75, "fgs_protocol_selection", migration75SQL, migration75Up),
+		newMigration(76, "fgs_outbox_inventory", migration76SQL, migration76Up),
+		newMigration(77, "fgs_existing_owner_protocol", migration77SQL, migration77Up),
 	}
 }
 

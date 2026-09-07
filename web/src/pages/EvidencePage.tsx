@@ -1,3 +1,5 @@
+import { ProjectReportProtocol } from "./FGSReport";
+import { BlackboardPage } from "./BlackboardPage";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { FolderLock } from "lucide-react";
@@ -16,7 +18,8 @@ import { ErrorState, LoadingState, RichEmptyState } from "@/components/shared";
  * Focused Evidence view over the current Blackboard v2 Snapshot.
  * Bookmark-compatible with /evidence; detail loads by Blackboard Key.
  */
-export function EvidencePage() {
+export function EvidencePage() {return <ProjectReportProtocol legacy={<LegacyEvidencePage />} fgs={<BlackboardPage />} />;}
+function LegacyEvidencePage() {
   const { projectId = "" } = useParams<{ projectId: string }>();
   const [rows, setRows] = useState<SnapshotListEntry[]>([]);
   const [error, setError] = useState<string | null>(null);

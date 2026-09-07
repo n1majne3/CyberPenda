@@ -41,7 +41,10 @@ describe("icon source policy", () => {
 
       const source = readFileSync(file, "utf8");
       const found = [];
-      if (/<svg\b/.test(source)) found.push("inline svg");
+      // FGS draws data relationships with SVG paths. This is a graph, not an
+      // icon; normal page controls still use the shared icon library.
+      const graphSource = rel === "pages/FGSPage.tsx";
+      if (/<svg\b/.test(source) && !graphSource) found.push("inline svg");
       if (/<img\b/.test(source)) found.push("image icon");
       if (emojiPattern.test(source)) found.push("emoji icon");
       return found.map((kind) => `${rel}: ${kind}`);

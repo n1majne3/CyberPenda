@@ -33,6 +33,9 @@ func TestCodexV2ContinuationLaunchAndRestartConformanceKeepsSnapshotRereadable(t
 		_ = server.Close()
 		t.Fatalf("create Project: %v", err)
 	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
 	if err != nil {
 		_ = server.Close()
@@ -144,6 +147,9 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 	createdProject, err := server.projects.Create("Finish resume", "", project.Scope{Domains: []string{"resume.test"}}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
+	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
 	}
 	profile, err := server.profiles.Create("Codex resume", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
 	if err != nil {
@@ -353,6 +359,9 @@ func TestBlackboardV2ResumeProjectionFailureLeavesNoContinuationPinOrSteeringCon
 		_ = server.Close()
 		t.Fatalf("create Project: %v", err)
 	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
 	profile, err := server.profiles.Create("Codex projection retry", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
 	if err != nil {
 		_ = server.Close()
@@ -476,6 +485,9 @@ func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringC
 	createdProject, err := server.projects.Create("Interrupt steer", "", project.Scope{Domains: []string{"steer.test"}}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
+	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
 	}
 	binary := filepath.Join(root, "codex-interrupt")
 	script := "#!/bin/sh\n" +
@@ -613,6 +625,9 @@ func TestBlackboardV2DaemonOwnsUnexpectedAttemptReconciliationAcrossRestart(t *t
 		_ = server.Close()
 		t.Fatalf("create Project: %v", err)
 	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
 	profile, err := server.profiles.Create("Codex reconciliation", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
 	if err != nil {
 		_ = server.Close()
@@ -714,9 +729,15 @@ func TestCodexV2LaunchExcludesIdentityMetadataAndOperatorCredentialSurface(t *te
 	if err != nil {
 		t.Fatalf("create Project A: %v", err)
 	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, projectA.ID); err != nil {
+		t.Fatal(err)
+	}
 	projectB, err := server.projects.Create("B", "", project.Scope{Domains: []string{"b.example"}}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create Project B: %v", err)
+	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, projectB.ID); err != nil {
+		t.Fatal(err)
 	}
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{BinaryPath: "/usr/local/bin/codex", Model: "gpt-test"})
 	if err != nil {
@@ -802,6 +823,9 @@ cat .pentest/blackboard.json
 	createdProject, err := server.projects.Create("Harness", "", project.Scope{Domains: []string{"harness.example"}}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
+	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
 	}
 	profile, err := server.profiles.Create("Codex shim", runtimeprofile.ProviderCodex, runtimeprofile.Fields{BinaryPath: shim, Model: "gpt-test"})
 	if err != nil {

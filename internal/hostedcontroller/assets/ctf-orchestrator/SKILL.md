@@ -5,10 +5,28 @@ description: Orchestrate a timed multi-target offensive/CTF session with a Decid
 
 # 攻防编排器（Decide/Execute + FGS 图）
 
-你的角色是 **Decide 进程**：只做感知（读图/读平台状态）、决策（调步骤池）、派发（spawn Execute agent）。
+你的默认角色是 **Decide 进程**：只做感知（读图/读平台状态）、决策（调步骤池）、派发（spawn Execute agent）。
 **你绝不亲自攻击目标**——不扫端口、不发 payload、不爆破。一旦发现自己在写攻击命令，立即停手改派 agent。
 原因：串行的你下场攻击是全局吞吐瓶颈；你的上下文留给编排才最值钱。
+**该身份必须先通过下方「身份确认」的 leader.lock 检查后才生效**——spawn 消息可能投递失败，
+任何线程都可能在你之前已经持有主控身份。
 
+## 身份确认（Step 0，任何会话开机必做，先于一切）
+
+无论你是主控线程、被 spawn 的子线程，还是任何后续唤醒的线程，开机第一件事：
+
+1. `WS="$(pwd -P)"; export WS`
+2. 读 `$WS/graph/leader.lock`（单行 epoch，即最近心跳的 `date +%s`，schema 见 graph-protocol.md）。
+3. 分支：
+   - **锁存在且心跳距今 ≤300 秒** → 主控已在位，你不是主控：**降级为 Execute**——从
+     `graph/steps.yaml` 认领一个 `open` 且依赖满足的 step（改 `dispatched`、登记 ledger.tsv），
+     按 `references/execute-prompt.md` 执行，写完 fact 立即结束。
+     **禁止 spawn、禁止改派发计划、禁止重排 queue/steps。**
+   - **锁缺失，或心跳距今 >300 秒** → **接管**：写入当前 epoch 成为主控；接管后的第一动作是
+     核对 `ledger.tsv` 的 hard_stop（见看门狗），再进开局序列。
+4. 主控在主循环每次轮转（≤2 分钟）重写 leader.lock 心跳。
+5. **任务消息缺失 = 投递失败**：若你醒来时没有收到任何任务消息（只有环境上下文），你就是
+   投递失败的线程——按上面分支处理，**绝不默认自己是主控**。
 
 ## Runtime 工具术语
 
@@ -89,6 +107,24 @@ Execute agent 禁止调用 `list`、`start`、`hint`、`close`、`abandon`。禁
 4. **补位**：从 `graph/steps.yaml` 取 `open` 且依赖满足、优先级最高的 step，派 Execute agent 保持满载。
 5. **看门狗**：核对 `ledger.tsv` 里 `hard_stop < now` 的 agent → 用当前 Runtime 的停止工具 + 资源轮转；
    核对“资源已分配但无活跃 agent”的漏派槽位 → 立即补。
+
+### 派发确认（spawn ack，每次派发后必做）
+
+spawn 消息可能不会送达子线程（子线程空白唤醒、什么都不做）。因此每次派发后必须验证：
+
+1. 每个 Execute agent 开工 **90 秒**内必须写出 **fact 骨架**（`graph/facts/NNN-*.md`，
+   front-matter + title 占位即可）。这条同时写进 execute-prompt 模板的收束纪律第 1 条。
+2. spawn 后 90 秒检查对应 fact 文件：骨架已出现 → 投递成功，继续。
+3. 骨架缺失 → 判定**投递失败**：先用 `list_agents` 核对旧 agent 状态，必要时 `interrupt_agent`，
+   然后立即用同一 step 重派一个新 agent（换新 fact 编号），计入“同一 step 重派上限 3 次”。
+   连续投递失败是环境信号，按错误处理降级，不要恋战。
+
+### 回合纪律（硬性）
+
+只要 `ledger.tsv` 里存在未收束的 agent，**禁止结束当前回合**：spawn 后立即进入
+`wait_agent`（每次 ≤300 秒）循环收割；没有通知也持续轮转（结合平台周期对账），
+直到所有 agent 收束或平台报告结束态。回合中途结束 = 预算看门狗失效 = 主控永久失联——
+通知驱动的编排里，没有任何人会把睡着的你叫醒。
 
 派发时把 code、agent_id、budget_min、hard_stop 追加进 `$WS/ledger.tsv`（TSV）。这是唯一 agent 生命周期
 时间事实源。Challenge pass 时间只读 Client list 的 Challenge Pass Clock 投影。**只记实际派发的 agent**——

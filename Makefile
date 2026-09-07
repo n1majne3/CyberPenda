@@ -1,4 +1,4 @@
-.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image build-tsecbench-hosted-image smoke-tsecbench-hosted-image tsecbench-hosted-runtime-inventory build-tsecbench-hosted-bundle test test-ci test-ci-windows test-backend smoke-sandbox-mcp smoke-runtime-tasks clean
+.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image build-tsecbench-hosted-image smoke-tsecbench-hosted-image tsecbench-hosted-runtime-inventory build-tsecbench-hosted-bundle test test-ci test-ci-windows test-backend test-concurrency smoke-sandbox-fgs smoke-runtime-tasks clean
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
@@ -9,7 +9,7 @@ TSECBENCH_HOSTED_IMAGE ?= cyberpenda-tsecbench-hosted:local
 # macOS /bin/sh (bash 3.2) has no `wait -n`, so poll: if either child dies,
 # surface the failure instead of silently running the other alone (which hid
 # backend bind errors behind the foreground Vite output).
-dev: ensure-web-deps
+dev: build-ui
 	@set -e; \
 	trap 'kill 0' EXIT INT TERM; \
 	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db -sandbox-image $(SANDBOX_IMAGE) & \
@@ -71,8 +71,8 @@ build-tsecbench-hosted-bundle:
 
 # Prove the configured sandbox image can reach the daemon Blackboard v2 HTTP
 # boundary and write a semantic fact.
-smoke-sandbox-mcp:
-	@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) bash scripts/smoke-sandbox-mcp-live.sh
+smoke-sandbox-fgs:
+	@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) bash scripts/smoke-sandbox-fgs-live.sh
 
 smoke-runtime-tasks:
 	@PENTEST_SANDBOX_IMAGE=$(SANDBOX_IMAGE) python3 scripts/smoke-runtime-tasks-live.py
@@ -107,6 +107,9 @@ test: test-backend
 # CI default: unit/integration tests only (no Docker, no LLM credentials).
 test-ci: test-backend
 
+test-concurrency: ensure-embed-stub
+	go test -race -shuffle=on -cpu=1,4 -count=1 -timeout 10m ./internal/runtime ./internal/daemon -run '^Test(TaskStartupWaitRequiresDurableContinuation|CompletedTaskMessageQueuesOnceAndResumesSameTask|ResumeWaitsForTerminalHarnessReleaseThenLaunchesOnce|ResumeTimesOutWhenTerminalHarnessStaysActive|ServerCloseStopsActiveTaskHarnessBeforeClosingStore|OwnerHarnessCanStopBeforeRunningPersistence|HarnessShutdownAllAndWaitReleasesRuntimeWithoutFinalizingDurableState|SessionHarnessRebindsFinalEventsAndConfirmsStop|FGSOutboxAcceptedDuringRuntimeAndReadableByOperator)$$'
+
 test-backend: ensure-embed-stub
 	go test -timeout 20m ./cmd/... ./internal/... ./scripts
 
@@ -120,7 +123,7 @@ test-ci-windows: ensure-embed-stub
 	go test -timeout 20m $$(go list ./cmd/... ./internal/... | grep -vxF 'pentest/internal/daemon' | grep -vxF 'pentest/internal/runner')
 
 # Live smokes (local):
-#   make smoke-sandbox-mcp     — sandbox image + daemon Blackboard HTTP, no LLM
+#   make smoke-sandbox-fgs     — sandbox image + Runtime Outbox + FGS read, no LLM
 #   make smoke-runtime-tasks   — Codex/Claude/Pi task smoke; needs Docker + provider creds
 # Optional filters: PENTEST_SMOKE_ONLY=codex|claude_code|pi|pi_sandbox
 

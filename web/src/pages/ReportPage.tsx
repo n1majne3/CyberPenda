@@ -1,3 +1,4 @@
+import { ProjectReportProtocol } from "./FGSReport";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ClipboardList, Download } from "lucide-react";
@@ -31,7 +32,9 @@ function severityVariant(severity: string): "destructive" | "warning" | "info" |
  * Structured v2 JSON supplies Blackboard Keys for detail/history navigation;
  * markdown remains the downloadable deliverable.
  */
-export function ReportPage() {
+export function ReportPage() { return <ProjectReportProtocol legacy={<LegacyReportPage />} />; }
+
+function LegacyReportPage() {
   const { projectId = "" } = useParams<{ projectId: string }>();
   const [report, setReport] = useState<PentestReportProjection | null>(null);
   const [markdown, setMarkdown] = useState<string | null>(null);

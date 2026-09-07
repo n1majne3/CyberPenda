@@ -46,9 +46,9 @@ func TestWithPentestdLiveStartsDaemonForCommand(t *testing.T) {
 	}
 }
 
-func TestGitHubSmokeWorkflowsRunWithDaemonWrapper(t *testing.T) {
+func TestGitHubSmokeWorkflowsUseTheirDaemonHarness(t *testing.T) {
 	root := repoRoot(t)
-	assertFileContains(t, filepath.Join(root, ".github", "workflows", "ci.yml"), "scripts/with-pentestd-live.sh make smoke-sandbox-mcp")
+	assertFileContains(t, filepath.Join(root, ".github", "workflows", "ci.yml"), "make smoke-sandbox-fgs")
 	assertFileContains(t, filepath.Join(root, ".github", "workflows", "smoke-runtime-nightly.yml"), "scripts/with-pentestd-live.sh make smoke-runtime-tasks")
 }
 

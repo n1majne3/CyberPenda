@@ -17,6 +17,17 @@ jobs:
       - name: Go tests
         run: make test-ci
 
+  concurrency:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Runtime concurrency contracts
+        run: make test-concurrency
+
   web:
     runs-on: ubuntu-latest
     steps:
@@ -31,6 +42,8 @@ jobs:
         run: npm ci
       - name: Web build helper tests
         run: node --test scripts/web-build.test.mjs
+      - name: Vite browser proxy contract
+        run: node --test scripts/vite-proxy.test.mjs
       - name: Claude SDK bridge tests
         run: node --test cmd/pentest-claude-sdk-bridge/bridge.test.mjs
       - name: Lint
@@ -117,7 +130,7 @@ jobs:
           fi
           scripts/ci-sandbox-smoke-required.sh "$base" "$head" >> "$GITHUB_OUTPUT"
 
-  smoke-sandbox-mcp:
+  smoke-sandbox-fgs:
     needs: sandbox-smoke-changes
     if: needs.sandbox-smoke-changes.outputs.required == 'true'
     runs-on: ubuntu-latest
@@ -128,9 +141,8 @@ jobs:
           go-version-file: go.mod
       - name: Build sandbox smoke probe image
         run: make build-sandbox-smoke-image
-      - name: Smoke sandbox MCP (no LLM)
+      - name: Smoke sandbox FGS (no LLM)
         env:
           PENTEST_SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci
           SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci
-          PENTEST_DAEMON_WAIT_SECONDS: "120"
-        run: scripts/with-pentestd-live.sh make smoke-sandbox-mcp
+        run: make smoke-sandbox-fgs

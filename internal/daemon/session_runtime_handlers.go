@@ -276,7 +276,11 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
-	launchGoal, err = modeskill.InjectInvocation(launchGoal, modeskill.Mode(found.RunControls.BlackboardMode))
+	if found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != session.BlackboardModeDisabled {
+		launchGoal = runner.FGSLaunchInstruction + "\n\n" + launchGoal
+	} else {
+		launchGoal, err = modeskill.InjectInvocation(launchGoal, modeskill.Mode(found.RunControls.BlackboardMode))
+	}
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
@@ -354,7 +358,8 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 	}
 	launchProfile := profile
 	projectionRequest := runner.ProjectionRequest{
-		Owner: found.OwnerContract(), DaemonAddr: server.listenAddr, AuthToken: interfaceToken,
+		BlackboardProtocol: found.BlackboardProtocol,
+		Owner:              found.OwnerContract(), DaemonAddr: server.listenAddr, AuthToken: interfaceToken,
 		Credentials: server.creds, MaterializedCredentials: materialized,
 		ModelProviders: server.modelProviders, GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot: modelSnapshot, RuntimePlugins: server.runtimePlugins,
@@ -399,7 +404,8 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.Model)
 	}
 	launchCtx := runner.RuntimeOwnerContext{
-		Owner: found.OwnerContract(), BlackboardMode: string(found.RunControls.BlackboardMode), ContinuationID: continuationID,
+		BlackboardProtocol: found.BlackboardProtocol,
+		Owner:              found.OwnerContract(), BlackboardMode: string(found.RunControls.BlackboardMode), ContinuationID: continuationID,
 	}
 	if graph != nil {
 		launchCtx.WorkingGraphRoot = graph.Root
@@ -680,7 +686,7 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 		}
 	}
 	var graphProjection *workinggraph.Projection
-	if found.RunControls.BlackboardMode == session.BlackboardModeWorkingGraph {
+	if found.RunControls.BlackboardMode == session.BlackboardModeWorkingGraph || (found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != session.BlackboardModeDisabled) {
 		preparedGraph, prepareErr := workinggraph.NewService().Prepare(ctx, workinggraph.OwnerContext{
 			Owner: found.OwnerContract(), ContinuationID: continuation.ID, Workdir: found.Workdir,
 		})

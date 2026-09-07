@@ -45,9 +45,10 @@ const (
 
 // ProjectionRequest supplies task and daemon context for launch projection.
 type ProjectionRequest struct {
-	Owner         owner.Contract
-	ScopeSnapshot project.Scope
-	Credentials   *credential.Service
+	BlackboardProtocol string
+	Owner              owner.Contract
+	ScopeSnapshot      project.Scope
+	Credentials        *credential.Service
 	// MaterializedCredentials is an in-memory launch snapshot. A non-nil map
 	// prevents projection from resolving credentials through the Store again.
 	MaterializedCredentials map[string]string
@@ -170,12 +171,19 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if len(req.SkillBundles) > 0 {
 		addSkillProjectionPreview(&projection, req.SkillBundles, layout)
 	}
-	addModeSkillProjectionPreview(&projection, req.BlackboardMode, layout)
+	if req.BlackboardProtocol != "fgs" || req.BlackboardMode == modeskill.ModeDisabled {
+		addModeSkillProjectionPreview(&projection, req.BlackboardMode, layout)
+	}
 	return projection, nil
 }
 
 func projectModeAndUserSkills(layout Layout, req ProjectionRequest) error {
-	if req.BlackboardMode != "" && req.BlackboardMode != modeskill.ModeDisabled {
+	if req.BlackboardProtocol == "fgs" && req.BlackboardMode != modeskill.ModeDisabled {
+		if err := modeskill.RetireGenerated(layout.SkillsRoot); err != nil {
+			return err
+		}
+	}
+	if req.BlackboardMode != "" && req.BlackboardMode != modeskill.ModeDisabled && req.BlackboardProtocol != "fgs" {
 		if _, err := modeskill.Project(layout.SkillsRoot, req.BlackboardMode); err != nil {
 			return err
 		}
@@ -1003,7 +1011,7 @@ func credentialsForBlackboardProjection(credentials map[string]string, projectio
 
 func isBlackboardAuthorityEnv(key string) bool {
 	switch strings.TrimSpace(key) {
-	case "PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_SESSION_ID", "PENTEST_CONTINUATION_ID",
+	case "PENTEST_BLACKBOARD_PROTOCOL", "PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_SESSION_ID", "PENTEST_CONTINUATION_ID",
 		"PENTEST_MCP_URL", "PENTEST_API_URL", "PENTEST_AUTH_TOKEN", "PENTEST_INTERFACE_TOKEN",
 		"PENTEST_BLACKBOARD_MODE", "PENTEST_WORKING_GRAPH_ROOT", "PENTEST_WORKING_GRAPH_OUTBOX",
 		"PENTEST_WORKING_GRAPH_RECEIPTS", "PENTEST_DISABLE_TRUSTED_MCP":
@@ -1818,6 +1826,9 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	if ctx.Owner.SessionID != "" {
 		env["PENTEST_SESSION_ID"] = ctx.Owner.SessionID
 	}
+	if ctx.BlackboardProtocol != "" {
+		env["PENTEST_BLACKBOARD_PROTOCOL"] = ctx.BlackboardProtocol
+	}
 	if ctx.ContinuationID != "" {
 		env["PENTEST_CONTINUATION_ID"] = ctx.ContinuationID
 	}
@@ -1832,6 +1843,11 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 	}
 	if ctx.APIURL != "" {
 		env["PENTEST_API_URL"] = ctx.APIURL
+		if ctx.BlackboardProtocol == "fgs" {
+			// Older sandbox CLIs append /api/v2 without normalizing the base.
+			// A daemon root is accepted by both old and current FGS clients.
+			env["PENTEST_API_URL"] = strings.TrimSuffix(strings.TrimRight(strings.TrimSpace(ctx.APIURL), "/"), "/api")
+		}
 	}
 	if ctx.BlackboardMode != "" {
 		env["PENTEST_BLACKBOARD_MODE"] = ctx.BlackboardMode
@@ -1877,6 +1893,16 @@ func launchVisiblePath(layout Layout, hostPath string, sandbox bool) string {
 }
 
 func sandboxMountedPath(hostRoot, sandboxRoot, hostPath string) (string, bool) {
+	// Layouts may use the daemon's relative runs directory, while the graph
+	// receiver resolves its paths to absolute names. Compare the same form.
+	if hostRoot == "" {
+		return "", false
+	}
+	var err error
+	hostRoot, err = filepath.Abs(hostRoot)
+	if err != nil {
+		return "", false
+	}
 	rel, err := filepath.Rel(hostRoot, hostPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", false

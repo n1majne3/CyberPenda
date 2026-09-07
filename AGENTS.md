@@ -22,3 +22,7 @@ Five canonical roles mapped to their default label strings (all five now exist i
 ### Domain docs
 
 Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Asynchronous tests
+
+Read `docs/agents/async-tests.md` before changing Runtime lifecycle tests. Wait for the state that the next assertion needs. Harness ownership, Provider request receipt, and durable completion are separate conditions.
