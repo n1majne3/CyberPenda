@@ -58,6 +58,10 @@ See [ADR 0025](docs/adr/0025-container-engine-support-matrix.md) and
 make dev
 ```
 
+`make dev` builds the embedded UI before starting the daemon, then starts Vite.
+Both ports therefore start with current UI code. Vite updates UI edits immediately;
+restart `make dev` to refresh the daemon’s embedded UI.
+
 Open the Vite URL printed by the frontend (API and health proxy to `http://127.0.0.1:8787`).
 When `PENTEST_AUTH_TOKEN` is not configured and the daemon binds to loopback,
 the local UI obtains an HttpOnly browser session automatically. Direct Blackboard

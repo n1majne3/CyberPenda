@@ -9,7 +9,7 @@ TSECBENCH_HOSTED_IMAGE ?= cyberpenda-tsecbench-hosted:local
 # macOS /bin/sh (bash 3.2) has no `wait -n`, so poll: if either child dies,
 # surface the failure instead of silently running the other alone (which hid
 # backend bind errors behind the foreground Vite output).
-dev: ensure-web-deps
+dev: build-ui
 	@set -e; \
 	trap 'kill 0' EXIT INT TERM; \
 	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db -sandbox-image $(SANDBOX_IMAGE) & \

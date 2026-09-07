@@ -42,6 +42,8 @@ jobs:
         run: npm ci
       - name: Web build helper tests
         run: node --test scripts/web-build.test.mjs
+      - name: Vite browser proxy contract
+        run: node --test scripts/vite-proxy.test.mjs
       - name: Claude SDK bridge tests
         run: node --test cmd/pentest-claude-sdk-bridge/bridge.test.mjs
       - name: Lint

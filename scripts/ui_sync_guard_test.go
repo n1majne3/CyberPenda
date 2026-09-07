@@ -123,7 +123,7 @@ func TestDevRepairsMissingOrStaleWebDependenciesWithoutBash(t *testing.T) {
 	}
 	makefile := string(makefileBytes)
 
-	assertContains(t, makefile, "dev: ensure-web-deps")
+	assertContains(t, makefile, "dev: build-ui")
 	assertContains(t, makefile, "@node scripts/web-build-cli.mjs ensure-deps")
 	if strings.Contains(makefile, "ensure-web-deps.sh") {
 		t.Fatal("web dependency repair must not require Bash")
