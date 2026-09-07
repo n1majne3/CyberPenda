@@ -37,7 +37,7 @@ export type RuntimeOwnerView = {
   blackboardProtocol?: "legacy" | "fgs";
   blackboardMode?: BlackboardMode;
   blackboardConclusion?: BlackboardConclusionView;
-  challengePlatforms?: string[];
+  challengeHistoryAvailable?: boolean;
   runtimeControls?: RuntimeControls;
   runtimeActivity?: RuntimeActivity;
   activeContinuation?: RuntimeOwnerContinuation;

@@ -91,9 +91,6 @@ type Config struct {
 	// one-shot Adapter path and native session controls remain unavailable until
 	// a real bridge factory is configured.
 	ProviderSessionFactory ProviderSessionFactory
-	// ChallengePlatforms are explicit protocol adapters keyed by the operator-
-	// visible Platform name. An empty map disables Challenge Workflow calls.
-	ChallengePlatforms map[string]challengeworkflow.PlatformAdapter
 }
 
 type Server struct {
@@ -355,7 +352,7 @@ func NewServer(config Config) (*Server, error) {
 	server.sessions.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
 	server.fgs = fgs.NewService(db)
-	server.challengeWorkflow = challengeworkflow.NewService(db, server.projects, server.tasks, config.ChallengePlatforms, challengeworkflow.NewBlackboardRecorder(server.blackboardV2, server.tasks, runtimeRoot))
+	server.challengeWorkflow = challengeworkflow.NewService(db, server.tasks)
 	server.finishReadiness = finishreadiness.NewService(db, server.tasks)
 	server.tasks.SetContinuationReconciler(server.blackboardV2)
 	server.blackboardV2Continuity = blackboardv2.NewContinuityService(db, server.blackboardV2, server.tasks, runtimeRoot)
@@ -363,11 +360,6 @@ func NewServer(config Config) (*Server, error) {
 		_ = server.Close()
 		return nil, err
 	}
-	challengeRecoveryContext, cancelChallengeRecovery := context.WithTimeout(context.Background(), 2*time.Second)
-	for _, failure := range server.challengeWorkflow.Recover(challengeRecoveryContext) {
-		server.logger.Printf("Challenge operation recovery pending: task=%s operation=%s kind=%s error=%s", failure.TaskID, failure.OperationID, failure.Kind, failure.Error)
-	}
-	cancelChallengeRecovery()
 	// Import baseline uses the same resolved projection as the editor seed
 	// and merged preview (issue #226: client cannot supply the baseline).
 	// The provenance list names the credential-generated paths so import
@@ -1040,11 +1032,8 @@ func (server *Server) routes() {
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/stop", server.handleStopTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/finish", server.handleFinishTask)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/finish-readiness", server.handleFinishReadiness)
-	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/claim", server.handleChallengeClaim)
 	server.mux.HandleFunc("GET /api/projects/{id}/tasks/{task_id}/challenges", server.handleChallengeAttempts)
-	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/submit", server.handleChallengeSubmit)
-	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/abandon", server.handleChallengeAbandon)
-	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/finalize", server.handleChallengeFinalize)
+	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/challenges/{operation}", server.handleRetiredChallengeOperation)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/resume", server.handleResumeTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer/queue", server.handleQueueSteerTask)
 	server.mux.HandleFunc("POST /api/projects/{id}/tasks/{task_id}/steer", server.handleSteerTask)

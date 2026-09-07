@@ -1630,7 +1630,7 @@ func (server *Server) decorateTask(found task.Task) (task.Task, error) {
 		return task.Task{}, err
 	}
 	found.RuntimeControls = controls
-	found.ChallengePlatforms, err = server.challengeWorkflow.AvailablePlatforms(found)
+	found.ChallengeHistoryAvailable, err = server.challengeWorkflow.HasHistory(context.Background(), found.ID)
 	if err != nil {
 		return task.Task{}, err
 	}

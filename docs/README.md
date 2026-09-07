@@ -23,11 +23,17 @@ Runtime extensions can be selected from the local registry or entered as explici
 references. Skills retain their managed import flow. The product does not fetch
 or browse remote plugin catalogs.
 
+Normal Project Challenge Workflow is retired. Tasks with retained Attempts or
+Operations show read-only history. Pending operations are not replayed and need
+review on the original Platform. The separate Hosted Challenge Client remains
+active.
+
 ## Historical references
 
 These records explain prior decisions. Do not use them as new-feature or current
 launch instructions.
 
+- [Retired Challenge Project Workflow](./specs/challenge-project-workflow/design.md).
 - [Original PRD](./product/prd.md), [MVP scope](./product/mvp.md), and [implementation plan](./product/implementation-plan.md).
 - [Legacy Blackboard v2 specification](./specs/blackboard-v2-spec.md) and [replacement plan](./specs/blackboard-v2-tdd-plan.md).
 - [Original design](./superpowers/specs/2026-06-17-pentest-agent-design.md).

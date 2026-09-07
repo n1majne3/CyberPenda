@@ -195,6 +195,17 @@ export interface Project {
   updated_at: string;
 }
 
+export interface ChallengeOperationHistory {
+  operation_id: string;
+  platform: string;
+  kind: string;
+  state: string;
+  external_attempt_id: string;
+  evidence_key?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ChallengeAttempt {
 	project_id: string;
 	task_id: string;
@@ -637,7 +648,7 @@ export interface RuntimeActivity {
 }
 
 export interface Task {
-  challenge_platforms?: string[];
+  challenge_history_available?: boolean;
   blackboard_protocol?: "legacy" | "fgs";
   id: string;
   project_id: string;

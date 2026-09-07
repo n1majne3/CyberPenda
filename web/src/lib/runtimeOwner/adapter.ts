@@ -203,7 +203,7 @@ export function taskAsRuntimeOwner(task: Task): RuntimeOwnerView {
     blackboardProtocol: task.blackboard_protocol,
     blackboardMode: task.run_controls.blackboard_mode,
     blackboardConclusion: task.blackboard_conclusion,
-    challengePlatforms: task.challenge_platforms,
+    challengeHistoryAvailable: task.challenge_history_available,
     runtimeControls: task.runtime_controls,
     runtimeActivity: task.runtime_activity,
     activeContinuation: task.active_continuation ? taskContinuationAsRuntimeOwner(task.active_continuation) : undefined,

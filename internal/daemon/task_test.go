@@ -1038,29 +1038,32 @@ func TestSandboxResumeRebuildsContainerWithPersistentTaskMountAndRuntimeHome(t *
 		}
 	}
 
-	detailResp := httptest.NewRecorder()
-	detailReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
-	server.ServeHTTP(detailResp, detailReq)
-	if detailResp.Code != http.StatusOK {
-		t.Fatalf("expected task detail status 200, got %d with body %s", detailResp.Code, detailResp.Body.String())
-	}
+	// Container creation precedes durable Continuation metadata. Wait for the
+	// public detail needed by this assertion, not only the CLI fixture log.
 	var detailed struct {
 		LatestContinuation *struct {
 			Number      int    `json:"number"`
 			ContainerID string `json:"container_id"`
 		} `json:"latest_continuation"`
 	}
-	if err := json.NewDecoder(detailResp.Body).Decode(&detailed); err != nil {
-		t.Fatalf("decode task detail: %v", err)
-	}
-	if detailed.LatestContinuation == nil {
-		t.Fatal("expected latest continuation")
-	}
-	if detailed.LatestContinuation.Number != 2 {
-		t.Fatalf("expected resumed continuation number 2, got %d", detailed.LatestContinuation.Number)
-	}
-	if detailed.LatestContinuation.ContainerID != "ctr-2" {
-		t.Fatalf("expected latest continuation container id ctr-2, got %q", detailed.LatestContinuation.ContainerID)
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		detailResp := httptest.NewRecorder()
+		detailReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID, nil)
+		server.ServeHTTP(detailResp, detailReq)
+		if detailResp.Code != http.StatusOK {
+			t.Fatalf("expected task detail status 200, got %d with body %s", detailResp.Code, detailResp.Body.String())
+		}
+		if err := json.NewDecoder(detailResp.Body).Decode(&detailed); err != nil {
+			t.Fatalf("decode task detail: %v", err)
+		}
+		if detailed.LatestContinuation != nil && detailed.LatestContinuation.Number == 2 && detailed.LatestContinuation.ContainerID == "ctr-2" {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("expected durable Continuation 2 with container ctr-2, got %s", detailResp.Body.String())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

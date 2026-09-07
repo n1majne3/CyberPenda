@@ -20,10 +20,14 @@ unchanged. FGS directory preparation and lifecycle draining remain active.
 
 Runtime Extension discovery uses the local registry and explicit references.
 Skills retain managed import. Remote plugin catalog browsing is retired.
-Challenge Workflow controls are available only for a CTF Challenge Project and
-Task with enabled Blackboard and a configured Platform. Historical Challenge
-Attempts remain readable when controls are unavailable. Hosted evaluation uses
-its separate Hosted Challenge Client.
+Challenge Workflow is retired. Claim, submit, abandon, finalize, Platform
+configuration, Task Policy enforcement, and restart recovery are removed.
+Challenge history is available when a Task has retained Attempts or Operations.
+Stored states, Evidence, and Task origins remain unchanged. Pending operations
+are not replayed; the operator must check unfinished work on the original
+Platform. Historical Challenge records do not block Task Finish, and Task Finish
+does not confirm Platform completion. New launch controls omit Task Policy.
+Hosted evaluation keeps its separate Hosted Challenge Client.
 
 The Assisted experiment launchers and built-in Blackboard MCP endpoint are
 retired. Historical reports remain data, not current execution instructions.
@@ -47,15 +51,15 @@ An explicit operator-confirmed change of one Project Kind after a preview proves
 _Avoid_: automatic project repair, fact-to-solution migration, task mode switch
 
 **Project Defaults**:
-Project-level choices for default runner and task policy. They never select, copy, or imply a **Runtime Profile**.
+Project-level choices for default runner, with retained legacy task policy metadata. They never select, copy, or imply a **Runtime Profile**.
 _Avoid_: project-local runtime profile, copied profile, default profile, launch selection store
 
 **Task Policy**:
-Structured operator-defined limits that the **Runtime Harness** enforces for one Task, such as maximum challenge Attempts, wrong submissions, wall time, consecutive failures, Rating drawdown, or no-progress duration.
+Retained operator-defined limits from the retired **Challenge Workflow**, such as maximum challenge Attempts, wrong submissions, wall time, consecutive failures, Rating drawdown, or no-progress duration. These fields remain historical metadata and are no longer enforced. New Task Launch controls omit them.
 _Avoid_: prompt advice, Skill rule, hidden timeout
 
 **Task Policy Snapshot**:
-The immutable Task-local copy of Task Policy captured by **Task Launch** and used for deterministic enforcement and historical inspection.
+The immutable Task-local copy of legacy Task Policy retained for historical inspection. Existing snapshots are not rewritten when Challenge Workflow retires.
 _Avoid_: current project defaults, mutable runtime limit, prompt text
 
 **Project Dashboard**:
@@ -839,27 +843,27 @@ An operator authorization statement in Scope notes that permits testing only the
 _Avoid_: automatic Scope Expansion, structured target list, unrestricted platform network
 
 **Platform Adapter**:
-An implementation behind the internal Challenge Platform seam that maps claim, submit, abandon, and recovery operations to one external platform. Production and in-memory test Adapters satisfy the same interface.
+A platform-specific implementation behind a challenge client. The normal Project Challenge Workflow Adapter and its configuration are retired. The independent Hosted Challenge Client retains its own adapters.
 _Avoid_: generic fetcher, Project Interface, Skill
 
 **Challenge Workflow**:
-The deep module whose small interface claims, submits, abandons, and finalizes challenge Attempts while owning stable identity, Task Policy enforcement, Platform Adapter calls, Evidence retention, Blackboard settlement, and recovery.
+The retired normal Project module for claim, submit, abandon, and finalize operations. Its read-only history retains Attempt state and Operation metadata without exposing raw request or response payloads. It has no Platform calls, policy enforcement, Blackboard writer, or recovery loop.
 _Avoid_: raw platform client, prompt procedure, collection of Blackboard tool calls
 
 **Runtime-Managed Challenge Execution**:
-A challenge execution path in which the Runtime obtains challenge information and submits candidate answers through a platform interface available inside its execution boundary. It does not depend on the optional **Challenge Workflow** control surface.
+A challenge execution path in which the Runtime obtains challenge information and submits candidate answers through a platform interface available inside its execution boundary. It does not depend on the retired **Challenge Workflow** control surface.
 _Avoid_: Challenge Workflow, operator-managed submission, hosted controller solving
 
 **Challenge Operation**:
-A durable idempotent claim, submit, abandon, or finalize request owned by one Task and one external Attempt. It moves through `pending` and `recording` to `completed`. If automatic daemon-restart recovery fails, it settles as `action_required` and is not retried automatically.
+A retained claim, submit, abandon, or finalize request owned by one Task and one external Attempt. Historical states include `pending`, `recording`, `completed`, and `action_required`. Retirement preserves those states and never replays the request or marks it complete.
 _Avoid_: tool call, Task Event, remote response only
 
 **Finish Readiness**:
-A read-only Task projection that reports whether **Task Finish** can proceed and lists every typed **Finish Blocker** across reconciliation, Current Work, Finish Intent state, and required challenge Evidence.
+A read-only Task projection that reports whether **Task Finish** can proceed and lists typed **Finish Blockers** from FGS updates, Blackboard conclusions, ordinary open Attempts, reconciliation, and Finish Intent state. Retired Challenge records do not block Finish.
 _Avoid_: Task status, Runtime Activity Indicator, automatic completion
 
 **Finish Blocker**:
-A stable typed reason that prevents Task Finish, such as open Attempt, unfinalized challenge Attempt, open Exploration Objective, unsettled reconciliation, or missing required Evidence.
+A stable typed reason that prevents Task Finish, such as an unresolved FGS update, ordinary open Attempt, unsettled Blackboard conclusion, unsettled reconciliation, or invalidated Finish Intent.
 _Avoid_: warning text, latest conclusion status, runtime error
 
 **Runtime Blackboard Snapshot**:
@@ -991,9 +995,9 @@ _Avoid_: transcript, export, source of truth
 - **Task Launch** requires an explicit **Task Type** that matches the current **Project Kind** and stores it as an immutable snapshot.
 - **Scope Expansion** is part of **Scope** but retains a distinct internal **Trusted Origin** from human-approved scope.
 - An **Out-of-Scope Fact** does not change **Scope** and does not authorize testing.
-- A **Project** may define **Project Defaults** for new **Tasks**, including a default **Runner** and Task Policy.
-- **Task Launch** captures one immutable **Task Policy Snapshot**.
-- The **Challenge Workflow** enforces Task Policy before each governed external operation, independently of prompt compliance.
+- A **Project** may define a default **Runner** for new **Tasks**. Legacy Task Policy fields remain metadata.
+- Existing **Task Policy Snapshots** remain immutable; new Task Launch controls omit these retired limits.
+- The retired **Challenge Workflow** does not enforce Task Policy or call a Platform.
 - The **Hosted Challenge Client** is process-isolated from the **Hosted Controller**, daemon, and Runtime session; one client command failure affects only that command.
 - The **Hosted Challenge Client** records the **Challenge Pass Clock** on successful start and clears it on successful close or abandon. `list` annotates `over_budget` from that clock. The Runtime still decides abandon or close.
 - The `ctf-orchestrator` reads per-challenge timing from the **Challenge Pass Clock** projection and does not duplicate that timing state in the **Hosted FGS**.
@@ -1421,10 +1425,10 @@ _Avoid_: transcript, export, source of truth
 - A **Finding Group** may have aggregate severity without changing the severity of individual **Findings**.
 - A **Finding** may be supported by zero or more **Project Facts** and **Evidence Artifacts**.
 - A **Solution** belongs only to a CTF Challenge Project; verified flag **Solutions** determine current solved state without replacing Task status.
-- A **Challenge Workflow** owns challenge Attempt identity and uses one **Platform Adapter** per configured Challenge Platform.
-- A **Challenge Operation** is replay-safe within one Task and external Attempt.
-- Challenge claim, submit, and abandon responses become **Evidence Artifacts** through system retention, not through Task Event text.
-- A successful or abandoned challenge Attempt remains a **Finish Blocker** until the **Challenge Workflow** finalizes it.
+- Retired **Challenge Workflow** Attempts and Operations remain read-only history. The daemon never replays pending Operations.
+- Existing Challenge **Evidence Artifacts** and Blackboard origins remain available through their retained interfaces.
+- Historical Challenge Attempts, Objectives, Operations, and missing Challenge Evidence do not block **Task Finish**.
+- Unfinished external work requires review on the original Platform. **Task Finish** does not confirm external completion.
 - **Finish Readiness** does not perform Task Finish and does not collapse Task lifecycle with Runtime activity.
 - **Task Finish** is rejected while any **Finish Blocker** exists.
 - A **Finding** uses a **CVSS Vector** to derive severity.
@@ -1683,7 +1687,7 @@ _Avoid_: transcript, export, source of truth
 - CTF Challenge Project support is not backend-only or selected by an implicit Pentest default; resolved: Project creation requires an explicit Project Kind and the creation interface exposes both supported kinds.
 - Task classification is not hidden in the owning Project; resolved: Task Launch exposes an explicit **Task Type**, stores the immutable selection, rejects a mismatch with the current Project Kind, and keeps historical Task Type unchanged after Project Kind Conversion.
 - Runtime Extension compatibility is not authorization; resolved: Preflight validates **Runtime Extension Requirements**, while Project Kind and Scope remain explicit operator-owned state.
-- Challenge execution is not a loose sequence of platform and Blackboard tool calls; resolved: the **Challenge Workflow** owns claim, submit, abandon, finalize, Evidence retention, and restart-safe settlement behind one small interface.
+- Normal Project **Challenge Workflow** is retired (supersedes its earlier operation-ownership decision); resolved: retain read-only history and Evidence, remove external operations and restart recovery, and keep the independent **Hosted Challenge Client**.
 - Task completion readiness is not the latest Blackboard conclusion label; resolved: **Finish Readiness** aggregates every current Finish Blocker and Task Finish enforces that projection.
 - TSecBench hosted evaluation is not a new CyberPenda product mode or a specialized competition Agent; resolved: the **TSecBench Hosted Image** preserves normal Pentest Agent semantics while keeping all normal product behavior unchanged.
 - A **Hosted Evaluation Run** is not interactive or externally started after container launch; resolved: it validates its environment and starts the complete eligible evaluation automatically, then remains alive until TSecBench terminates the container.

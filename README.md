@@ -187,9 +187,14 @@ Skills support managed import. Runtime Profiles support local registry
 extensions, explicit extension references, and external MCP configuration.
 There is no remote plugin catalog browser or built-in Blackboard MCP server.
 
-The optional Challenge Workflow requires a CTF Challenge Project and Task,
-enabled Blackboard, and a configured Challenge Platform. Hosted evaluation uses
-the separate Hosted Challenge Client.
+Normal Project Challenge Workflow is retired. Tasks with retained Attempts or
+Operations show read-only Challenge history. Old write routes return HTTP 410;
+`--challenge-platform-config` and `PENTEST_CHALLENGE_PLATFORM_CONFIG` are removed.
+Task Policy limits are retained only as historical metadata and are no longer
+enforced or shown at launch. Stored states and Evidence remain unchanged;
+pending operations are not replayed. Check unfinished work on the original
+Platform. These records do not block Task Finish, which does not confirm Platform
+completion. Hosted evaluation keeps the separate Hosted Challenge Client.
 
 Domain terms are defined in [CONTEXT.md](CONTEXT.md).
 

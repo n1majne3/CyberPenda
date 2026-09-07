@@ -383,6 +383,10 @@ func TestDisabledSessionHTTPSteerCreatesOrdinaryContinuationWithoutBlackboard(t 
 		t.Fatal(err)
 	}
 
+	// The accepted create response precedes durable Runtime startup.
+	initial := waitForDisabledSessionPublicContinuation(t, server, created.ID, 1)
+	assertDisabledSessionPublicContinuation(t, initial, 1, session.RuntimeStatusRunning)
+
 	steer := httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/steer", bytes.NewBufferString(`{
 		"request_id":"disabled-session-steer",
 		"message":"focus on the alternate Session path"

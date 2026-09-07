@@ -2,159 +2,115 @@ package daemon
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
 	"path/filepath"
-	"strings"
-	"testing"
-
-	"pentest/internal/challengeworkflow"
 	"pentest/internal/project"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"strings"
+	"testing"
 )
 
-type challengePlatformFixture struct{}
-
-func (challengePlatformFixture) Claim(_ context.Context, request challengeworkflow.PlatformClaimRequest) (challengeworkflow.PlatformClaimResponse, error) {
-	return challengeworkflow.PlatformClaimResponse{ExternalAttemptID: "attempt-42", ChallengeID: request.ChallengeID, Summary: "claimed", Rating: 2100}, nil
-}
-func (challengePlatformFixture) Submit(_ context.Context, request challengeworkflow.PlatformSubmitRequest) (challengeworkflow.PlatformSubmitResponse, error) {
-	return challengeworkflow.PlatformSubmitResponse{Accepted: request.Candidate == "FLAG{ok}", Summary: "checked", Rating: 2113}, nil
-}
-func (challengePlatformFixture) Abandon(context.Context, challengeworkflow.PlatformAbandonRequest) (challengeworkflow.PlatformAbandonResponse, error) {
-	return challengeworkflow.PlatformAbandonResponse{Summary: "abandoned"}, nil
-}
-func (challengePlatformFixture) Finalize(context.Context, challengeworkflow.PlatformFinalizeRequest) (challengeworkflow.PlatformFinalizeResponse, error) {
-	return challengeworkflow.PlatformFinalizeResponse{Summary: "finalized"}, nil
-}
-
-func TestChallengeWorkflowHTTPAndFinishReadiness(t *testing.T) {
+func TestRetiredChallengeWorkflowPreservesHistoryAcrossRestart(t *testing.T) {
 	root := t.TempDir()
-	runtimeRoot := filepath.Join(root, "runs")
-	server, err := NewServer(Config{DBPath: filepath.Join(root, "db.sqlite"), RuntimeRoot: runtimeRoot, DisableBuiltinSkills: true, ChallengePlatforms: map[string]challengeworkflow.PlatformAdapter{"arena": challengePlatformFixture{}}})
+	config := Config{DBPath: filepath.Join(root, "db.sqlite"), RuntimeRoot: filepath.Join(root, "runs"), SessionRoot: filepath.Join(root, "sessions"), AuthToken: "operator-test", DisableBuiltinSkills: true}
+	server, err := NewServer(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = server.Close() })
+	t.Cleanup(func() {
+		if server != nil {
+			_ = server.Close()
+		}
+	})
 	proj, err := server.projects.CreateWithKind("Arena", "", project.KindCTFChallenge, project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	created, err := server.tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypeCTFChallenge, Goal: "solve", Runner: task.RunnerSandbox})
+	profile, err := server.profiles.Create("Fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.tasks.CreateContinuation(created.ID, "profile", "codex", task.RunnerSandbox); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(runtimeRoot, created.ID, "workdir"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	accessURL, err := url.Parse(server.GeneratedOperatorAccessURL())
-	if err != nil || accessURL.Query().Get("token") == "" {
-		t.Fatalf("generated operator access URL = %q, error=%v", server.GeneratedOperatorAccessURL(), err)
-	}
-	operatorToken := accessURL.Query().Get("token")
-	disabled, err := server.tasks.Create(task.CreateRequest{
-		ProjectID: proj.ID, Type: task.TypeCTFChallenge, Goal: "keep Challenge output operator-only",
-		Runner: task.RunnerHost,
-		RunControls: task.RunControls{
-			HostActivated: true, BlackboardMode: task.BlackboardModeDisabled,
-		},
-	})
+	created, err := server.tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypeCTFChallenge, Goal: "Inspect", Runner: task.RunnerSandbox, RuntimeProfileID: profile.ID, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.tasks.CreateContinuation(disabled.ID, "profile", "codex", task.RunnerHost); err != nil {
+	empty := serveChallenge(t, server, http.MethodGet, "/api/projects/"+proj.ID+"/tasks/"+created.ID, "operator-test", "")
+	if empty.Code != http.StatusOK || strings.Contains(empty.Body.String(), `"challenge_history_available":true`) {
+		t.Fatalf("new Task has Challenge history: %d %s", empty.Code, empty.Body.String())
+	}
+	stamp := "2026-09-01T00:00:00Z"
+	if _, err := server.db.Exec(`INSERT INTO challenge_attempts (project_id,task_id,platform,external_attempt_id,challenge_id,attempt_key,objective_key,status,last_progress_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,'open',?,?,?)`, proj.ID, created.ID, "arena", "attempt-42", "42", "attempt:42", "objective:42", stamp, stamp, stamp); err != nil {
 		t.Fatal(err)
 	}
-	disabledClaim := serveChallenge(
-		t, server, http.MethodPost,
-		"/api/projects/"+proj.ID+"/tasks/"+disabled.ID+"/challenges/claim",
-		operatorToken, `{"platform":"arena","operation_id":"disabled-claim","challenge_id":"3121"}`,
-	)
-	if disabledClaim.Code != http.StatusConflict || !strings.Contains(disabledClaim.Body.String(), "Disabled") {
-		t.Fatalf("Disabled Challenge claim = %d %s, want conflict", disabledClaim.Code, disabledClaim.Body.String())
+	for _, state := range []string{"pending", "recording", "action_required", "completed"} {
+		if _, err := server.db.Exec(`INSERT INTO challenge_operations (task_id,operation_id,project_id,platform,kind,request_hash,request_json,state,external_attempt_id,response_json,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, created.ID, state, proj.ID, "arena", "submit", strings.Repeat("0", 64), `{"candidate":"do-not-expose"}`, state, "attempt-42", `{"private":"do-not-expose"}`, stamp, stamp); err != nil {
+			t.Fatal(err)
+		}
 	}
-	disabledSnapshot := serveChallenge(
-		t, server, http.MethodGet, "/api/v2/projects/"+proj.ID+"/blackboard/snapshot", operatorToken, "",
-	)
-	if disabledSnapshot.Code != http.StatusOK || strings.Contains(disabledSnapshot.Body.String(), "attempt-42") {
-		t.Fatalf("Disabled Challenge action changed public Blackboard: %d %s", disabledSnapshot.Code, disabledSnapshot.Body.String())
-	}
-
-	available := serveChallenge(t, server, http.MethodGet, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/challenges", operatorToken, "")
-	var workflow struct {
-		Platforms []string `json:"platforms"`
-	}
-	if err := json.NewDecoder(available.Body).Decode(&workflow); err != nil {
+	if err := server.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if len(workflow.Platforms) != 1 || workflow.Platforms[0] != "arena" {
-		t.Fatalf("available platforms = %v, want arena", workflow.Platforms)
+	server, err = NewServer(config)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	claimPath := "/api/projects/" + proj.ID + "/tasks/" + created.ID + "/challenges/claim"
-	denied := serveChallenge(t, server, http.MethodPost, claimPath, "", `{"platform":"arena","operation_id":"tokenless-claim","challenge_id":"3121"}`)
+	base := "/api/projects/" + proj.ID + "/tasks/" + created.ID
+	history := serveChallenge(t, server, http.MethodGet, base+"/challenges", "operator-test", "")
+	if history.Code != http.StatusOK {
+		t.Fatalf("history: %d %s", history.Code, history.Body.String())
+	}
+	var body struct {
+		Retired    bool `json:"retired"`
+		Operations []struct {
+			ID    string `json:"operation_id"`
+			State string `json:"state"`
+		} `json:"operations"`
+		Attempts []struct {
+			Status string `json:"status"`
+		} `json:"attempts"`
+	}
+	if err := json.Unmarshal(history.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.Retired || len(body.Operations) != 4 || len(body.Attempts) != 1 || body.Attempts[0].Status != "open" {
+		t.Fatalf("history: %s", history.Body.String())
+	}
+	for _, op := range body.Operations {
+		if op.ID != op.State {
+			t.Fatalf("restart changed operation: %+v", op)
+		}
+	}
+	if strings.Contains(history.Body.String(), "do-not-expose") {
+		t.Fatal("history exposed raw payload")
+	}
+	detail := serveChallenge(t, server, http.MethodGet, base, "operator-test", "")
+	if detail.Code != http.StatusOK || !strings.Contains(detail.Body.String(), `"challenge_history_available":true`) {
+		t.Fatalf("detail: %d %s", detail.Code, detail.Body.String())
+	}
+	for _, operation := range []string{"claim", "submit", "abandon", "finalize"} {
+		result := serveChallenge(t, server, http.MethodPost, base+"/challenges/"+operation, "operator-test", `{}`)
+		if result.Code != http.StatusGone {
+			t.Fatalf("%s = %d %s", operation, result.Code, result.Body.String())
+		}
+	}
+	denied := serveChallenge(t, server, http.MethodGet, base+"/challenges", "", "")
 	if denied.Code != http.StatusUnauthorized {
-		t.Fatalf("tokenless Challenge claim = %d %s", denied.Code, denied.Body.String())
+		t.Fatalf("anonymous history: %d", denied.Code)
 	}
-
-	claim := serveChallenge(t, server, http.MethodPost, claimPath, operatorToken, `{"platform":"arena","operation_id":"claim-1","challenge_id":"3121"}`)
-	if claim.Code != http.StatusOK {
-		t.Fatalf("claim = %d %s", claim.Code, claim.Body.String())
-	}
-	readiness := serveChallenge(t, server, http.MethodGet, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/finish-readiness", operatorToken, "")
-	var blocked struct {
-		Ready bool `json:"ready_to_finish"`
-	}
-	if err := json.NewDecoder(readiness.Body).Decode(&blocked); err != nil {
+	wrongProject, err := server.projects.Create("Other", "", project.Scope{}, project.Defaults{})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if blocked.Ready {
-		t.Fatal("open Challenge Attempt must block Finish")
+	cross := serveChallenge(t, server, http.MethodGet, "/api/projects/"+wrongProject.ID+"/tasks/"+created.ID+"/challenges", "operator-test", "")
+	if cross.Code != http.StatusNotFound {
+		t.Fatalf("cross-project history: %d", cross.Code)
 	}
-	finishBlocked := serveChallenge(t, server, http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/finish", operatorToken, `{}`)
-	if finishBlocked.Code != http.StatusConflict {
-		t.Fatalf("Finish with blockers = %d %s", finishBlocked.Code, finishBlocked.Body.String())
-	}
-	var conflict struct {
-		FinishReadiness struct {
-			Blockers []struct {
-				Code string `json:"code"`
-			} `json:"blockers"`
-		} `json:"finish_readiness"`
-	}
-	if err := json.NewDecoder(finishBlocked.Body).Decode(&conflict); err != nil {
-		t.Fatal(err)
-	}
-	if len(conflict.FinishReadiness.Blockers) == 0 {
-		t.Fatal("Finish conflict did not return Finish Readiness blockers")
-	}
-
-	submit := serveChallenge(t, server, http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/challenges/submit", operatorToken, `{"platform":"arena","operation_id":"submit-1","external_attempt_id":"attempt-42","candidate":"FLAG{ok}"}`)
-	if submit.Code != http.StatusOK {
-		t.Fatalf("submit = %d %s", submit.Code, submit.Body.String())
-	}
-	finalize := serveChallenge(t, server, http.MethodPost, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/challenges/finalize", operatorToken, `{"platform":"arena","operation_id":"finalize-1","external_attempt_id":"attempt-42"}`)
-	if finalize.Code != http.StatusOK {
-		t.Fatalf("finalize = %d %s", finalize.Code, finalize.Body.String())
-	}
-	readiness = serveChallenge(t, server, http.MethodGet, "/api/projects/"+proj.ID+"/tasks/"+created.ID+"/finish-readiness", operatorToken, "")
-	var ready struct {
-		Ready    bool  `json:"ready_to_finish"`
-		Blockers []any `json:"blockers"`
-	}
-	if err := json.NewDecoder(readiness.Body).Decode(&ready); err != nil {
-		t.Fatal(err)
-	}
-	if !ready.Ready {
-		t.Fatalf("expected ready, blockers %#v", ready.Blockers)
+	readiness := serveChallenge(t, server, http.MethodGet, base+"/finish-readiness", "operator-test", "")
+	if readiness.Code != http.StatusOK || !strings.Contains(readiness.Body.String(), `"ready_to_finish":true`) {
+		t.Fatalf("retired history blocks finish: %s", readiness.Body.String())
 	}
 }
 
@@ -170,68 +126,4 @@ func serveChallenge(t *testing.T, server *Server, method, path, token, body stri
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 	return response
-}
-
-func TestChallengeWorkflowAvailabilityHTTP(t *testing.T) {
-	for _, tc := range []struct {
-		name       string
-		kind       string
-		mode       task.BlackboardMode
-		configured bool
-		want       int
-	}{
-		{"configured CTF", project.KindCTFChallenge, task.BlackboardModeWorkingGraph, true, 1},
-		{"unconfigured CTF", project.KindCTFChallenge, task.BlackboardModeWorkingGraph, false, 0},
-		{"disabled CTF", project.KindCTFChallenge, task.BlackboardModeDisabled, true, 0},
-		{"pentest", project.KindPentest, task.BlackboardModeWorkingGraph, true, 0},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			platforms := map[string]challengeworkflow.PlatformAdapter{}
-			if tc.configured {
-				platforms["arena"] = challengePlatformFixture{}
-			}
-			server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "db.sqlite"), DisableBuiltinSkills: true, ChallengePlatforms: platforms})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = server.Close() })
-			proj, err := server.projects.CreateWithKind("Scope", "", tc.kind, project.Scope{}, project.Defaults{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			profile, err := server.profiles.Create("Fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
-			if err != nil {
-				t.Fatal(err)
-			}
-			created, err := server.tasks.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.Type(tc.kind), Goal: "Inspect", Runner: task.RunnerSandbox, RuntimeProfileID: profile.ID, RunControls: task.RunControls{BlackboardMode: tc.mode}, RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)})
-			if err != nil {
-				t.Fatal(err)
-			}
-			accessURL, err := url.Parse(server.GeneratedOperatorAccessURL())
-			if err != nil {
-				t.Fatal(err)
-			}
-			base := "/api/projects/" + proj.ID + "/tasks/" + created.ID
-			for _, suffix := range []string{"", "/challenges"} {
-				response := serveChallenge(t, server, http.MethodGet, base+suffix, accessURL.Query().Get("token"), "")
-				if response.Code != http.StatusOK {
-					t.Fatalf("%s: %d %s", suffix, response.Code, response.Body.String())
-				}
-				var body struct {
-					Platforms          []string `json:"platforms"`
-					ChallengePlatforms []string `json:"challenge_platforms"`
-				}
-				if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
-					t.Fatal(err)
-				}
-				got := body.Platforms
-				if suffix == "" {
-					got = body.ChallengePlatforms
-				}
-				if len(got) != tc.want {
-					t.Fatalf("%s platforms = %v, want count %d", suffix, got, tc.want)
-				}
-			}
-		})
-	}
 }

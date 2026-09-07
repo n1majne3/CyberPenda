@@ -81,7 +81,7 @@ func TestBlackboardV2ReplacementRetiresEveryIndependentProductionV1Path(t *testi
 	}
 }
 
-func TestBlackboardV2AcceptedContractsAndUserDocsAgree(t *testing.T) {
+func TestBlackboardV2HistoricalContractsAndCurrentDocsAgree(t *testing.T) {
 	root := repositoryRoot(t)
 
 	var openAPI struct {
@@ -145,7 +145,6 @@ func TestBlackboardV2AcceptedContractsAndUserDocsAgree(t *testing.T) {
 		body string
 	}{
 		{"ADR 0014", adr},
-		{"README", readme},
 	} {
 		if !strings.Contains(document.body, "seven") && !strings.Contains(document.body, "Exactly seven") {
 			t.Errorf("%s does not state the seven-tool contract", document.name)
@@ -153,6 +152,9 @@ func TestBlackboardV2AcceptedContractsAndUserDocsAgree(t *testing.T) {
 		if strings.Contains(document.body, "/api/v1/") || strings.Contains(document.body, "get_current_graph") {
 			t.Errorf("%s advertises a retired public v1 interface", document.name)
 		}
+	}
+	if !strings.Contains(readme, "FGS") || !strings.Contains(readme, "built-in Blackboard MCP") || !strings.Contains(readme, "retired") {
+		t.Error("README must describe FGS and retirement of the built-in Blackboard MCP")
 	}
 	for _, marker := range []string{
 		"### 6.1 T30 executable proof matrix",
