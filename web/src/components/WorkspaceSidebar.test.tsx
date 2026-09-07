@@ -923,9 +923,12 @@ describe("WorkspaceSidebar", () => {
     );
 
     const nonProjectLink = await screen.findByRole("link", { name: /non-project/i });
-    expect(nonProjectLink.parentElement).toHaveTextContent("Non-project2");
     const projectsLink = screen.getByRole("link", { name: /^projects$/i });
-    expect(projectsLink.parentElement).toHaveTextContent("Projects3");
+    // Group links exist before the independent navigation requests complete.
+    await waitFor(() => {
+      expect(nonProjectLink.parentElement).toHaveTextContent("Non-project2");
+      expect(projectsLink.parentElement).toHaveTextContent("Projects3");
+    });
   });
 
   // #268: the sidebar status word is durable-first. While the owner's latest

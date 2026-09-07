@@ -91,7 +91,7 @@ describe("RuntimeProfilesPage", () => {
         return url.includes("/api/runtime-extension-catalog");
       }),
     ).toHaveLength(0);
-    await userEvent.click(screen.getByRole("button", { name: /Fast Codex/ }));
+    await userEvent.click(screen.getByRole("button", { name: /^Fast Codex/ }));
     await userEvent.click(await screen.findByRole("button", { name: /^save$/i }));
     await waitFor(() => {
       const call = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === "PATCH");
@@ -794,7 +794,7 @@ expect(screen.getByText("Codex · MiMo")).toBeInTheDocument();
     vi.stubGlobal("fetch", fetchMock);
 
     renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: /Fast Codex/i }));
+    await userEvent.click(await screen.findByRole("button", { name: /^Fast Codex/i }));
 
     const stateSelect = screen.getByLabelText("In-turn multi-agent tools");
     expect(stateSelect).toHaveValue("inherit");
