@@ -51,6 +51,7 @@ const (
 // Detail references the owner-authorized endpoint that returns the complete
 // retained entry.
 type Entry struct {
+	Position     int            `json:"position,omitempty"` // Stable position inside independently paged child history.
 	ID           string         `json:"id"`
 	Seq          int            `json:"seq"`
 	Continuation int            `json:"continuation"`
@@ -400,7 +401,7 @@ func parseRuntimeOutput(event Event, continuation int, adapter, text string, chi
 	}
 	turns := runtimeoutput.ParseRecordWithMeta(record, runtimeoutput.RecordMeta{
 		ProviderEvent: stringValue(event.Payload, "provider_event"),
-	}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true}, base.CreatedAt)
+	}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true, AttributeChildStreams: event.Payload["child_history_v1"] == true}, base.CreatedAt)
 	if len(turns) == 0 {
 		return nil, false
 	}

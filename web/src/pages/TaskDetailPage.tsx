@@ -7,13 +7,14 @@ import { Button, Badge, Chip, Input, Select, Textarea } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { ErrorState, LoadingState, PageContainer } from "@/components/shared";
+import { SubagentHistory } from "@/components/task-transcript/SubagentHistory";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
 import { AttachmentFileRow } from "@/components/AttachmentPicker";
 import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
 import { modelsForProvider } from "./taskLaunchForm";
 import { formatDateTime, formatRelativeTime } from "@/lib/format";
-import { mergeTimelineItems, mergeTranscriptEntries, prependTimelineItems, prependTranscriptEntries } from "@/lib/ownerEvents";
+import { anchorSubagentBlocks, mergeTimelineItems, mergeTranscriptEntries, prependTimelineItems, prependTranscriptEntries } from "@/lib/ownerEvents";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 import { useVirtualWindow } from "@/lib/virtualWindow";
 import { taskRuntimeOwnerAdapter, sessionRuntimeOwnerAdapter, type RuntimeOwnerAdapter } from "@/lib/runtimeOwner/adapter";
@@ -150,6 +151,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         ...(mode === "initial" ? {
           timelineHasOlder: loaded.timelineHasOlder,
           transcriptHasOlder: loaded.transcriptHasOlder,
+          transcriptBefore: loaded.transcriptBefore,
         } : {}),
       };
       applyHistoryDelta(
@@ -214,13 +216,13 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   async function loadOlderConversation() {
     const current = historyRef.current;
     if (current.loadingOlder !== null || current.transcript.length === 0 || !current.transcriptHasOlder) return;
-    const before = current.transcript[0]!.seq;
+    const before = current.transcriptBefore ?? current.transcript[0]!.seq;
     commitHistory({ ...current, loadingOlder: "transcript" });
     try {
       const page = await ownerAdapter.loadOlderTranscript(before);
       const latest = historyRef.current;
       const merged = prependTranscriptEntries(latest.transcript, page.entries ?? []);
-      commitHistory({ ...latest, transcript: merged, transcriptHasOlder: page.has_older === true, loadingOlder: null });
+      commitHistory({ ...latest, transcript: merged, transcriptHasOlder: page.has_older === true, transcriptBefore: page.before, loadingOlder: null });
     } catch (e) {
       commitHistory({ ...historyRef.current, loadingOlder: null });
       setActionError((e as Error).message);
@@ -1697,6 +1699,7 @@ function TranscriptList({
 }
 
 function buildTranscriptRows(entries: TaskTranscriptEntry[]): TranscriptDisplayRow[] {
+  entries = anchorSubagentBlocks(entries);
   const resultByCallID = new Map<string, TaskTranscriptEntry>();
   for (const entry of entries) {
     if (entry.kind === "tool_result" && entry.tool_call_id) resultByCallID.set(entry.tool_call_id, entry);
@@ -1861,12 +1864,14 @@ function ToolTranscriptRow({ call, result }: { call?: TaskTranscriptEntry; resul
 }
 
 function SubagentBlockRow({ entry }: { entry: TaskTranscriptEntry }) {
+  const [open, setOpen] = useState(false);
+  const history = typeof entry.details?.history === "string" ? entry.details.history : "";
   const items = Array.isArray(entry.details?.items) ? (entry.details?.items as TaskTranscriptEntry[]) : [];
   // The child's items render with the same row machinery as the main thread:
   // tool calls pair with their results and collapse like every other tool row.
   const rows = buildTranscriptRows(items);
   return (
-    <details data-testid="transcript-subagent-row" className="group">
+    <details data-testid="transcript-subagent-row" className="group" onToggle={(event) => setOpen(event.currentTarget.open)}>
       <summary className={cn(
         "-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden",
       )}>
@@ -1876,7 +1881,13 @@ function SubagentBlockRow({ entry }: { entry: TaskTranscriptEntry }) {
           {collapsedTranscriptTitle(entry)}
         </span>
       </summary>
-      {rows.length > 0 && (
+      {history && open && Array.isArray(entry.details?.legacy_items) && buildTranscriptRows(entry.details.legacy_items as TaskTranscriptEntry[]).map((row) => <TranscriptRow key={`legacy-${row.entry.id}`} entry={row.entry} pairedResult={row.result} />)}
+      {history && open && <div className="ml-[1.625rem] border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
+        <SubagentHistory key={history} history={history} renderItems={(items) => buildTranscriptRows(items).map((row) => (
+          <TranscriptRow key={row.entry.id} entry={row.entry} pairedResult={row.result} />
+        ))} />
+      </div>}
+      {!history && rows.length > 0 && (
         <div className="ml-[1.625rem] space-y-1 border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
           {rows.map((row) => (
             <TranscriptRow key={`${entry.id}-${row.entry.id}`} entry={row.entry} pairedResult={row.result} />

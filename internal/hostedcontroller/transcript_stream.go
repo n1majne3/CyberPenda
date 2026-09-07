@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -17,6 +18,7 @@ import (
 const maskedHostedCredential = "[REDACTED]"
 
 type transcriptPage struct {
+	Before   int                `json:"before"`
 	TaskID   string             `json:"task_id"`
 	Entries  []transcript.Entry `json:"entries"`
 	Cursor   int                `json:"cursor"`
@@ -42,6 +44,9 @@ func (app *HTTPApp) streamInitialTranscript(ctx context.Context, run HostedEvalu
 	}
 	seen := transcriptEntryIDs(entries)
 	oldest := oldestTranscriptEventSeq(entries)
+	if initial.Before > 0 {
+		oldest = initial.Before
+	}
 	hasOlder := initial.HasOlder
 	for hasOlder {
 		if len(entries) == 0 || oldest <= 0 {
@@ -64,22 +69,43 @@ func (app *HTTPApp) streamInitialTranscript(ctx context.Context, run HostedEvalu
 				return 0, errorsInvalidTranscriptPage("older history did not move backward")
 			}
 			if _, duplicate := seen[entry.ID]; duplicate {
-				continue
+				// New summaries refer to all indexed child changes. Legacy
+				// slices still contain content that only that page can supply.
+				if entry.Kind != transcript.KindSubagentBlock {
+					continue
+				}
+				if entry.Details["history"] != nil {
+					if entry.Truncated {
+						complete, err := app.transcriptEntryDetail(ctx, run, entry)
+						if err != nil {
+							return 0, err
+						}
+						entry = complete
+					}
+					if legacy, ok := legacyChildBlock(entry); ok {
+						older = append(older, legacy)
+					}
+					continue
+				}
 			}
 			seen[entry.ID] = struct{}{}
 			older = append(older, entry)
 		}
-		if len(older) == 0 {
-			return 0, errorsInvalidTranscriptPage("older history contained only duplicate entries")
-		}
 		entries = append(older, entries...)
-		oldest = oldestTranscriptEventSeq(older)
+		next := oldestTranscriptEventSeq(page.Entries)
+		if page.Before > 0 {
+			next = page.Before
+		}
+		if page.HasOlder && (next <= 0 || next >= oldest) {
+			return 0, errorsInvalidTranscriptPage("older source cursor did not advance")
+		}
+		oldest = next
 		hasOlder = page.HasOlder
 	}
 	// The synthetic Task Goal has Seq 0 but can first appear on a later
 	// backward page. Restore global sequence order after all pages are joined.
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Seq < entries[j].Seq })
-	if err := app.emitTranscriptEntries(ctx, run, output, masker, entries); err != nil {
+	if err := app.emitTranscriptEntries(ctx, run, output, masker, entries, 0); err != nil {
 		return 0, err
 	}
 	return initial.Cursor, nil
@@ -105,7 +131,7 @@ func (app *HTTPApp) drainTranscript(ctx context.Context, run HostedEvaluationRef
 		if len(page.Entries) > 0 && page.Entries[len(page.Entries)-1].Seq > page.Cursor {
 			return cursor, errorsInvalidTranscriptPage("live-tail cursor precedes a returned entry")
 		}
-		if err := app.emitTranscriptEntries(ctx, run, output, masker, page.Entries); err != nil {
+		if err := app.emitTranscriptEntries(ctx, run, output, masker, page.Entries, cursor); err != nil {
 			return cursor, err
 		}
 		previous := cursor
@@ -116,7 +142,7 @@ func (app *HTTPApp) drainTranscript(ctx context.Context, run HostedEvaluationRef
 	}
 }
 
-func (app *HTTPApp) emitTranscriptEntries(ctx context.Context, run HostedEvaluationReference, output io.Writer, masker *exactMasker, entries []transcript.Entry) error {
+func (app *HTTPApp) emitTranscriptEntries(ctx context.Context, run HostedEvaluationReference, output io.Writer, masker *exactMasker, entries []transcript.Entry, afterEvent int) error {
 	for _, preview := range entries {
 		entry := preview
 		if preview.Truncated {
@@ -126,17 +152,14 @@ func (app *HTTPApp) emitTranscriptEntries(ctx context.Context, run HostedEvaluat
 			}
 			entry = complete
 		}
-		line, err := masker.marshal(entry)
-		if err != nil {
-			return fmt.Errorf("encode hosted Transcript entry: %w", err)
+		if history, ok := entry.Details["history"].(string); entry.Kind == transcript.KindSubagentBlock && ok {
+			if err := app.emitChildTranscript(ctx, run, output, masker, entry, history, afterEvent); err != nil {
+				return err
+			}
+			continue
 		}
-		line = append(line, '\n')
-		written, err := output.Write(line)
-		if err != nil {
-			return fmt.Errorf("write hosted Transcript to stdout: %w", err)
-		}
-		if written != len(line) {
-			return fmt.Errorf("write hosted Transcript to stdout: %w", io.ErrShortWrite)
+		if err := writeTranscriptEntry(output, masker, entry); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -146,7 +169,7 @@ func (app *HTTPApp) transcriptEntryDetail(ctx context.Context, run HostedEvaluat
 	prefix := taskTranscriptPath(run) + "/entries/"
 	detail := strings.TrimSpace(preview.Detail)
 	parsed, err := url.Parse(detail)
-	if err != nil || parsed.IsAbs() || parsed.RawQuery != "" || parsed.Fragment != "" || !strings.HasPrefix(parsed.Path, prefix) {
+	if err != nil || parsed.IsAbs() || parsed.RawQuery != "" || parsed.Fragment != "" || (!strings.HasPrefix(parsed.Path, prefix) && !(strings.HasPrefix(parsed.Path, taskTranscriptPath(run)+"/children/") && (strings.Contains(parsed.Path, "/items/") || strings.Contains(parsed.Path, "/changes/")))) {
 		return transcript.Entry{}, errorsInvalidTranscriptPage("truncated entry has an invalid detail reference")
 	}
 	var complete transcript.Entry
@@ -266,4 +289,94 @@ func (masker *exactMasker) mask(value any) any {
 	default:
 		return typed
 	}
+}
+
+// emitChildTranscript reads only changes inside the parent page's source
+// boundary. Child pages are emitted separately, so a multi-hour child never
+// requires an unbounded buffer. A lifecycle-only update still emits its header.
+func (app *HTTPApp) emitChildTranscript(ctx context.Context, run HostedEvaluationReference, output io.Writer, masker *exactMasker, summary transcript.Entry, history string, afterEvent int) error {
+	prefix := taskTranscriptPath(run) + "/children/"
+	parsed, err := url.Parse(history)
+	if err != nil || parsed.IsAbs() || parsed.RawQuery != "" || parsed.Fragment != "" || !strings.HasPrefix(parsed.Path, prefix) {
+		return errorsInvalidTranscriptPage("invalid child history reference")
+	}
+	if legacy, ok := legacyChildBlock(summary); ok {
+		if err := writeTranscriptEntry(output, masker, legacy); err != nil {
+			return err
+		}
+	}
+	summary.Details = maps.Clone(summary.Details)
+	delete(summary.Details, "legacy_items")
+	cursor := 0
+	emitted := false
+	for {
+		query := url.Values{"view": {"changes"}, "after": {strconv.Itoa(cursor)}, "through": {strconv.Itoa(summary.Seq)}, "after_event": {strconv.Itoa(afterEvent)}}
+		var page struct {
+			Entries  []transcript.Entry `json:"entries"`
+			Cursor   int                `json:"cursor"`
+			HasNewer bool               `json:"has_newer"`
+		}
+		if err := app.request(ctx, http.MethodGet, parsed.EscapedPath()+"?"+query.Encode(), nil, &page); err != nil {
+			return fmt.Errorf("read hosted child Transcript: %w", err)
+		}
+		if page.Cursor < cursor || (page.HasNewer && page.Cursor <= cursor) {
+			return errorsInvalidTranscriptPage("child cursor did not advance")
+		}
+		for i, entry := range page.Entries {
+			if entry.Seq <= afterEvent || entry.Seq > summary.Seq {
+				return errorsInvalidTranscriptPage("child entry outside source boundary")
+			}
+			if entry.Truncated {
+				full, err := app.transcriptEntryDetail(ctx, run, entry)
+				if err != nil {
+					return err
+				}
+				page.Entries[i] = full
+			}
+		}
+		if len(page.Entries) > 0 || (!emitted && !page.HasNewer) {
+			block := summary
+			block.Details = make(map[string]any, len(summary.Details)+1)
+			for key, value := range summary.Details {
+				block.Details[key] = value
+			}
+			block.Details["items"] = page.Entries
+			if err := writeTranscriptEntry(output, masker, block); err != nil {
+				return err
+			}
+			emitted = true
+		}
+		if !page.HasNewer {
+			return nil
+		}
+		cursor = page.Cursor
+	}
+}
+
+func writeTranscriptEntry(output io.Writer, masker *exactMasker, entry transcript.Entry) error {
+	line, err := masker.marshal(entry)
+	if err != nil {
+		return fmt.Errorf("encode hosted Transcript entry: %w", err)
+	}
+	line = append(line, '\n')
+	written, err := output.Write(line)
+	if err != nil {
+		return fmt.Errorf("write hosted Transcript to stdout: %w", err)
+	}
+	if written != len(line) {
+		return fmt.Errorf("write hosted Transcript to stdout: %w", io.ErrShortWrite)
+	}
+	return nil
+}
+
+func legacyChildBlock(entry transcript.Entry) (transcript.Entry, bool) {
+	items, ok := entry.Details["legacy_items"].([]any)
+	if !ok || len(items) == 0 {
+		return transcript.Entry{}, false
+	}
+	entry.Details = maps.Clone(entry.Details)
+	delete(entry.Details, "history")
+	delete(entry.Details, "legacy_items")
+	entry.Details["items"] = items
+	return entry, true
 }

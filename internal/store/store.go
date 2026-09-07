@@ -963,6 +963,7 @@ func migrations() []migration {
 		newMigration(75, "fgs_protocol_selection", migration75SQL, migration75Up),
 		newMigration(76, "fgs_outbox_inventory", migration76SQL, migration76Up),
 		newMigration(77, "fgs_existing_owner_protocol", migration77SQL, migration77Up),
+		newMigration(78, "child_transcript_history", migration78SQL, migration78Up),
 	}
 }
 

@@ -106,7 +106,7 @@ export function mergeTranscriptEntries(existing: TaskTranscriptEntry[], delta: T
     appended.push(entry);
   }
   if (!changed && appended.length === 0) return existing;
-  return appendCoalescedTranscript(updated, appended);
+  return anchorSubagentBlocks(appendCoalescedTranscript(updated, appended));
 }
 
 // mergeSubagentBlock unions a rebuilt block's items with the loaded ones. Each
@@ -114,6 +114,13 @@ export function mergeTranscriptEntries(existing: TaskTranscriptEntry[], delta: T
 // the union (deduplicated by item id, ordered by item Seq) is the full child
 // history the client has loaded so far.
 function mergeSubagentBlock(previous: TaskTranscriptEntry, next: TaskTranscriptEntry): TaskTranscriptEntry {
+  if (typeof next.details?.history === "string") {
+    const legacy = previous.details?.history ? previous.details?.legacy_items : previous.details?.items;
+    if (!Array.isArray(legacy) || !legacy.length) return next;
+    const old = Array.isArray(next.details?.legacy_items) ? next.details.legacy_items : [];
+    const byID = new Map([...legacy, ...old].map((item) => [item.id, item]));
+    return { ...next, details: { ...next.details, legacy_items: [...byID.values()] } };
+  }
   const mergedItems = [...blockItems(previous), ...blockItems(next)];
   const byID = new Map<string, Record<string, unknown>>();
   for (const item of mergedItems) {
@@ -208,7 +215,7 @@ export function timelineItemIdentity(item: TaskTimelineItem): string {
  */
 export function prependTranscriptEntries(existing: TaskTranscriptEntry[], page: TaskTranscriptEntry[]): TaskTranscriptEntry[] {
   if (page.length === 0) return existing;
-  if (existing.length === 0) return page;
+  if (existing.length === 0) return anchorSubagentBlocks(page);
   const headSeq = existing[0]!.seq;
   const older: TaskTranscriptEntry[] = [];
   const merged = new Map<string, TaskTranscriptEntry>();
@@ -229,5 +236,31 @@ export function prependTranscriptEntries(existing: TaskTranscriptEntry[], page: 
     result = existing.map((entry) => merged.get(entry.id) ?? entry);
   }
   const seen = new Set(result.map((entry) => entry.id));
-  return [...older.filter((entry) => !seen.has(entry.id)), ...result];
+  return anchorSubagentBlocks([...older.filter((entry) => !seen.has(entry.id)), ...result]);
+}
+
+/** Keep source/update sequences separate from the child's visual spawn anchor. */
+export function anchorSubagentBlocks(entries: TaskTranscriptEntry[]): TaskTranscriptEntry[] {
+  const calls = new Map(entries.filter((entry) => entry.kind === "tool_call" && entry.tool_call_id).map((entry) => [entry.tool_call_id, entry.id]));
+  const blocks = new Map<string, TaskTranscriptEntry[]>();
+  const held = new Set<string>();
+  for (const entry of entries) {
+    const spawn = entry.details?.spawn_tool_use_id;
+    if (entry.kind !== "subagent_block" || !entry.details?.history || typeof spawn !== "string" || !calls.has(spawn)) continue;
+    blocks.set(spawn, [...(blocks.get(spawn) ?? []), entry]);
+    held.add(entry.id);
+  }
+  if (!held.size) return entries;
+  const main = entries.filter((entry) => !held.has(entry.id));
+  const result: TaskTranscriptEntry[] = [];
+  for (let index = 0; index < main.length; index++) {
+    const entry = main[index]!;
+    result.push(entry);
+    if (entry.kind !== "tool_call" || !entry.tool_call_id) continue;
+    const children = blocks.get(entry.tool_call_id);
+    if (!children) continue;
+    if (main[index + 1]?.kind === "tool_result" && main[index + 1]?.tool_call_id === entry.tool_call_id) result.push(main[++index]!);
+    result.push(...children);
+  }
+  return result;
 }

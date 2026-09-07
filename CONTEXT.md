@@ -789,8 +789,12 @@ The TSecBench-specific bootstrap process that validates hosted configuration, st
 _Avoid_: Runtime, Challenge Workflow, challenge scheduler
 
 **Subagent Activity**:
-A provider-neutral projection of one child agent that a **Runtime** spawned through its own agent-spawning tool, such as a Claude Code async Agent-tool child or a Codex child thread. It carries durable child identity, a coarse started-to-settled activity state, and its provider, and it projects two ways: one Timeline lifecycle entry, plus one collapsed and attributed conversation block anchored at the spawning tool call that aggregates the child's own transcript items regardless of stream interleaving. A child agent may keep working after the **Work Runtime Turn** that spawned it has settled. The **Runtime Harness** only observes it and never gains a spawn RPC or a Harness-owned subagent scheduling surface.
+A provider-neutral projection of one child agent that a **Runtime** spawned through its own agent-spawning tool, such as a Claude Code async Agent-tool child or a Codex child thread. It carries durable child identity, a coarse started-to-settled activity state, and its provider, and it projects two ways: one Timeline lifecycle entry, plus one **Subagent Conversation Block**. A child agent may keep working after the **Work Runtime Turn** that spawned it has settled. The **Runtime Harness** only observes it and never gains a spawn RPC or a Harness-owned subagent scheduling surface.
 _Avoid_: Harness-owned subagent, Runtime Continuation per child, raw provider JSON dump, Task, provider-specific display rule
+
+**Subagent Conversation Block**:
+One collapsed and attributed conversation summary for one child agent within a **Runtime Owner**, anchored at its spawning tool call, with the child's complete retained Transcript available through separate pages bounded by item count and serialized size. Its child history remains available independently of loaded main-conversation pages and continues to update during **Runtime Turns** that can last hours.
+_Avoid_: window-local child history, client-only aggregation, complete inline child Transcript, Runtime Turn per child
 
 **Hosted Challenge Client**:
 A bounded, one-command process inside the TSecBench Hosted Image that performs one list, start, hint, submit, or guarded close operation for the Runtime. It has no background lifecycle, never controls the Hosted Controller or daemon, and derives safety decisions from current platform state so its failure cannot terminate the host process. It loads one Challenge Platform adapter by `CYBERPENDA_CHALLENGE_ADAPTER`. Overlay manifests under `/data/adapters` replace baked adapters without rebuilding the image.

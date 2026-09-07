@@ -82,6 +82,7 @@ export function taskRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
         transcriptCursor: transcript.cursor ?? current.transcriptCursor,
         timelineHasOlder: timeline.has_older === true,
         transcriptHasOlder: transcript.has_older === true,
+        transcriptBefore: transcript.before,
       };
     },
     loadOlderTranscript: (before) => apiGet<TaskTranscript>(`${base}/transcript?before=${before}`),
@@ -135,6 +136,7 @@ export function sessionRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
         transcriptCursor: transcript.cursor ?? current.transcriptCursor,
         timelineHasOlder: timeline.has_older === true,
         transcriptHasOlder: transcript.has_older === true,
+        transcriptBefore: transcript.before,
       };
     },
     loadOlderTranscript: (before) => apiGet<TaskTranscript>(`${base}/transcript?before=${before}`),

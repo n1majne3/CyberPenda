@@ -1,7 +1,12 @@
 package daemon
 
 import (
+	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"pentest/internal/childhistory"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -72,6 +77,8 @@ type ownerHistoryStore interface {
 // Session. Handlers keep only route parsing and owner-specific response
 // envelopes.
 type ownerHistory struct {
+	childDB              *sql.DB
+	childOwner           childhistory.Owner
 	store                ownerHistoryStore
 	subject              transcript.Subject
 	timelineDetailBase   string
@@ -149,20 +156,80 @@ func (h ownerHistory) TranscriptPage(req historyRequest) (historyPage[transcript
 	if err != nil {
 		return historyPage[transcript.Entry]{}, err
 	}
-	entries := transcript.BuildWindow(h.subject, ownerTranscriptEvents(window.Events), transcript.WindowContext{
-		Continuation: window.PriorContinuation,
-		Adapter:      window.PriorTranscriptAdapter,
-	})
+	entries, err := h.transcriptWindowEntries(window)
+	if err != nil {
+		return historyPage[transcript.Entry]{}, err
+	}
 	if entries == nil {
 		entries = []transcript.Entry{}
 	}
 	page := historyResponseFor(entries, req, func(entry transcript.Entry) int {
 		return entry.Seq
 	}, func(entry transcript.Entry) (transcript.Entry, int) {
-		return boundedTranscriptEntry(entry, h.transcriptDetailBase)
+		preview, size := boundedTranscriptEntry(entry, h.transcriptDetailBase)
+		if preview.Truncated && entry.Kind == transcript.KindSubagentBlock && len(window.Events) > 0 {
+			// Child IDs do not embed a source Event ID. Keep the original
+			// bounded source window in the detail reference instead.
+			preview.Detail = fmt.Sprintf("%s/window.%d.%d.%s", h.transcriptDetailBase, window.Events[0].Seq, window.Events[len(window.Events)-1].Seq, base64.RawURLEncoding.EncodeToString([]byte(entry.ID)))
+			raw, _ := json.Marshal(preview)
+			return preview, len(raw)
+		}
+		return preview, size
 	})
 	reconcileHistoryPageWindow(&page, req, window.HasOlder, window.Cursor, window.HasNewer, window.ScanCursor)
+	for _, entry := range page.items {
+		if entry.Seq > 0 && (page.before == 0 || entry.Seq < page.before) {
+			page.before = entry.Seq
+		}
+	}
+	// A complete projection of this Event window can contain only one child
+	// summary. Page before the source window, not before its last child event.
+	if len(page.items) == len(entries) && len(window.Events) > 0 {
+		page.before = window.Events[0].Seq
+	}
 	return page, nil
+}
+
+// transcriptWindowEntries keeps page previews and full details on the same
+// forward-only projection, including legacy items in a mixed window.
+func (h ownerHistory) transcriptWindowEntries(window ownerHistoryEventWindow) ([]transcript.Entry, error) {
+	events := ownerTranscriptEvents(window.Events)
+	if h.childDB != nil {
+		if err := childhistory.MarkIndexedEvents(h.childDB, h.childOwner, events); err != nil {
+			return nil, err
+		}
+	}
+	entries := transcript.BuildWindow(h.subject, events, transcript.WindowContext{
+		Continuation: window.PriorContinuation,
+		Adapter:      window.PriorTranscriptAdapter,
+	})
+	if h.childDB != nil {
+		indexed := false
+		for i, entry := range entries {
+			if entry.Kind != transcript.KindSubagentBlock {
+				continue
+			}
+			if !indexedChildBlock(entry, events) {
+				continue
+			}
+			summary, found, err := childhistory.Summary(h.childDB, h.childOwner, entry.ID)
+			if err != nil {
+				return nil, err
+			}
+			if found {
+				summary.Seq = entry.Seq
+				if legacy := legacyChildItems(entry, events); len(legacy) > 0 {
+					summary.Details["legacy_items"] = legacy
+				}
+				entries[i] = summary
+				indexed = true
+			}
+		}
+		if indexed {
+			sort.SliceStable(entries, func(i, j int) bool { return entries[i].Seq < entries[j].Seq })
+		}
+	}
+	return entries, nil
 }
 
 // TranscriptEntry returns one complete retained Transcript entry by ID,
@@ -170,6 +237,9 @@ func (h ownerHistory) TranscriptPage(req historyRequest) (historyPage[transcript
 // history window preview truncated. Like TimelineItem it reads one bounded
 // window ending at the source Event instead of rebuilding full history.
 func (h ownerHistory) TranscriptEntry(ref string) (transcript.Entry, bool, error) {
+	if strings.HasPrefix(ref, "window.") {
+		return h.transcriptWindowEntry(ref)
+	}
 	if ref == "" {
 		return transcript.Entry{}, false, nil
 	}
@@ -347,7 +417,8 @@ func sessionOwnerEvents(events []session.Event) []ownerEvent {
 // taskOwnerHistory builds the owner history read model for one Task.
 func (server *Server) taskOwnerHistory(found task.Task) ownerHistory {
 	return ownerHistory{
-		store: taskOwnerHistoryStore{tasks: server.tasks, taskID: found.ID},
+		store:   taskOwnerHistoryStore{tasks: server.tasks, taskID: found.ID},
+		childDB: server.db.DB, childOwner: childhistory.Owner{Kind: "task", ID: found.ID, Base: fmt.Sprintf("/api/projects/%s/tasks/%s/transcript/children", found.ProjectID, found.ID)},
 		subject: transcript.Subject{
 			ID: found.ID, Title: found.Goal, CreatedAt: found.CreatedAt,
 		},
@@ -361,11 +432,72 @@ func (server *Server) taskOwnerHistory(found task.Task) ownerHistory {
 // a conversation Event.
 func (server *Server) sessionOwnerHistory(found session.Session) ownerHistory {
 	return ownerHistory{
-		store: sessionOwnerHistoryStore{sessions: server.sessions, sessionID: found.ID},
+		store:   sessionOwnerHistoryStore{sessions: server.sessions, sessionID: found.ID},
+		childDB: server.db.DB, childOwner: childhistory.Owner{Kind: "session", ID: found.ID, Base: "/api/sessions/" + found.ID + "/transcript/children"},
 		subject: transcript.Subject{
 			ID: found.ID, CreatedAt: found.CreatedAt,
 		},
 		timelineDetailBase:   "/api/sessions/" + found.ID + "/timeline/items",
 		transcriptDetailBase: "/api/sessions/" + found.ID + "/transcript/entries",
 	}
+}
+
+// Old-only windows retain their inline projection. A mixed window uses the
+// index for new content and retains only its genuinely legacy child items.
+func indexedChildBlock(entry transcript.Entry, events []transcript.Event) bool {
+	for _, event := range events {
+		if event.Seq == entry.Seq {
+			return event.Payload["child_history_v1"] == true
+		}
+	}
+	return false
+}
+func legacyChildItems(entry transcript.Entry, events []transcript.Event) []any {
+	indexed := map[int]bool{}
+	for _, event := range events {
+		indexed[event.Seq] = event.Payload["child_history_v1"] == true
+	}
+	var legacy []any
+	if items, ok := entry.Details["items"].([]any); ok {
+		for _, item := range items {
+			if value, ok := item.(map[string]any); ok {
+				if seq, ok := value["seq"].(float64); ok && !indexed[int(seq)] {
+					legacy = append(legacy, item)
+				}
+			}
+		}
+	}
+	return legacy
+}
+
+// transcriptWindowEntry restores one child preview from exactly its original
+// source window. A later append cannot change the content of this reference.
+func (h ownerHistory) transcriptWindowEntry(ref string) (transcript.Entry, bool, error) {
+	parts := strings.SplitN(ref, ".", 4)
+	if len(parts) != 4 {
+		return transcript.Entry{}, false, nil
+	}
+	first, errFirst := strconv.Atoi(parts[1])
+	last, errLast := strconv.Atoi(parts[2])
+	id, errID := base64.RawURLEncoding.DecodeString(parts[3])
+	if errFirst != nil || errLast != nil || errID != nil || first <= 0 || last < first {
+		return transcript.Entry{}, false, nil
+	}
+	window, err := h.store.TranscriptWindow(ownerHistoryWindowQuery{AfterSet: true, After: first - 1})
+	if err != nil {
+		return transcript.Entry{}, false, err
+	}
+	for len(window.Events) > 0 && window.Events[len(window.Events)-1].Seq > last {
+		window.Events = window.Events[:len(window.Events)-1]
+	}
+	entries, err := h.transcriptWindowEntries(window)
+	if err != nil {
+		return transcript.Entry{}, false, err
+	}
+	for _, entry := range entries {
+		if entry.ID == string(id) && entry.Kind == transcript.KindSubagentBlock {
+			return entry, true, nil
+		}
+	}
+	return transcript.Entry{}, false, nil
 }

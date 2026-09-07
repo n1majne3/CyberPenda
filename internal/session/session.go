@@ -21,9 +21,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"pentest/internal/childhistory"
 	"pentest/internal/owner"
 	"pentest/internal/runtimeconfig"
 	"pentest/internal/store"
+	"pentest/internal/transcript"
 )
 
 // Lifecycle is the only durable Session state. Runtime liveness and turn
@@ -2067,6 +2069,9 @@ func appendEventTx(tx *sql.Tx, sessionID string, kind EventKind, payload EventPa
 	event := Event{ID: id, SessionID: sessionID, Seq: int(max.Int64) + 1, Kind: kind, Payload: payload, CreatedAt: now.UTC()}
 	if _, err := tx.Exec(`INSERT INTO session_events (id,session_id,seq,kind,payload_json,created_at) VALUES (?,?,?,?,?,?)`, event.ID, event.SessionID, event.Seq, string(event.Kind), string(encoded), formatTime(event.CreatedAt)); err != nil {
 		return Event{}, err
+	}
+	if err := childhistory.Record(tx, childhistory.Owner{Kind: "session", ID: event.SessionID}, transcript.Event{ID: event.ID, Seq: event.Seq, Kind: string(event.Kind), Payload: event.Payload, CreatedAt: event.CreatedAt}); err != nil {
+		return Event{}, fmt.Errorf("index child history: %w", err)
 	}
 	return event, nil
 }

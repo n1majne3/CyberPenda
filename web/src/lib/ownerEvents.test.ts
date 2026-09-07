@@ -235,3 +235,11 @@ describe("prependTranscriptEntries", () => {
     expect(merged.map((entry) => entry.id)).toEqual(["z", "a", "b"]);
   });
 });
+
+it("anchors an independently paged child when its spawn arrives on an older page", () => {
+  const child = { ...transcriptEntry("child", 90), kind: "subagent_block", details: { history: "/children/a", spawn_tool_use_id: "spawn" } };
+  const spawn = { ...transcriptEntry("call", 1), kind: "tool_call", tool_call_id: "spawn" };
+  const ack = { ...transcriptEntry("ack", 2), kind: "tool_result", tool_call_id: "spawn" };
+  const result = prependTranscriptEntries([transcriptEntry("main", 50), child], [spawn, ack, transcriptEntry("later", 3)]);
+  expect(result.map((entry) => entry.id)).toEqual(["call", "ack", "child", "later", "main"]);
+});

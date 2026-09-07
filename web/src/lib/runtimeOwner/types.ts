@@ -70,6 +70,7 @@ export type OwnerHistory = {
   transcript: TaskTranscriptEntry[];
   timelineCursor: number;
   transcriptCursor: number;
+  transcriptBefore?: number;
   timelineHasOlder: boolean;
   transcriptHasOlder: boolean;
   timelineUnseen: number;
@@ -92,6 +93,7 @@ export type RuntimeWorkspaceLoad = {
   transcript: TaskTranscriptEntry[];
   timelineCursor: number;
   transcriptCursor: number;
+  transcriptBefore?: number;
   timelineHasOlder: boolean;
   transcriptHasOlder: boolean;
 };

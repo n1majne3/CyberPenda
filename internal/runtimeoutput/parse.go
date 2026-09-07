@@ -55,7 +55,11 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 					}
 				}
 			}
-			return ParseRecordWithMeta(nested, meta, opts, createdAt)
+			turns := ParseRecordWithMeta(nested, meta, opts, createdAt)
+			if opts.AttributeChildStreams {
+				return stampAgentIdentity(turns, record)
+			}
+			return turns
 		}
 	}
 	if turns := parseHermesACPRecord(record, opts, createdAt); len(turns) > 0 || isHermesACPRecord(record) {
@@ -96,7 +100,11 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 				if phase == "" {
 					phase = ReasoningPhaseStreaming
 				}
-				return []Turn{{Kind: KindReasoning, Role: roleAssistant, Text: text, ProviderItemID: firstText(record, "item_id", "itemId", "provider_item_id"), LifecyclePhase: phase, Incremental: isTruthy(record["incremental"]), ContentIndex: -1, CreatedAt: createdAt}}
+				turns := []Turn{{Kind: KindReasoning, Role: roleAssistant, Text: text, ProviderItemID: firstText(record, "item_id", "itemId", "provider_item_id"), LifecyclePhase: phase, Incremental: isTruthy(record["incremental"]), ContentIndex: -1, CreatedAt: createdAt}}
+				if opts.AttributeChildStreams {
+					return stampAgentIdentity(turns, record)
+				}
+				return turns
 			}
 		}
 	}

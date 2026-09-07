@@ -57,6 +57,9 @@ type Turn struct {
 
 // ParseOptions controls which fragments are emitted from a provider record.
 type ParseOptions struct {
+	// AttributeChildStreams is enabled for new child-indexed Transcript Events.
+	// Older stored stream wrappers keep their original projection.
+	AttributeChildStreams     bool
 	IncludeThinking           bool
 	IncludeReasoningSummaries bool
 	IncludeErrors             bool

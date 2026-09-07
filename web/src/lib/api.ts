@@ -769,6 +769,8 @@ export interface TaskEvent {
 }
 
 export interface TaskTranscriptEntry {
+  /** Stable position inside independently paged child history. */
+  position?: number;
   id: string;
   seq: number;
   continuation: number;
@@ -789,6 +791,8 @@ export interface TaskTranscriptEntry {
 }
 
 export interface TaskTranscript {
+  /** Source-window boundary for backward paging, independent of block updates. */
+  before?: number;
   task_id: string;
   entries: TaskTranscriptEntry[];
   /** Maximum entry Seq; the client sends it back as ?after= for the next poll. */

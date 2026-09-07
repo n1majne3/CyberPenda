@@ -74,6 +74,7 @@ func parseHistoryRequest(request *http.Request) historyRequest {
 
 // historyPage is the shared Timeline/Transcript page result.
 type historyPage[T any] struct {
+	before   int
 	items    []T
 	cursor   int
 	hasOlder bool

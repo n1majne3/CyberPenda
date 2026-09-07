@@ -15,10 +15,12 @@ import (
 	"strings"
 	"time"
 
+	"pentest/internal/childhistory"
 	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/runtimeconfig"
 	"pentest/internal/store"
+	"pentest/internal/transcript"
 )
 
 // Runner names the execution boundary for a task. The sandbox runner is the
@@ -1029,6 +1031,9 @@ func appendTaskEventTx(tx *sql.Tx, taskID string, kind EventKind, payload EventP
 	); err != nil {
 		return Event{}, fmt.Errorf("store event: %w", err)
 	}
+	if err := childhistory.Record(tx, childhistory.Owner{Kind: "task", ID: event.TaskID}, transcript.Event{ID: event.ID, Seq: event.Seq, Kind: string(event.Kind), Payload: event.Payload, CreatedAt: event.CreatedAt}); err != nil {
+		return Event{}, fmt.Errorf("index child history: %w", err)
+	}
 	return event, nil
 }
 
@@ -1085,6 +1090,9 @@ func (s *Service) appendEvent(taskID, continuationID string, kind EventKind, pay
 		event.ID, event.TaskID, event.ContinuationID, event.Seq, string(event.Kind), string(payloadJSON), event.CreatedAt.Format(time.RFC3339Nano),
 	); err != nil {
 		return Event{}, fmt.Errorf("store event: %w", err)
+	}
+	if err := childhistory.Record(tx, childhistory.Owner{Kind: "task", ID: event.TaskID}, transcript.Event{ID: event.ID, Seq: event.Seq, Kind: string(event.Kind), Payload: event.Payload, CreatedAt: event.CreatedAt}); err != nil {
+		return Event{}, fmt.Errorf("index child history: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return Event{}, fmt.Errorf("commit event: %w", err)

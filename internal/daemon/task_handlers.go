@@ -1876,12 +1876,14 @@ func (server *Server) handleTaskTranscript(response http.ResponseWriter, request
 		TaskID   string             `json:"task_id"`
 		Entries  []transcript.Entry `json:"entries"`
 		Cursor   int                `json:"cursor"`
+		Before   int                `json:"before"`
 		HasOlder bool               `json:"has_older"`
 	}{
 		TaskID:   found.ID,
 		Entries:  page.items,
 		Cursor:   page.cursor,
 		HasOlder: page.hasOlder,
+		Before:   page.before,
 	})
 }
 
