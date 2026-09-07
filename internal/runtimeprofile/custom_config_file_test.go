@@ -11,8 +11,8 @@ import (
 func TestProfileCustomConfigFileRoundTrips(t *testing.T) {
 	service := newTestService(t)
 
-	const overlay = "# keep my comments\nterminal:\n  backend: local\n"
-	created, err := service.Create("Hermes Preset", runtimeprofile.ProviderHermes, runtimeprofile.Fields{
+	const overlay = "# keep my comments\ncustom_setting = true\n"
+	created, err := service.Create("Codex Preset", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		CustomConfigFile: overlay,
 	})
 	if err != nil {
@@ -55,7 +55,7 @@ func TestProviderSwitchRequiresOverlayClearConfirmation(t *testing.T) {
 
 	// Switching provider without confirmation is refused; the overlay stays.
 	var switchErr *runtimeprofile.ProviderSwitchNeedsOverlayClearError
-	if _, err := service.Update(created.ID, "", runtimeprofile.ProviderHermes, runtimeprofile.Fields{}, false, false); !errors.As(err, &switchErr) {
+	if _, err := service.Update(created.ID, "", runtimeprofile.ProviderCodex, runtimeprofile.Fields{}, false, false); !errors.As(err, &switchErr) {
 		t.Fatalf("expected provider switch overlay confirmation error, got %v", err)
 	}
 	kept, err := service.Get(created.ID)
@@ -67,11 +67,11 @@ func TestProviderSwitchRequiresOverlayClearConfirmation(t *testing.T) {
 	}
 
 	// Confirming clears the overlay and switches.
-	switched, err := service.Update(created.ID, "", runtimeprofile.ProviderHermes, runtimeprofile.Fields{}, false, true)
+	switched, err := service.Update(created.ID, "", runtimeprofile.ProviderCodex, runtimeprofile.Fields{}, false, true)
 	if err != nil {
 		t.Fatalf("confirmed switch: %v", err)
 	}
-	if switched.Provider != runtimeprofile.ProviderHermes {
+	if switched.Provider != runtimeprofile.ProviderCodex {
 		t.Fatalf("switched provider = %q", switched.Provider)
 	}
 	if switched.Fields.CustomConfigFile != "" {
@@ -90,14 +90,14 @@ func TestProviderSwitchConfirmClearsOverlayEvenWhenFieldsCarryIt(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	switched, err := service.Update(created.ID, "Claude Preset", runtimeprofile.ProviderHermes, runtimeprofile.Fields{
+	switched, err := service.Update(created.ID, "Claude Preset", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		Model:            "claude-opus-4-6",
 		CustomConfigFile: overlay,
 	}, true, true)
 	if err != nil {
 		t.Fatalf("confirmed switch with fields: %v", err)
 	}
-	if switched.Provider != runtimeprofile.ProviderHermes {
+	if switched.Provider != runtimeprofile.ProviderCodex {
 		t.Fatalf("switched provider = %q", switched.Provider)
 	}
 	if switched.Fields.CustomConfigFile != "" {

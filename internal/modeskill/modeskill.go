@@ -184,6 +184,15 @@ func RetireGenerated(skillsRoot string) error {
 }
 
 func ValidateBundleCompatibility(mode Mode, bundle skill.Bundle) error {
+	return validateBundleCompatibility(mode, bundle, false)
+}
+
+// ValidateFGSBundleCompatibility treats both historical enabled values as FGS.
+func ValidateFGSBundleCompatibility(mode Mode, bundle skill.Bundle) error {
+	return validateBundleCompatibility(mode, bundle, true)
+}
+
+func validateBundleCompatibility(mode Mode, bundle skill.Bundle, fgs bool) error {
 	if !Valid(mode) {
 		return fmt.Errorf("%w: %q", errInvalidMode, mode)
 	}
@@ -204,7 +213,7 @@ func ValidateBundleCompatibility(mode Mode, bundle skill.Bundle) error {
 		return nil
 	}
 	for _, candidate := range allowed {
-		if candidate == mode {
+		if candidate == mode || (fgs && candidate != ModeDisabled && mode != ModeDisabled) {
 			return nil
 		}
 	}

@@ -1,5 +1,10 @@
 # Blackboard v2 Specification
 
+> Historical document. This describes the earlier Blackboard model and release plan.
+> For the current FGS workflow, read [the documentation index](../README.md).
+> Retained legacy interfaces and data remain supported where implemented; this
+> document does not define the current Runtime launch defaults.
+
 - **Status:** accepted and implementation-ready after shared-understanding confirmation
 - **Tracker spec:** [#97 — Replace Blackboard v1 with compact semantic Blackboard v2](https://github.com/n1majne3/CyberPenda/issues/97)
 - **Runtime snapshot schema:** `runtime-blackboard/v2`

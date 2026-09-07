@@ -1,5 +1,12 @@
 # Implementation Plan
 
+> Historical specification: normal Project Challenge Workflow is retired. Its
+> operations, Task Policy enforcement, Platform configuration, and recovery are
+> removed. Attempts, Operation metadata, Evidence, and origins remain readable.
+> Pending operations are not replayed and do not block Task Finish. Check
+> unfinished work on the original Platform. The independent Hosted Challenge
+> Client remains active. See the current boundary in [CONTEXT.md](../../../CONTEXT.md).
+
 - [x] 1. Make Project kind explicit
   - Add failing daemon and React tests.
   - Require Project kind during creation.

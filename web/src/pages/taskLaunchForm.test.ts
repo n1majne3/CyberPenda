@@ -76,9 +76,9 @@ const anthropicProvider: ModelProvider = {
 };
 
 describe("taskLaunchForm", () => {
-  it("excludes fake runtime from launch runtimes", () => {
+  it("excludes fake and retired Hermes runtimes from launch runtimes", () => {
     const runtimes = launchRuntimes([codexPlugin, piPlugin, hermesPlugin, fakePlugin]);
-    expect(runtimes.map((plugin) => plugin.id)).toEqual(["codex", "pi", "hermes"]);
+    expect(runtimes.map((plugin) => plugin.id)).toEqual(["codex", "pi"]);
   });
 
   it("requires goal, runtime, and model provider for auto-resolved launches", () => {

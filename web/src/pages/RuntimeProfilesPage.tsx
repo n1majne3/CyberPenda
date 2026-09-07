@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { CheckCircle2, Plus, Search, Trash2 } from "lucide-react";
-import { apiGet, apiPost, apiPatch, apiDelete, mergedConfigPreview, projectedConfig, type ModelProvider, type RuntimeExtension, type RuntimeExtensionCatalogItem, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
+import { apiGet, apiPost, apiPatch, apiDelete, type ModelProvider, type RuntimeExtension, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
 import { ModelProviderMigrationPanel } from "@/pages/ModelProviderMigrationPanel";
-import { codexMultiAgentTOMLLines, enrichPreviewWithModelProvider } from "@/pages/runtimeProfilePreview";
+import { RuntimeProfileConfig } from "@/pages/RuntimeProfileConfig";
 import {
   applyModelProviderSelection,
   buildProfileFields,
@@ -17,7 +17,7 @@ import {
   showLegacyModelFields,
 } from "@/pages/runtimeProfileForm";
 import { cn } from "@/lib/utils";
-import { Button, Input, Label, Badge, Chip, Textarea, Select, Card, CardTitle } from "@/components/ui";
+import { Button, Input, Label, Badge, Chip, Textarea, Select } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SaveActionButton } from "@/components/SaveActionButton";
 import {
@@ -34,7 +34,7 @@ import {
   SettingsScrollPanel,
 } from "@/components/settingsLibrary";
 
-const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "hermes", "fake"] as const;
+const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "fake"] as const;
 // HIDDEN_PROVIDER_IDS are real, registered providers that should not be
 // selectable when creating a profile (e.g. the in-process fake harness used
 // for tests). Profiles already using one are still displayed and editable.
@@ -57,20 +57,6 @@ const DEFAULT_API_KEY_ENV: Record<string, string> = {
 // The daemon redacts stored API keys to this sentinel in profile payloads;
 // runtimeProfileForm.ts carries the same constant for save-side handling.
 const API_KEY_CONFIGURED = "[configured]";
-
-const DEFAULT_DAEMON_MCP_PORT = "8787";
-
-let runtimeExtensionCatalogRequest: Promise<{ items: RuntimeExtensionCatalogItem[] }> | null = null;
-
-function loadRuntimeExtensionCatalog() {
-  if (!runtimeExtensionCatalogRequest) {
-    runtimeExtensionCatalogRequest = apiGet<{ items: RuntimeExtensionCatalogItem[] }>("/api/runtime-extension-catalog").catch((error) => {
-      runtimeExtensionCatalogRequest = null;
-      throw error;
-    });
-  }
-  return runtimeExtensionCatalogRequest;
-}
 
 type RuntimeProfileFields = RuntimeProfile["fields"];
 type RuntimeExtensionFormRef = {
@@ -165,7 +151,6 @@ export function RuntimeProfilesPage() {
   const [plugins, setPlugins] = useState<RuntimePlugin[]>([]);
   const [extensions, setExtensions] = useState<RuntimeExtension[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
-  const [extensionCatalog, setExtensionCatalog] = useState<RuntimeExtensionCatalogItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(() => searchParams.get("profile"));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -241,9 +226,6 @@ export function RuntimeProfilesPage() {
         return loaded[0]?.id ?? null;
       });
       setError(null);
-      void loadRuntimeExtensionCatalog()
-        .then((catalogData) => setExtensionCatalog(catalogData.items ?? []))
-        .catch(() => setExtensionCatalog([]));
     } catch (e) {
       setError((e as Error).message);
     }
@@ -360,89 +342,14 @@ export function RuntimeProfilesPage() {
     }
   }
 
-  const previewConfig = selected
-    ? JSON.stringify(
-        buildGeneratedConfigPreview(
-          draft?.provider ?? selected.provider,
-          buildProfileFields(draft ?? profileToForm(selected, effectivePlugins), effectivePlugins),
-          draft ?? profileToForm(selected, effectivePlugins),
-          pluginFor(effectivePlugins, draft?.provider ?? selected.provider),
-          modelProviders,
-        ),
-        null,
-        2
-      )
-    : "";
-
-  const [configEditorOpen, setConfigEditorOpen] = useState(false);
-  const [configDraft, setConfigDraft] = useState("");
-  const [configImporting, setConfigImporting] = useState(false);
-  const [configImportKeys, setConfigImportKeys] = useState<{ key: string; field?: string; message: string }[]>([]);
+  const [configProfileId, setConfigProfileId] = useState<string | null>(null);
   const [confirmSwitchProviderId, setConfirmSwitchProviderId] = useState<string | null>(null);
-  const [mergedPreview, setMergedPreview] = useState<{ id: string; text: string } | null>(null);
-  const activeProfileId = selected?.id;
-  const activeProfileUpdatedAt = selected?.updated_at;
-  const activeProfileOverlay = selected?.fields.custom_config_file;
-  // Only the preview fetched for the currently selected profile is shown, so
-  // switching profiles never flashes the previous profile's merged config.
-  const mergedPreviewText =
-    mergedPreview && activeProfileId && mergedPreview.id === activeProfileId ? mergedPreview.text : "";
+  const hasUnsavedChanges = !!selected && !!draft && JSON.stringify(draft) !== JSON.stringify(profileToForm(selected, effectivePlugins));
 
-  // Show the final merged result (structured + Custom Config File
-  // overlay) exactly as projection will produce it.
-  useEffect(() => {
-    if (!activeProfileId) return;
-    let cancelled = false;
-    mergedConfigPreview(activeProfileId)
-      .then((payload) => {
-        if (!cancelled) setMergedPreview({ id: activeProfileId, text: JSON.stringify(payload?.merged ?? {}, null, 2) });
-      })
-      .catch(() => {
-        if (!cancelled) setMergedPreview({ id: activeProfileId, text: "" });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [activeProfileId, activeProfileUpdatedAt, activeProfileOverlay]);
-
-  async function openConfigEditor() {
-    if (!selected) return;
-    setConfigImportKeys([]);
-    setConfigEditorOpen(true);
-    // The editor opens on the complete provider-native projected
-    // file (redacted), never a preview envelope; fall back to the local
-    // preview only if the endpoint is unavailable.
-    setConfigDraft(previewConfig);
-    try {
-      const payload = await projectedConfig(selected.id);
-      if (payload?.text) setConfigDraft(payload.text);
-    } catch {
-      // keep the local preview fallback
-    }
-  }
-
-  async function importConfigText() {
-    if (!selected) return;
-    setConfigImporting(true);
-    setConfigImportKeys([]);
-    try {
-      await apiPost<{
-        profile: RuntimeProfile;
-        mapped_keys: string[];
-      }>(`/api/runtime-profiles/${selected.id}/import-config`, {
-        config_text: configDraft,
-      });
-      await load();
-      setConfigEditorOpen(false);
-      showSavedNotice();
-    } catch (e) {
-      setError((e as Error).message);
-      // Per-key detail travels on the ApiError body, not the message.
-      const body = (e as { body?: unknown }).body as { keys?: { key: string; field?: string; message: string }[] } | undefined;
-      if (body?.keys?.length) setConfigImportKeys(body.keys);
-    } finally {
-      setConfigImporting(false);
-    }
+  async function configImported() {
+    setConfigProfileId(null);
+    await load();
+    showSavedNotice();
   }
 
   return (
@@ -569,7 +476,6 @@ export function RuntimeProfilesPage() {
               plugins={effectivePlugins}
               modelProviders={modelProviders}
               extensions={extensions}
-              extensionCatalog={extensionCatalog}
             />
           </SettingsDetailPane>
         ) : selected && draft ? (
@@ -617,38 +523,19 @@ export function RuntimeProfilesPage() {
               plugins={effectivePlugins}
               modelProviders={modelProviders}
               extensions={extensions}
-              extensionCatalog={extensionCatalog}
             />
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-medium leading-none text-muted-foreground">Generated config preview</p>
-                <Button size="sm" variant="outline" onClick={openConfigEditor}>
-                  Edit config
-                </Button>
-              </div>
-              <pre className="mt-1 max-h-64 w-full max-w-full overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-                {previewConfig}
-              </pre>
-              {selected.fields.custom_config_file?.trim() ? (
-                <div className="mt-2 min-w-0">
-                  <p className="text-sm font-medium leading-none text-muted-foreground">
-                    Custom config file (remainder, deep-merged on projection)
-                  </p>
-                  <pre className="mt-1 max-h-40 w-full max-w-full overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-                    {selected.fields.custom_config_file}
-                  </pre>
-                </div>
-              ) : null}
-              {mergedPreviewText.trim() ? (
-                <div className="mt-2 min-w-0">
-                  <p className="text-sm font-medium leading-none text-muted-foreground">
-                    Final merged config (structured + custom config file)
-                  </p>
-                  <pre data-testid="merged-config-preview" className="mt-1 max-h-64 w-full max-w-full overflow-x-auto rounded-md border border-border bg-muted/30 p-3 text-xs">
-                    {mergedPreviewText}
-                  </pre>
-                </div>
-              ) : null}
+            <div className="min-w-0 space-y-3">
+              <Button size="sm" variant="outline" aria-expanded={configProfileId === selected.id} aria-controls="actual-runtime-config" onClick={() => setConfigProfileId(configProfileId === selected.id ? null : selected.id)}>
+                {configProfileId === selected.id ? "Hide actual config" : "View actual config"}
+              </Button>
+              {configProfileId === selected.id && (
+                <RuntimeProfileConfig
+                  key={`${selected.id}:${selected.updated_at}`}
+                  profileId={selected.id}
+                  canEdit={!hasUnsavedChanges && !saving}
+                  onImported={configImported}
+                />
+              )}
             </div>
           </SettingsDetailPane>
         ) : (
@@ -684,50 +571,6 @@ export function RuntimeProfilesPage() {
         }}
         onCancel={() => setConfirmSwitchProviderId(null)}
       />
-      {configEditorOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <Card className="flex max-h-[90vh] w-full max-w-3xl flex-col gap-3 overflow-hidden p-4">
-            <CardTitle className="text-base">Edit runtime config</CardTitle>
-            <p className="text-sm text-muted-foreground">
-              Edit the generated config for {selected?.name}. On import, keys the structured fields express map back to
-              them; Managed Config Keys and secret-shaped values are refused; the remainder is stored as the Custom
-              Config File.
-            </p>
-            <label className="sr-only" htmlFor="runtime-config-editor">
-              Runtime config editor
-            </label>
-            <textarea
-              id="runtime-config-editor"
-              aria-label="Runtime config editor"
-              className="min-h-[40vh] w-full resize-y rounded-md border border-border bg-muted/30 p-3 font-mono text-xs"
-              value={configDraft}
-              onChange={(event) => setConfigDraft(event.target.value)}
-              spellCheck={false}
-            />
-            {configImportKeys.length > 0 && (
-              <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm">
-                <p className="font-medium">Import refused — fix these keys and retry:</p>
-                <ul className="mt-1 list-disc space-y-1 pl-5">
-                  {configImportKeys.map((keyError) => (
-                    <li key={keyError.key}>
-                      <span className="font-mono">{keyError.key}</span>: {keyError.message}
-                      {keyError.field ? <span className="text-muted-foreground"> (owned by the {keyError.field} field)</span> : null}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setConfigEditorOpen(false)}>
-                Cancel
-              </Button>
-              <Button disabled={configImporting} onClick={() => void importConfigText()}>
-                {configImporting ? "Importing…" : "Import config"}
-              </Button>
-            </div>
-          </Card>
-        </div>
-      )}
     </SettingsPageShell>
   );
 }
@@ -841,7 +684,6 @@ function ProfileEditor({
   plugins,
   modelProviders,
   extensions,
-  extensionCatalog,
 }: {
   title?: string;
   form: ProfileForm;
@@ -855,10 +697,8 @@ function ProfileEditor({
   plugins: RuntimePlugin[];
   modelProviders: ModelProvider[];
   extensions: RuntimeExtension[];
-  extensionCatalog: RuntimeExtensionCatalogItem[];
 }) {
   const [extensionToAdd, setExtensionToAdd] = useState("");
-  const [catalogItemToAdd, setCatalogItemToAdd] = useState("");
   const [manualExtensionID, setManualExtensionID] = useState("");
   const plugin = pluginFor(plugins, form.provider);
   const selectableProviders = selectableModelProviders(modelProviders, plugin, form.model_provider_id);
@@ -892,22 +732,9 @@ function ProfileEditor({
   const availableExtensions = compatibleExtensions.filter(
     (extension) => !form.runtime_extensions.some((ref) => ref.id === extension.id)
   );
-  const compatibleCatalogItems = extensionCatalog.filter((item) => item.provider === form.provider);
-  const catalogItemID = (item: RuntimeExtensionCatalogItem) => item.install_ref || item.id;
-  const catalogByRefID = new Map<string, RuntimeExtensionCatalogItem>();
-  for (const item of extensionCatalog) {
-    catalogByRefID.set(item.id, item);
-    if (item.install_ref) catalogByRefID.set(item.install_ref, item);
-  }
-  const availableCatalogItems = compatibleCatalogItems.filter(
-    (item) => !form.runtime_extensions.some((ref) => ref.id === catalogItemID(item))
-  );
   const selectedExtensionID = availableExtensions.some((extension) => extension.id === extensionToAdd)
     ? extensionToAdd
     : availableExtensions[0]?.id || "";
-  const selectedCatalogItemID = availableCatalogItems.some((item) => catalogItemID(item) === catalogItemToAdd)
-    ? catalogItemToAdd
-    : availableCatalogItems[0] ? catalogItemID(availableCatalogItems[0]) : "";
   const trimmedManualExtensionID = manualExtensionID.trim();
   const manualRegistryExtension = extensionByID.get(trimmedManualExtensionID);
   const manualExtensionIncompatible = Boolean(
@@ -927,23 +754,6 @@ function ProfileEditor({
       ],
     });
     setExtensionToAdd("");
-  };
-  const addCatalogRuntimeExtension = () => {
-    const item = availableCatalogItems.find((candidate) => catalogItemID(candidate) === selectedCatalogItemID);
-    if (!item) return;
-    const config = {
-      registry: item.registry,
-      ...(item.install_ref ? { install_ref: item.install_ref } : {}),
-      ...(item.source_url ? { source_url: item.source_url } : {}),
-    };
-    onChange({
-      ...form,
-      runtime_extensions: [
-        ...form.runtime_extensions,
-        { id: catalogItemID(item), enabled: true, config: formatEnv(config) },
-      ],
-    });
-    setCatalogItemToAdd("");
   };
   const addManualRuntimeExtension = () => {
     if (!canAddManualExtension) return;
@@ -1361,36 +1171,12 @@ function ProfileEditor({
             </Button>
           </div>
           <div className="mt-2 flex gap-2">
-            <Select
-              id="profile-catalog-extension"
-              name="catalog_extension"
-              className="flex-1"
-              value={selectedCatalogItemID}
-              onChange={(e) => setCatalogItemToAdd(e.target.value)}
-              disabled={availableCatalogItems.length === 0}
-            >
-              {availableCatalogItems.length === 0 ? (
-                <option value="">No catalog packages available</option>
-              ) : (
-                availableCatalogItems.map((item) => (
-                  <option key={`${item.registry}:${catalogItemID(item)}`} value={catalogItemID(item)}>
-                    {item.name || catalogItemID(item)}
-                  </option>
-                ))
-              )}
-            </Select>
-            <Button type="button" size="sm" variant="outline" onClick={addCatalogRuntimeExtension} disabled={!selectedCatalogItemID}>
-              <Plus className="h-4 w-4" />
-              Add package
-            </Button>
-          </div>
-          <div className="mt-2 flex gap-2">
             <Input
               id="profile-manual-extension-id"
               name="manual_extension_id"
               value={manualExtensionID}
               onChange={(e) => setManualExtensionID(e.target.value)}
-              placeholder="manual_extension_id…"
+              placeholder="npm:@scope/package or local extension ID…"
               autoComplete="off"
               spellCheck={false}
             />
@@ -1401,7 +1187,7 @@ function ProfileEditor({
           </div>
           {extensions.length === 0 && (
             <p className="mt-1 text-[11px] text-muted-foreground">
-              No registry extensions loaded. Manual refs can be saved, but launch requires the daemon registry to resolve them.
+              No registry extensions loaded. Local IDs require a registry entry. For packages, set install_ref in Config.
             </p>
           )}
           {manualExtensionIncompatible && (
@@ -1415,7 +1201,6 @@ function ProfileEditor({
             )}
             {form.runtime_extensions.map((ref, index) => {
               const extension = extensionByID.get(ref.id);
-              const catalogItem = catalogByRefID.get(ref.id);
               return (
                 <div key={`${ref.id}-${index}`} className="rounded-md border border-border p-3 space-y-2">
                   <div className="flex items-start justify-between gap-3">
@@ -1429,17 +1214,13 @@ function ProfileEditor({
                       />
                       <span>
                         <span className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-medium">{extension?.name || catalogItem?.name || ref.id}</span>
+                          <span className="font-medium">{extension?.name || ref.id}</span>
                           <Badge variant="outline">{ref.id}</Badge>
-                          {catalogItem && <Badge variant="outline">{catalogItem.registry}</Badge>}
-                          {!extension && !catalogItem && <Badge variant="outline">manual</Badge>}
+                          {!extension && <Badge variant="outline">manual</Badge>}
                           {!ref.enabled && <Badge variant="default">disabled</Badge>}
                         </span>
                         {extension?.description && (
                           <span className="mt-1 block text-xs text-muted-foreground">{extension.description}</span>
-                        )}
-                        {!extension && catalogItem?.description && (
-                          <span className="mt-1 block text-xs text-muted-foreground">{catalogItem.description}</span>
                         )}
                         {extension?.projection && (
                           <span className="mt-1 block text-[11px] text-muted-foreground">
@@ -1452,7 +1233,7 @@ function ProfileEditor({
                       type="button"
                       size="icon"
                       variant="ghost"
-                      aria-label={`Remove ${extension?.name || catalogItem?.name || ref.id} runtime extension`}
+                      aria-label={`Remove ${extension?.name || ref.id} runtime extension`}
                       onClick={() => removeRuntimeExtension(index)}
                     >
                       <Trash2 className="h-4 w-4 text-destructive" />
@@ -1571,463 +1352,6 @@ function formatEnv(env?: Record<string, string>): string {
   return Object.entries(env)
     .map(([key, value]) => `${key}=${value}`)
     .join("\n");
-}
-
-function buildGeneratedConfigPreview(
-  provider: string,
-  fields: RuntimeProfileFields,
-  form?: ProfileForm,
-  plugin?: RuntimePlugin,
-  modelProviders: ModelProvider[] = [],
-): Record<string, unknown> {
-  const mcpServers = buildPreviewMCPServers(fields);
-  const mcpPreview = formatMCPServerPreview(mcpServers);
-  const launchPreview = buildLaunchPreview(provider, fields, form, (mcpServers?.length ?? 0) > 0, plugin);
-  const configPath = plugin?.config_projection.config_path;
-  const mcpConfigPath = plugin?.config_projection.mcp_config_path;
-  const runtimeExtensionPreview = fields.runtime_extensions?.length
-    ? { runtime_extensions: fields.runtime_extensions }
-    : {};
-
-  if (provider === "claude_code") {
-    const env: Record<string, string> = { ...(fields.env ?? {}) };
-    if (fields.endpoint && !env.ANTHROPIC_BASE_URL) env.ANTHROPIC_BASE_URL = fields.endpoint;
-    if (fields.model && !env.ANTHROPIC_MODEL) env.ANTHROPIC_MODEL = fields.model;
-    return {
-      provider,
-      settings_path: configPath ?? "runtime-home/claude/settings.json",
-      env,
-      ...runtimeExtensionPreview,
-      ...(mcpPreview ? { mcp_servers: mcpPreview, mcp_config_path: mcpConfigPath ?? "workdir/.mcp.json" } : {}),
-      ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
-        ? { api_keys: redactedAPIKeyPreview(fields) }
-        : {}),
-      ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
-      task_context_path: "workdir/.pentest/context.json",
-      launch_preview: launchPreview,
-    };
-  }
-
-  if (provider === "codex") {
-    if (fields.model_provider_id) {
-      const base: Record<string, unknown> = {
-        provider,
-        config_path: configPath ?? "runtime-home/codex/config.toml",
-        ...runtimeExtensionPreview,
-        ...(mcpPreview ? { mcp_servers: mcpPreview } : {}),
-        ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
-        task_context_path: "workdir/.pentest/context.json",
-        launch_preview: launchPreview,
-      };
-      return enrichPreviewWithModelProvider(base, fields, modelProviders, plugin);
-    }
-
-    const providerId = fields.env?.CODEX_MODEL_PROVIDER?.trim() || "custom";
-    const wireApi = fields.env?.CODEX_WIRE_API?.trim() || "responses";
-    const providerName = fields.env?.CODEX_PROVIDER_NAME?.trim() || "Custom";
-    const endpoint = fields.endpoint?.trim() || fields.env?.OPENAI_BASE_URL?.trim() || "";
-    const configToml = [
-      fields.model ? `model = "${fields.model}"` : null,
-      endpoint ? `model_provider = "${providerId}"` : null,
-      endpoint ? `cli_auth_credentials_store = "file"` : null,
-      endpoint ? "" : null,
-      endpoint ? `[model_providers.${providerId}]` : null,
-      endpoint ? `name = "${providerName}"` : null,
-      endpoint ? `base_url = "${endpoint.replace(/\/$/, "")}"` : null,
-      endpoint ? `wire_api = "${wireApi}"` : null,
-      endpoint ? "requires_openai_auth = true" : null,
-      ...appendCodexMCPTOMLPreview(mcpServers),
-      ...codexMultiAgentTOMLLines(fields),
-    ]
-      .filter((line): line is string => line !== null)
-      .join("\n");
-
-    return {
-      provider,
-      config_path: configPath ?? "runtime-home/codex/config.toml",
-      config_toml: configToml,
-      ...runtimeExtensionPreview,
-      ...(mcpPreview ? { mcp_servers: mcpPreview } : {}),
-      ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
-        ? {
-            auth_path: "runtime-home/codex/auth.json",
-            auth_json: redactedAPIKeyPreview(fields),
-            api_keys: redactedAPIKeyPreview(fields),
-          }
-        : {}),
-      ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
-      task_context_path: "workdir/.pentest/context.json",
-      launch_preview: launchPreview,
-    };
-  }
-
-  if (provider === "pi") {
-    const providerId = fields.env?.PI_PROVIDER_ID?.trim() || "custom";
-    const api =
-      fields.env?.PI_API?.trim() ||
-      (fields.endpoint?.toLowerCase().includes("anthropic")
-        ? "anthropic-messages"
-        : fields.endpoint?.toLowerCase().includes("generativelanguage") ||
-            fields.endpoint?.toLowerCase().includes("googleapis")
-          ? "google-generative-ai"
-          : "openai-completions");
-    const apiKeyEnv = Object.keys(fields.api_keys ?? {})[0];
-    const apiKeyRef = apiKeyEnv ? `$${apiKeyEnv}` : undefined;
-    const modelsJson: Record<string, unknown> = {
-      providers: {
-        [providerId]: {
-          ...(fields.endpoint ? { baseUrl: fields.endpoint.replace(/\/$/, "") } : {}),
-          api,
-          ...(apiKeyRef ? { apiKey: apiKeyRef } : {}),
-          ...(fields.model ? { models: [{ id: fields.model }] } : {}),
-        },
-      },
-    };
-
-    return {
-      provider,
-      models_path: configPath ?? "runtime-home/pi/agent/models.json",
-      models_json: modelsJson,
-      ...runtimeExtensionPreview,
-      ...(mcpPreview ? { mcp_servers: mcpPreview, mcp_config_path: mcpConfigPath ?? "runtime-home/pi/agent/mcp.json" } : {}),
-      ...(fields.api_keys && Object.keys(fields.api_keys).length > 0
-        ? {
-            auth_path: "runtime-home/pi/agent/auth.json",
-            auth_json: buildPiAuthPreview(fields),
-            api_keys: redactedAPIKeyPreview(fields),
-          }
-        : {}),
-      ...(fields.default_runner ? { default_runner: fields.default_runner } : {}),
-      task_context_path: "workdir/.pentest/context.json",
-      launch_preview: launchPreview,
-    };
-  }
-
-  const cfg: Record<string, unknown> = { provider };
-  if (fields.binary_path) cfg.binary = fields.binary_path;
-  if (fields.model) cfg.model = fields.model;
-  if (fields.endpoint) cfg.endpoint = fields.endpoint;
-  if (fields.model_provider_id) cfg.model_provider_id = fields.model_provider_id;
-  if (fields.model_provider_protocol) cfg.model_provider_protocol = fields.model_provider_protocol;
-  if (fields.model_override) cfg.model_override = fields.model_override;
-  if (fields.custom_args?.length) cfg.custom_args = fields.custom_args;
-  if (fields.env && Object.keys(fields.env).length > 0) cfg.env = fields.env;
-  if (fields.api_keys && Object.keys(fields.api_keys).length > 0) {
-    cfg.api_keys = redactedAPIKeyPreview(fields);
-  }
-  if (fields.runtime_extensions?.length) cfg.runtime_extensions = fields.runtime_extensions;
-  if (mcpPreview) cfg.mcp_servers = mcpPreview;
-  if (fields.default_runner) cfg.default_runner = fields.default_runner;
-  return cfg;
-}
-
-function buildLaunchPreview(
-  provider: string,
-  fields: RuntimeProfileFields,
-  form: ProfileForm | undefined,
-  hasMCP: boolean,
-  plugin?: RuntimePlugin
-): Record<string, unknown> {
-  const sandbox = fields.default_runner === "sandbox";
-  const runtimeHome = sandbox ? "/task/runtime-home" : "runtime-home";
-  const workdir = sandbox ? "/task/workdir" : "workdir";
-  const binary = fields.binary_path?.trim() || plugin?.binary.default || fallbackBinary(provider);
-  const subcommand = fields.env?.PENTEST_CODEX_SUBCOMMAND?.trim() || "exec";
-  const configPath = previewRuntimePath(defaultConfigPath(provider, plugin), sandbox);
-  const mcpConfigPath = previewRuntimePath(defaultMCPConfigPath(provider, plugin), sandbox);
-  const customArgs = fields.custom_args ?? [];
-  const lists: Record<string, string[]> = {
-    custom_args: customArgs,
-  };
-  if (provider === "codex" && subcommand === "exec" && !hasCLIOption(customArgs, "--skip-git-repo-check")) {
-    lists.codex_exec_args = ["--skip-git-repo-check"];
-  }
-  if (hasMCP && mcpConfigPath) {
-    lists.mcp_args = ["--strict-mcp-config", "--mcp-config", mcpConfigPath];
-  }
-  if (subcommand !== "exec") {
-    lists.codex_goal_prefix = ["--"];
-  }
-  if (hasMCP) {
-    lists.claude_goal_prefix = ["--"];
-  }
-  if (!hasCLIOption(customArgs, "--provider")) {
-    const providerId = fields.env?.PI_PROVIDER_ID?.trim() || (fields.endpoint?.trim() ? "custom" : "");
-    if (providerId) lists.pi_provider_args = ["--provider", providerId];
-  }
-  const scalars: Record<string, string> = {
-    binary,
-    model: fields.model ?? "",
-    endpoint: fields.endpoint ?? "",
-    config_path: configPath,
-    mcp_config_path: mcpConfigPath,
-    goal: "<goal>",
-    codex_subcommand: subcommand,
-    runtime_home: runtimeHome,
-    workdir,
-  };
-
-  const args = plugin?.launch.args?.length
-    ? renderLaunchTemplate(plugin.launch, scalars, lists)
-    : renderCompatibilityLaunch(provider, fields, hasMCP, configPath, mcpConfigPath, binary);
-  const processEnv: Record<string, string> = renderProcessEnvTemplate(plugin?.process_env, {
-    ...scalars,
-    provider_home: runtimeHome + "/" + providerHomeDir(provider),
-  });
-
-  for (const [key, value] of Object.entries(fields.env ?? {})) {
-    processEnv[key] = value;
-  }
-  for (const key of Object.keys(fields.api_keys ?? {})) {
-    processEnv[key] = "[REDACTED at launch]";
-  }
-
-  if (sandbox) {
-    processEnv.IS_SANDBOX = "1";
-    processEnv.PENTEST_SKILLS_DIR = "/task/skills";
-    if (form?.endpoint?.includes("bigmodel.cn") || fields.endpoint?.includes("bigmodel.cn")) {
-      processEnv.ANTHROPIC_BASE_URL = fields.endpoint ?? form?.endpoint ?? "";
-    }
-  }
-
-  return { argv: args, process_env: processEnv, runner: fields.default_runner ?? "sandbox" };
-}
-
-function renderCompatibilityLaunch(
-  provider: string,
-  fields: RuntimeProfileFields,
-  hasMCP: boolean,
-  configPath: string,
-  mcpConfigPath: string,
-  binary: string
-): string[] {
-  const args = [binary];
-  const customArgs = fields.custom_args ?? [];
-  if (provider === "codex") {
-    const subcommand = fields.env?.PENTEST_CODEX_SUBCOMMAND?.trim() || "exec";
-    args.push(subcommand);
-    if (fields.model) args.push("--model", fields.model);
-    if (subcommand === "exec" && !hasCLIOption(customArgs, "--skip-git-repo-check")) {
-      args.push("--skip-git-repo-check");
-    }
-    args.push(...customArgs);
-    if (subcommand !== "exec") args.push("--");
-    args.push("<goal>");
-    return args;
-  }
-  if (provider === "claude_code") {
-    if (fields.model) args.push("--model", fields.model);
-    if (configPath) args.push("--settings", configPath);
-    if (hasMCP && mcpConfigPath) args.push("--strict-mcp-config", "--mcp-config", mcpConfigPath);
-    if (!hasCLIOption(customArgs, "-p") && !hasCLIOption(customArgs, "--print")) args.push("-p");
-    if (!hasCLIOption(customArgs, "--output-format")) args.push("--output-format", "stream-json");
-    if (!hasCLIOption(customArgs, "--verbose")) args.push("--verbose");
-    args.push(...customArgs);
-    if (hasMCP) args.push("--");
-    args.push("<goal>");
-    return args;
-  }
-  if (provider === "pi") {
-    if (!hasCLIOption(customArgs, "--provider")) {
-      const providerId = fields.env?.PI_PROVIDER_ID?.trim() || (fields.endpoint?.trim() ? "custom" : "");
-      if (providerId) args.push("--provider", providerId);
-    }
-    if (fields.model) args.push("--model", fields.model);
-    args.push(...customArgs, "<goal>");
-  }
-  return args.filter(Boolean);
-}
-
-function renderLaunchTemplate(
-  launch: RuntimePlugin["launch"],
-  scalars: Record<string, string>,
-  lists: Record<string, string[]>
-): string[] {
-  const templateArgs = suppressSingletonDefaults(launch.args, launch.singleton_options ?? [], lists.custom_args ?? []);
-  const out: string[] = [];
-  for (let i = 0; i < templateArgs.length; i += 1) {
-    const arg = templateArgs[i];
-    const nextPlaceholder = placeholderName(templateArgs[i + 1]);
-    if (
-      nextPlaceholder &&
-      arg.startsWith("-") &&
-      !Object.prototype.hasOwnProperty.call(lists, nextPlaceholder) &&
-      placeholderEmpty(nextPlaceholder, scalars, lists)
-    ) {
-      i += 1;
-      continue;
-    }
-    const placeholder = placeholderName(arg);
-    if (placeholder) {
-      if (Object.prototype.hasOwnProperty.call(lists, placeholder)) {
-        out.push(...nonEmptyStrings(lists[placeholder]));
-        continue;
-      }
-      const value = (scalars[placeholder] ?? "").trim();
-      if (value) out.push(value);
-      continue;
-    }
-    const rendered = renderScalarFragments(arg, scalars).trim();
-    if (rendered) out.push(rendered);
-  }
-  return out;
-}
-
-function renderProcessEnvTemplate(
-  processEnv: Record<string, string> | undefined,
-  scalars: Record<string, string>
-): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(processEnv ?? {})) {
-    const rendered = renderScalarFragments(value, scalars).trim();
-    if (rendered) out[key] = rendered;
-  }
-  return out;
-}
-
-function suppressSingletonDefaults(
-  args: string[],
-  groups: { options: string[]; arity: number }[],
-  customArgs: string[]
-): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const group = groups.find((item) => item.options.includes(args[i]) && item.options.some((option) => hasCLIOption(customArgs, option)));
-    if (group) {
-      i += group.arity;
-      continue;
-    }
-    out.push(args[i]);
-  }
-  return out;
-}
-
-function placeholderName(value: string | undefined): string | null {
-  if (!value?.startsWith("{{") || !value.endsWith("}}")) return null;
-  const name = value.slice(2, -2).trim();
-  return name || null;
-}
-
-function placeholderEmpty(name: string, scalars: Record<string, string>, lists: Record<string, string[]>): boolean {
-  if (Object.prototype.hasOwnProperty.call(lists, name)) return nonEmptyStrings(lists[name]).length === 0;
-  return !(scalars[name] ?? "").trim();
-}
-
-function nonEmptyStrings(values: string[] | undefined): string[] {
-  return (values ?? []).map((value) => value.trim()).filter(Boolean);
-}
-
-function renderScalarFragments(value: string, scalars: Record<string, string>): string {
-  return value.replace(/{{\s*([^}]+)\s*}}/g, (_, name: string) => scalars[name.trim()] ?? "");
-}
-
-function fallbackBinary(provider: string): string {
-  if (provider === "claude_code") return "claude";
-  if (provider === "codex" || provider === "pi" || provider === "fake") return provider;
-  return provider;
-}
-
-function providerHomeDir(provider: string): string {
-  return provider === "claude_code" ? "claude" : provider;
-}
-
-function defaultConfigPath(provider: string, plugin?: RuntimePlugin): string {
-  if (plugin?.config_projection.config_path) return plugin.config_projection.config_path;
-  if (provider === "claude_code") return "runtime-home/claude/settings.json";
-  if (provider === "codex") return "runtime-home/codex/config.toml";
-  if (provider === "pi") return "runtime-home/pi/agent/models.json";
-  return "";
-}
-
-function defaultMCPConfigPath(provider: string, plugin?: RuntimePlugin): string {
-  if (plugin?.config_projection.mcp_config_path) return plugin.config_projection.mcp_config_path;
-  if (provider === "claude_code") return "workdir/.mcp.json";
-  if (provider === "pi") return "runtime-home/pi/agent/mcp.json";
-  return "";
-}
-
-function previewRuntimePath(path: string, sandbox: boolean): string {
-  if (!path) return "";
-  if (!sandbox || path.startsWith("/")) return path;
-  return "/task/" + path;
-}
-
-function hasCLIOption(args: string[] | undefined, option: string): boolean {
-  return (args ?? []).some((arg) => arg === option || arg.startsWith(`${option}=`));
-}
-
-function redactedAPIKeyPreview(fields: RuntimeProfileFields): Record<string, string> {
-  return Object.fromEntries(
-    Object.keys(fields.api_keys ?? {})
-      .filter((key) => key.trim())
-      .map((key) => [key, "[REDACTED at launch]"])
-  );
-}
-
-function buildPiAuthPreview(fields: RuntimeProfileFields): Record<string, { type: string; key: string }> {
-  const apiKeyEnv = Object.keys(fields.api_keys ?? {})
-    .filter((key) => key.trim())
-    .sort()[0];
-  if (!apiKeyEnv) return {};
-  const providerId = fields.env?.PI_PROVIDER_ID?.trim() || "custom";
-  return {
-    [providerId]: { type: "api_key", key: "[REDACTED at launch]" },
-  };
-}
-
-function trustedMCPDisabled(env?: Record<string, string>): boolean {
-  const value = (env?.PENTEST_DISABLE_TRUSTED_MCP ?? "").trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes";
-}
-
-function previewMCPEndpointURL(sandbox: boolean): string {
-  const host = sandbox ? "host.docker.internal" : "127.0.0.1";
-  return `http://${host}:${DEFAULT_DAEMON_MCP_PORT}/mcp`;
-}
-
-function buildPreviewMCPServers(fields: RuntimeProfileFields): RuntimeProfileFields["mcp_servers"] {
-  const servers = [...(fields.mcp_servers ?? [])];
-  if (trustedMCPDisabled(fields.env)) return servers;
-
-  const sandbox = fields.default_runner === "sandbox";
-  const trustedURL = previewMCPEndpointURL(sandbox);
-  const normalized = trustedURL.replace(/\/$/, "");
-  if (servers.some((server) => (server.url ?? "").replace(/\/$/, "") === normalized)) {
-    return servers;
-  }
-  return [{ name: "pentest", mode: "trusted", url: trustedURL }, ...servers];
-}
-
-function formatMCPServerPreview(
-  servers?: RuntimeProfileFields["mcp_servers"]
-): Array<Record<string, unknown>> | undefined {
-  if (!servers?.length) return undefined;
-  return servers.map((server) => ({
-    name: server.name,
-    mode: server.mode,
-    ...(server.command ? { command: server.command } : {}),
-    ...(server.url ? { url: server.url } : {}),
-    ...(server.args?.length ? { args: server.args } : {}),
-    ...(server.env && Object.keys(server.env).length > 0 ? { env: server.env } : {}),
-  }));
-}
-
-function appendCodexMCPTOMLPreview(servers?: RuntimeProfileFields["mcp_servers"]): Array<string | null> {
-  if (!servers?.length) return [];
-  const lines: Array<string | null> = ["", "[mcp_servers]"];
-  for (const server of servers) {
-    const name = server.name?.trim();
-    if (!name) continue;
-    lines.push("", `[mcp_servers.${name}]`);
-    if (server.url) {
-      lines.push(`url = "${server.url}"`, "enabled = true");
-      continue;
-    }
-    if (server.command) {
-      lines.push(`command = "${server.command}"`, "enabled = true");
-    }
-  }
-  return lines;
 }
 
 function formatMCPServers(servers?: RuntimeProfileFields["mcp_servers"]): string {

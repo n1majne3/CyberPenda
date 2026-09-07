@@ -134,3 +134,21 @@ func TestInjectInvocationDisabledModeStillInvokesAdditionalSystemSkills(t *testi
 		}
 	}
 }
+
+func TestFGSCompatibilityUnifiesEnabledModesAndKeepsDisabledSeparate(t *testing.T) {
+	for _, declared := range []string{"interactive", "working_graph"} {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "SKILL.md"), []byte("---\nname: check\nblackboard_modes: ["+declared+"]\n---\n# Check\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		bundle := skill.Bundle{ID: "check", Path: root}
+		for _, mode := range []modeskill.Mode{modeskill.ModeInteractive, modeskill.ModeWorkingGraph} {
+			if err := modeskill.ValidateFGSBundleCompatibility(mode, bundle); err != nil {
+				t.Fatalf("%s / %s: %v", declared, mode, err)
+			}
+		}
+		if err := modeskill.ValidateFGSBundleCompatibility(modeskill.ModeDisabled, bundle); err == nil {
+			t.Fatal("enabled-only Skill accepted Disabled")
+		}
+	}
+}

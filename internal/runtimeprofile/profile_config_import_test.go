@@ -6,9 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
-
-	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 )
 
@@ -49,15 +46,14 @@ func TestImportProfileConfigMapsStructuredAndStoresRemainder(t *testing.T) {
 
 func TestImportProfileConfigPreservesRawTextVerbatim(t *testing.T) {
 	service := newTestService(t)
-	created, err := service.Create("Hermes Preset", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
+	created, err := service.Create("Codex Preset", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
 	// Story 8: re-opening the editor must show exactly what the operator
-	// wrote — comments and formatting included. Nothing maps for Hermes
-	// (no structured env mapping), so the raw text is stored verbatim.
-	edited := "# keep my header comment\nskills:\n  autoload: false   # inline comment\n"
+	// wrote, including comments and formatting. These keys stay in the remainder.
+	edited := "# keep my header comment\n[features]\nweb_search = false   # inline comment\n"
 	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
 	if err != nil {
 		t.Fatalf("import: %v", err)
@@ -72,12 +68,12 @@ func TestImportProfileConfigPreservesRawTextVerbatim(t *testing.T) {
 
 func TestImportProfileConfigRefusesManagedKeysPerKey(t *testing.T) {
 	service := newTestService(t)
-	created, err := service.Create("Hermes Preset", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
+	created, err := service.Create("Codex Preset", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
-	edited := "approvals:\n  mode: on\nterminal:\n  backend: docker\nskills:\n  autoload: false\n"
+	edited := "approval_policy = \"on\"\nsandbox_mode = \"read-only\"\n[features]\nweb_search = false\n"
 	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
 	if err == nil {
 		t.Fatal("expected managed key refusal")
@@ -88,13 +84,13 @@ func TestImportProfileConfigRefusesManagedKeysPerKey(t *testing.T) {
 	}
 	var approvalsErr, terminalErr bool
 	for _, keyErr := range refusal.Errors {
-		if strings.HasPrefix(keyErr.Key, "approvals.mode") {
+		if strings.HasPrefix(keyErr.Key, "approval_policy") {
 			approvalsErr = true
 			if keyErr.Field == "" {
 				t.Fatalf("managed key error must name the owning structured field, got %#v", keyErr)
 			}
 		}
-		if strings.HasPrefix(keyErr.Key, "terminal.backend") {
+		if strings.HasPrefix(keyErr.Key, "sandbox_mode") {
 			terminalErr = true
 		}
 		if strings.HasPrefix(keyErr.Key, "skills") {
@@ -102,7 +98,7 @@ func TestImportProfileConfigRefusesManagedKeysPerKey(t *testing.T) {
 		}
 	}
 	if !approvalsErr || !terminalErr {
-		t.Fatalf("expected approvals.mode and terminal.backend refusals, got %#v", refusal.Errors)
+		t.Fatalf("expected approval_policy and sandbox_mode refusals, got %#v", refusal.Errors)
 	}
 
 	// Nothing persisted: the profile is untouched.
@@ -181,11 +177,11 @@ func TestImportProfileConfigRefusesSecretShapedValuesOnInnocentKeys(t *testing.T
 
 func TestImportProfileConfigRejectsMalformedText(t *testing.T) {
 	service := newTestService(t)
-	created, err := service.Create("Hermes Preset", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
+	created, err := service.Create("Codex Preset", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: "not: [valid: yaml"}); err == nil {
+	if _, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: "invalid = ["}); err == nil {
 		t.Fatal("expected parse error refusal")
 	}
 }
@@ -414,44 +410,6 @@ func TestImportProfileConfigPreservesCommentsInRemainder(t *testing.T) {
 	}
 }
 
-// Story 21: a Managed Config Key on a list field locks only the entries the
-// harness itself derives. The Hermes iteration-budget entry stays pinned,
-// while operator-added provider-native plugins join the array freely.
-func TestImportProfileConfigHermesPluginEntryGranularity(t *testing.T) {
-	service := newTestService(t)
-	service.SetManagedKeyDeclarations(map[runtimeprofile.Provider][]runtimeprofile.ManagedKeyDeclaration{
-		runtimeprofile.ProviderHermes: {{
-			Key:   "plugins.enabled",
-			Field: "runtime extensions",
-		}},
-	})
-	baseline := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n"
-	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
-	created, err := service.Create("Hermes Plugins", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	// Operator adds their own plugin entry alongside the managed one.
-	edited := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n    - my-custom-plugin\n"
-	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
-	if err != nil {
-		t.Fatalf("operator-added plugin entry must import freely, got %v", err)
-	}
-	if !strings.Contains(result.Profile.Fields.CustomConfigFile, "my-custom-plugin") {
-		t.Fatalf("operator entry must survive in the remainder, got %q", result.Profile.Fields.CustomConfigFile)
-	}
-	if strings.Contains(result.Profile.Fields.CustomConfigFile, "cyberpenda-iteration-budget") {
-		t.Fatalf("managed entry must be stripped from the remainder, got %q", result.Profile.Fields.CustomConfigFile)
-	}
-
-	// Removing the harness-derived entry is a managed change → refused.
-	removed := "plugins:\n  enabled:\n    - my-custom-plugin\n"
-	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: removed})
-	if err == nil {
-		t.Fatal("deleting the harness-derived plugin entry must be refused")
-	}
-}
-
 // Structured Codex model round-trips fully: removing the model key from
 // the edited document clears the structured field instead of resurrecting it.
 func TestImportProfileConfigModelDeletionRoundTrips(t *testing.T) {
@@ -576,44 +534,6 @@ func TestImportProfileConfigKnownPluginDisableAndNoRemainderDuplicate(t *testing
 	}
 }
 
-// Story 8/21: the stored remainder must stay valid YAML — dropping the
-// managed list entry must not remove the enabled: container line.
-func TestImportProfileConfigHermesRemainderStaysValidYAML(t *testing.T) {
-	service := newTestService(t)
-	service.SetManagedKeyDeclarations(map[runtimeprofile.Provider][]runtimeprofile.ManagedKeyDeclaration{
-		runtimeprofile.ProviderHermes: {{
-			Key:   "plugins.enabled",
-			Field: "runtime extensions",
-		}},
-	})
-	baseline := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n"
-	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
-	created, err := service.Create("Hermes YAML Shape", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	edited := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n    - my-custom-plugin\n"
-	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
-	if err != nil {
-		t.Fatalf("import: %v", err)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(result.Profile.Fields.CustomConfigFile), &doc); err != nil {
-		t.Fatalf("stored remainder must parse as YAML: %v\n%s", err, result.Profile.Fields.CustomConfigFile)
-	}
-	plugins, ok := doc["plugins"].(map[string]any)
-	if !ok {
-		t.Fatalf("plugins must stay an object, got %#v\n%s", doc["plugins"], result.Profile.Fields.CustomConfigFile)
-	}
-	enabled, ok := plugins["enabled"].([]any)
-	if !ok {
-		t.Fatalf("plugins.enabled must stay a list, got %#v\n%s", plugins["enabled"], result.Profile.Fields.CustomConfigFile)
-	}
-	if len(enabled) != 1 || enabled[0] != "my-custom-plugin" {
-		t.Fatalf("remainder must keep exactly the operator plugin, got %#v", enabled)
-	}
-}
-
 // Story 6: without a Model Provider, ANTHROPIC_MODEL / ANTHROPIC_BASE_URL are
 // projections of the structured Model / Endpoint fields. Import consumes them
 // back instead of freezing them into Fields.Env.
@@ -666,44 +586,6 @@ func TestImportProfileConfigClaudeLegacyModelEndpointRoundTrip(t *testing.T) {
 	}
 }
 
-// Full semantic round-trip: the stored remainder must re-merge so the final
-// projection keeps both the harness plugin and the operator plugin.
-func TestImportProfileConfigHermesRemainderProjectsBothPlugins(t *testing.T) {
-	service := newTestService(t)
-	service.SetManagedKeyDeclarations(map[runtimeprofile.Provider][]runtimeprofile.ManagedKeyDeclaration{
-		runtimeprofile.ProviderHermes: {{
-			Key:   "plugins.enabled",
-			Field: "runtime extensions",
-		}},
-	})
-	baseline := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n"
-	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
-	created, err := service.Create("Hermes Round Trip", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
-	if err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	edited := "plugins:\n  enabled:\n    - cyberpenda-iteration-budget\n    - my-custom-plugin\n"
-	result, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: edited})
-	if err != nil {
-		t.Fatalf("import: %v", err)
-	}
-	merged, err := runner.MergedProjectedConfig(runtimeprofile.ProviderHermes, result.Profile)
-	if err != nil {
-		t.Fatalf("merged config: %v", err)
-	}
-	plugins, _ := merged["plugins"].(map[string]any)
-	enabled, _ := plugins["enabled"].([]any)
-	joined := make([]string, 0, len(enabled))
-	for _, item := range enabled {
-		if text, ok := item.(string); ok {
-			joined = append(joined, text)
-		}
-	}
-	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
-		t.Fatalf("final plugins.enabled must contain harness + operator entries, got %#v", joined)
-	}
-}
-
 // Generated redactions round-trip via provenance: credential-generated paths
 // import cleanly and never persist into Fields.Env.
 func TestImportProfileConfigCredentialPlaceholderProvenance(t *testing.T) {
@@ -741,38 +623,13 @@ func TestImportProfileConfigCredentialPlaceholderProvenance(t *testing.T) {
 	}
 }
 
-// Managed subtrees leave the raw text too: Hermes providers and Codex
+// Managed subtrees leave the raw text too: Codex
 // model_providers.* tables must not survive into the stored remainder.
 func TestImportProfileConfigManagedSubtreeLeavesRawText(t *testing.T) {
 	service := newTestService(t)
 	service.SetManagedKeyDeclarations(map[runtimeprofile.Provider][]runtimeprofile.ManagedKeyDeclaration{
-		runtimeprofile.ProviderHermes: {{Key: "providers", Field: "model providers"}},
-		runtimeprofile.ProviderCodex:  {{Key: "model_providers.*", Field: "model_provider_id", Condition: "model_provider_resolved"}},
+		runtimeprofile.ProviderCodex: {{Key: "model_providers.*", Field: "model_provider_id", Condition: "model_provider_resolved"}},
 	})
-
-	hermesBaseline := "model:\n  provider: custom:a\nproviders:\n  a:\n    base_url: https://a.example.test\n"
-	service.SetImportBaseline(func(p runtimeprofile.Profile) (string, error) {
-		if p.Provider == runtimeprofile.ProviderHermes {
-			return hermesBaseline, nil
-		}
-		return "approval_policy = \"never\"\n", nil
-	})
-	hermes, err := service.Create("Hermes Subtree", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
-	if err != nil {
-		t.Fatalf("create hermes: %v", err)
-	}
-	result, err := service.ImportConfig(hermes.ID, runtimeprofile.ImportConfigRequest{
-		ConfigText: "model:\n  provider: custom:a\nproviders:\n  a:\n    base_url: https://a.example.test\nskills:\n  autoload: false\n",
-	})
-	if err != nil {
-		t.Fatalf("hermes import: %v", err)
-	}
-	if strings.Contains(result.Profile.Fields.CustomConfigFile, "base_url") || strings.Contains(result.Profile.Fields.CustomConfigFile, "providers") {
-		t.Fatalf("managed providers subtree must leave the remainder, got:\n%s", result.Profile.Fields.CustomConfigFile)
-	}
-	if !strings.Contains(result.Profile.Fields.CustomConfigFile, "autoload: false") {
-		t.Fatalf("operator keys must survive:\n%s", result.Profile.Fields.CustomConfigFile)
-	}
 
 	codex, err := service.Create("Codex Subtree", runtimeprofile.ProviderCodex, runtimeprofile.Fields{ModelProviderID: "prov-a"})
 	if err != nil {
@@ -783,7 +640,7 @@ func TestImportProfileConfigManagedSubtreeLeavesRawText(t *testing.T) {
 		if p.Provider == runtimeprofile.ProviderCodex {
 			return codexBaseline, nil
 		}
-		return hermesBaseline, nil
+		return "", nil
 	})
 	codexResult, err := service.ImportConfig(codex.ID, runtimeprofile.ImportConfigRequest{
 		ConfigText: "approval_policy = \"never\"\n\n[model_providers.prov-a]\nname = \"A\"\nbase_url = \"https://a.example.test/v1\"\nwire_api = \"responses\"\n\n[features]\nweb_search = true\n",
@@ -805,17 +662,12 @@ func TestImportProfileConfigManagedSubtreeLeavesRawText(t *testing.T) {
 func TestImportProfileConfigStripsMCPServersFromRemainder(t *testing.T) {
 	service := newTestService(t)
 	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return "", nil })
-	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderCodex, runtimeprofile.ProviderHermes} {
+	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderCodex} {
 		created, err := service.Create("MCP "+string(provider), provider, runtimeprofile.Fields{})
 		if err != nil {
 			t.Fatalf("create %s: %v", provider, err)
 		}
-		var text string
-		if provider == runtimeprofile.ProviderCodex {
-			text = "\n[mcp_servers.pentest]\nurl = \"http://127.0.0.1:8787/mcp\"\nenabled = true\n"
-		} else {
-			text = "mcp_servers:\n  pentest:\n    url: http://127.0.0.1:8787/mcp\n"
-		}
+		text := "\n[mcp_servers.pentest]\nurl = \"http://127.0.0.1:8787/mcp\"\nenabled = true\n"
 		if _, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{ConfigText: text}); err == nil {
 			t.Fatalf("%s operator-added mcp_servers must be refused", provider)
 		}
@@ -875,15 +727,15 @@ func TestImportProfileConfigProvenanceRefusesNonSecretReplacement(t *testing.T) 
 // config, the Custom Config File never carries it.
 func TestImportProfileConfigRefusesModifiedMCPServers(t *testing.T) {
 	service := newTestService(t)
-	baseline := "mcp_servers:\n  pentest:\n    url: http://127.0.0.1:8787/mcp\n"
+	baseline := "[mcp_servers.pentest]\nurl = \"http://127.0.0.1:8787/mcp\"\n"
 	service.SetImportBaseline(func(runtimeprofile.Profile) (string, error) { return baseline, nil })
-	created, err := service.Create("MCP Guard", runtimeprofile.ProviderHermes, runtimeprofile.Fields{})
+	created, err := service.Create("MCP Guard", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
 	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
-		ConfigText: "mcp_servers:\n  pentest:\n    url: http://evil.example.com/mcp\n",
+		ConfigText: "[mcp_servers.pentest]\nurl = \"http://evil.example.com/mcp\"\n",
 	})
 	if err == nil {
 		t.Fatal("modified MCP section must be refused")
@@ -903,7 +755,7 @@ func TestImportProfileConfigRefusesModifiedMCPServers(t *testing.T) {
 	}
 
 	added, err := service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
-		ConfigText: "skills:\n  autoload: false\nmcp_servers:\n  extra:\n    url: http://x.example.com\n",
+		ConfigText: "[mcp_servers.extra]\nurl = \"http://x.example.com\"\n",
 	})
 	if err == nil {
 		t.Fatalf("operator-added MCP section must be refused, got remainder %q", added.Profile.Fields.CustomConfigFile)

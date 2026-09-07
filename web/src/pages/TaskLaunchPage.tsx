@@ -4,7 +4,7 @@ import { Rocket } from "lucide-react";
 import { AttachmentPicker } from "@/components/AttachmentPicker";
 import { LaunchSummaryRail, RuntimeLaunchControls, useRuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { Card, CardHeader, CardTitle, Input, Label, Select, Textarea } from "@/components/ui";
+import { Label, Select, Textarea } from "@/components/ui";
 import { apiPost, apiPostForm } from "@/lib/api";
 
 export function TaskLaunchPage() {
@@ -15,14 +15,6 @@ export function TaskLaunchPage() {
   const [goal, setGoal] = useState("");
   const [launching, setLaunching] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
-  const [policy, setPolicy] = useState({
-    maxAttempts: "0",
-    maxWrongSubmissions: "0",
-    maxWallTimeSeconds: "0",
-    maxConsecutiveFailures: "0",
-    maxRatingDrawdown: "0",
-    maxNoProgressSeconds: "0",
-  });
   const effectiveGoal = goal;
 
   async function launchTask() {
@@ -40,17 +32,6 @@ export function TaskLaunchPage() {
         type: taskType,
         goal: effectiveGoal,
         ...launch,
-        run_controls: {
-          ...launch.run_controls,
-          policy: {
-            max_attempts: policyValue(policy.maxAttempts),
-            max_wrong_submissions: policyValue(policy.maxWrongSubmissions),
-            max_wall_time_seconds: policyValue(policy.maxWallTimeSeconds),
-            max_consecutive_failures: policyValue(policy.maxConsecutiveFailures),
-            max_rating_drawdown: policyValue(policy.maxRatingDrawdown),
-            max_no_progress_seconds: policyValue(policy.maxNoProgressSeconds),
-          },
-        },
       };
       const taskPath = `/api/projects/${projectId}/tasks`;
       let created: { id: string };
@@ -126,20 +107,7 @@ export function TaskLaunchPage() {
 
         <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={effectiveGoal} />
 
-        <Card as="section" className="border-border/70 bg-muted/10">
-          <CardHeader>
-            <CardTitle>Task Policy</CardTitle>
-          </CardHeader>
-          <p className="mb-3 text-xs text-muted-foreground">A value of 0 disables the limit. These values become the immutable Task Policy Snapshot.</p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <PolicyInput id="policy-max-attempts" label="Maximum attempts" value={policy.maxAttempts} onChange={(value) => setPolicy((current) => ({ ...current, maxAttempts: value }))} />
-            <PolicyInput id="policy-max-wrong" label="Maximum wrong submissions" value={policy.maxWrongSubmissions} onChange={(value) => setPolicy((current) => ({ ...current, maxWrongSubmissions: value }))} />
-            <PolicyInput id="policy-max-wall" label="Maximum wall time (seconds)" value={policy.maxWallTimeSeconds} onChange={(value) => setPolicy((current) => ({ ...current, maxWallTimeSeconds: value }))} />
-            <PolicyInput id="policy-max-consecutive" label="Maximum consecutive failures" value={policy.maxConsecutiveFailures} onChange={(value) => setPolicy((current) => ({ ...current, maxConsecutiveFailures: value }))} />
-            <PolicyInput id="policy-max-drawdown" label="Maximum rating drawdown" value={policy.maxRatingDrawdown} onChange={(value) => setPolicy((current) => ({ ...current, maxRatingDrawdown: value }))} />
-            <PolicyInput id="policy-max-no-progress" label="Maximum no-progress time (seconds)" value={policy.maxNoProgressSeconds} onChange={(value) => setPolicy((current) => ({ ...current, maxNoProgressSeconds: value }))} />
-          </div>
-        </Card>
+
       </div>
 
 <LaunchSummaryRail
@@ -151,18 +119,4 @@ export function TaskLaunchPage() {
       />
     </ProjectPageShell>
   );
-}
-
-function PolicyInput({ id, label, value, onChange }: { id: string; label: string; value: string; onChange: (value: string) => void }) {
-  return (
-    <div>
-      <Label htmlFor={id}>{label}</Label>
-      <Input id={id} type="number" min={0} step={1} value={value} onChange={(event) => onChange(event.target.value)} />
-    </div>
-  );
-}
-
-function policyValue(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }

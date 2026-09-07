@@ -79,7 +79,6 @@ func TestProviderSessionAssemblersRejectJSONRPCSetupErrors(t *testing.T) {
 		{name: "codex initialize", provider: runtimeprofile.ProviderCodex, method: "initialize", assembler: codexAssembler{plugins: registry, bridge: "bridge"}},
 		{name: "claude initialize", provider: runtimeprofile.ProviderClaudeCode, method: "claude/initialize", assembler: claudeAssembler{plugins: registry}},
 		{name: "pi state", provider: runtimeprofile.ProviderPi, method: "pi/get_state", assembler: piAssembler{plugins: registry}},
-		{name: "hermes initialize", provider: runtimeprofile.ProviderHermes, method: "initialize", assembler: hermesAssembler{plugins: registry}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -146,17 +145,6 @@ func TestProviderSessionAssemblerSandboxConformance(t *testing.T) {
 			wantBridge:    []string{"sandbox:test", "/usr/local/bin/pentest-provider-bridge", "--provider", "pi", "--", "pi", "--mode", "rpc"},
 			wantSessionID: "conf-pi", wantInTurnSteer: true,
 		},
-		{
-			provider: runtimeprofile.ProviderHermes,
-			respond: func(method string, _ json.RawMessage) string {
-				if method == "session/new" {
-					return `{"sessionId":"conf-hermes"}`
-				}
-				return ""
-			},
-			wantBridge:    []string{"sandbox:test", "hermes", "--yolo", "acp"},
-			wantSessionID: "conf-hermes",
-		},
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.provider), func(t *testing.T) {
@@ -221,7 +209,7 @@ func TestProviderSessionAssemblerManifestIsCapabilitySource(t *testing.T) {
 	registry := runtimeplugin.MustBuiltinRegistry()
 	for _, provider := range []runtimeprofile.Provider{
 		runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode,
-		runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes,
+		runtimeprofile.ProviderPi,
 	} {
 		capabilities, err := manifestSessionCapabilities(registry, provider)
 		if err != nil {

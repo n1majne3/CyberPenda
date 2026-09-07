@@ -538,6 +538,10 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 	if err != nil {
 		return Session{}, err
 	}
+	// Canonicalize new input only; stored snapshots retain their original mode.
+	if mode == BlackboardModeInteractive {
+		mode = BlackboardModeWorkingGraph
+	}
 	if req.InitialRuntime != nil {
 		if req.InitialRuntime.Runner != RunnerSandbox && req.InitialRuntime.Runner != RunnerHost {
 			return Session{}, ErrInvalidRunner

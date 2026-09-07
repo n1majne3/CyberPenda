@@ -108,8 +108,8 @@ func ResolveContainerCLI(taskChoice, daemonDefault string) string {
 	return strings.TrimSpace(daemonDefault)
 }
 
-// TaskPolicy defines machine-enforced stop conditions for one Task.
-// Each positive value enables its limit. A zero value means no limit.
+// TaskPolicy retains limits from the retired Challenge Workflow for history.
+// Values describe historical limits; the daemon no longer enforces them.
 type TaskPolicy struct {
 	MaxAttempts            int `json:"max_attempts,omitempty"`
 	MaxWrongSubmissions    int `json:"max_wrong_submissions,omitempty"`
@@ -528,18 +528,20 @@ type RuntimeActivity struct {
 
 // Task is a single user-goal-driven run within a project.
 type Task struct {
-	BlackboardProtocol   string                 `json:"blackboard_protocol"`
-	ID                   string                 `json:"id"`
-	ProjectID            string                 `json:"project_id"`
-	Type                 Type                   `json:"type"`
-	Goal                 string                 `json:"goal"`
-	Status               Status                 `json:"status"`
-	Runner               Runner                 `json:"runner"`
-	RuntimeProfileID     string                 `json:"runtime_profile_id,omitempty"`
-	RunControls          RunControls            `json:"run_controls"`
-	ScopeSnapshot        ScopeSnapshot          `json:"scope_snapshot"`
-	RuntimeControls      RuntimeControls        `json:"runtime_controls"`
-	RuntimeConfiguration *runtimeconfig.Summary `json:"runtime_configuration,omitempty"`
+	// ChallengeHistoryAvailable is a read-only projection, not stored Task state.
+	ChallengeHistoryAvailable bool                   `json:"challenge_history_available,omitempty"`
+	BlackboardProtocol        string                 `json:"blackboard_protocol"`
+	ID                        string                 `json:"id"`
+	ProjectID                 string                 `json:"project_id"`
+	Type                      Type                   `json:"type"`
+	Goal                      string                 `json:"goal"`
+	Status                    Status                 `json:"status"`
+	Runner                    Runner                 `json:"runner"`
+	RuntimeProfileID          string                 `json:"runtime_profile_id,omitempty"`
+	RunControls               RunControls            `json:"run_controls"`
+	ScopeSnapshot             ScopeSnapshot          `json:"scope_snapshot"`
+	RuntimeControls           RuntimeControls        `json:"runtime_controls"`
+	RuntimeConfiguration      *runtimeconfig.Summary `json:"runtime_configuration,omitempty"`
 	// RuntimeActivity is current process/session health, not Task status.
 	RuntimeActivity      RuntimeActivity      `json:"runtime_activity"`
 	BlackboardConclusion BlackboardConclusion `json:"blackboard_conclusion"`
@@ -698,6 +700,10 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	mode, err := normalizeBlackboardMode(req.RunControls.BlackboardMode)
 	if err != nil {
 		return Task{}, err
+	}
+	// Canonicalize new input only; stored snapshots retain their original mode.
+	if mode == BlackboardModeInteractive {
+		mode = BlackboardModeWorkingGraph
 	}
 	req.RunControls.BlackboardMode = mode
 	if err := req.RunControls.validate(); err != nil {

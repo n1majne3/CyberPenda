@@ -3,11 +3,8 @@ package runner_test
 import (
 	"encoding/json"
 	"os"
-	"slices"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/runner"
@@ -153,36 +150,6 @@ func TestCodexConfigTOMLOverlayMergesExtraSections(t *testing.T) {
 	}
 }
 
-func TestHermesConfigYAMLOverlayMergesExtraKeys(t *testing.T) {
-	layout, _ := projectForTest(t, runtimeprofile.ProviderHermes)
-	profile := runtimeprofile.Profile{
-		Provider: runtimeprofile.ProviderHermes,
-		Fields: runtimeprofile.Fields{
-			CustomConfigFile: "# my extras\nskills:\n  autoload: false\nterminal:\n  shell: /bin/zsh\n",
-		},
-	}
-	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
-	if err != nil {
-		t.Fatalf("project: %v", err)
-	}
-	raw, err := os.ReadFile(projection.ConfigPath)
-	if err != nil {
-		t.Fatalf("read config.yaml: %v", err)
-	}
-	config := string(raw)
-	if !strings.Contains(config, "autoload: false") {
-		t.Fatalf("overlay skills key missing:\n%s", config)
-	}
-	// terminal.backend is managed (structured non-interactive default);
-	// terminal.shell is a different child key and must survive.
-	if !strings.Contains(config, "backend: local") {
-		t.Fatalf("managed terminal.backend lost:\n%s", config)
-	}
-	if !strings.Contains(config, "shell: /bin/zsh") {
-		t.Fatalf("non-managed terminal.shell missing:\n%s", config)
-	}
-}
-
 func TestPiModelsJSONOverlayMergesCustomModels(t *testing.T) {
 	// Without Global Model Projection the host ~/.pi/agent/models.json is copied.
 	isolatePiHostHome(t)
@@ -218,11 +185,11 @@ func TestProjectionRejectsOverlayWithSecretShapedValues(t *testing.T) {
 }
 
 func TestProjectionRejectsMalformedOverlay(t *testing.T) {
-	layout, _ := projectForTest(t, runtimeprofile.ProviderHermes)
+	layout, _ := projectForTest(t, runtimeprofile.ProviderCodex)
 	profile := runtimeprofile.Profile{
-		Provider: runtimeprofile.ProviderHermes,
+		Provider: runtimeprofile.ProviderCodex,
 		Fields: runtimeprofile.Fields{
-			CustomConfigFile: "not: [valid: yaml",
+			CustomConfigFile: "invalid = [",
 		},
 	}
 	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{}); err == nil {
@@ -239,7 +206,7 @@ func TestProjectedConfigTextRendersProviderNativeSeeds(t *testing.T) {
 	}{
 		{runtimeprofile.ProviderClaudeCode, []string{`"env"`, `STRUCTURED`}},
 		{runtimeprofile.ProviderCodex, []string{"approval_policy", "sandbox_mode"}},
-		{runtimeprofile.ProviderHermes, []string{"approvals:", "agent:"}},
+
 		{runtimeprofile.ProviderPi, []string{`"providers"`}},
 	}
 	for _, tc := range cases {
@@ -301,29 +268,6 @@ func TestMergedProjectedConfigMergesOverlayIntoNativeShape(t *testing.T) {
 	}
 }
 
-func TestHermesPluginsEnabledMergesOperatorEntries(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "plugins:\n  enabled:\n    - my-custom-plugin\n"
-	merged, err := runner.MergedProjectedConfig(profile.Provider, profile)
-	if err != nil {
-		t.Fatalf("merged: %v", err)
-	}
-	plugins, _ := merged["plugins"].(map[string]any)
-	enabled, _ := plugins["enabled"].([]any)
-	got := make([]string, 0, len(enabled))
-	for _, item := range enabled {
-		if text, ok := item.(string); ok {
-			got = append(got, text)
-		}
-	}
-	if !strings.Contains(strings.Join(got, ","), "cyberpenda-iteration-budget") {
-		t.Fatalf("harness-derived plugin must survive, got %#v", got)
-	}
-	if !strings.Contains(strings.Join(got, ","), "my-custom-plugin") {
-		t.Fatalf("operator plugin must coexist, got %#v", got)
-	}
-}
-
 func TestClaudePermissionsAllowPreservesOperatorEntries(t *testing.T) {
 	layout, _ := projectForTest(t, runtimeprofile.ProviderClaudeCode)
 	profile := runtimeprofile.Profile{
@@ -367,36 +311,6 @@ func TestProjectedConfigTextPreservesTOMLRemainderComments(t *testing.T) {
 	}
 }
 
-// Story 8: reopening a Hermes profile with an operator plugin must produce
-// ONE plugins block containing both harness and operator entries — never a
-// duplicate top-level key.
-func TestProjectedConfigTextHermesReopenSinglePluginsBlock(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "plugins:\n  enabled:\n    - my-custom-plugin\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	if strings.Count(text, "plugins:") != 1 {
-		t.Fatalf("reopen must contain exactly one plugins block, got:\n%s", text)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-	plugins, _ := doc["plugins"].(map[string]any)
-	enabled, _ := plugins["enabled"].([]any)
-	joined := make([]string, 0, len(enabled))
-	for _, item := range enabled {
-		if s, ok := item.(string); ok {
-			joined = append(joined, s)
-		}
-	}
-	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
-		t.Fatalf("reopen must show harness + operator plugins, got %#v\n%s", joined, text)
-	}
-}
-
 // Reopen ordering: a remainder root key must stay at TOML root even when the
 // generated seed ends with tables.
 func TestProjectedConfigTextTOMLRootKeyStaysAtRoot(t *testing.T) {
@@ -414,30 +328,6 @@ func TestProjectedConfigTextTOMLRootKeyStaysAtRoot(t *testing.T) {
 	}
 	if settingIdx > tableIdx {
 		t.Fatalf("remainder root key must precede generated tables (TOML scoping):\n%s", text)
-	}
-}
-
-// Reopen survival: a remainder root scalar survives alongside a colliding
-// plugins block.
-func TestProjectedConfigTextYAMLRootScalarSurvivesMerge(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "custom_setting: true\nplugins:\n  enabled:\n    - my-custom-plugin\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	if !strings.Contains(text, "custom_setting: true") {
-		t.Fatalf("reopen must keep the remainder root scalar:\n%s", text)
-	}
-	if strings.Count(text, "plugins:") != 1 {
-		t.Fatalf("reopen must contain exactly one plugins block:\n%s", text)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-	if doc["custom_setting"] != true {
-		t.Fatalf("root scalar must parse at document root: %#v", doc)
 	}
 }
 
@@ -463,290 +353,5 @@ func TestProjectedConfigTextClaudePreviewShowsCredentialChannels(t *testing.T) {
 	}
 	if strings.Contains(text, "«redacted:sk-…»") {
 		t.Fatalf("preview leaked an inline API key value:\n%s", text)
-	}
-}
-
-// Story 8 verbatim: the operator's comment inside a colliding block survives
-// reopen byte-for-byte; harness entries merge in without re-encoding the
-// operator's own lines.
-func TestProjectedConfigTextHermesReopenKeepsOperatorComments(t *testing.T) {
-	remainder := "plugins:\n  # keep this comment\n  enabled:\n    - my-custom-plugin\n"
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = remainder
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	if !strings.Contains(text, "# keep this comment") {
-		t.Fatalf("operator comment must survive reopen, got:\n%s", text)
-	}
-	if !strings.Contains(text, "my-custom-plugin") || !strings.Contains(text, "cyberpenda-iteration-budget") {
-		t.Fatalf("reopen must show both harness and operator plugins, got:\n%s", text)
-	}
-	if strings.Count(text, "plugins:") != 1 {
-		t.Fatalf("reopen must contain exactly one plugins block, got:\n%s", text)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-}
-
-// Story 8 verbatim: a preamble comment before any root key survives reopen.
-func TestProjectedConfigTextHermesReopenKeepsPreambleComment(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "# keep this operator note\nskills:\n  autoload: false\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	if !strings.Contains(text, "# keep this operator note") {
-		t.Fatalf("preamble comment must survive reopen:\n%s", text)
-	}
-	if !strings.Contains(text, "autoload: false") {
-		t.Fatalf("remainder keys must survive reopen:\n%s", text)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-}
-
-// Story 16: entry dedup must scope to the target list. A sibling list
-// (plugins.disabled) carrying the same entry name does not satisfy the
-// plugins.enabled union.
-func TestProjectedConfigTextHermesSiblingListDoesNotSuppressInjection(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "plugins:\n  enabled:\n    - my-custom-plugin\n  disabled:\n    - cyberpenda-iteration-budget\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-	plugins, _ := doc["plugins"].(map[string]any)
-	enabled, _ := plugins["enabled"].([]any)
-	joined := make([]string, 0, len(enabled))
-	for _, item := range enabled {
-		if s, ok := item.(string); ok {
-			joined = append(joined, s)
-		}
-	}
-	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
-		t.Fatalf("preview enabled must match the runtime union, got %#v\n%s", joined, text)
-	}
-}
-
-// Story 8 verbatim: remainder root-key order survives reopen byte-for-byte.
-func TestProjectedConfigTextHermesReopenKeepsRootKeyOrder(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "z_custom:\n  value: 1\na_custom:\n  value: 2\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	zIdx := strings.Index(text, "z_custom:")
-	aIdx := strings.Index(text, "a_custom:")
-	if zIdx == -1 || aIdx == -1 {
-		t.Fatalf("reopen must keep both remainder keys:\n%s", text)
-	}
-	if zIdx > aIdx {
-		t.Fatalf("remainder root-key order must be preserved (z_custom before a_custom):\n%s", text)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-}
-
-// Story 16: a nested same-name list (plugins.metadata.enabled) must not
-// attract the harness entry; only the direct plugins.enabled unions.
-func TestProjectedConfigTextHermesNestedSameNameListStaysScoped(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "plugins:\n  metadata:\n    enabled:\n      - shadow-plugin\n  enabled:\n    - my-custom-plugin\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-	plugins, _ := doc["plugins"].(map[string]any)
-	enabled, _ := plugins["enabled"].([]any)
-	joined := make([]string, 0, len(enabled))
-	for _, item := range enabled {
-		if s, ok := item.(string); ok {
-			joined = append(joined, s)
-		}
-	}
-	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
-		t.Fatalf("direct plugins.enabled must match the runtime union, got %#v\n%s", joined, text)
-	}
-	metadata, _ := plugins["metadata"].(map[string]any)
-	nested, _ := metadata["enabled"].([]any)
-	for _, item := range nested {
-		if s, ok := item.(string); ok && s == "cyberpenda-iteration-budget" {
-			t.Fatalf("harness entry must not inject into the nested same-name list:\n%s", text)
-		}
-	}
-}
-
-// Story 8: a mapping block followed by a root scalar then another mapping
-// must not lose the first block to a stale currentKey.
-func TestProjectedConfigTextHermesMapScalarMapKeepsAllBlocks(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "plugins:\n  enabled:\n    - my-custom-plugin\ncustom_setting: true\nskills:\n  autoload: false\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-	plugins, _ := doc["plugins"].(map[string]any)
-	enabled, _ := plugins["enabled"].([]any)
-	joined := make([]string, 0, len(enabled))
-	for _, item := range enabled {
-		if s, ok := item.(string); ok {
-			joined = append(joined, s)
-		}
-	}
-	if !slices.Contains(joined, "my-custom-plugin") {
-		t.Fatalf("operator plugin must survive map→scalar→map reopen, got %#v\n%s", joined, text)
-	}
-	if doc["custom_setting"] != true {
-		t.Fatalf("root scalar must survive: %#v\n%s", doc["custom_setting"], text)
-	}
-	skills, _ := doc["skills"].(map[string]any)
-	if skills["autoload"] != false {
-		t.Fatalf("trailing mapping must survive: %#v\n%s", doc["skills"], text)
-	}
-}
-
-// Story 8 verbatim: 4-space direct-child indentation keeps the operator's
-// comment through the colliding-block merge.
-func TestProjectedConfigTextHermesFourSpaceIndentKeepsComments(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "plugins:\n    # keep this comment\n    enabled:\n      - my-custom-plugin\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	if !strings.Contains(text, "# keep this comment") {
-		t.Fatalf("operator comment must survive the 4-space merge:\n%s", text)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-	plugins, _ := doc["plugins"].(map[string]any)
-	enabled, _ := plugins["enabled"].([]any)
-	joined := make([]string, 0, len(enabled))
-	for _, item := range enabled {
-		if s, ok := item.(string); ok {
-			joined = append(joined, s)
-		}
-	}
-	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
-		t.Fatalf("4-space enabled must still union harness + operator, got %#v\n%s", joined, text)
-	}
-}
-
-// Story 8: a root mapping header with an inline comment is still one mapping
-// block. Its comment and children survive reopen while the harness entry
-// merges into the direct plugins.enabled list.
-func TestProjectedConfigTextHermesInlineCommentMappingHeader(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "plugins: # keep this inline comment\n  enabled:\n    - my-custom-plugin\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	if !strings.Contains(text, "# keep this inline comment") {
-		t.Fatalf("inline mapping comment must survive reopen:\n%s", text)
-	}
-	if strings.Count(text, "plugins:") != 1 {
-		t.Fatalf("reopen must contain exactly one plugins block:\n%s", text)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-	plugins, _ := doc["plugins"].(map[string]any)
-	enabled, _ := plugins["enabled"].([]any)
-	joined := make([]string, 0, len(enabled))
-	for _, item := range enabled {
-		if s, ok := item.(string); ok {
-			joined = append(joined, s)
-		}
-	}
-	if !slices.Contains(joined, "cyberpenda-iteration-budget") || !slices.Contains(joined, "my-custom-plugin") {
-		t.Fatalf("plugins.enabled must contain harness + operator entries, got %#v\n%s", joined, text)
-	}
-}
-
-// Story 16: quoted list entries dedupe semantically. The operator's
-// quoted harness entry must not cause a duplicate preview injection.
-func TestProjectedConfigTextHermesQuotedEntryNoDuplicate(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "plugins:\n  enabled:\n    - \"cyberpenda-iteration-budget\"\n    - my-custom-plugin\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
-	}
-	plugins, _ := doc["plugins"].(map[string]any)
-	enabled, _ := plugins["enabled"].([]any)
-	count := 0
-	hasOperator := false
-	for _, item := range enabled {
-		if s, ok := item.(string); ok {
-			if s == "cyberpenda-iteration-budget" {
-				count++
-			}
-			if s == "my-custom-plugin" {
-				hasOperator = true
-			}
-		}
-	}
-	if count != 1 {
-		t.Fatalf("harness entry must appear exactly once (semantic dedup), got %d\n%s", count, text)
-	}
-	if !hasOperator {
-		t.Fatalf("operator entry must survive:\n%s", text)
-	}
-}
-
-// Story 8: a colliding non-list YAML map keeps the operator's comment and
-// formatting while the managed child still merges.
-func TestProjectedConfigTextHermesCollidingMapKeepsComments(t *testing.T) {
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderHermes}
-	profile.Fields.CustomConfigFile = "terminal:\n  # use zsh for tool wrappers\n  shell: /bin/zsh\n"
-	text, err := runner.ProjectedConfigText(runtimeprofile.ProviderHermes, profile)
-	if err != nil {
-		t.Fatalf("projected text: %v", err)
-	}
-	if !strings.Contains(text, "# use zsh for tool wrappers") {
-		t.Fatalf("colliding-map comment must survive reopen:\n%s", text)
-	}
-	if !strings.Contains(text, "shell: /bin/zsh") {
-		t.Fatalf("operator shell must survive reopen:\n%s", text)
-	}
-	if !strings.Contains(text, "backend: local") {
-		t.Fatalf("managed backend must still merge:\n%s", text)
-	}
-	if strings.Count(text, "terminal:") != 1 {
-		t.Fatalf("reopen must contain exactly one terminal block:\n%s", text)
-	}
-	var doc map[string]any
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil {
-		t.Fatalf("reopen text must parse as YAML: %v\n%s", err, text)
 	}
 }

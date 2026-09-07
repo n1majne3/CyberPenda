@@ -130,7 +130,6 @@ var projectionPrimitives = map[string]bool{
 	"codex_home":      true,
 	"claude_settings": true,
 	"pi_agent":        true,
-	"hermes_home":     true,
 }
 
 var modelProviderRequirements = map[string]bool{
@@ -150,7 +149,6 @@ var transcriptParsers = map[string]bool{
 	"codex_json":           true,
 	"claude_stream_json":   true,
 	"pi_json_session":      true,
-	"hermes_acp":           true,
 }
 
 var managedKeyConditions = map[string]bool{

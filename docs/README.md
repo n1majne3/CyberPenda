@@ -1,16 +1,46 @@
 # CyberPenda Docs
 
-These documents define CyberPenda, a local-first pentest agent, from product intent through MVP execution. Blackboard v2 is the only current public Blackboard contract; older product planning remains historical context.
+CyberPenda coordinates authorized security testing in a local Project. Current
+Projects and Sessions use Goal, Step, and Fact (FGS) for enabled Blackboard work.
+Disabled Blackboard Mode remains available. Historical Blackboard records and
+Evidence files remain stored without conversion to FGS nodes.
 
-## Start Here
+## Current product
 
-- [Product Requirements](./product/prd.md): what the product must do and why.
-- [MVP Scope](./product/mvp.md): what the first usable release includes, excludes, and must prove.
-- [Implementation Plan](./product/implementation-plan.md): historical MVP build order and acceptance record.
+- [Quick start and workflow](../README.md): build, configure, launch, and inspect results.
+- [Domain glossary](../CONTEXT.md): canonical terms and definitions only.
+- [Current product boundary](./product/current-boundary.md): supported behavior, retired features, and links to detailed constraints.
+- [FGS Runtime protocol](./specs/fgs-runtime-outbox-protocol.md): confirmed principles, protocol design, and implementation status.
+- [FGS decision](./adr/0035-use-fgs-as-the-blackboard-working-model.md): model replacement and historical-data boundary.
+- [Platform engines](./platform-engines.md): Sandbox Runner support.
+- [TSecBench Hosted delivery](./tsecbench/README.md): image, configuration, and acceptance.
 
-## Supporting Context
+The Runtime publishes FGS updates through its Outbox. The Harness validates and
+stores accepted updates and Receipts. The UI reads accepted graph state and can
+export Markdown. CyberPenda does not expose a built-in Blackboard MCP server.
+External MCP servers remain explicit Runtime Profile configuration.
 
-- [Project Glossary](../CONTEXT.md): canonical domain language.
-- [Blackboard v2 Specification](./specs/blackboard-v2-spec.md): the single normative Blackboard behavior and data contract.
-- [Blackboard v2 TDD Replacement Plan](./specs/blackboard-v2-tdd-plan.md): the single Red-Green deletion and rebuild order.
-- [Original Design Draft](./superpowers/specs/2026-06-17-pentest-agent-design.md): approved architecture draft from the initial brainstorming session.
+Runtime extensions can be selected from the local registry or entered as explicit
+references. Skills retain their managed import flow. The product does not fetch
+or browse remote plugin catalogs.
+
+Normal Project Challenge Workflow is retired. Tasks with retained Attempts or
+Operations show read-only history. Pending operations are not replayed and need
+review on the original Platform. The separate Hosted Challenge Client remains
+active.
+
+## Historical references
+
+These records explain prior decisions. Do not use them as new-feature or current
+launch instructions.
+
+- [Retired Challenge Project Workflow](./specs/challenge-project-workflow/design.md).
+- [Original PRD](./product/prd.md), [MVP scope](./product/mvp.md), and [implementation plan](./product/implementation-plan.md).
+- [Legacy Blackboard v2 specification](./specs/blackboard-v2-spec.md) and [replacement plan](./specs/blackboard-v2-tdd-plan.md).
+- [Original design](./superpowers/specs/2026-06-17-pentest-agent-design.md).
+- [Architecture decisions](./adr/): check each document's status and later decisions.
+- [Pre-compression domain snapshot](./history/2026-09-08-context-before-compression.md): prior definitions, relationships, and resolved questions; mixed current and superseded material for decision tracing only.
+
+The Assisted-versus-Interactive experiment launchers are retired. Their saved
+results remain historical data. Use `make smoke-sandbox-fgs`,
+`make smoke-runtime-tasks`, and the Hosted acceptance workflow for current checks.

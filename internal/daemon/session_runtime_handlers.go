@@ -593,13 +593,7 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 	if err != nil {
 		return sessionRuntimePreparation{}, err
 	}
-	if blackboardMode := modeskill.Mode(mode); blackboardMode != modeskill.ModeDisabled {
-		modeSkill, err := modeskill.Resolve(blackboardMode)
-		if err != nil {
-			return sessionRuntimePreparation{}, err
-		}
-		runtimeConfig["mode_skill_id"] = modeSkill.ID
-	}
+
 	return sessionRuntimePreparation{
 		Profile: profile, Runner: run, RuntimeConfig: runtimeConfig,
 	}, nil
@@ -686,7 +680,7 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 		}
 	}
 	var graphProjection *workinggraph.Projection
-	if found.RunControls.BlackboardMode == session.BlackboardModeWorkingGraph || (found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != session.BlackboardModeDisabled) {
+	if found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != session.BlackboardModeDisabled {
 		preparedGraph, prepareErr := workinggraph.NewService().Prepare(ctx, workinggraph.OwnerContext{
 			Owner: found.OwnerContract(), ContinuationID: continuation.ID, Workdir: found.Workdir,
 		})
@@ -925,6 +919,8 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 		// provider-native SendTurn capability below.
 		QueueSteerAvailable: found.Lifecycle == session.LifecycleOpen,
 	}
+	_, runtimeSupported := server.runtimePlugins.Get(provider)
+	controls.QueueSteerAvailable = controls.QueueSteerAvailable && runtimeSupported
 	if latest != nil {
 		controls.NativeSessionCaptured = latest.NativeSessionID != "" || latest.NativeSessionPath != ""
 		selection, selectionErr := server.sessionCurrentSelection(*latest)
@@ -934,7 +930,7 @@ func (server *Server) decorateSession(found session.Session) (session.Session, e
 				ReasoningEffort: selection.RequestedReasoningEffort,
 			}
 		}
-		controls.NativeResumeAvailable = active == nil && controls.NativeSessionCaptured && provider != string(runtimeprofile.ProviderFake)
+		controls.NativeResumeAvailable = runtimeSupported && active == nil && controls.NativeSessionCaptured && provider != string(runtimeprofile.ProviderFake)
 	}
 	steeringControl, steeringControlErr := server.latestSteeringControl(owner.KindSession, found.ID)
 	if steeringControlErr == nil {
@@ -1156,6 +1152,17 @@ func (server *Server) handleSessionMessageInput(response http.ResponseWriter, re
 	if found.Lifecycle != session.LifecycleOpen {
 		writeSessionError(response, session.ErrSessionNotOpen)
 		return
+	}
+	latest, err := server.sessions.LatestContinuation(id)
+	if err != nil {
+		writeSessionError(response, err)
+		return
+	}
+	if latest != nil {
+		if _, supported := server.runtimePlugins.Get(latest.RuntimeProvider); !supported {
+			writeError(response, http.StatusBadRequest, fmt.Sprintf("runtime %q is not supported", latest.RuntimeProvider))
+			return
+		}
 	}
 	if err := server.waitForSessionWorkingGraphSettlement(request.Context(), id, false); err != nil {
 		if errors.Is(err, errSemanticConclusionActionRequired) {

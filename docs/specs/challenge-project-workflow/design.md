@@ -1,5 +1,12 @@
 # Challenge Project Workflow Design
 
+> Historical specification: normal Project Challenge Workflow is retired. Its
+> operations, Task Policy enforcement, Platform configuration, and recovery are
+> removed. Attempts, Operation metadata, Evidence, and origins remain readable.
+> Pending operations are not replayed and do not block Task Finish. Check
+> unfinished work on the original Platform. The independent Hosted Challenge
+> Client remains active. See the current boundary in [CONTEXT.md](../../../CONTEXT.md).
+
 ## Design summary
 
 The change keeps Project kind as a strong semantic invariant. It connects the existing CTF Challenge Project implementation to the creation interface and adds a deep Challenge Workflow module. Callers use four operations. The module owns identity, Task Policy, external Adapter calls, Evidence retention, Blackboard settlement, and recovery.
@@ -47,7 +54,7 @@ type Workflow interface {
 
 The external challenge platform is a true external dependency. A `PlatformAdapter` port sits at the internal seam. Production uses an HTTP Adapter. Tests use an in-memory Adapter.
 
-Production loads strict Platform Adapter JSON through `--challenge-platform-config` or `PENTEST_CHALLENGE_PLATFORM_CONFIG`. The file names a bearer-token environment variable. It does not contain the token value. See `docs/examples/challenge-platforms.example.json`.
+The retired implementation loaded Platform Adapter JSON through `--challenge-platform-config` or `PENTEST_CHALLENGE_PLATFORM_CONFIG`. Both inputs and the example configuration are removed.
 
 ### Finish Readiness module
 

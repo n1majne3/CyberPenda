@@ -14,7 +14,7 @@ import (
 )
 
 func TestFGSTaskBoundLaunchKeepsInstructionsAndSchema(t *testing.T) {
-	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderPi, runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderHermes} {
+	for _, provider := range []runtimeprofile.Provider{runtimeprofile.ProviderPi, runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode} {
 		t.Run(string(provider), func(t *testing.T) {
 			root := t.TempDir()
 			server, err := NewServer(Config{Version: "test", DBPath: filepath.Join(root, "test.db"), RuntimeRoot: filepath.Join(root, "runs"), SandboxImage: "sandbox:test", DisableBuiltinSkills: true})

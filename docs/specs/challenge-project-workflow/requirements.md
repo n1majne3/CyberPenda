@@ -1,5 +1,12 @@
 # Challenge Project Workflow Requirements
 
+> Historical specification: normal Project Challenge Workflow is retired. Its
+> operations, Task Policy enforcement, Platform configuration, and recovery are
+> removed. Attempts, Operation metadata, Evidence, and origins remain readable.
+> Pending operations are not replayed and do not block Task Finish. Check
+> unfinished work on the original Platform. The independent Hosted Challenge
+> Client remains active. See the current boundary in [CONTEXT.md](../../../CONTEXT.md).
+
 ## Problem
 
 CyberPenda supports `ctf_challenge` in its domain and Blackboard, but the Project creation interface omits the Project kind. The daemon therefore creates a Pentest Project by default. A Runtime can then start challenge work and fail later when it writes a Solution. Challenge execution also depends on several independent Runtime calls for Attempt identity, remote submission, Evidence retention, Blackboard relationships, and Task completion. This creates duplicate Attempts, missing Evidence, and stranded semantic debt.

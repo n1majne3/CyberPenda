@@ -289,7 +289,6 @@ func optionalProjectionProviders() []runtimeprofile.Provider {
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.ProviderClaudeCode,
 		runtimeprofile.ProviderPi,
-		runtimeprofile.ProviderHermes,
 	}
 }
 
@@ -407,12 +406,6 @@ func TestRuntimeProvidersRejectMalformedKnownMCPConfigWithoutChangingLayout(t *t
 			path:     func(layout runner.Layout) string { return filepath.Join(layout.ProviderHome, "agent", "mcp.json") },
 			content:  []byte(`{"mcpServers":{"external-docs":`),
 		},
-		{
-			name:     "hermes config.yaml",
-			provider: runtimeprofile.ProviderHermes,
-			path:     func(layout runner.Layout) string { return filepath.Join(layout.ProviderHome, "config.yaml") },
-			content:  []byte("mcp_servers:\n  external-docs: [unterminated\n"),
-		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			taskID := "malformed-known-mcp-" + string(test.provider)
@@ -526,8 +519,6 @@ func staleTrustedMCPConfig(layout runner.Layout, provider runtimeprofile.Provide
 		return filepath.Join(layout.Workdir, ".mcp.json"), []byte(`{"mcpServers":{"external-docs":{"type":"http","url":"https://external.example.test/mcp"},"pentest":{"type":"http","url":"` + url + `"}}}`)
 	case runtimeprofile.ProviderPi:
 		return filepath.Join(layout.ProviderHome, "agent", "mcp.json"), []byte(`{"mcpServers":{"external-docs":{"type":"http","url":"https://external.example.test/mcp"},"pentest":{"type":"http","url":"` + url + `"}}}`)
-	case runtimeprofile.ProviderHermes:
-		return filepath.Join(layout.ProviderHome, "config.yaml"), []byte("model: ordinary-model\nmcp_servers:\n  external-docs:\n    url: https://external.example.test/mcp\n  pentest:\n    url: " + url + "\n")
 	default:
 		panic("unsupported Runtime Provider")
 	}
@@ -542,8 +533,6 @@ func staleProjectInterfaceTokenConfig(layout runner.Layout, provider runtimeprof
 		return filepath.Join(layout.ProviderHome, "settings.json"), []byte(`{"env":{"PENTEST_INTERFACE_TOKEN":"` + token + `","ORDINARY_RUNTIME_SETTING":"preserve-me"}}`)
 	case runtimeprofile.ProviderPi:
 		return filepath.Join(layout.ProviderHome, "agent", "auth.json"), []byte(`{"PENTEST_INTERFACE_TOKEN":"` + token + `","ordinary":{"token":"ordinary-model-credential"}}`)
-	case runtimeprofile.ProviderHermes:
-		return filepath.Join(layout.ProviderHome, ".env"), []byte("PENTEST_INTERFACE_TOKEN=" + token + "\nORDINARY_MODEL_CREDENTIAL=preserve-me\n")
 	default:
 		panic("unsupported Runtime Provider")
 	}
@@ -726,7 +715,6 @@ func TestRuntimeProviderConfigsConsumeLaunchesWithoutBlackboardProjection(t *tes
 		{runtimeprofile.ProviderPi, func(layout runner.Layout, _ runner.ConfigProjection) string {
 			return filepath.Join(layout.ProviderHome, "agent", "mcp.json")
 		}},
-		{runtimeprofile.ProviderHermes, func(_ runner.Layout, projection runner.ConfigProjection) string { return projection.ConfigPath }},
 	} {
 		t.Run(string(tc.provider), func(t *testing.T) {
 			layout, err := runner.PrepareTaskLayout(t.TempDir(), "ordinary-"+string(tc.provider), tc.provider)

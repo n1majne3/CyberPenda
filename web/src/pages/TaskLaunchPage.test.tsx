@@ -135,7 +135,7 @@ describe("TaskLaunchPage", () => {
     });
   });
 
-  it("launches with an explicit Working Graph mode", async () => {
+  it("launches with FGS and no retired Task Policy controls", async () => {
     const workingGraphPlugin = codexPlugin;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -188,7 +188,7 @@ describe("TaskLaunchPage", () => {
         };
         expect(body.type).toBe("ctf_challenge");
         expect(body.run_controls?.blackboard_mode).toBe("working_graph");
-        expect(body.run_controls?.policy).toMatchObject({ max_wrong_submissions: 3, max_rating_drawdown: 50 });
+        expect(body.run_controls?.policy).toBeUndefined();
         return Promise.resolve(new Response(JSON.stringify({ id: "task-1" }), {
           status: 201,
           headers: { "Content-Type": "application/json" },
@@ -225,13 +225,11 @@ describe("TaskLaunchPage", () => {
     await userEvent.selectOptions(taskType, "ctf_challenge");
 
     await userEvent.click(await screen.findByRole("button", { name: /blackboard mode/i }));
-    expect(screen.getByRole("radio", { name: /^Working Graph/ })).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText(/emits local intents.*settles them into Blackboard in order/i)).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /^FGS/ })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText(/publishes Goals, Steps, and Facts/i)).toBeInTheDocument();
     await userEvent.type(screen.getByLabelText("What do you want to explore?"), "Run recon");
-    await userEvent.clear(screen.getByLabelText("Maximum wrong submissions"));
-    await userEvent.type(screen.getByLabelText("Maximum wrong submissions"), "3");
-    await userEvent.clear(screen.getByLabelText("Maximum rating drawdown"));
-    await userEvent.type(screen.getByLabelText("Maximum rating drawdown"), "50");
+    expect(screen.queryByText("Task Policy")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Maximum wrong submissions")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /launch/i }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -303,7 +301,7 @@ describe("TaskLaunchPage", () => {
     expect(await screen.findByRole("option", { name: "MiMo" })).toBeInTheDocument();
   });
 
-  it("keeps all Blackboard modes available without provider capability gating", async () => {
+  it("offers FGS and Disabled without provider capability gating", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn((input: RequestInfo | URL) => {
@@ -342,8 +340,8 @@ describe("TaskLaunchPage", () => {
     renderPage();
 
     await userEvent.click(await screen.findByRole("button", { name: /blackboard mode/i }));
-    expect(screen.getByRole("radio", { name: /^Working Graph/ })).toBeEnabled();
-    expect(screen.getByRole("radio", { name: /^Interactive/ })).toBeEnabled();
+    expect(screen.getByRole("radio", { name: /^FGS/ })).toBeEnabled();
+    expect(screen.queryByRole("radio", { name: /^Interactive/ })).not.toBeInTheDocument();
     expect(screen.getByRole("radio", { name: /^Disabled/ })).toBeEnabled();
     await selectPentestTaskType();
     await userEvent.type(screen.getByLabelText("What do you want to explore?"), "Run recon");

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -988,64 +986,6 @@ func TestPiProviderSessionMapsPromptAbortAndReplacement(t *testing.T) {
 	requests := transport.snapshot()
 	if len(requests) != 2 || requests[0].Method != "pi/abort" || requests[1].Method != "pi/prompt" {
 		t.Fatalf("requests = %#v", requests)
-	}
-}
-
-func TestHermesProviderSessionAppliesSetModelBeforePrompt(t *testing.T) {
-	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
-		"session/set_model": {Result: json.RawMessage(`{}`)},
-		"session/prompt":    {Result: json.RawMessage(`{"sessionId":"hermes-1","turn_id":"turn-2"}`)},
-	}}
-	session := NewHermesProviderSession(HermesProviderSessionConfig{Transport: transport, SessionID: "hermes-1"})
-	_, err := session.SendTurn(context.Background(), ProviderSessionRequest{
-		RequestID:       "send-selection",
-		Message:         "hi",
-		ModelProviderID: "hub",
-		Model:           "deepseek-v4-flash-free",
-	}, nil)
-	if err != nil {
-		t.Fatalf("send turn: %v", err)
-	}
-	requests := transport.snapshot()
-	if len(requests) < 2 {
-		t.Fatalf("wire requests = %#v", requests)
-	}
-	if requests[0].Method != "session/set_model" || requests[1].Method != "session/prompt" {
-		t.Fatalf("order = %q, %q", requests[0].Method, requests[1].Method)
-	}
-	var setModel map[string]any
-	if err := json.Unmarshal(requests[0].Params, &setModel); err != nil {
-		t.Fatal(err)
-	}
-	if setModel["sessionId"] != "hermes-1" || setModel["modelId"] != "custom:hub:deepseek-v4-flash-free" {
-		t.Fatalf("set_model params = %#v", setModel)
-	}
-}
-
-func TestHermesProviderSessionProjectsRequestedReasoningEffort(t *testing.T) {
-	home := t.TempDir()
-	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
-		"session/set_model": {Result: json.RawMessage(`{}`)},
-		"session/prompt":    {Result: json.RawMessage(`{"sessionId":"hermes-1","turn_id":"turn-2"}`)},
-	}}
-	session := NewHermesProviderSession(HermesProviderSessionConfig{
-		Transport: transport, SessionID: "hermes-1", HermesHome: home,
-	})
-	if _, err := session.SendTurn(context.Background(), ProviderSessionRequest{
-		RequestID:                "send-effort",
-		Message:                  "hi",
-		ModelProviderID:          "hub",
-		Model:                    "deepseek-v4-flash-free",
-		RequestedReasoningEffort: "max",
-	}, nil); err != nil {
-		t.Fatalf("send turn: %v", err)
-	}
-	raw, err := os.ReadFile(filepath.Join(home, "cyberpenda-requested-reasoning-effort"))
-	if err != nil {
-		t.Fatalf("read projected Reasoning Effort: %v", err)
-	}
-	if strings.TrimSpace(string(raw)) != "max" {
-		t.Fatalf("projected Reasoning Effort = %q, want max", raw)
 	}
 }
 

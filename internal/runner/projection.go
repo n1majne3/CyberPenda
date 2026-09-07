@@ -153,8 +153,6 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 		projection, err = projectCodexConfig(layout, profile, req)
 	case "pi_agent":
 		projection, err = projectPiConfig(layout, profile, req)
-	case "hermes_home":
-		projection, err = projectHermesHome(layout, profile, req)
 	case "none":
 		projection = ConfigProjection{Config: runtimeprofile.GeneratedConfig(profile)}
 	default:
@@ -190,7 +188,11 @@ func projectModeAndUserSkills(layout Layout, req ProjectionRequest) error {
 	}
 	for _, bundle := range req.SkillBundles {
 		if req.BlackboardMode != "" {
-			if err := modeskill.ValidateBundleCompatibility(req.BlackboardMode, bundle); err != nil {
+			validate := modeskill.ValidateBundleCompatibility
+			if req.BlackboardProtocol == "fgs" {
+				validate = modeskill.ValidateFGSBundleCompatibility
+			}
+			if err := validate(req.BlackboardMode, bundle); err != nil {
 				return err
 			}
 		}
@@ -448,9 +450,6 @@ func profileWithModelSnapshot(profile runtimeprofile.Profile, snapshot modelprov
 	case runtimeprofile.ProviderPi:
 		profile.Fields.Env["PI_PROVIDER_ID"] = snapshot.ModelProviderID
 		profile.Fields.Env["PI_API"] = piAPIForProtocol(snapshot.Protocol)
-	case runtimeprofile.ProviderHermes:
-		profile.Fields.Env["HERMES_PROVIDER_ID"] = snapshot.ModelProviderID
-		profile.Fields.Env["HERMES_API_MODE"] = hermesAPIMode(snapshot.Protocol)
 	case runtimeprofile.ProviderClaudeCode:
 		profile.Fields.Env["ANTHROPIC_BASE_URL"] = snapshot.EndpointBaseURL
 		profile.Fields.Env["ANTHROPIC_MODEL"] = snapshot.Model
@@ -1341,7 +1340,7 @@ type piProjectedProvider struct {
 
 func listPiLaunchReadyProviders(profile runtimeprofile.Profile, req ProjectionRequest) ([]piProjectedProvider, error) {
 	switch profile.Provider {
-	case runtimeprofile.ProviderPi, runtimeprofile.ProviderHermes:
+	case runtimeprofile.ProviderPi:
 	default:
 		return nil, nil
 	}

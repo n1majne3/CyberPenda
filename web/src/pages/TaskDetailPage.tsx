@@ -841,9 +841,9 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
             )}
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            {owner.kind === "task" && projectId && (
-              <Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/tasks/${owner.id}/challenges`)} aria-label="Challenge Workflow" title="Open Challenge Workflow">
-                <Wrench className="h-4 w-4" /> <span className="hidden sm:inline">Challenges</span>
+            {owner.kind === "task" && projectId && owner.challengeHistoryAvailable && (
+              <Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/tasks/${owner.id}/challenges`)} aria-label="Challenge history" title="Open Challenge history">
+                <Wrench className="h-4 w-4" /> <span className="hidden sm:inline">Challenge history</span>
               </Button>
             )}
             {owner.capabilities.rename && !editingTitle && (

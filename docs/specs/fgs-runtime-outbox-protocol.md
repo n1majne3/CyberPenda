@@ -1,10 +1,15 @@
 # FGS Runtime and Outbox protocol
 
-Status: proposed protocol with an initial backend kernel — September 6, 2026.
-See section 11 for implemented scope and remaining integration work.
+Status: protocol design with implemented FGS integration. Current Projects and
+Sessions select FGS; historical records remain unconverted. See section 11 for
+implementation scope. Proposed details below are not a promise of CLI support.
 
 Decision: [ADR 0035](../adr/0035-use-fgs-as-the-blackboard-working-model.md).
 Domain terms: [CONTEXT.md](../../CONTEXT.md).
+
+Current feature boundary: [supported and retired behavior](../product/current-boundary.md).
+Normal Project Task Policy enforcement and legacy Intent settlement are retired;
+older references to them below do not apply to current launches.
 
 ## 1. Purpose and confirmed scope
 
@@ -294,7 +299,10 @@ invocation during implementation; do not require both mechanisms. Subagent
 dispatch still carries its Step and output contract explicitly, since instruction
 inheritance cannot be assumed across providers.
 
-Commands below are proposed, not currently available:
+Current Runtime commands are `emit --input`, `read --limit --cursor`, `status`,
+and `history --key --cursor`. The additional command shapes below remain
+proposals; use the [README](../../README.md#runtime-cli-pentestctl) for supported
+examples:
 
 ```text
 pentestctl working-graph validate --input update.json

@@ -1,5 +1,10 @@
 # Use Global Model Projection for Pi and Hermes
 
+Status update (2026-09-08): Hermes Runtime execution and image installation are
+retired. The Hermes parts below describe the earlier decision. Retained
+Profiles and Transcripts remain readable; see [current boundary](../../CONTEXT.md).
+
+
 Pi and Hermes can switch provider, model, and reasoning effort natively when configuration and credentials are already loaded. Every Pi or Hermes task therefore receives every global Model Provider that is launch-ready for that Runtime Plugin, together with model configuration and API credentials. Draft or otherwise unavailable providers are skipped without blocking unrelated launches. This accepts global credential exposure inside every Pi and Hermes Runtime, including Host Runner, instead of task allowlists or on-demand injection. Codex and Claude Code still reproject and restart when their Model Provider changes.
 
 This supersedes ADR 0015, which stated the same policy for Pi only.

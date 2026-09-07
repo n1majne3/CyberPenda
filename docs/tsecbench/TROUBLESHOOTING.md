@@ -16,8 +16,7 @@ bounded error before it creates the Project.
 
 Use the strict matrix in `README.md`. Codex requires `openai_responses`. Claude
 Code requires `anthropic_messages`. Pi accepts `openai_chat_completions`,
-`openai_responses`, or `anthropic_messages`. Hermes remains installed in the
-image, but Hosted bootstrap rejects it as the selected Runtime.
+`openai_responses`, or `anthropic_messages`. Hermes is retired and is not installed in the image.
 
 ## Claude request exceeds the 1M context
 

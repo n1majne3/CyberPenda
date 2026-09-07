@@ -44,7 +44,7 @@ func withPiSessionTail(adapter runtime.Adapter, sandbox bool, provider runtimepr
 // collector: the sandbox container id plus the provider-native session
 // discovery for runtimes that keep one.
 func providerNativeSessionMetadata(sandbox bool, provider runtimeprofile.Provider, layout runner.Layout, containerIDFile string) func() (runtime.NativeSessionMetadata, error) {
-	if !sandbox && provider != runtimeprofile.ProviderCodex && provider != runtimeprofile.ProviderPi && provider != runtimeprofile.ProviderHermes {
+	if !sandbox && provider != runtimeprofile.ProviderCodex && provider != runtimeprofile.ProviderPi {
 		return nil
 	}
 	return func() (runtime.NativeSessionMetadata, error) {

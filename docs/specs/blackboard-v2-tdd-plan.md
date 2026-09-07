@@ -1,5 +1,10 @@
 # Blackboard v2 TDD Replacement Plan
 
+> Historical document. This describes the earlier Blackboard model and release plan.
+> For the current FGS workflow, read [the documentation index](../README.md).
+> Retained legacy interfaces and data remain supported where implemented; this
+> document does not define the current Runtime launch defaults.
+
 - **Status:** accepted; ticket publication and implementation may proceed
 - **Parent spec:** [#97 — Replace Blackboard v1 with compact semantic Blackboard v2](https://github.com/n1majne3/CyberPenda/issues/97)
 - **Normative behavior:** [Blackboard v2 Specification](./blackboard-v2-spec.md)

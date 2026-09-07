@@ -195,6 +195,17 @@ export interface Project {
   updated_at: string;
 }
 
+export interface ChallengeOperationHistory {
+  operation_id: string;
+  platform: string;
+  kind: string;
+  state: string;
+  external_attempt_id: string;
+  evidence_key?: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface ChallengeAttempt {
 	project_id: string;
 	task_id: string;
@@ -386,13 +397,6 @@ export function deleteSession(sessionId: string) {
 
 export function listRuntimeProfiles() {
   return apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles");
-}
-
-/** Final merged result the runtime receives (structured + Custom Config File overlay). */
-export function mergedConfigPreview(profileId: string) {
-  return apiGet<{ provider: string; merged: Record<string, unknown> }>(
-    `/api/runtime-profiles/${encodeURIComponent(profileId)}/merged-config-preview`,
-  );
 }
 
 /** Provider-native seed text the config editor opens on (redacted). */
@@ -594,16 +598,6 @@ export interface RuntimeExtension {
   config?: Record<string, string>;
 }
 
-export interface RuntimeExtensionCatalogItem {
-  id: string;
-  name: string;
-  description?: string;
-  provider: string;
-  registry: string;
-  registry_url: string;
-  install_ref?: string;
-  source_url?: string;
-}
 
 export interface CredentialBinding {
   id: string;
@@ -647,6 +641,7 @@ export interface RuntimeActivity {
 }
 
 export interface Task {
+  challenge_history_available?: boolean;
   blackboard_protocol?: "legacy" | "fgs";
   id: string;
   project_id: string;

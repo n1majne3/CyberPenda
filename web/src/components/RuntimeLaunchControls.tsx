@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { AlertTriangle, Ban, BookOpen, Bookmark, CheckCircle2, ChevronRight, ChevronsUpDown, Container, GitBranch, Rocket, ShieldCheck, Sparkles, Terminal, UserCheck, XCircle, type LucideIcon } from "lucide-react";
+import { AlertTriangle, Ban, BookOpen, Bookmark, CheckCircle2, ChevronRight, ChevronsUpDown, Container, GitBranch, Rocket, ShieldCheck, Sparkles, Terminal, XCircle, type LucideIcon } from "lucide-react";
 import {
   apiGet,
   apiPost,
@@ -326,7 +326,7 @@ export function RuntimeLaunchControls({
   } = controller;
   useEffect(() => {
     if (!allowDisabledBlackboardMode && blackboardMode === "disabled") {
-      setBlackboardMode("interactive");
+      setBlackboardMode("working_graph");
       setPreflight(null);
     }
   }, [allowDisabledBlackboardMode, blackboardMode, setBlackboardMode, setPreflight]);
@@ -352,8 +352,7 @@ export function RuntimeLaunchControls({
       ? "Error"
       : `${enabledSkillsPreview.length} enabled`;
   const blackboardModeCards: { mode: BlackboardMode; icon: LucideIcon; title: string; description: string; disabled: boolean }[] = [
-    { mode: "interactive", icon: UserCheck, title: "Interactive", description: "You decide when Runtime work is committed to the Blackboard.", disabled: false },
-    { mode: "working_graph", icon: Sparkles, title: "Working Graph", description: "The Runtime emits local intents. The Harness settles them into Blackboard in order.", disabled: false },
+    { mode: "working_graph", icon: Sparkles, title: "FGS", description: "The Runtime publishes Goals, Steps, and Facts. The Harness records accepted updates and Receipts.", disabled: false },
     ...(allowDisabledBlackboardMode
       ? [{ mode: "disabled" as const, icon: Ban, title: "Disabled", description: ownerLabel === "task" ? "This Task does not write to the Blackboard." : "This Session does not write to the Blackboard.", disabled: false }]
       : []),
@@ -505,7 +504,7 @@ export function RuntimeLaunchControls({
             )}
           </ConfigAccordion>
 
-          <ConfigAccordion icon={GitBranch} title="Blackboard mode" summary={blackboardMode === "working_graph" ? "Working Graph" : blackboardMode === "disabled" ? "Disabled" : "Interactive"}>
+          <ConfigAccordion icon={GitBranch} title="Blackboard mode" summary={blackboardMode === "disabled" ? "Disabled" : "FGS"}>
             <div role="radiogroup" aria-label="Blackboard conclusions" className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {blackboardModeCards.map((card) => {
                 const CardIcon = card.icon;
@@ -533,9 +532,7 @@ export function RuntimeLaunchControls({
             <p className="mt-2 text-xs text-muted-foreground">
               {blackboardMode === "disabled"
                 ? "The Runtime does not receive Blackboard state or Blackboard access. All non-Blackboard launch context remains available."
-                : blackboardMode === "working_graph"
-                  ? "The Runtime reads Blackboard through the CLI and emits local write intents. The Harness owns versions, idempotency, and ordered settlement."
-                  : "The Runtime receives full Blackboard CLI access. The operator and Runtime decide when to write."}
+                : "The Runtime reads accepted FGS state and publishes updates through the Outbox. Check Receipts for acceptance."}
             </p>
           </ConfigAccordion>
 
@@ -649,7 +646,7 @@ export function LaunchSummaryRail({
   const summaryProvider = compatibleProviders.find((provider) => provider.id === form.modelProviderId);
   const modelDisplay = [summaryProvider?.name, form.modelOverride || "Default model"].filter(Boolean).join(" · ") || "—";
   const runnerDisplay = form.runner === "host" ? "Host" : containerCLI === "podman" ? "Podman" : "Docker";
-  const blackboardDisplay = blackboardMode === "working_graph" ? "Working Graph" : blackboardMode === "disabled" ? "Disabled" : "Interactive";
+  const blackboardDisplay = blackboardMode === "disabled" ? "Disabled" : "FGS";
   const profileDisplay = presetMode ? `Runtime Profile: ${profiles.find((profile) => profile.id === presetId)?.name ?? presetId}` : "Direct configuration";
   const apiKeyEnv = summaryProvider?.api_key_env ?? "";
   const credentialConfigured = bindings !== null && bindings.some((binding) => binding.credential_ref === apiKeyEnv && !binding.disabled);

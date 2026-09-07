@@ -130,7 +130,7 @@ describe("SessionHomePage", () => {
     await user.type(screen.getByLabelText("What do you want to explore?"), "Inspect the standalone target");
     await user.click(screen.getByRole("button", { name: "xhigh" }));
     await user.click(screen.getByRole("button", { name: /blackboard mode/i }));
-    await user.click(screen.getByRole("radio", { name: /^working graph/i }));
+    await user.click(screen.getByRole("radio", { name: /^FGS/i }));
     await user.click(screen.getByRole("button", { name: /launch session/i }));
 
     await waitFor(() => {
@@ -289,7 +289,7 @@ describe("SessionHomePage", () => {
     await screen.findByRole("option", { name: "MiMo" });
     await user.type(await screen.findByRole("textbox", { name: "What do you want to explore?" }), "Inspect the standalone target");
     await user.click(screen.getByRole("button", { name: /blackboard mode/i }));
-    await user.click(screen.getByRole("radio", { name: /^Working Graph/ }));
+    await user.click(screen.getByRole("radio", { name: /^FGS/ }));
     await user.click(screen.getByRole("button", { name: /launch session/i }));
 
     await waitFor(() => {

@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -27,13 +25,6 @@ type ProviderSessionResponseWaiter interface {
 	Wait(context.Context) (SandboxBridgeResponse, error)
 }
 
-// ProviderSessionStartTransport exposes the provider request write boundary for
-// provider methods whose JSON-RPC response is also the Runtime Turn terminal
-// boundary. SandboxSessionBridge and HostSessionBridge implement it.
-type ProviderSessionStartTransport interface {
-	BeginSend(SandboxBridgeRequest) (ProviderSessionResponseWaiter, error)
-}
-
 // ProviderSessionEventHandler is implemented by adapters that can consume
 // unsolicited provider notifications delivered through SandboxBridgeConfig's
 // ProtocolEmit callback. Implementations emit only normalized correlation
@@ -41,13 +32,6 @@ type ProviderSessionStartTransport interface {
 type ProviderSessionEventHandler interface {
 	HandleEvent(SandboxBridgeEvent, ProviderSessionEmit)
 }
-
-type providerSendResponseBoundary uint8
-
-const (
-	providerSendResponseStartsRuntimeTurn providerSendResponseBoundary = iota
-	providerSendResponseEndsRuntimeTurn
-)
 
 type providerWireMethods struct {
 	send       string
@@ -64,10 +48,6 @@ type providerWireMethods struct {
 	prepareSend func(context.Context, ProviderSessionTransport, string, string, string, ProviderSessionRequest) error
 	turnID      func(map[string]any) string
 	sessionID   func(map[string]any) string
-	// sendResponseBoundary defines whether the send response starts or ends the
-	// Runtime Turn. A response-ending provider must supply start evidence through
-	// provider updates while the response remains pending.
-	sendResponseBoundary providerSendResponseBoundary
 }
 
 type providerSessionCallResult struct {
@@ -83,10 +63,6 @@ type providerSessionRequestIdentity struct {
 
 type providerSettlement struct {
 	seq uint64
-}
-
-type providerLongRunningSendResult struct {
-	err error
 }
 
 // providerSessionAdapter implements the shared lifecycle, idempotency, and
@@ -115,7 +91,6 @@ type providerSessionAdapter struct {
 	settlements               map[string]providerSettlement
 	startGeneration           uint64
 	pendingStartGeneration    uint64
-	pendingStartEvidence      chan struct{}
 	pendingStartTerminalTurns map[string]struct{}
 	settlementSeq             uint64
 	settlementChanged         chan struct{}
@@ -431,7 +406,6 @@ func (s *providerSessionAdapter) Close(ctx context.Context) error {
 	s.closed = true
 	s.activeTurnID = ""
 	s.pendingStartGeneration = 0
-	s.pendingStartEvidence = nil
 	s.pendingStartTerminalTurns = nil
 	transport := s.transport
 	s.mu.Unlock()
@@ -616,14 +590,11 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 		return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: err}
 	}
 	startGeneration := uint64(0)
-	var startEvidence <-chan struct{}
 	if method == s.methods.send && mode != ProviderSessionModeInTurnSteer {
 		s.mu.Lock()
 		s.startGeneration++
 		startGeneration = s.startGeneration
 		s.pendingStartGeneration = startGeneration
-		s.pendingStartEvidence = make(chan struct{})
-		startEvidence = s.pendingStartEvidence
 		s.pendingStartTerminalTurns = make(map[string]struct{})
 		s.mu.Unlock()
 	}
@@ -634,52 +605,12 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 		s.mu.Lock()
 		if s.pendingStartGeneration == startGeneration {
 			s.pendingStartGeneration = 0
-			s.pendingStartEvidence = nil
 			s.pendingStartTerminalTurns = nil
 		}
 		s.mu.Unlock()
 	}
 	wireRequest := SandboxBridgeRequest{ID: wireID, Method: method, Params: encoded}
-	if startGeneration != 0 && s.methods.sendResponseBoundary == providerSendResponseEndsRuntimeTurn {
-		if starter, ok := transport.(ProviderSessionStartTransport); ok {
-			turnID := strings.TrimSpace(request.RequestID)
-			s.mu.Lock()
-			s.activeTurnID = turnID
-			s.mu.Unlock()
-			waiter, startErr := starter.BeginSend(wireRequest)
-			if startErr != nil {
-				clearPendingStart()
-				s.mu.Lock()
-				if s.activeTurnID == turnID {
-					s.activeTurnID = ""
-				}
-				s.mu.Unlock()
-				return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: startErr}
-			}
-			responseDone := waitProviderSessionResponse(waiter, wireID)
-			started := ProviderSessionResult{
-				RequestID: request.RequestID, SessionID: sessionID, ProviderTurnID: turnID,
-				Mode: mode, Outcome: "started",
-			}
-			select {
-			case <-startEvidence:
-				clearPendingStart()
-				go s.finishLongRunningSend(responseDone, mode, request.RequestID, sessionID, turnID, true)
-				return started, nil
-			case result := <-responseDone:
-				clearPendingStart()
-				s.recordProviderTurnEvent(sessionID, turnID, true)
-				if result.err != nil {
-					return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: result.err}
-				}
-				return started, nil
-			case <-ctx.Done():
-				clearPendingStart()
-				go s.finishLongRunningSend(responseDone, mode, request.RequestID, sessionID, turnID, false)
-				return ProviderSessionResult{}, &ProviderSessionOperationError{Mode: mode, Cause: ctx.Err()}
-			}
-		}
-	}
+
 	response, err := transport.Send(ctx, wireRequest)
 	if err != nil {
 		clearPendingStart()
@@ -735,26 +666,6 @@ func (s *providerSessionAdapter) native(ctx context.Context, mode ProviderSessio
 	}
 	s.mu.Unlock()
 	return ProviderSessionResult{RequestID: request.RequestID, SessionID: newSessionID, ProviderTurnID: turnID, Mode: mode, Outcome: "acknowledged"}, nil
-}
-
-func waitProviderSessionResponse(waiter ProviderSessionResponseWaiter, requestID string) <-chan providerLongRunningSendResult {
-	done := make(chan providerLongRunningSendResult, 1)
-	go func() {
-		response, err := waiter.Wait(context.Background())
-		if err == nil && len(response.Error) > 0 && string(response.Error) != "null" {
-			err = sandboxBridgeRPCError(requestID, response.Error)
-		}
-		done <- providerLongRunningSendResult{err: err}
-	}()
-	return done
-}
-
-func (s *providerSessionAdapter) finishLongRunningSend(done <-chan providerLongRunningSendResult, mode ProviderSessionMode, requestID, sessionID, turnID string, emitFailure bool) {
-	result := <-done
-	s.recordProviderTurnEvent(sessionID, turnID, true)
-	if emitFailure && result.err != nil {
-		s.emit(nil, mode, "failed", requestID, turnID)
-	}
 }
 
 func sandboxBridgeRPCError(requestID string, raw json.RawMessage) *SandboxBridgeRPCError {
@@ -1045,10 +956,7 @@ func (s *providerSessionAdapter) recordProviderTurnEvent(sessionID, turnID strin
 	interruptActive := s.active && (s.activeMode == ProviderSessionModeInterruptTurn || s.activeMode == ProviderSessionModeInterruptThenReplace)
 	matchingSession := currentSession == "" || currentSession == sessionID
 	matchingTurn := currentTurn == "" || currentTurn == turnID
-	if s.pendingStartGeneration != 0 && matchingSession && matchingTurn && sessionID != "" && turnID != "" && s.pendingStartEvidence != nil {
-		close(s.pendingStartEvidence)
-		s.pendingStartEvidence = nil
-	}
+
 	if terminal && interruptActive && matchingSession && matchingTurn && sessionID != "" && turnID != "" {
 		s.settlementSeq++
 		s.settlements[providerSettlementKey(sessionID, turnID)] = providerSettlement{seq: s.settlementSeq}
@@ -1253,112 +1161,6 @@ type PiProviderSessionConfig struct {
 }
 
 type PiProviderSession struct{ *providerSessionAdapter }
-
-// HermesProviderSessionConfig configures one Task-owned Hermes ACP process.
-type HermesProviderSessionConfig struct {
-	Transport    ProviderSessionTransport
-	SessionID    string
-	ActiveTurnID string
-	// HermesHome is the projected HERMES_HOME. Per-turn Requested Reasoning
-	// Effort is written here so ACP can apply it before session/prompt.
-	HermesHome   string
-	Capabilities runtimeplugin.Capabilities
-}
-
-type HermesProviderSession struct {
-	*providerSessionAdapter
-	reasoning *reasoningDeltaBatcher
-}
-
-func NewHermesProviderSession(config HermesProviderSessionConfig) *HermesProviderSession {
-	methods := providerWireMethods{
-		send:      "session/prompt",
-		interrupt: "session/cancel",
-		params:    hermesACPParams,
-		prepareSend: func(ctx context.Context, transport ProviderSessionTransport, wireBaseID, sessionID, turnID string, request ProviderSessionRequest) error {
-			return hermesPrepareSendSelection(ctx, transport, wireBaseID, sessionID, turnID, config.HermesHome, request)
-		},
-		turnID:               func(record map[string]any) string { return providerJSONValue(record, "turn_id", "turnId", "id") },
-		sessionID:            identitySession,
-		sendResponseBoundary: providerSendResponseEndsRuntimeTurn,
-	}
-	return &HermesProviderSession{
-		providerSessionAdapter: newProviderSessionAdapter("hermes", config.Transport, config.SessionID, config.ActiveTurnID, providerCapabilities(config.Capabilities), methods),
-		reasoning:              newReasoningDeltaBatcher(reasoningBatchWindow),
-	}
-}
-
-func hermesACPParams(sessionID, turnID string, request ProviderSessionRequest) map[string]any {
-	return map[string]any{
-		"sessionId":  sessionID,
-		"session_id": sessionID,
-		"turn_id":    turnID,
-		"prompt":     []map[string]any{{"type": "text", "text": request.Message}},
-	}
-}
-
-// hermesPrepareSendSelection applies Runtime Turn Selection through ACP
-// session/set_model. session/prompt has no model field; extra keys are ignored.
-// Named Model Providers use custom:<id>:<model> so Hermes does not auto-switch
-// to a built-in MiniMax/OpenRouter route.
-func hermesPrepareSendSelection(ctx context.Context, transport ProviderSessionTransport, wireBaseID, sessionID, turnID, hermesHome string, request ProviderSessionRequest) error {
-	if transport == nil {
-		return errors.New("provider session transport is required")
-	}
-	if err := writeHermesRequestedReasoningEffort(hermesHome, request.RequestedReasoningEffort); err != nil {
-		return err
-	}
-	modelID := hermesACPModelID(request.ModelProviderID, request.Model)
-	if modelID == "" {
-		return nil
-	}
-	params := map[string]any{
-		"sessionId":  sessionID,
-		"session_id": sessionID,
-		"modelId":    modelID,
-	}
-	encoded, err := json.Marshal(params)
-	if err != nil {
-		return err
-	}
-	response, err := transport.Send(ctx, SandboxBridgeRequest{
-		ID: wireBaseID + ":set_model", Method: "session/set_model", Params: encoded,
-	})
-	if err != nil {
-		return err
-	}
-	if len(response.Error) > 0 && string(response.Error) != "null" {
-		return &SandboxBridgeRPCError{RequestID: wireBaseID + ":set_model"}
-	}
-	return nil
-}
-
-func writeHermesRequestedReasoningEffort(hermesHome, effort string) error {
-	home := strings.TrimSpace(hermesHome)
-	effort = strings.TrimSpace(effort)
-	if home == "" || effort == "" {
-		return nil
-	}
-	if err := os.MkdirAll(home, 0o700); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(home, "cyberpenda-requested-reasoning-effort"), []byte(effort+"\n"), 0o600)
-}
-
-func hermesACPModelID(providerID, model string) string {
-	providerID = strings.TrimSpace(providerID)
-	model = strings.TrimSpace(model)
-	if model == "" {
-		return ""
-	}
-	if providerID == "" || strings.HasPrefix(model, "custom:") {
-		return model
-	}
-	if strings.HasPrefix(providerID, "custom:") {
-		return providerID + ":" + model
-	}
-	return "custom:" + providerID + ":" + model
-}
 
 func NewPiProviderSession(config PiProviderSessionConfig) *PiProviderSession {
 	methods := providerWireMethods{

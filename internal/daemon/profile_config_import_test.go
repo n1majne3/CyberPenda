@@ -543,7 +543,7 @@ func TestProjectedConfigPreviewNeverContainsOperatorToken(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
-	for _, provider := range []string{"codex", "hermes", "claude_code"} {
+	for _, provider := range []string{"codex", "claude_code"} {
 		body := `{"name":"Token Leak","provider":"` + provider + `","fields":{}}`
 		req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader([]byte(body)))
 		req.Header.Set("Authorization", "Bearer super-secret-operator-token")

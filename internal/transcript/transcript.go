@@ -411,6 +411,10 @@ func parseRuntimeOutput(event Event, continuation int, adapter, text string, chi
 // ParserForAdapter returns the manifest-selected transcript parser for a runtime
 // adapter. Unknown adapters intentionally fall back to plain runtime output.
 func ParserForAdapter(adapter string, registry *runtimeplugin.Registry) string {
+	// Retained Hermes events must remain readable after Runtime retirement.
+	if adapter == string(runtimeprofile.ProviderHermes) {
+		return HermesACPStream
+	}
 	if registry == nil {
 		registry = runtimeplugin.MustBuiltinRegistry()
 	}

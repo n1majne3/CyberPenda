@@ -1,7 +1,7 @@
 import type { ModelProvider, RuntimePlugin, RuntimeProfile } from "@/lib/api";
 import { displayReasoningEffort, selectableModelProviders } from "@/pages/runtimeProfileForm";
 
-export const LAUNCH_RUNTIME_IDS = ["codex", "claude_code", "pi", "hermes"] as const;
+export const LAUNCH_RUNTIME_IDS = ["codex", "claude_code", "pi"] as const;
 
 export type LaunchForm = {
   runtime: string;

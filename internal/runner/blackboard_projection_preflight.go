@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"gopkg.in/yaml.v3"
 
 	"pentest/internal/runtimeprofile"
 )
@@ -24,7 +23,6 @@ const (
 	omittedProjectionMCPJSON
 	omittedProjectionCodexConfig
 	omittedProjectionClaudeSettings
-	omittedProjectionHermesConfig
 	omittedProjectionCredentialConfig
 )
 
@@ -48,7 +46,6 @@ func preflightOmittedBlackboardProjection(layout Layout, profile runtimeprofile.
 		{layout.Workdir, ".mcp.json", omittedProjectionMCPJSON},
 		{layout.ProviderHome, "settings.json", omittedProjectionClaudeSettings},
 		{layout.ProviderHome, "config.toml", omittedProjectionCodexConfig},
-		{layout.ProviderHome, "config.yaml", omittedProjectionHermesConfig},
 		{layout.ProviderHome, ".env", omittedProjectionCredentialConfig},
 		{layout.ProviderHome, "auth.json", omittedProjectionCredentialConfig},
 		{layout.ProviderHome, filepath.Join("agent", "mcp.json"), omittedProjectionMCPJSON},
@@ -77,8 +74,7 @@ func preflightOmittedBlackboardProjection(layout Layout, profile runtimeprofile.
 			stale, inspectErr = containsTrustedCodexConfig(raw, trustedMCPNames)
 		case omittedProjectionClaudeSettings:
 			stale = containsBlackboardAuthorityText(raw) || bytes.Contains(raw, []byte("mcp__pentest__"))
-		case omittedProjectionHermesConfig:
-			stale, inspectErr = containsTrustedHermesConfig(raw, trustedMCPNames)
+
 		case omittedProjectionCredentialConfig:
 			stale = containsBlackboardAuthorityText(raw)
 		}
@@ -133,24 +129,6 @@ func containsTrustedCodexConfig(raw []byte, trustedNames map[string]struct{}) (b
 	}
 	if err := toml.Unmarshal(raw, &config); err != nil {
 		return false, fmt.Errorf("parse known Codex TOML: %w", err)
-	}
-	if containsBlackboardAuthorityText(raw) {
-		return true, nil
-	}
-	for name := range config.MCPServers {
-		if isOmittedProjectionTrustedMCPName(name, trustedNames) {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func containsTrustedHermesConfig(raw []byte, trustedNames map[string]struct{}) (bool, error) {
-	var config struct {
-		MCPServers map[string]any `yaml:"mcp_servers"`
-	}
-	if err := yaml.Unmarshal(raw, &config); err != nil {
-		return false, fmt.Errorf("parse known Hermes YAML: %w", err)
 	}
 	if containsBlackboardAuthorityText(raw) {
 		return true, nil

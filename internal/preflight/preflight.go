@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -159,9 +158,6 @@ type Service struct {
 	capabilityCache   modelprovider.CapabilityLookup
 	// containerRunner probes the host container CLI. Nil uses the real CLI.
 	containerRunner runner.CommandRunner
-	// hermesACPProbe checks that a host Hermes binary exposes the ACP extra.
-	// Nil uses the default `hermes acp --help` probe.
-	hermesACPProbe func(binary string) error
 }
 
 // NewService returns a preflight Service.
@@ -196,25 +192,11 @@ func (s *Service) WithContainerRunner(run runner.CommandRunner) *Service {
 	return s
 }
 
-// WithHermesACPProbe injects the Host Hermes ACP extra check. Tests supply
-// fakes; production leaves this nil and runs `hermes acp --help`.
-func (s *Service) WithHermesACPProbe(probe func(binary string) error) *Service {
-	s.hermesACPProbe = probe
-	return s
-}
-
 // Run executes all preflight checks for a launch request.
 func (s *Service) Run(ctx context.Context, request Request) Result {
 	result := Result{Pass: true}
-	if request.BlackboardMode != "" {
-		if request.BlackboardMode == modeskill.ModeDisabled {
-			result.add(Check{Name: "mode_skill", Status: CheckPass, Detail: "no Mode Skill for disabled Blackboard Mode"})
-		} else if spec, err := modeskill.Resolve(request.BlackboardMode); err != nil {
-			result.add(Check{Name: "mode_skill", Status: CheckFail, Detail: err.Error()})
-		} else {
-			result.ModeSkill = &SkillPreview{ID: spec.ID, Name: spec.Name}
-			result.add(Check{Name: "mode_skill", Status: CheckPass, Detail: spec.ID})
-		}
+	if request.BlackboardMode != "" && !modeskill.Valid(request.BlackboardMode) {
+		result.add(Check{Name: "blackboard_mode", Status: CheckFail, Detail: "invalid Blackboard Mode"})
 	}
 
 	// Check 1: a source-neutral Runtime configuration is loadable.
@@ -226,6 +208,11 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		profile, err = s.profiles.Get(request.RuntimeProfileID)
 	} else {
 		err = runtimeprofile.ErrNotFound
+	}
+	if err == nil {
+		if _, supported := runtimepluginForProfile(profile, s.runtimePlugins); !supported {
+			err = fmt.Errorf("runtime %q is not supported", profile.Provider)
+		}
 	}
 	profileLoaded := err == nil
 	if err != nil {
@@ -401,10 +388,6 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		})
 	} else if runner == "host" {
 		result.add(Check{Name: "host_activation", Status: CheckPass})
-	}
-
-	if profileLoaded && runner == "host" {
-		s.checkHermesACP(&result, profile)
 	}
 
 	if runner == "sandbox" {
@@ -634,7 +617,7 @@ func validateEnabledSkillBundles(bundles []skill.Bundle, mode modeskill.Mode) er
 			return err
 		}
 		if mode != "" {
-			if err := modeskill.ValidateBundleCompatibility(mode, bundle); err != nil {
+			if err := modeskill.ValidateFGSBundleCompatibility(mode, bundle); err != nil {
 				return err
 			}
 		}
@@ -771,50 +754,6 @@ func (s *Service) checkContainerEngine(ctx context.Context, result *Result, requ
 		return
 	}
 	result.add(Check{Name: "sandbox_vpn_tun", Status: CheckPass, Detail: vpnDetail})
-}
-
-func (s *Service) checkHermesACP(result *Result, profile runtimeprofile.Profile) {
-	if profile.Provider != runtimeprofile.ProviderHermes {
-		return
-	}
-	binary := strings.TrimSpace(profile.Fields.BinaryPath)
-	if binary == "" {
-		binary = "hermes"
-	}
-	probe := s.hermesACPProbe
-	if probe == nil {
-		probe = defaultHermesACPProbe
-	}
-	if err := probe(binary); err != nil {
-		result.add(Check{
-			Name:   "hermes_acp",
-			Status: CheckFail,
-			Detail: err.Error(),
-		})
-		return
-	}
-	result.add(Check{Name: "hermes_acp", Status: CheckPass, Detail: binary + " acp"})
-}
-
-func defaultHermesACPProbe(binary string) error {
-	resolved := binary
-	if !filepath.IsAbs(binary) && !strings.Contains(binary, string(os.PathSeparator)) {
-		found, err := exec.LookPath(binary)
-		if err != nil {
-			return fmt.Errorf("hermes binary %q not found on PATH", binary)
-		}
-		resolved = found
-	}
-	cmd := exec.Command(resolved, "acp", "--help")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(out))
-		if detail == "" {
-			detail = err.Error()
-		}
-		return fmt.Errorf("Hermes ACP extra is not available: %s", detail)
-	}
-	return nil
 }
 
 func (r *Result) add(check Check) {
