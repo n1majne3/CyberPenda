@@ -55,7 +55,7 @@ export function FGSBoard({ scope, id }: { scope: "projects" | "sessions"; id: st
   const height = Math.max(260, ...types.map((type) => visible.filter((node) => node.type === type).length * 120 + 70));
   const detail = graph?.nodes.find((node) => node.key === selected);
   const select = (key: string) => { setSelected(key); setHistoryKey(""); setHistory([]); setHistoryCursor(0); };
-  return <section className="space-y-4" aria-label="FGS Blackboard">
+  return <section className="min-w-0 space-y-4" aria-label="FGS Blackboard">
     <div className="flex flex-wrap items-end justify-between gap-3">
       <div><h2 className="text-lg font-semibold">Goal · Step · Fact</h2><p className="text-sm text-muted-foreground">{graph ? `Accepted revision ${graph.revision}. ` : "Loading Blackboard. "}Last reported state; Runtime activity is shown separately.</p></div>
       <label className="text-sm">Filter nodes<input className="ml-2 rounded-md border bg-background px-3 py-2" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Key, text, or state" /></label>
@@ -77,15 +77,15 @@ export function FGSBoard({ scope, id }: { scope: "projects" | "sessions"; id: st
             return <path key={index} d={`M${x1},${a.y + 42} C${(x1 + x2) / 2},${a.y + 42} ${(x1 + x2) / 2},${b.y + 42} ${x2},${b.y + 42}`} fill="none" stroke="currentColor" strokeWidth="1.2" className="text-muted-foreground/40" markerEnd={`url(#${marker})`} />;
           })}
         </svg>
-        {visible.map((node) => <button key={node.key} type="button" onClick={() => select(node.key)} aria-pressed={selected === node.key} className={`absolute h-[88px] w-[290px] rounded-lg border bg-background px-3 py-2 text-left shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${selected === node.key ? "border-primary" : "border-border hover:border-primary/50"}`} style={{ left: positions.get(node.key)?.x, top: positions.get(node.key)?.y }}>
-          <span className="flex justify-between gap-2 text-xs text-muted-foreground"><span className="truncate font-mono">{node.key}</span><span>{node.state ?? "recorded"}</span></span>
-          <span className="mt-2 line-clamp-2 block text-sm font-medium">{label(node)}</span>
+        {visible.map((node) => <button key={node.key} type="button" onClick={() => select(node.key)} aria-pressed={selected === node.key} className={`absolute overflow-hidden h-[88px] w-[290px] rounded-lg border bg-background px-3 py-2 text-left shadow-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${selected === node.key ? "border-primary" : "border-border hover:border-primary/50"}`} style={{ left: positions.get(node.key)?.x, top: positions.get(node.key)?.y }}>
+          <span className="flex justify-between gap-2 text-xs text-muted-foreground"><span className="truncate font-mono">{node.key}</span><span className="shrink-0">{node.state ?? "recorded"}</span></span>
+          <span className="mt-2 line-clamp-2 break-words text-sm font-medium">{label(node)}</span>
         </button>)}
       </div>
     </div>}
     {(cursor || graph?.next_cursor) && <div className="flex gap-3 text-sm"><button className="rounded border px-3 py-1" disabled={!cursor} onClick={() => { setCursor(""); setGraph(undefined); select(""); }}>First page</button><button className="rounded border px-3 py-1" disabled={!graph?.next_cursor} onClick={() => { setCursor(graph?.next_cursor ?? ""); setGraph(undefined); select(""); }}>Next page</button><span className="text-muted-foreground">Filter applies to this page. Related nodes can be on another page.</span></div>}
-    {detail && <article className="space-y-3 rounded-lg border bg-card p-5">
-      <div className="flex items-center justify-between"><h3 className="font-semibold">{label(detail)}</h3><button className="rounded border px-3 py-1 text-sm" onClick={() => setHistoryKey(detail.key)}>History</button></div>
+    {detail && <article className="min-w-0 [overflow-wrap:anywhere] space-y-3 rounded-lg border bg-card p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3"><h3 className="font-semibold">{label(detail)}</h3><button className="rounded border px-3 py-1 text-sm" onClick={() => setHistoryKey(detail.key)}>History</button></div>
       <p className="font-mono text-xs text-muted-foreground">{detail.key} · {detail.type} · version {detail.version}</p>
       {detail.success_criteria && <p className="text-sm"><strong>Success criteria: </strong>{detail.success_criteria}</p>}
       {detail.body && <p className="whitespace-pre-wrap text-sm">{detail.body}</p>}
@@ -99,5 +99,5 @@ export function FGSBoard({ scope, id }: { scope: "projects" | "sessions"; id: st
 
 export function FGSSessionPage() {
   const { sessionId = "" } = useParams();
-  return <main className="space-y-5 p-6"><Link className="text-sm underline" to={`/sessions/${sessionId}`}>Back to Session</Link><h1 className="text-xl font-semibold">Blackboard</h1><FGSBoard scope="sessions" id={sessionId} /></main>;
+  return <main className="min-w-0 space-y-5 p-6"><Link className="text-sm underline" to={`/sessions/${sessionId}`}>Back to Session</Link><h1 className="text-xl font-semibold">Blackboard</h1><FGSBoard scope="sessions" id={sessionId} /></main>;
 }
