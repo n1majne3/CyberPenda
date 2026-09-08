@@ -60,8 +60,41 @@ function transcriptURL(base: string, mode: "initial" | "poll", cursor: number): 
   return mode === "initial" ? `${base}/transcript` : `${base}/transcript?after=${cursor}`;
 }
 
+function ownerHistory(timeline: TaskTimeline, transcript: TaskTranscript, current: OwnerHistory) {
+  return {
+    timeline: timeline.items ?? [],
+    transcript: transcript.entries ?? [],
+    timelineCursor: timeline.cursor ?? current.timelineCursor,
+    transcriptCursor: transcript.cursor ?? current.transcriptCursor,
+    timelineHasOlder: timeline.has_older === true,
+    transcriptHasOlder: transcript.has_older === true,
+    transcriptBefore: transcript.before,
+  };
+}
+
+type SharedOwnerOperations = Pick<RuntimeOwnerAdapter,
+  "loadOlderTranscript" | "loadOlderTimeline" | "stop" | "finish" | "resume" | "respondPermission" | "remove"
+>;
+
+function sharedOwnerOperations(base: string): SharedOwnerOperations {
+  return {
+    loadOlderTranscript: (before) => apiGet<TaskTranscript>(`${base}/transcript?before=${before}`),
+    loadOlderTimeline: (before) => apiGet<TaskTimeline>(`${base}/timeline?before=${before}`),
+    stop: () => apiPost(`${base}/stop`, {}),
+    finish: () => apiPost(`${base}/finish`, {}),
+    resume: (selection) => apiPost(`${base}/resume`, selection),
+    respondPermission: (permissionRequestID, decision) =>
+      apiPost(`${base}/permissions/${encodeURIComponent(permissionRequestID)}/respond`, {
+        request_id: newPermissionRequestID(),
+        decision,
+      }),
+    remove: () => apiDelete(base),
+  };
+}
+
 export function taskRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
   return {
+    ...sharedOwnerOperations(base),
     kind: "task",
     base,
     async loadWorkspace(signal, mode, current) {
@@ -76,17 +109,9 @@ export function taskRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
         finishReadiness: typeof finishReadiness.ready_to_finish === "boolean" && Array.isArray(finishReadiness.blockers)
           ? finishReadiness
           : undefined,
-        timeline: timeline.items ?? [],
-        transcript: transcript.entries ?? [],
-        timelineCursor: timeline.cursor ?? current.timelineCursor,
-        transcriptCursor: transcript.cursor ?? current.transcriptCursor,
-        timelineHasOlder: timeline.has_older === true,
-        transcriptHasOlder: transcript.has_older === true,
-        transcriptBefore: transcript.before,
+        ...ownerHistory(timeline, transcript, current),
       };
     },
-    loadOlderTranscript: (before) => apiGet<TaskTranscript>(`${base}/transcript?before=${before}`),
-    loadOlderTimeline: (before) => apiGet<TaskTimeline>(`${base}/timeline?before=${before}`),
     async sendMessage(text, selection) {
       return taskAsRuntimeOwner(await apiPost<Task>(`${base}/messages`, { message: text, ...selection }));
     },
@@ -98,26 +123,18 @@ export function taskRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
           : { directive: text, ...selection },
       ),
     queueSteer: (text, selection) => apiPost(`${base}/steer/queue`, { directive: text, ...selection }),
-    stop: () => apiPost(`${base}/stop`, {}),
-    finish: () => apiPost(`${base}/finish`, {}),
-    resume: (selection) => apiPost(`${base}/resume`, selection),
-    respondPermission: (permissionRequestID, decision) =>
-      apiPost(`${base}/permissions/${encodeURIComponent(permissionRequestID)}/respond`, {
-        request_id: newPermissionRequestID(),
-        decision,
-      }),
     async rename() {
       throw new Error("Tasks cannot be renamed");
     },
     async changeLifecycle() {
       throw new Error("Tasks cannot be archived");
     },
-    remove: () => apiDelete(base),
   };
 }
 
 export function sessionRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
   return {
+    ...sharedOwnerOperations(base),
     kind: "session",
     base,
     async loadWorkspace(signal, mode, current) {
@@ -130,35 +147,18 @@ export function sessionRuntimeOwnerAdapter(base: string): RuntimeOwnerAdapter {
         owner: sessionAsRuntimeOwner(session),
         // Session timelines and transcripts are built by the same daemon pipeline
         // as task ones, so the rendered shapes are identical.
-        timeline: timeline.items ?? [],
-        transcript: transcript.entries ?? [],
-        timelineCursor: timeline.cursor ?? current.timelineCursor,
-        transcriptCursor: transcript.cursor ?? current.transcriptCursor,
-        timelineHasOlder: timeline.has_older === true,
-        transcriptHasOlder: transcript.has_older === true,
-        transcriptBefore: transcript.before,
+        ...ownerHistory(timeline, transcript, current),
       };
     },
-    loadOlderTranscript: (before) => apiGet<TaskTranscript>(`${base}/transcript?before=${before}`),
-    loadOlderTimeline: (before) => apiGet<TaskTimeline>(`${base}/timeline?before=${before}`),
     sendMessage: (text, selection, attachments) => postSessionRuntimeMessage(`${base}/messages`, text, selection, attachments).then(sessionAsRuntimeOwner),
     steer: ({ text, selection, requestID, attachments, forceReplace }) => postSessionRuntimeMessage(
       `${base}/steer`, text, selection, attachments ?? [], forceReplace ? { force_replace: true } : {}, requestID,
     ),
     queueSteer: (text, selection, attachments) => postSessionRuntimeMessage(`${base}/steer/queue`, text, selection, attachments),
-    stop: () => apiPost(`${base}/stop`, {}),
-    finish: () => apiPost(`${base}/finish`, {}),
-    resume: (selection) => apiPost(`${base}/resume`, selection),
-    respondPermission: (permissionRequestID, decision) =>
-      apiPost(`${base}/permissions/${encodeURIComponent(permissionRequestID)}/respond`, {
-        request_id: newPermissionRequestID(),
-        decision,
-      }),
     async rename(title) {
       return sessionAsRuntimeOwner(await apiPatch<Session>(base, { title }));
     },
     changeLifecycle: async (action) => sessionAsRuntimeOwner(await apiPost<Session>(`${base}/${action}`, {})),
-    remove: () => apiDelete(base),
   };
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"pentest/internal/runtime"
 	"pentest/internal/task"
+	"pentest/internal/timeline"
 )
 
 // The provider permission-response ladder is one owner-neutral protocol
@@ -128,4 +129,43 @@ func permissionResponseErrorCode(operationErr error) string {
 	default:
 		return "provider_rejected"
 	}
+}
+
+// readPermissionResponse shares validation while each route keeps its body contract.
+func readPermissionResponse(response http.ResponseWriter, request *http.Request, decode func(any) error) (providerPermissionResponseRequest, string, bool) {
+	var input providerPermissionResponseRequest
+	permissionID := strings.TrimSpace(request.PathValue("permission_id"))
+	if permissionID == "" {
+		writeError(response, http.StatusBadRequest, "permission request id is required")
+		return input, permissionID, false
+	}
+	if err := decode(&input); err != nil {
+		writeError(response, http.StatusBadRequest, "invalid JSON body")
+		return input, permissionID, false
+	}
+	input.Decision = normalizePermissionDecision(input.Decision)
+	if input.Decision == "" {
+		writeError(response, http.StatusBadRequest, "permission decision must be allow or deny")
+		return input, permissionID, false
+	}
+	derivePermissionResponseRequestID(request, &input)
+	return input, permissionID, true
+}
+
+// permissionResponsePending replays prior outcomes before owner lifecycle gates.
+func permissionResponsePending(response http.ResponseWriter, input providerPermissionResponseRequest, permissionID, providerSessionID string, events []timeline.Event) bool {
+	pending, priorOutcome, priorDecision := providerPermissionStatus(events, permissionID, input.RequestID)
+	if priorDecision != "" && priorDecision != input.Decision {
+		writeError(response, http.StatusConflict, "permission request id already belongs to a different decision")
+		return false
+	}
+	if priorOutcome != "" {
+		writePermissionResponseAccepted(response, input, permissionID, providerSessionID, priorOutcome)
+		return false
+	}
+	if !pending {
+		writeError(response, http.StatusNotFound, "provider permission request is no longer pending")
+		return false
+	}
+	return true
 }
