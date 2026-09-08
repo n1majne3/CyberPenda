@@ -340,6 +340,41 @@ FGS Runtime Instructions teach this loop:
 7. Keep local state pointers current. When reporting to the operator, distinguish
    published work, accepted graph state, and delivery failures.
 
+### Reporting at decision boundaries
+
+The projected instructions require an observed result before the Runtime selects
+the next experiment. One Step can contain several tool calls, but a long sequence
+of different experiments must not remain in one unchanged Step until success.
+A finished experiment can have a negative result: publish its Fact and mark the
+Step done. Cancel an approach that is no longer pursued, with a reason. Create a
+new Step for a different approach or a retry of completed work. Use `inputs` for
+the Facts that justify the choice and `after` when Step order matters. Use
+`step.describe` with expected values when the same work needs a corrected
+description. Publish dependent results and plan changes together.
+
+Compare draft reports with the latest observations before publication. Keep
+untested plans in Step actions. Fact summaries state observations; an optional
+interpretation in the body must be labelled as a hypothesis, with its evidence,
+limits, and remaining checks. Failure to obtain an expected result does not prove
+the cause. A result file reference supports inspection but does not retain the
+file by itself.
+
+Correct each accepted false Fact with a new Fact whose `corrects` field names it.
+Explain the false claim, new evidence, and any claims that remain valid. A later
+summary alone is not an explicit correction. Update affected Step plans in the
+same batch. Later Steps and Goal completion must use current supporting Facts,
+not disproved claims.
+
+Before ending a Work Runtime Turn, read accepted state and compare it with the
+work done. Report missing results and correct inaccurate descriptions or Facts.
+Goal completion must cite the Facts that support its success criteria, not all
+historical Facts. Confirm that the final update ID is `applied`; an empty
+`action_required` count alone does not prove acceptance.
+
+These are Runtime reporting instructions. The Harness does not infer false Facts
+from the Transcript or enforce the choice and timing of experiments. Deterministic
+protocol tests do not prove that a model follows these semantic rules.
+
 The linked protocol reference includes a schema and copyable JSON examples. Help must make
 these discoverable without source-code access. Generic FGS has no CTF deadline,
 platform API, target selection, score policy, or requirement to spawn agents.

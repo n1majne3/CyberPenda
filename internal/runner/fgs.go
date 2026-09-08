@@ -29,7 +29,7 @@ const FGSLaunchInstruction = `FGS startup: complete these steps before executing
 2. Run pentestctl working-graph read to inspect accepted state.
 3. Publish a Goal and the first Step with pentestctl working-graph emit --input update.json. Reuse existing nodes after resume.
 4. Run pentestctl working-graph status and confirm the update was applied.
-Then execute the Step. Publish a Fact and the Step result before moving to the next Step. Continue reporting at each result or change of plan, including during long tool loops. Before your final reply, publish the result and check its receipt.
+Then execute the Step. Before each change of plan, publish the observed result, correct any earlier false Fact with corrects, and make the next Step describe the work you will actually do. During long tool loops, report a failed experiment or new observation before choosing the next experiment. Do not wait until final success to report these changes. Before your final reply, read accepted state, check that Step descriptions match the work done, use current supporting Facts for Goal completion, and confirm the final update receipt.
 These reports are part of the Task, even for a small task. Do not substitute chat text, private notes, or a Skill's local files for accepted Blackboard updates. If reporting fails, report the exact blocker and follow the recovery rules in the instruction file.
 
 Task Goal:`
@@ -47,6 +47,18 @@ Read accepted state with ` + "`pentestctl working-graph read`" + ` before planni
 - Goal states: open, active, done, abandoned. A terminal Goal can reopen with a reason. To mark done, supply supporting facts and a summary that explains how they meet the success criteria.
 - Step states: open, running, blocked, done, cancelled. A done Step means work finished, including a negative result. Supply outputs that name Facts. A retry is a new Step. Supply a reason when blocked or cancelled.
 - Description changes require expected values for the changed fields. Transitions require from and to. Keep node keys stable and unique in the graph.
+
+### Results and changes of plan
+
+Use a Step for an experiment or a decision with a clear result, not for every tool call. Use inputs to name the Facts that justify the work and after to name an earlier Step when order matters. Before choosing the next experiment, report what the previous experiment showed, including a negative result, a failed check, or a blocker. Several tool calls can serve one experiment. Do not leave a long sequence of different experiments inside one unchanged Step until final success.
+
+When evidence changes the plan, publish the result and the next plan together. If the current Step still describes the same work but needs a correction, use step.describe with expected values. If you stop that approach, cancel the Step with a reason and keep its observed Facts. If an experiment finished with a negative result, mark its Step done with output Facts. Create a new Step for a different approach or a retry of completed work, with inputs that explain the change. Do not mark an old approach done as if a different approach had executed it.
+
+Before publication, compare draft Facts and Steps with the latest tool results. Do not publish a draft that you already know is false. A Fact states what was observed, with the relevant conditions and a result file reference when available. Keep an untested plan in the Step action. If an interpretation is useful in a Fact body, label it as a hypothesis, state its evidence and limits, and state what remains untested. A missing expected result does not by itself prove its cause. For example, "the command returned no output" is an observation; "a policy blocked the command" needs separate evidence.
+
+When a result disproves an accepted Fact, append a correction Fact with corrects set to that Fact key. Explain which claim is false, the new observation, and what remains valid. Repeat this for each false Fact; a later summary without corrects does not identify which earlier claim it replaces. Update the affected Step plan in the same batch. Do not cite a disproved Fact as current support for later work or Goal completion.
+
+Before ending a Work Runtime Turn, read accepted state and compare it with the work done. Record missing results, correct false Facts, and make Step descriptions and states accurate. A done Goal must cite Facts that currently support its success criteria; do not include every historical Fact. Do not report a Goal done if its success criteria remain unproven. Check that the final update ID is applied, not merely published or absent from action_required. These checks report semantic progress; they do not finish the Task.
 
 Publish an object with an operations array through ` + "`pentestctl working-graph emit --input update.json`" + `. Example:
 
