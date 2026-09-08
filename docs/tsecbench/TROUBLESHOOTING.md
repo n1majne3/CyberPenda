@@ -30,12 +30,23 @@ output is 384K (393216). DeepSeek documents compact window 786432, but
 786432 plus 393216 exceeds 1048576. For DeepSeek, use:
 
 ```
+CYBERPENDA_CONTEXT_WINDOW=1048576
 CYBERPENDA_AUTO_COMPACT_WINDOW=524288
 CYBERPENDA_MAX_OUTPUT_TOKENS=393216
 ```
 
 524288 plus 393216 is 917504, which stays under 1048576 and leaves a buffer
 for one large tool result.
+
+## Context window 或 max output 未生效
+
+`CYBERPENDA_CONTEXT_WINDOW` 和 `CYBERPENDA_MAX_OUTPUT_TOKENS` 都接受
+1 到 1048576 的整数。检查生成的 Claude `settings.json` 的 `env`，或
+Pi `agent/models.json` 中所选模型的 `contextWindow` 和 `maxTokens`。
+显式 Hosted 值优先于模型能力缓存。留空不表示固定使用 32000。
+自动压缩窗口和百分比仅支持 Claude Code，Pi 不接收这些 Claude 变量。
+Claude Code 对 Claude 模型 ID 和 `[1m]` ID 的窗口覆盖有限制，详见 README。
+投影值不会扩大服务端实际允许的模型容量或输出上限。
 
 ## Model endpoint fails
 

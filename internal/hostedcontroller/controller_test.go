@@ -137,6 +137,8 @@ func TestHostedConfigurationAcceptsOptionalReasoningEffortAndTaskGoalAppendix(t 
 
 func TestHostedConfigurationAcceptsOptionalCompactThresholdAndMaxOutputTokens(t *testing.T) {
 	env := validHostedEnv()
+	env["CYBERPENDA_RUNTIME"] = "claude_code"
+	env["CYBERPENDA_MODEL_PROTOCOL"] = "anthropic_messages"
 	env["CYBERPENDA_AUTO_COMPACT_THRESHOLD"] = "80"
 	env["CYBERPENDA_AUTO_COMPACT_WINDOW"] = "786432"
 	env["CYBERPENDA_MAX_OUTPUT_TOKENS"] = "393216"
@@ -431,6 +433,8 @@ func TestHTTPAppProjectsHostedCompactThresholdAndMaxOutputTokens(t *testing.T) {
 	})}
 
 	env := validHostedEnv()
+	env["CYBERPENDA_RUNTIME"] = "claude_code"
+	env["CYBERPENDA_MODEL_PROTOCOL"] = "anthropic_messages"
 	env["CYBERPENDA_AUTO_COMPACT_THRESHOLD"] = "80"
 	env["CYBERPENDA_AUTO_COMPACT_WINDOW"] = "786432"
 	env["CYBERPENDA_MAX_OUTPUT_TOKENS"] = "393216"

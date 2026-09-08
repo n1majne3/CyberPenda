@@ -35,3 +35,12 @@ Runtime CLI packages intentionally install their current releases at build time 
 The Hosted Delivery Bundle contains the Docker archive, its SHA-256 checksum, a Secret-free TSecBench page environment-variable template, a local-mode runner, the resolved component inventory, and integration and troubleshooting guidance. Local validation reads Secrets from a separate permission-restricted environment file created by the deployer; the bundle does not place Secrets in templates or command-line arguments.
 
 The TSecBench page supplies one Hosted Model Configuration through `CYBERPENDA_RUNTIME`, `CYBERPENDA_MODEL_PROTOCOL`, `CYBERPENDA_MODEL_BASE_URL`, `CYBERPENDA_MODEL`, `CYBERPENDA_MODEL_API_KEY`, and optional `CYBERPENDA_REASONING_EFFORT`. Optional `CYBERPENDA_TASK_GOAL_APPENDIX` is appended to the required hosted Task Goal. Optional `CYBERPENDA_AUTO_COMPACT_THRESHOLD`, `CYBERPENDA_AUTO_COMPACT_WINDOW`, and `CYBERPENDA_MAX_OUTPUT_TOKENS` become Claude Code compact and completion env values. Bootstrap translates these stable inputs into normal Model Provider, Credential Binding, Runtime Profile, and Task Goal inputs. The model protocol must be explicit, the gateway URL must already use the TSecBench form, and invalid or incompatible configuration fails before challenge work. TSecBench's score and completion state are the formal result; container-local Project, FGS, Evidence, database, reports, and logs exist only to support execution and diagnosis.
+
+## 2026-09-08：Hosted 模型限制投影
+
+`CYBERPENDA_CONTEXT_WINDOW` 和 `CYBERPENDA_MAX_OUTPUT_TOKENS` 共用
+Model Catalog Limit Override，支持 Claude Code 和 Pi。Claude Code 使用
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` 和 `CLAUDE_CODE_MAX_OUTPUT_TOKENS`；
+Pi 使用 `models.json` 的 `contextWindow` 和 `maxTokens`。
+两个自动压缩输入仍仅投影到 Claude Code。模型容量不替代自动压缩窗口。
+Claude Code 对模型 ID 的原生限制见 Hosted README。

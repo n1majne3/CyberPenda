@@ -213,19 +213,19 @@ func evaluationFromConfig(config Config) HostedEvaluationBootstrap {
 	evaluation.Runtime.ModelAPIKey = config.ModelAPIKey
 	evaluation.Runtime.ReasoningEffort = config.ReasoningEffort
 	evaluation.Runtime.Env = map[string]string{"BENCHMARK_BASE_URL": config.BenchmarkBaseURL}
-	if config.AutoCompactThreshold > 0 {
-		evaluation.Runtime.Env[ClaudeAutoCompactPctOverride] = strconv.Itoa(config.AutoCompactThreshold)
+	if config.Runtime == RuntimeClaudeCode {
+		if config.AutoCompactThreshold > 0 {
+			evaluation.Runtime.Env[ClaudeAutoCompactPctOverride] = strconv.Itoa(config.AutoCompactThreshold)
+		}
+		if config.AutoCompactWindow > 0 {
+			evaluation.Runtime.Env[ClaudeAutoCompactWindow] = strconv.Itoa(config.AutoCompactWindow)
+		}
+		if config.MaxOutputTokens > 0 {
+			evaluation.Runtime.Env[ClaudeMaxOutputTokens] = strconv.Itoa(config.MaxOutputTokens)
+		}
 	}
-	if config.AutoCompactWindow > 0 {
-		evaluation.Runtime.Env[ClaudeAutoCompactWindow] = strconv.Itoa(config.AutoCompactWindow)
-	}
-	if config.MaxOutputTokens > 0 {
-		evaluation.Runtime.Env[ClaudeMaxOutputTokens] = strconv.Itoa(config.MaxOutputTokens)
-		evaluation.Runtime.MaxOutputTokens = config.MaxOutputTokens
-	}
-	if config.ContextWindow > 0 {
-		evaluation.Runtime.ContextWindow = config.ContextWindow
-	}
+	evaluation.Runtime.MaxOutputTokens = config.MaxOutputTokens
+	evaluation.Runtime.ContextWindow = config.ContextWindow
 	evaluation.Runtime.Credentials = map[string]string{"BENCHMARK_TOKEN": config.BenchmarkToken}
 	return evaluation
 }

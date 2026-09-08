@@ -20,6 +20,24 @@ Optional `CYBERPENDA_AUTO_COMPACT_WINDOW` is an integer from 1 to 1048576.
 Optional `CYBERPENDA_MAX_OUTPUT_TOKENS` is an integer from 1 to 1048576.
 For DeepSeek on Claude Code, set max output to 393216 (384K) and set the
 compact window to 524288 so messages plus 393216 stay under 1048576.
+`CYBERPENDA_CONTEXT_WINDOW` 是可选的模型总容量，整数范围为 1 到 1048576。
+它和 `CYBERPENDA_MAX_OUTPUT_TOKENS` 都写入 Model Catalog Limit Override，
+优先于 Model Capability Cache。留空时使用缓存值；缓存也没有值时使用 Runtime 默认值。
+
+| Hosted 输入 | Claude Code 投影 | Pi 投影 |
+| --- | --- | --- |
+| `CYBERPENDA_CONTEXT_WINDOW` | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | `models.json` → `contextWindow` |
+| `CYBERPENDA_MAX_OUTPUT_TOKENS` | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | `models.json` → `maxTokens` |
+| `CYBERPENDA_AUTO_COMPACT_WINDOW` | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | 不投影 |
+| `CYBERPENDA_AUTO_COMPACT_THRESHOLD` | `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | 不投影 |
+
+Pi 的三种协议共用此投影。Pi 的自动压缩仍使用其原生设置。
+模型总容量和自动压缩窗口是独立设置。
+Claude Code 对普通自定义模型 ID 可直接使用 context window 值；
+对含 `[1m]` 或被识别为 Claude 的 ID 有原生限制，见
+[Claude Code 官方说明](https://code.claude.com/docs/en/model-config#correct-the-window-for-a-gateway-or-custom-model-id)。
+CyberPenda 不会为强制覆盖容量而关闭自动压缩。
+
 The strict Runtime and protocol matrix is:
 
 - Codex: `openai_responses`

@@ -1754,6 +1754,9 @@ func buildClaudeEnv(profile runtimeprofile.Profile, req ProjectionRequest) (map[
 		env[key] = value
 	}
 	limits := resolveLaunchModelLimits(profile, req)
+	if limits.ContextWindow >= 1 && strings.TrimSpace(env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"]) == "" {
+		env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = strconv.Itoa(limits.ContextWindow)
+	}
 	if limits.MaxOutputTokens >= 1 && strings.TrimSpace(env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"]) == "" {
 		env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = strconv.Itoa(limits.MaxOutputTokens)
 	}

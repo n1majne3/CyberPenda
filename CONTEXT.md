@@ -721,8 +721,12 @@ The optional absolute token window used for conversation compaction by the hoste
 _Avoid_: Claude-native page variable, compact percent, required compact setting
 
 **Hosted Max Output Tokens**:
-The optional maximum completion token reservation for a hosted Claude Code request.
+Hosted 请求的可选最大输出 token 数。至少支持 Claude Code 和 Pi；写入 **Model Catalog Limit Override**，再通过 **Model Runtime Projection** 传入 Runtime。
 _Avoid_: context window size, Claude-native page variable, required output cap
+
+**Hosted Context Window**:
+Hosted 模型的可选总 token 容量。至少支持 Claude Code 和 Pi；写入 **Model Catalog Limit Override**，与 **Hosted Auto Compact Window** 独立。
+_Avoid_: 自动压缩窗口、输入 token 上限、服务端容量扩展
 
 **Hosted Task Goal Appendix**:
 Optional operator-supplied text appended to the required hosted **Task Goal**. It does not replace the required Skill completion sentence and does not change Hosted Controller behavior.

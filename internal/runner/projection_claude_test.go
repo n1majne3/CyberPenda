@@ -88,17 +88,17 @@ func TestProjectClaudeSettingsWritesEnvAndMaterializedCredentials(t *testing.T) 
 	}
 }
 
-func TestProjectClaudeSettingsWritesResolvedMaxOutputTokens(t *testing.T) {
+func TestProjectClaudeSettingsWritesResolvedModelLimits(t *testing.T) {
 	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-claude-limits", runtimeprofile.ProviderClaudeCode)
 	if err != nil {
 		t.Fatalf("prepare layout: %v", err)
 	}
 	cache := modelprovider.NewCapabilityCache(map[string]modelprovider.CatalogLimits{
-		"claude-sonnet": {ContextWindow: 200000, MaxOutputTokens: 64000},
+		"custom-model": {ContextWindow: 200000, MaxOutputTokens: 64000},
 	}, "", nil)
 	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderClaudeCode,
-		Fields:   runtimeprofile.Fields{Model: "claude-sonnet"},
+		Fields:   runtimeprofile.Fields{Model: "custom-model"},
 	}, runner.ProjectionRequest{CapabilityCache: cache}); err != nil {
 		t.Fatalf("project: %v", err)
 	}
@@ -111,6 +111,9 @@ func TestProjectClaudeSettingsWritesResolvedMaxOutputTokens(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+	if settings.Env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] != "200000" {
+		t.Fatalf("context window env = %#v", settings.Env)
 	}
 	if settings.Env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] != "64000" {
 		t.Fatalf("max output env = %#v", settings.Env)
@@ -219,5 +222,36 @@ func TestLaunchConfigPathUsesContainerPathInSandbox(t *testing.T) {
 	want := "/task/runtime-home/claude/settings.json"
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestClaudeModelLimitsKeepNativeEnvAndUnknownDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		name                    string
+		env                     map[string]string
+		cache                   map[string]modelprovider.CatalogLimits
+		wantContext, wantOutput string
+	}{
+		{name: "unknown model", env: map[string]string{}},
+		{name: "explicit native values", env: map[string]string{
+			"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "524288", "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "65536",
+		}, cache: map[string]modelprovider.CatalogLimits{"custom-model": {ContextWindow: 1048576, MaxOutputTokens: 393216}}, wantContext: "524288", wantOutput: "65536"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode, Fields: runtimeprofile.Fields{Model: "custom-model", Env: tc.env}}
+			env, err := runner.ClaudeProcessEnv(profile, runner.ProjectionRequest{CapabilityCache: modelprovider.NewCapabilityCache(tc.cache, "", nil)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] != tc.wantContext || env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] != tc.wantOutput {
+				t.Fatalf("model limits = %#v", env)
+			}
+			if _, ok := env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]; ok {
+				t.Fatal("model limits set a compact window")
+			}
+			if _, ok := env["DISABLE_COMPACT"]; ok {
+				t.Fatal("model limits disabled compaction")
+			}
+		})
 	}
 }
