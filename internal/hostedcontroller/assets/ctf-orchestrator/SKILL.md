@@ -79,10 +79,12 @@ Execute agent 禁止调用 `list`、`start`、`hint`、`close`、`abandon`。禁
 3. 平台适配：平台接口已封装为 `pentest-tsecbench-client list|start|hint|submit|close|abandon`，
    禁止用 `curl` 直连平台 API，禁止自行构造鉴权头。
 4. `pentest-tsecbench-client list > "$WS/challenges.json"`，按“分数/预计耗时”排序写入
-   `$WS/queue.tsv`：先易后难、高性价比优先。
+   `$WS/queue.tsv`：先易后难、高性价比优先。家族 = `unique_code` 前缀（第一个 `-` 之前）。
 5. 初始化图目录（schema 见 `references/graph-protocol.md`，**派发前必读**）：
    `mkdir -p "$WS/graph/facts" "$WS/graph/data"`
-6. 启动首批容器，派第一波 Execute agent（模板见 `references/execute-prompt.md`，**派发前必读**）。
+6. 启动首批容器：从 queue.tsv 取高性价比题，**首批 start 必须覆盖不同 unique_code 前缀**。
+   同一家族在本场尚未出分前，不得占用第二个槽。然后派第一波 Execute agent
+   （模板见 `references/execute-prompt.md`，**派发前必读**）。
 7. 每次成功 `start` 后立即 `list`，读取 `elapsed_min`、`budget_min`、`over_budget`、`attempt_n`。
    这些字段来自 Challenge Pass Clock，是 challenge pass 的唯一时间源；不读写 Clock 文件，不复制进 FGS。
 
@@ -99,14 +101,14 @@ Execute agent 禁止调用 `list`、`start`、`hint`、`close`、`abandon`。禁
 3. **派生**：按 fact 内容决定下一步——
    - 新凭证/新端点/新攻击面 → 派生后续 step（高优先）
    - fact 是“未达成”且该面首试 → **换角度**再派一个（换协议/换参数/换路径类型，不是原样重派）
-   - 同一攻击面第 2 个 fact 仍零进展且外部行为恒定 → 标 `blocked`，
-     优先释放并重开资源（容器/实例损坏常是假象，重开即愈）再试一次
-   - **坏实例快速判别**：指纹在但核心功能不可达（API 绑 127.0.0.1、入口全方法 5xx）、
-     且 close+start 重开后行为恒定 → 1 棒内关题让位，不等 3 棒
-   - 多 flag 链题每 20 分钟必须有新 flag 或新 fact，否则降优先让位给单 flag 题
+   - 同一攻击面第 2 个 fact 仍零进展且外部行为恒定 → 标 `blocked`，按「放槽」处理
+   - **坏实例**：指纹在但核心功能不可达，且再开一次后行为恒定 → 放槽，不要 close 未完成题
+   - 多 flag 链题：Clock 已过 `budget_min` 一半仍无新 flag 且无新事实 → 降优先或放槽
 4. **补位**：从 `graph/steps.yaml` 取 `open` 且依赖满足、优先级最高的 step，派 Execute agent 保持满载。
+   补位优先取本场已出分、命中率高的家族；未出分家族最多占一个槽。
 5. **看门狗**：核对 `ledger.tsv` 里 `hard_stop < now` 的 agent → 用当前 Runtime 的停止工具 + 资源轮转；
    核对“资源已分配但无活跃 agent”的漏派槽位 → 立即补。
+   核对 Clock：无新 flag 且无新事实的 pass 按「放槽」处理。
 
 ### 派发确认（spawn ack，每次派发后必做）
 
@@ -115,16 +117,16 @@ spawn 消息可能不会送达子线程（子线程空白唤醒、什么都不�
 1. 每个 Execute agent 开工 **90 秒**内必须写出 **fact 骨架**（`graph/facts/NNN-*.md`，
    front-matter + title 占位即可）。这条同时写进 execute-prompt 模板的收束纪律第 1 条。
 2. spawn 后 90 秒检查对应 fact 文件：骨架已出现 → 投递成功，继续。
-3. 骨架缺失 → 判定**投递失败**：先用 `list_agents` 核对旧 agent 状态，必要时 `interrupt_agent`，
+3. 骨架缺失 → 判定**投递失败**：先核对旧 agent 状态，必要时用当前 Runtime 的停止工具，
    然后立即用同一 step 重派一个新 agent（换新 fact 编号），计入“同一 step 重派上限 3 次”。
    连续投递失败是环境信号，按错误处理降级，不要恋战。
 
 ### 回合纪律（硬性）
 
-只要 `ledger.tsv` 里存在未收束的 agent，**禁止结束当前回合**：spawn 后立即进入
-`wait_agent`（每次 ≤300 秒）循环收割；没有通知也持续轮转（结合平台周期对账），
-直到所有 agent 收束或平台报告结束态。回合中途结束 = 预算看门狗失效 = 主控永久失联——
-通知驱动的编排里，没有任何人会把睡着的你叫醒。
+只要 `ledger.tsv` 里存在未收束的 agent，**禁止结束当前回合**（主控空闲退出 = 看门狗失效）。
+**等待上界** = min(该 step 预算, Challenge Pass Clock 剩余)。**禁止一次等待全部**子线程。
+一次只等待即将到期或刚有通知的子集。到期：收割 fact，必要时停止该 agent，再决定补派或放槽。
+没有通知也按等待上界轮转（结合平台周期对账）。等待不是栅栏。
 
 派发时把 code、agent_id、budget_min、hard_stop 追加进 `$WS/ledger.tsv`（TSV）。这是唯一 agent 生命周期
 时间事实源。Challenge pass 时间只读 Client list 的 Challenge Pass Clock 投影。**只记实际派发的 agent**——
@@ -132,26 +134,43 @@ spawn 消息可能不会送达子线程（子线程空白唤醒、什么都不�
 
 ## 调度策略
 
+- **槽是稀缺资源**：优化每个并发槽是否产出新 flag 或新事实。槽满但分数不涨，就是调度失败。
 - **前段是胜负手**：把高命中率、快周转的题前置，开局即满配并发（容器配额 × 每容器 2-3 个互斥攻击面 agent）。
-- **命中率反馈回路**：queue.tsv 是活队列——每关一题记录该系列战绩（如 f2 7/8、d 6/6），
-  补位时优先取**实测命中率高家族**的未做题，而非只按标称分值/难度；低命中家族沉底。
+  首批 start 覆盖不同 unique_code 前缀。
+- **命中率反馈回路**：queue.tsv 是活队列——每关一题记录该家族战绩，
+  补位时优先取**本场已出分且命中率高**的家族；低命中且未出分的家族沉底，且最多占一个槽。
 - **并行度**：平台限的是资源数（容器/靶机），不限 agent 数。同一资源内派互不重叠攻击面
   （web 面 / 凭据爆破 tmux 化 / 内网横向），prompt 里写明互斥范围。
-- **step 粒度**：一个攻击面 5-15 分钟。宁可多派小 step，不派整题大 step。
+- **step 粒度**：一个攻击面的预算取 Challenge Pass Clock 的 `budget_min` 的一小段。
+  宁可多派小 step，不派整题大 step。
 - **长任务 tmux 化**：爆破/隧道/监听一律 `tmux new-session -d -s stepXXX-主题`，
   agent 启动确认存活、登记 `graph/tmux-registry.md` 后立即收束；
-  之后周期派 5 分钟“收割 agent” `tmux capture-pane` 取结果。长任务时间不占 agent 预算。
+  之后派短预算“收割 agent” `tmux capture-pane` 取结果。长任务时间不占 agent 预算。
 - **链题**（多阶段/多 flag）：中段插入；维护 goals.yaml 子目标链（立足→凭据→横向→目标）。
-- **提示/求助**：预算过半 0 进展才用；低分题早用，高分题忍到 2/3；只由 Decide 请求，
+- **提示/求助**：Clock 过半且 0 进展才用；低分题早用，高分题忍到过半以上；只由 Decide 请求，
   用完必派带全部情报的补刀 agent。
 
-`list` 返回 `over_budget: true` 时，由 Decide 决定 close、abandon 或继续。Execute 不做该决策。
+`list` 返回 `over_budget: true` 且本 pass 无新 flag 时，Decide 放槽。Execute 不做该决策。
+
+## 放槽（配额操作，不是收官）
+
+**放槽不是收官。** 放槽只释放一个并发槽，Hosted Evaluation Run 继续。
+
+- **未完成的题禁止 close。** 放槽只用 `pentest-tsecbench-client abandon "$code" "$reason"`，
+  然后单独 `start` 下一题（不要把 abandon 和 start 串在同一命令里）。2 分钟内补位。
+- **close 只用于**平台 `list` 已证明 complete 的题。
+- 是否放槽只读 Challenge Pass Clock（`elapsed_min`、`budget_min`、`over_budget`、
+  `correct_flag_count`、`attempt_n`）和 fact 是否含新资产/新凭证/新端点。
+  不要用自估分钟数，不要写死题号。
+- `over_budget == true` 且本 pass 无新 flag → 放槽。
+- 本 pass `elapsed_min` 已过 `budget_min` 一半，且 fact 只有重复观察 → 放槽。
+- 同一 step 重派到达上限 → 封存该 step，必要时放整题。
 
 ## 预算纪律（到点强制止损，无例外）
 
 每个 challenge pass 的默认预算来自 Challenge Pass Clock 的 `budget_min`；不要在 FGS 重复一份。
-链题每 20min 须有产出。止损 = 停止 agent + Decide 释放/放弃资源 + 2 分钟内补位。
-唯一续命例外：高分值且已有阶段产出，可续 ≤15min。
+止损 = 停止该槽上的 agent + Decide 放槽 + 2 分钟内补位。
+唯一续命例外：Clock 仍显示未过预算，且本 pass 已有新 flag 或新事实。
 绝不停机——任务结束的唯一判据：**平台返回结束态（如 invalid_state）或用户给定且到点的 deadline**。
 自估的时间窗口不构成收官理由；额度型任务常在任一时刻提前结束，随时保持可终盘状态。
 
@@ -162,7 +181,7 @@ spawn 消息可能不会送达子线程（子线程空白唤醒、什么都不�
   没结果就如实写“已试X、观察到Y、未达成Z”。误判死路 = 白送分。
 - 大段输出落 `graph/data/stepXXX-*.{txt,json}`，fact 里只引用文件名。
 - FGS 记录调度决策和证据；平台状态与 Challenge Pass Clock 投影由 Client 刷新，不成为 FGS 真相。
-- 弃题唯一判据是任务/平台的结束信号；自己的时间估算不构成停止理由。
+- 自估时间不构成收官理由。放槽由 Clock 与事实增量决定。
 
 ## 错误处理
 

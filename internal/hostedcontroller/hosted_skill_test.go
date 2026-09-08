@@ -171,6 +171,32 @@ func TestTSecBenchSkillPinsCodexSpawnWithoutParentHistory(t *testing.T) {
 	}
 }
 
+func TestTSecBenchSkillPinsGenericSlotReleasePolicy(t *testing.T) {
+	instruction := captureHostedSkillInstruction(t)
+	for _, required := range []string{
+		"槽是稀缺",
+		"未完成的题禁止 close",
+		"abandon",
+		"close 只用于",
+		"放槽不是收官",
+		"Challenge Pass Clock",
+		"unique_code 前缀",
+		"等待上界",
+		"禁止一次等待全部",
+	} {
+		if !strings.Contains(instruction, required) {
+			t.Errorf("hosted Skill missing generic slot-release rule %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"弃题唯一判据是任务/平台的结束信号",
+	} {
+		if strings.Contains(instruction, forbidden) {
+			t.Errorf("hosted Skill keeps the slot-release contradiction %q", forbidden)
+		}
+	}
+}
+
 func TestTSecBenchSkillTreatsClientFailureAsLocalAndRecoverable(t *testing.T) {
 	instruction := captureHostedSkillInstruction(t)
 	for _, required := range []string{
@@ -206,6 +232,7 @@ func TestNormalBuiltinCTFOrchestratorDoesNotContainTheHostedOnlyContract(t *test
 		"pentest-tsecbench-client",
 		"Challenge Pass Clock",
 		"Hosted Task uses Disabled Blackboard Mode",
+		"放槽不是收官",
 	} {
 		if strings.Contains(instruction, hostedOnly) {
 			t.Fatalf("normal ctf-orchestrator leaked hosted-only contract %q", hostedOnly)
