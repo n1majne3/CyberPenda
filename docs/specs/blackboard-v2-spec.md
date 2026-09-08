@@ -340,7 +340,7 @@ Budgeting measures the exact deterministic Runtime Snapshot bytes only. It exclu
 - 32K tokens: warning and offer consolidation.
 - 64K tokens: consolidation required indicator.
 
-Every threshold remains launchable and complete. The system never truncates, relevance-filters, or blocks startup. An explicitly requested Reason Task may propose merges, Fact refinement, supersession, summary tightening, and relationship cleanup. The operator approves every semantic mutation.
+Every threshold remains launchable and complete. The system never truncates, relevance-filters, or blocks startup. The Reason Task consolidation action is retired. Health reports no executable proposals; the complete Snapshot remains available.
 
 ## 11. Ordinary UI and reports
 

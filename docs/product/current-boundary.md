@@ -126,6 +126,10 @@ are not replayed; the operator must check unfinished work on the original Platfo
 Historical Challenge records do not block Task Finish, and Task Finish does not
 confirm Platform completion. New launch controls omit Task Policy.
 
+Reason Task consolidation and approval actions are retired. Legacy health keeps
+an empty proposals array for response compatibility. Historical workflow tables
+remain stored without execution or replay.
+
 The Assisted experiment launchers are retired. Historical reports and experiment
 results remain data, not current execution instructions.
 

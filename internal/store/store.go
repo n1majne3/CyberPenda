@@ -2298,9 +2298,9 @@ func backfillRecoveryConclusionDirectiveKinds(tx *sql.Tx, table string) error {
 	return err
 }
 
-// migration59SQL stores operator-approved Project workflows. Scope Expansion
-// retains its internal Trusted Origin, and a Reason Task proposal remains
-// separate from Blackboard state until explicit approval.
+// migration59SQL preserves the original Project workflow tables.
+// Scope Expansion retains its Trusted Origin. Reason Task tables are inert
+// historical storage; keep their schema and data without restoring execution.
 const migration59SQL = `
 CREATE TABLE IF NOT EXISTS scope_expansions (
 	id TEXT PRIMARY KEY,

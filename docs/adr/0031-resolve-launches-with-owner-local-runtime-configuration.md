@@ -9,7 +9,7 @@ Runtime Plugin, Model Provider, and model selection will resolve directly into a
 ## Decision
 
 - **Preflight** resolves direct **Launch Selection** without persistent writes. After it succeeds, the Runtime Owner or Continuation and its Snapshot are stored atomically.
-- Task, Reason Task, Session, Resume, Steering, and Runtime Turn model-selection paths never find, create, or reuse a Runtime Profile automatically.
+- Task, Session, Resume, Steering, and Runtime Turn model-selection paths never find, create, or reuse a Runtime Profile automatically.
 - A **Runtime Profile** is only a user-created reusable advanced configuration. It has no `manual` or `launch_resolve` Kind.
 - A Runtime Profile is optional and must be selected explicitly when a Task or Session is created. Project Defaults cannot select one, and an existing Runtime Owner cannot switch one.
 - A direct launch uses Runtime Plugin standard configuration, global default Skills after Global Skill Opt-Outs, and explicit Run Controls. Profile-specific MCP, Custom Config, Extensions, and Profile Skill Opt-Out apply only when the launch explicitly selects that Profile.

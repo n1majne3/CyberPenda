@@ -826,7 +826,7 @@
           {
             "code": "attention_required",
             "severity": "critical",
-            "message": "Runtime Snapshot reached the 64K consolidation-required threshold (65000 estimated tokens). Start an approval-required Reason Task for consolidation; complete Snapshot remains launchable."
+            "message": "Runtime Snapshot reached the 64K consolidation-required threshold (65000 estimated tokens). Complete Snapshot remains launchable."
           },
           {
             "code": "missing_evidence",
@@ -844,14 +844,7 @@
             "subject_key": "objective:stranded"
           }
         ],
-        "proposals": [
-          {
-            "code": "consolidation_reason_task",
-            "action": "start_reason_task",
-            "approval_required": true,
-            "required": true
-          }
-        ]
+        "proposals": []
       }
     }
   ]

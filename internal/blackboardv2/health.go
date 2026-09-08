@@ -36,12 +36,13 @@ const (
 // state and exact Runtime Snapshot bytes when available. It never mutates
 // knowledge, never truncates Snapshot completeness, and never blocks launch.
 type SemanticHealth struct {
-	Schema    string           `json:"schema"`
-	Revision  int              `json:"revision"`
-	Status    HealthStatus     `json:"status"`
-	Attention HealthAttention  `json:"attention"`
-	Anomalies []HealthAnomaly  `json:"anomalies"`
-	Proposals []HealthProposal `json:"proposals"`
+	Schema    string          `json:"schema"`
+	Revision  int             `json:"revision"`
+	Status    HealthStatus    `json:"status"`
+	Attention HealthAttention `json:"attention"`
+	Anomalies []HealthAnomaly `json:"anomalies"`
+	// Proposals remains an empty array for response compatibility.
+	Proposals [0]struct{} `json:"proposals"`
 }
 
 // HealthAttention reports Snapshot budget measurement and consolidation
@@ -65,15 +66,6 @@ type HealthAnomaly struct {
 	Message     string         `json:"message"`
 	SubjectKey  string         `json:"subject_key,omitempty"`
 	RelatedKeys []string       `json:"related_keys,omitempty"`
-}
-
-// HealthProposal is an approval-required operator action suggested by health.
-// Health never mutates state and never schedules work; proposals are guidance only.
-type HealthProposal struct {
-	Code             string `json:"code"`
-	Action           string `json:"action"`
-	ApprovalRequired bool   `json:"approval_required"`
-	Required         bool   `json:"required"`
 }
 
 // ProjectSemanticHealth derives the current Project's semantic health DTO.
@@ -164,7 +156,7 @@ func (s *Service) ProjectSemanticHealth(ctx context.Context, projectID string) (
 		Status:    healthStatusFromAnomalies(anomalies),
 		Attention: attention,
 		Anomalies: anomalies,
-		Proposals: []HealthProposal{},
+		Proposals: [0]struct{}{},
 	}, nil
 }
 

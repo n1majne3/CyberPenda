@@ -3476,33 +3476,6 @@
         }
       }
     },
-    "healthProposal": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "code",
-        "action",
-        "approval_required",
-        "required"
-      ],
-      "properties": {
-        "code": {
-          "type": "string",
-          "const": "consolidation_reason_task"
-        },
-        "action": {
-          "type": "string",
-          "const": "start_reason_task"
-        },
-        "approval_required": {
-          "type": "boolean",
-          "const": true
-        },
-        "required": {
-          "type": "boolean"
-        }
-      }
-    },
     "semanticHealth": {
       "type": "object",
       "additionalProperties": false,
@@ -3535,9 +3508,7 @@
         },
         "proposals": {
           "type": "array",
-          "items": {
-            "$ref": "#/$defs/healthProposal"
-          }
+          "maxItems": 0
         },
         "sync": {
           "$ref": "#/$defs/syncAttachment"

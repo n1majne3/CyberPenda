@@ -835,6 +835,26 @@ func TestFixtureCorpusCoversEveryFrozenV2WireShape(t *testing.T) {
 	}
 }
 
+func TestSemanticHealthRejectsExecutableProposals(t *testing.T) {
+	harness := mustHarness(t)
+	raw, err := harness.Fixture("semantic_health.healthy_empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var health map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &health); err != nil {
+		t.Fatal(err)
+	}
+	health["proposals"] = json.RawMessage(`[{}]`)
+	raw, err = json.Marshal(health)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.Validate("semanticHealth", raw); err == nil {
+		t.Fatal("health schema accepted a non-empty proposal array")
+	}
+}
+
 func TestRelationshipTableEnumeratesEveryEndpointAndGraphPolicy(t *testing.T) {
 	harness := mustHarness(t)
 	cases, err := harness.RelationshipCases()

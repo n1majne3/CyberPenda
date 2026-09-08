@@ -1,3 +1,7 @@
 # Rebuild Blackboard v2 atomically
 
+Status update: the Reason Task consolidation recommendation below is historical
+and was retired by [ADR 0032](0032-replace-assisted-blackboard-with-working-graph.md).
+Historical records remain stored; there is no current launch or approval action.
+
 Migration from the graph-ledger Blackboard rebuilds each Project once from its current v1 heads into new versioned semantic-state tables, then switches the store epoch atomically without long-lived dual reads or writes. The migration first creates a full database backup, removes projected Goal records and Goal-only edges, moves terminal workflow records and prior semantic versions into Semantic History, creates conservative tentative Facts for reusable terminal summaries that lack semantic outcomes, rewrites relationships to project-wide Blackboard Keys, and renames opaque or cross-type-colliding keys while retaining already conforming keys. Existing Observations become tentative or confirmed Facts according to their supported state, while active Hypotheses become open Exploration Objectives or tentative Facts. Active Project Directives require operator classification into Scope/testing limits or Exploration Objectives; task-local steering is not migrated. It validates every `runtime-blackboard/v2` projection before cutover; after cutover an approval-required Reason Task may consolidate conservative migration-created Facts.

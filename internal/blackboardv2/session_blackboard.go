@@ -432,10 +432,9 @@ func (s *Service) SessionSemanticHealth(ctx context.Context, sessionID string) (
 		// Project-only consolidation is not a Session capability.
 		ConsolidationOffered: false, ConsolidationRequired: false,
 	}
-	proposals := make([]HealthProposal, 0)
 	return SemanticHealth{
 		Schema: healthSchema, Revision: projection.Snapshot.Revision, Status: healthStatusFromAnomalies(anomalies),
-		Attention: attention, Anomalies: anomalies, Proposals: proposals,
+		Attention: attention, Anomalies: anomalies,
 	}, nil
 }
 

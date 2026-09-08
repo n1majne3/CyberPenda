@@ -260,7 +260,7 @@ describe("blackboard v2 data contracts", () => {
           code: "attention_required",
           severity: "critical",
           message:
-            "Runtime Snapshot reached the 64K consolidation-required threshold (65000 estimated tokens). Start an approval-required Reason Task for consolidation; complete Snapshot remains launchable.",
+            "Runtime Snapshot reached the 64K consolidation-required threshold (65000 estimated tokens). Complete Snapshot remains launchable.",
         },
         {
           code: "stranded_objective",
@@ -269,14 +269,7 @@ describe("blackboard v2 data contracts", () => {
           subject_key: "objective:admin",
         },
       ],
-      proposals: [
-        {
-          code: "consolidation_reason_task",
-          action: "start_reason_task",
-          approval_required: true,
-          required: true,
-        },
-      ],
+      proposals: [],
     });
     expect(health.status).toBe("critical");
     expect(health.attention.consolidation_required).toBe(true);
@@ -284,14 +277,7 @@ describe("blackboard v2 data contracts", () => {
     expect(attentionLabel(health.attention.state)).toMatch(/64K consolidation required/i);
     expect(health.anomalies[0].code).toBe("attention_required");
     expect(health.anomalies[1].subject_key).toBe("objective:admin");
-    expect(health.proposals).toEqual([
-      {
-        code: "consolidation_reason_task",
-        action: "start_reason_task",
-        approval_required: true,
-        required: true,
-      },
-    ]);
+    expect(health.proposals).toEqual([]);
   });
 
   it("rejects semantic health payloads that violate the closed schema", () => {
@@ -378,16 +364,9 @@ describe("blackboard v2 data contracts", () => {
     expect(() =>
       parseSemanticHealth({
         ...valid,
-        proposals: [
-          {
-            code: "consolidation_reason_task",
-            action: "start_reason_task",
-            approval_required: false,
-            required: false,
-          },
-        ],
+        proposals: [{}],
       }),
-    ).toThrow(/approval_required must be true/i);
+    ).toThrow(/proposals must be empty/i);
 
     expect(() => parseSemanticHealth({ ...valid, proposals: undefined })).toThrow(
       /proposals must be an array/i,

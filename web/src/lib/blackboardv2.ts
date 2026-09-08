@@ -272,21 +272,14 @@ export interface HealthAnomaly {
   related_keys?: string[];
 }
 
-/** Approval-required operator proposal suggested by health (no mutation/scheduler). */
-export interface HealthProposal {
-  code: "consolidation_reason_task";
-  action: "start_reason_task";
-  approval_required: true;
-  required: boolean;
-}
-
 export interface SemanticHealth {
   schema: typeof HEALTH_SCHEMA;
   revision: number;
   status: HealthStatus;
   attention: HealthAttention;
   anomalies: HealthAnomaly[];
-  proposals: HealthProposal[];
+  // Retained wire field; health no longer proposes executable actions.
+  proposals: [];
 }
 
 export interface BlackboardV2Error {
@@ -797,13 +790,6 @@ const HEALTH_ANOMALY_FIELDS = [
   "subject_key",
   "related_keys",
 ] as const;
-const HEALTH_PROPOSAL_FIELDS = [
-  "code",
-  "action",
-  "approval_required",
-  "required",
-] as const;
-
 /** Parse blackboard-health/v2 with closed schema and typed field rules. */
 export function parseSemanticHealth(raw: unknown): SemanticHealth {
   if (!isPlainObject(raw)) throw new Error("health must be an object");
@@ -858,29 +844,9 @@ export function parseSemanticHealth(raw: unknown): SemanticHealth {
       ...(related !== undefined ? { related_keys: related } : {}),
     };
   });
-  const proposals: HealthProposal[] = raw.proposals.map((item, index) => {
-    if (!isPlainObject(item)) {
-      throw new Error(`proposals[${index}] must be an object`);
-    }
-    assertAllowlist(item, HEALTH_PROPOSAL_FIELDS, `proposals[${index}]`);
-    const code = requireString(item.code, `proposals[${index}].code`);
-    if (code !== "consolidation_reason_task") {
-      throw new Error(`proposals[${index}].code is not a closed proposal code: ${code}`);
-    }
-    const action = requireString(item.action, `proposals[${index}].action`);
-    if (action !== "start_reason_task") {
-      throw new Error(`proposals[${index}].action is not a closed proposal action: ${action}`);
-    }
-    if (item.approval_required !== true) {
-      throw new Error(`proposals[${index}].approval_required must be true`);
-    }
-    return {
-      code: "consolidation_reason_task",
-      action: "start_reason_task",
-      approval_required: true,
-      required: requireBoolean(item.required, `proposals[${index}].required`),
-    };
-  });
+  if (raw.proposals.length !== 0) {
+    throw new Error("proposals must be empty");
+  }
   return {
     schema: HEALTH_SCHEMA,
     revision: requireNonNegativeInteger(raw.revision, "revision"),
@@ -904,7 +870,7 @@ export function parseSemanticHealth(raw: unknown): SemanticHealth {
       ),
     },
     anomalies,
-    proposals,
+    proposals: [],
   };
 }
 

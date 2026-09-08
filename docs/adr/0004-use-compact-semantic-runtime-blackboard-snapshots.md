@@ -1,5 +1,9 @@
 # Use compact semantic Runtime Blackboard snapshots
 
+Status update: the Reason Task consolidation recommendation below is historical
+and was retired by [ADR 0032](0032-replace-assisted-blackboard-with-working-graph.md).
+Historical records remain stored; there is no current launch or approval action.
+
 A Runtime Continuation receives a pinned, topology-complete view of Current Work, Project Knowledge, and their current semantic relationships instead of a lossless rendering of storage, audit, and task-history fields. This preserves the full current reasoning graph while removing Task Goals already supplied at launch, Trusted Origin data, internal IDs, infrastructure identifiers, lifecycle timestamps, auxiliary bodies, repeated relationship summaries, terminal workflow records, and other audit-only metadata. Full semantic details remain addressable on demand through project-isolated Blackboard Keys.
 
 ## Snapshot shape
