@@ -28,22 +28,16 @@ description: Orchestrate a timed multi-target offensive/CTF session with a Decid
 5. **任务消息缺失 = 投递失败**：若你醒来时没有收到任何任务消息（只有环境上下文），你就是
    投递失败的线程——按上面分支处理，**绝不默认自己是主控**。
 
-## Runtime 工具术语
+## Runtime 派发
 
-只使用当前 Runtime 对应的一行，不混用两套术语：
+派发 Execute **必须后台异步**：Decide 发出后立即返回，**禁止同步等**到子线程结束。
+子线程只要本 step 正文，不要拷主控历史，不要加载本编排 Skill。
+使用当前 Runtime 的原生后台 agent 工具。
 
-| 动作 | Codex | Claude Code |
-| --- | --- | --- |
-| 派发 Execute agent | `spawn_agent` | `Agent` + `run_in_background: true` |
-| 等待/收割 | `wait_agent`（必须带 agent id） | 完成通知或 `TaskOutput` |
-| 发消息 | `send_input` | `SendMessage` |
-| 强制停止 | `close_agent` | `TaskStop` |
-
-Codex Profile 必须启用 multi-agent。CyberPenda 投影 V1 工具（`multi_agent_v1` 命名空间）。
-`spawn_agent` **必须** `fork_context: false`：只投递本 step 正文，禁止把主控历史拷进子线程。
+**仅 Codex：** Profile 必须启用 multi-agent。CyberPenda 投影 V1 工具（`multi_agent_v1` 命名空间）。
+`spawn_agent` **必须** `fork_context: false`。等待用 `wait_agent`（必须带 agent id），发信用 `send_input`，停止用 `close_agent`。
 不要传 `fork_turns` 或 `task_name`。不要用 V2 的 `send_message` / `interrupt_agent`。
 Execute 子线程禁止调用 ctf-orchestrator，禁止当 Decide；只执行派发模板里的那一个 step。
-Claude Code 使用后台 Agent。
 
 环境参数从任务说明读取。开局先执行 `WS="$(pwd -P)"; export WS`，实际 Runtime Workdir 是唯一 `$WS`。
 总时限从任务说明读取；并发容器配额默认 3。Hosted Task 使用 Disabled Blackboard Mode，

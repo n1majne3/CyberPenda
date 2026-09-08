@@ -1,9 +1,10 @@
 # Execute Agent 派发模板
 
-Codex 用 `spawn_agent`；Claude Code 用 `Agent` + `run_in_background: true`。prompt 结构固定三段：
-背景图 → 单 step → 收束纪律。**图放最前、step 放最后**（前缀稳定，命中缓存）。
+派发必须**后台异步**。Decide 发出后立即返回，禁止同步等到子线程结束。
+prompt 结构固定三段：背景图 → 单 step → 收束纪律。**图放最前、step 放最后**（前缀稳定，命中缓存）。
 
-Codex 派发参数硬性：`fork_context: false`。禁止 `fork_context: true`。子线程只要本 step 正文，不要主控历史、不要 Skill 开局指令。
+**仅 Codex：** `spawn_agent` 且 `fork_context: false`。禁止 `fork_context: true`。
+子线程只要本 step 正文，不要主控历史、不要 Skill 开局指令。
 Execute 只做这一个 step，禁止调用 ctf-orchestrator，禁止 list/start/hint/close/abandon。
 
 模板（`{}` 为占位符，其余逐字保留）：
@@ -39,7 +40,7 @@ Execute 只做这一个 step，禁止调用 ctf-orchestrator，禁止 list/start
 4. 长任务（爆破/隧道/监听）一律 tmux 后台：会话名 step{XXX}-{主题}，
    启动并确认存活后在 {$WS}/graph/tmux-registry.md 追加一行登记，不要原地等待结果。
 5. 只连接本 step 的目标地址，严禁扫描其他 IP（同网段常有其他目标在并行）。
-6. 环境：{按任务说明注入：可用工具、架构限制、网络限制}。
+6. 环境：{按任务说明注入：可用工具、架构限制、网络限制}。本环境为 kali 沙箱,已预装大量工具，可直接调用。
 7. 到点：写完 fact 文件立即结束，最终报告只需一句“已收束于 fact_{NNN}”。
 ```
 

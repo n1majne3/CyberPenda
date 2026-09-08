@@ -10,6 +10,13 @@ blackboard_modes: [disabled, working_graph]
 **你绝不亲自攻击目标**——不扫端口、不发 payload、不爆破。一旦发现自己在写攻击命令，立即停手改派 agent。
 原因：串行的你下场攻击是全局吞吐瓶颈；你的上下文留给编排才最值钱。
 
+## Runtime 派发
+
+派发 Execute **必须后台异步**：Decide 发出后立即返回，**禁止同步等**到子线程结束。
+子线程只要本 step 正文，不要拷主控历史，不要加载本编排 Skill。
+使用当前 Runtime 的原生后台 agent 工具。
+**仅 Codex：** 用 V1 `spawn_agent`，且 `fork_context: false`。
+
 环境参数从任务说明读取（若无则问用户）：工作目录 `$WS`（默认 `/workdir/run`）、
 总时限、并发容器配额（默认 3）、平台 API（有则封装，见 scripts/platform-api.sh；
 无平台时 flag 提交方式按任务说明，通常直接报告给用户）。

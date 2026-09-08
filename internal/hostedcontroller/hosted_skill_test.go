@@ -80,7 +80,7 @@ func TestHostedEvaluationPublishesOnlyCTFOrchestratorAndProjectsBenchmarkEnviron
 		"pentest-tsecbench-client submit", "pentest-tsecbench-client close", "pentest-tsecbench-client abandon",
 		"Decide", "Execute agent", "FGS", "graph/facts", "ledger.tsv", "WS=\"$(pwd -P)\"",
 		"Codex", "spawn_agent", "wait_agent", "send_input", "close_agent",
-		"Claude Code", "run_in_background", "TaskOutput", "TaskStop", "SendMessage",
+		"后台异步", "fork_context: false",
 		"over_budget", "elapsed_min", "budget_min", "attempt_n", "Challenge Pass Clock",
 	} {
 		if !strings.Contains(instruction, required) {
@@ -169,6 +169,31 @@ func TestTSecBenchSkillPinsCodexSpawnWithoutParentHistory(t *testing.T) {
 	if !strings.Contains(executePrompt, "fork_context: false") {
 		t.Fatal("execute-prompt.md must require fork_context: false")
 	}
+	if !strings.Contains(executePrompt, "后台异步") {
+		t.Fatal("execute-prompt.md must require background-async dispatch")
+	}
+}
+
+func TestTSecBenchSkillPinsBackgroundAsyncDispatchWithoutRuntimeProductTable(t *testing.T) {
+	instruction := captureHostedSkillInstruction(t)
+	for _, required := range []string{
+		"后台异步",
+		"禁止同步等",
+		"fork_context: false",
+		"spawn_agent",
+	} {
+		if !strings.Contains(instruction, required) {
+			t.Errorf("hosted Skill missing background-async dispatch rule %q", required)
+		}
+	}
+	for _, productColumn := range []string{
+		"| 动作 | Codex | Claude Code |",
+		"| 动作 | Codex | Claude Code | Pi |",
+	} {
+		if strings.Contains(instruction, productColumn) {
+			t.Errorf("hosted Skill still lists Runtime product columns %q", productColumn)
+		}
+	}
 }
 
 func TestTSecBenchSkillPinsGenericSlotReleasePolicy(t *testing.T) {
@@ -256,6 +281,37 @@ func TestNormalBuiltinCTFOrchestratorDoesNotContainTheHostedOnlyContract(t *test
 		if strings.Contains(instruction, hostedOnly) {
 			t.Fatalf("normal ctf-orchestrator leaked hosted-only contract %q", hostedOnly)
 		}
+	}
+}
+
+func TestBuiltinCTFOrchestratorPinsBackgroundAsyncDispatch(t *testing.T) {
+	bundles, err := skill.BuiltinBundles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files map[string]string
+	for _, bundle := range bundles {
+		if bundle.Metadata.ID != "ctf-orchestrator" {
+			continue
+		}
+		files = bundle.Files
+		break
+	}
+	instruction := files["SKILL.md"]
+	executePrompt := files["references/execute-prompt.md"]
+	if strings.TrimSpace(instruction) == "" {
+		t.Fatal("normal ctf-orchestrator Built-in Skill is missing")
+	}
+	for _, required := range []string{"后台异步", "禁止同步等", "fork_context: false"} {
+		if !strings.Contains(instruction, required) {
+			t.Errorf("builtin Skill missing background-async dispatch rule %q", required)
+		}
+	}
+	if !strings.Contains(executePrompt, "后台异步") {
+		t.Fatal("builtin execute-prompt.md must require background-async dispatch")
+	}
+	if strings.Contains(instruction, "| 动作 | Codex | Claude Code |") {
+		t.Fatal("builtin Skill still lists Runtime product columns")
 	}
 }
 
