@@ -259,8 +259,14 @@ pentestctl working-graph status
 pentestctl working-graph history --key goal:inspect
 ```
 
-`emit` publishes a structured update to the Outbox. Check its Receipt before
-assuming the Blackboard accepted it. `--input -` reads one JSON object from stdin.
+`emit` publishes an update and waits up to 5 seconds for its Receipt. It returns
+`applied` on acceptance, or the rejection Receipt and a nonzero exit status when
+repair is required. Use `--wait 0` for publication only, or `--wait 10s` to change
+the wait (maximum 30 seconds). On timeout it returns `published` and a nonzero
+exit status: the update remains published, but acceptance is unknown. Run
+`status` and repair any original rejected update before dependent reports. Do
+not republish or withdraw an update because its Receipt is missing.
+`--input -` reads one JSON object from stdin.
 Read and history commands use the trusted HTTP interface. Disabled Runtime
 Owners cannot use these commands.
 

@@ -313,8 +313,14 @@ pentestctl working-graph read --active
 pentestctl working-graph read --key step:check-connectivity
 ```
 
-`emit` reports `published`, identity, and receipt location. It does not claim the
-graph is saved. `validate` runs schema and available reference checks without
+`emit` waits up to 5 seconds for the published update's Receipt and returns it.
+Acceptance returns `applied`; rejection returns `action_required` and a nonzero
+exit status. `--wait 0` returns `published` without waiting. The wait is bounded
+at 30 seconds. Timeout returns `published` and a nonzero exit status with guidance
+to inspect status, not to republish or withdraw the pending update. Receipt reads
+are scoped to the current Continuation and update ID. This bounded feedback does
+not schedule Runtime work or change the atomic Outbox acceptance contract.
+`validate` runs schema and available reference checks without
 mutation; acceptance is still decided at commit. `read --active` is a bounded
 projection of active Goals, open/running/blocked Steps, related Fact summaries,
 and pending delivery identities, with cursors for more data. Facts are read in

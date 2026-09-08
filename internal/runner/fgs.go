@@ -46,7 +46,7 @@ Read accepted state with ` + "`pentestctl working-graph read`" + ` before planni
 - Fact: append an observed result with fact.append. Supply a Step key, summary, and optional body. Facts are immutable. Correct an inaccurate Fact with a new Fact whose corrects field names the earlier Fact.
 - Goal states: open, active, done, abandoned. A terminal Goal can reopen with a reason. To mark done, supply supporting facts and a summary that explains how they meet the success criteria.
 - Step states: open, running, blocked, done, cancelled. A done Step means work finished, including a negative result. Supply outputs that name Facts. A retry is a new Step. Supply a reason when blocked or cancelled.
-- Description changes require expected values for the changed fields. Transitions require from and to. Keep node keys stable and unique in the graph.
+- Description changes put the new value in the top-level field and the current value in expected: {"op":"step.describe","key":"step:check","action":"Read the new endpoint","expected":{"action":"Read the old endpoint"}}. Do not put the new value only in expected. Transitions require from and to. Keep node keys stable and unique in the graph.
 
 ### Results and changes of plan
 
@@ -66,9 +66,9 @@ Publish an object with an operations array through ` + "`pentestctl working-grap
 {"operations":[{"op":"goal.create","key":"goal:check","title":"Check access","success_criteria":"The access result is known"},{"op":"step.create","key":"step:check","goal":"goal:check","action":"Read the authorized health endpoint"}]}
 ` + "```" + `
 
-Publish before work starts and when execution, a blocker, a result, or a decision changes. The Harness reads graph/outbox/<continuation>/ during work. Emit allocates the immutable update ID and sequence. Do not edit published files. Publication is not acceptance: inspect graph/receipts/<continuation>/ for applied or action_required, or use ` + "`pentestctl working-graph status`" + `.
+Publish before work starts and when execution, a blocker, a result, or a decision changes. The Harness reads graph/outbox/<continuation>/ during work. Emit allocates the immutable update ID and sequence and waits up to 5 seconds for its Receipt. It returns applied on acceptance. A rejection or timeout returns a nonzero exit status. On timeout the update is still published: run status, keep its ID, and do not republish or withdraw it because the Receipt is missing. The optional --wait 0 returns published without waiting. Check pending Receipts at the next decision boundary; do not defer this until the final reply. Do not edit published files. Publication is not acceptance: inspect graph/receipts/<continuation>/ for applied or action_required, or use ` + "`pentestctl working-graph status`" + `.
 
-Updates are atomic: if any operation fails, NONE of that update's operations were applied. The receipt operation index identifies the error, not a partially applied prefix. Read accepted state again and resend the COMPLETE corrected batch, including its Facts and Step results. Use the accepted node state for from; creating a Goal leaves it open, not active.
+Operations run in array order: create a Fact before a Step transition that names it in outputs. Updates are atomic: if any operation fails, NONE of that update's operations were applied. The receipt operation index identifies the error, not a partially applied prefix. Read accepted state again and resend the COMPLETE corrected batch, including its Facts and Step results. Use the accepted node state for from; creating a Goal leaves it open, not active.
 
 For action_required, publish a new update with resolves: {continuation_id, intent_id} naming the ORIGINAL rejected update and the complete corrected operations. If that repair also fails, the original update remains the blocker: target it again, not the failed repair. To withdraw the original update, use resolves, an empty operations array, and withdrawal_reason. Withdrawal discards the whole batch; it does not preserve its earlier operations. After withdrawal, read accepted state before a fresh update. Never withdraw a missing receipt as if it were a rejected update.
 

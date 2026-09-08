@@ -464,7 +464,13 @@ func applyOperation(nodes map[string]Node, op Operation) (Node, error) {
 		}
 		return Node{Key: op.Key, Type: "fact", Step: op.Step, Summary: op.Summary, Body: op.Body, Corrects: op.Corrects, DataRefs: op.DataRefs}, nil
 	case "step.transition":
-		if n.Type != "step" || n.State != op.From || !stepTransition(op.From, op.To) {
+		if n.Type != "step" {
+			return n, fmt.Errorf("Step %q does not exist", op.Key)
+		}
+		if n.State != op.From {
+			return n, fmt.Errorf("Step %q is %q, but from is %q; use the current state for from", n.Key, n.State, op.From)
+		}
+		if !stepTransition(op.From, op.To) {
 			return n, errors.New("invalid Step state transition; retry a terminal Step with a new Step")
 		}
 		if (op.To == "blocked" || op.To == "cancelled") && op.Reason == "" {
@@ -474,8 +480,11 @@ func applyOperation(nodes map[string]Node, op Operation) (Node, error) {
 			return n, errors.New("Step completion requires current state and output Facts")
 		}
 		for _, f := range op.Outputs {
-			if nodes[f].Type != "fact" || nodes[f].Step != n.Key {
-				return n, errors.New("output Fact belongs to another Step")
+			if nodes[f].Type != "fact" {
+				return n, fmt.Errorf("output Fact %q does not exist; append the Fact before the Step transition in the operations array", f)
+			}
+			if nodes[f].Step != n.Key {
+				return n, fmt.Errorf("output Fact %q belongs to Step %q, not Step %q", f, nodes[f].Step, n.Key)
 			}
 		}
 		n.State = op.To
@@ -486,8 +495,11 @@ func applyOperation(nodes map[string]Node, op Operation) (Node, error) {
 		}
 		return n, nil
 	case "goal.transition":
-		if n.Type != "goal" || n.State != op.From {
-			return n, errors.New("Goal state does not match")
+		if n.Type != "goal" {
+			return n, fmt.Errorf("Goal %q does not exist", op.Key)
+		}
+		if n.State != op.From {
+			return n, fmt.Errorf("Goal %q is %q, but from is %q; use the current state for from", n.Key, n.State, op.From)
 		}
 		if (op.From == "done" || op.From == "abandoned") && op.To == "open" && op.Reason != "" {
 			n.State = "open"
@@ -555,7 +567,7 @@ func applyOperation(nodes map[string]Node, op Operation) (Node, error) {
 			count++
 		}
 		if count == 0 || len(op.Expected) != count {
-			return n, errors.New("description requires exactly the changed fields and their expected values")
+			return n, errors.New("description requires new values in top-level fields and current values for the same fields in expected; for step.describe supply action and expected.action")
 		}
 		return n, nil
 	default:

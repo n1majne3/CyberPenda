@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pentest/internal/fgs"
@@ -222,5 +223,33 @@ func TestFactCorrectionAndGoalHierarchyKeepCausalLinks(t *testing.T) {
 	r = submit(t, s, c, 2, fgs.Operation{Op: "goal.transition", Key: "goal:health", From: "done", To: "open", Reason: "more checks"})
 	if r.State != "action_required" {
 		t.Fatalf("child reopened under done parent: %+v", r)
+	}
+}
+
+func TestRejectedUpdatesExplainHowToRepair(t *testing.T) {
+	cases := []struct {
+		name string
+		op   fgs.Operation
+		want []string
+	}{
+		{"missing output", fgs.Operation{Op: "step.transition", Key: "step:check", From: "open", To: "done", Outputs: []string{"fact:missing"}}, []string{"fact:missing", "does not exist", "before"}},
+		{"wrong Step state", fgs.Operation{Op: "step.transition", Key: "step:check", From: "running", To: "done", Outputs: []string{"fact:missing"}}, []string{"step:check", "open", "running", "from"}},
+		{"wrong Goal state", fgs.Operation{Op: "goal.transition", Key: "goal:check", From: "active", To: "done"}, []string{"goal:check", "open", "active", "from"}},
+		{"missing new description", fgs.Operation{Op: "step.describe", Key: "step:check", Expected: map[string]string{"action": "New action"}}, []string{"top-level", "expected", "current"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, c := fixture(t)
+			submit(t, s, c, 1, fgs.Operation{Op: "goal.create", Key: "goal:check", Title: "Check", SuccessCriteria: "Checked"}, fgs.Operation{Op: "step.create", Key: "step:check", Goal: "goal:check", Action: "Check response"})
+			r := submit(t, s, c, 2, tc.op)
+			if r.State != "action_required" {
+				t.Fatalf("receipt: %+v", r)
+			}
+			for _, part := range tc.want {
+				if !strings.Contains(r.Message, part) {
+					t.Errorf("message %q missing %q", r.Message, part)
+				}
+			}
+		})
 	}
 }
