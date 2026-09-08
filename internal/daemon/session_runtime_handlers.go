@@ -1883,38 +1883,16 @@ func (server *Server) handleSessionProviderPermissionResponse(response http.Resp
 		writeError(response, http.StatusConflict, "Session Runtime provider session is unavailable")
 		return
 	}
-	permissionID := strings.TrimSpace(request.PathValue("permission_id"))
-	if permissionID == "" {
-		writeError(response, http.StatusBadRequest, "permission request id is required")
+	input, permissionID, valid := readPermissionResponse(response, request, func(value any) error { return decodeOptionalJSON(request, value) })
+	if !valid {
 		return
 	}
-	var input providerPermissionResponseRequest
-	if err := decodeOptionalJSON(request, &input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	input.Decision = normalizePermissionDecision(input.Decision)
-	if input.Decision == "" {
-		writeError(response, http.StatusBadRequest, "permission decision must be allow or deny")
-		return
-	}
-	derivePermissionResponseRequestID(request, &input)
 	events, err := server.sessions.Events(id)
 	if err != nil {
 		writeSessionError(response, err)
 		return
 	}
-	pending, priorOutcome, priorDecision := providerPermissionStatus(sessionEventsAsTimeline(events), permissionID, input.RequestID)
-	if priorDecision != "" && priorDecision != input.Decision {
-		writeError(response, http.StatusConflict, "permission request id already belongs to a different decision")
-		return
-	}
-	if priorOutcome != "" {
-		writePermissionResponseAccepted(response, input, permissionID, provider.SessionID(), priorOutcome)
-		return
-	}
-	if !pending {
-		writeError(response, http.StatusNotFound, "provider permission request is no longer pending")
+	if !permissionResponsePending(response, input, permissionID, provider.SessionID(), sessionEventsAsTimeline(events)) {
 		return
 	}
 	if !provider.Capabilities().PermissionResponse {
