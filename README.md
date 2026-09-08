@@ -156,9 +156,38 @@ TSecBench injects `BENCHMARK_BASE_URL` and the one-use `BENCHMARK_TOKEN` in Host
 | `CYBERPENDA_TASK_GOAL_APPENDIX` | Optional text appended to the required Hosted Task Goal |
 | `CYBERPENDA_AUTO_COMPACT_THRESHOLD` | Optional Claude Code compaction threshold (1-100) |
 | `CYBERPENDA_AUTO_COMPACT_WINDOW` | Optional Claude Code compaction window (1-1048576) |
-| `CYBERPENDA_MAX_OUTPUT_TOKENS` | Optional max output tokens (1-1048576); DeepSeek hosted runs use `393216` |
-| `CYBERPENDA_CONTEXT_WINDOW` | Optional context window in tokens |
+| `CYBERPENDA_MAX_OUTPUT_TOKENS` | Optional maximum output tokens (1-1048576); supports Claude Code and Pi |
+| `CYBERPENDA_CONTEXT_WINDOW` | Optional total context capacity in tokens (1-1048576); supports Claude Code and Pi |
 | `CYBERPENDA_CHALLENGE_ADAPTER` | Optional challenge adapter id; defaults to `tsecbench` |
+
+Context capacity and the compaction window are separate settings. Explicit context
+and output limits take precedence over the Model Capability Cache. If a value is
+empty, CyberPenda uses the cache value when available, then the Runtime default.
+The two compaction settings apply only to Claude Code; Pi uses its native
+compaction settings.
+
+| Hosted setting | Claude Code projection | Pi projection in `models.json` |
+| --- | --- | --- |
+| `CYBERPENDA_CONTEXT_WINDOW` | `CLAUDE_CODE_MAX_CONTEXT_TOKENS` | `contextWindow` |
+| `CYBERPENDA_MAX_OUTPUT_TOKENS` | `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | `maxTokens` |
+
+For a model with a 1048576-token context and a 393216-token output limit, use:
+
+```env
+# Claude Code and Pi. Set these values to the model's actual limits.
+CYBERPENDA_CONTEXT_WINDOW=1048576
+CYBERPENDA_MAX_OUTPUT_TOKENS=393216
+
+# Claude Code only. Leave empty to use its native defaults.
+CYBERPENDA_AUTO_COMPACT_WINDOW=524288
+CYBERPENDA_AUTO_COMPACT_THRESHOLD=80
+```
+
+Claude Code has native restrictions on context overrides for recognized Claude
+model IDs and IDs with `[1m]`. CyberPenda does not disable compaction to force an
+override. See the [Hosted configuration guide](docs/tsecbench/README.md#hosted-mode)
+for these restrictions and the [environment template](docs/tsecbench/tsecbench.env.example)
+for the complete configuration.
 
 ## Typical workflow
 
