@@ -197,6 +197,25 @@ func TestTSecBenchSkillPinsGenericSlotReleasePolicy(t *testing.T) {
 	}
 }
 
+func TestTSecBenchSkillPinsStartEligibilityAndBackfillPriority(t *testing.T) {
+	instruction := captureHostedSkillInstruction(t)
+	for _, required := range []string{
+		"correct_flag_count == total_flag_count",
+		"禁止再 start",
+		"从未开过",
+		"还剩 flag",
+		"零进展 pass",
+		"不得立刻再占槽",
+		"正在占槽的那一题",
+		"配额不满必须补",
+		"禁止用零进展题凑满",
+	} {
+		if !strings.Contains(instruction, required) {
+			t.Errorf("hosted Skill missing start-eligibility rule %q", required)
+		}
+	}
+}
+
 func TestTSecBenchSkillTreatsClientFailureAsLocalAndRecoverable(t *testing.T) {
 	instruction := captureHostedSkillInstruction(t)
 	for _, required := range []string{

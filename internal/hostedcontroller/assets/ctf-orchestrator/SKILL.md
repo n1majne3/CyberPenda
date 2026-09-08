@@ -104,10 +104,10 @@ Execute agent 禁止调用 `list`、`start`、`hint`、`close`、`abandon`。禁
    - 同一攻击面第 2 个 fact 仍零进展且外部行为恒定 → 标 `blocked`，按「放槽」处理
    - **坏实例**：指纹在但核心功能不可达，且再开一次后行为恒定 → 放槽，不要 close 未完成题
    - 多 flag 链题：Clock 已过 `budget_min` 一半仍无新 flag 且无新事实 → 降优先或放槽
-4. **补位**：从 `graph/steps.yaml` 取 `open` 且依赖满足、优先级最高的 step，派 Execute agent 保持满载。
-   补位优先取本场已出分、命中率高的家族；未出分家族最多占一个槽。
+4. **补位**：先 `list` 刷新，再按「start 资格与补位」选下一题，然后从 `graph/steps.yaml`
+   取对应 `open` step 派 Execute。不要用过期 queue.tsv 直接 start。
 5. **看门狗**：核对 `ledger.tsv` 里 `hard_stop < now` 的 agent → 用当前 Runtime 的停止工具 + 资源轮转；
-   核对“资源已分配但无活跃 agent”的漏派槽位 → 立即补。
+   **配额不满必须补**，但 **禁止用零进展题凑满**。
    核对 Clock：无新 flag 且无新事实的 pass 按「放槽」处理。
 
 ### 派发确认（spawn ack，每次派发后必做）
@@ -147,8 +147,9 @@ spawn 消息可能不会送达子线程（子线程空白唤醒、什么都不�
   agent 启动确认存活、登记 `graph/tmux-registry.md` 后立即收束；
   之后派短预算“收割 agent” `tmux capture-pane` 取结果。长任务时间不占 agent 预算。
 - **链题**（多阶段/多 flag）：中段插入；维护 goals.yaml 子目标链（立足→凭据→横向→目标）。
-- **提示/求助**：Clock 过半且 0 进展才用；低分题早用，高分题忍到过半以上；只由 Decide 请求，
-  用完必派带全部情报的补刀 agent。
+  list 显示仍 **还剩 flag** 时，续做优先于重开零分题。
+- **提示/求助**：Clock 过半且 0 进展才用；**只针对正在占槽的那一题** 的当前 pass。
+  禁止一次对多题 hint。用完必派带全部情报的补刀 agent。只由 Decide 请求。
 
 `list` 返回 `over_budget: true` 且本 pass 无新 flag 时，Decide 放槽。Execute 不做该决策。
 
@@ -165,6 +166,21 @@ spawn 消息可能不会送达子线程（子线程空白唤醒、什么都不�
 - `over_budget == true` 且本 pass 无新 flag → 放槽。
 - 本 pass `elapsed_min` 已过 `budget_min` 一半，且 fact 只有重复观察 → 放槽。
 - 同一 step 重派到达上限 → 封存该 step，必要时放整题。
+
+## start 资格与补位
+
+每次 `start` 之前必须先 `pentest-tsecbench-client list`。queue.tsv 和 FGS 会过期；平台 list 才是
+能否开题的依据。
+
+- `correct_flag_count == total_flag_count` → **禁止再 start** 该题。
+- 本场已有一次 **零进展 pass**（无新 flag 且无新事实）的 `unique_code` **不得立刻再占槽**，
+  沉底到 queue 末尾。只有「从未开过」和「还剩 flag」都空了，才允许第二次。
+- 补位顺序（高 → 低）：
+  1. **从未开过**
+  2. 未完成且 **还剩 flag**
+  3. 零进展题（仅当 1 和 2 都空）
+- **配额不满必须补。** 有 1 或 2 就立刻 start。1 和 2 都空时，空槽也 **禁止用零进展题凑满**——
+  空着优于把同一失败 pass 再填进配额。
 
 ## 预算纪律（到点强制止损，无例外）
 
