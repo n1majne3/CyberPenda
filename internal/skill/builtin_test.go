@@ -29,11 +29,14 @@ func TestBuiltinBundlesIncludeRequestedProjects(t *testing.T) {
 	}
 
 	// The curated builtin set: sandbox tooling discipline the model cannot know
-	// from pretraining, the product-integrated scoreboard flow, and the
-	// operator-authored benchmark orchestration skill.
+	// from pretraining, the product-integrated scoreboard flow, the
+	// operator-authored benchmark orchestration skill, and the two
+	// verification Skills that state Blackboard settlement rules.
 	want := []string{
 		"scoreboard-driven-web-challenge",
 		"ctf-orchestrator",
+		"verify-finding",
+		"verify-solution",
 		"tooling-ffuf",
 		"tooling-httpx",
 		"tooling-katana",
@@ -441,4 +444,42 @@ func assertBuiltinBundle(t *testing.T, bundles map[string]skill.ImportedBundle, 
 		t.Fatalf("builtin bundle %q has no display name", id)
 	}
 	return bundle
+}
+
+
+func TestVerificationSkillsStateProductProtocol(t *testing.T) {
+	bundles, err := skill.BuiltinBundles()
+	if err != nil {
+		t.Fatalf("load builtin bundles: %v", err)
+	}
+	byID := map[string]string{}
+	for _, bundle := range bundles {
+		byID[bundle.Metadata.ID] = bundle.Files["SKILL.md"]
+	}
+	finding := byID["verify-finding"]
+	for _, needle := range []string{
+		"pentestctl blackboard change",
+		"false_positive",
+		"supports",
+		"Do not set `severity`",
+		"cyberpenda-blackboard-working-graph",
+		"fact.append",
+	} {
+		if !strings.Contains(finding, needle) {
+			t.Fatalf("verify-finding missing %q", needle)
+		}
+	}
+	solution := byID["verify-solution"]
+	for _, needle := range []string{
+		"verification_summary",
+		"ctf_challenge",
+		"`status` `verified`",
+		"Do not set `solved`",
+		"cyberpenda-blackboard-working-graph",
+		"pentestctl blackboard change",
+	} {
+		if !strings.Contains(solution, needle) {
+			t.Fatalf("verify-solution missing %q", needle)
+		}
+	}
 }
