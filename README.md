@@ -158,7 +158,7 @@ TSecBench injects `BENCHMARK_BASE_URL` and the one-use `BENCHMARK_TOKEN` in Host
 | `CYBERPENDA_AUTO_COMPACT_WINDOW` | Optional Claude Code compaction window (1-1048576) |
 | `CYBERPENDA_MAX_OUTPUT_TOKENS` | Optional maximum output tokens (1-1048576); supports Claude Code and Pi |
 | `CYBERPENDA_CONTEXT_WINDOW` | Optional total context capacity in tokens (1-1048576); supports Claude Code and Pi |
-| `CYBERPENDA_PI_ADDITIONAL_MODEL_N` | Optional Pi-only additional model slots (N = 1-3), projected into the same Pi profile as the parent model |
+| `CYBERPENDA_PI_ADDITIONAL_MODEL_N` | Optional Pi-only additional model slots (N = 1-3) with optional `_PROTOCOL`, `_BASE_URL`, `_API_KEY` overrides; projected into the same Pi profile as the parent model |
 | `CYBERPENDA_CHALLENGE_ADAPTER` | Optional challenge adapter id; defaults to `tsecbench` |
 
 Context capacity and the compaction window are separate settings. Explicit context
@@ -206,14 +206,34 @@ override without its model id is invalid. `CYBERPENDA_CONTEXT_WINDOW` and
 `CYBERPENDA_MAX_OUTPUT_TOKENS` apply to every projected model; reasoning
 effort stays a parent-session setting.
 
+Slots 1-3 exist; the slot prefix is the same for all of them. `_1` applies a
+model id, `_1_PROTOCOL`, `_1_BASE_URL`, and `_1_API_KEY` are its optional
+overrides; `_2` and `_3` follow the same shape. Slot base URLs obey the same
+gateway rules as `CYBERPENDA_MODEL_BASE_URL`.
+
+```env
+# Slot 1: no overrides — inherits protocol, base URL, and API key,
+# and joins the parent provider's catalog.
+CYBERPENDA_PI_ADDITIONAL_MODEL_1=pi-scout
+
+# Slot 2: model on a second Hosted gateway with its own dedicated key.
+CYBERPENDA_PI_ADDITIONAL_MODEL_2=pi-researcher
+CYBERPENDA_PI_ADDITIONAL_MODEL_2_BASE_URL=http://SECOND_HOST.tsecbench.gw/v1
+CYBERPENDA_PI_ADDITIONAL_MODEL_2_API_KEY=SECOND_DEDICATED_KEY
+CYBERPENDA_PI_ADDITIONAL_MODEL_2_PROTOCOL=openai_chat_completions
+```
+
 The same model id projected with the same protocol, base URL, and API key is
-projected once. Model ids that share their whole effective provider tuple
-share one projected Model Provider. The parent session keeps launching on
-`CYBERPENDA_MODEL`; additional models widen the projected Pi registry only.
-Write the subagent calling rules (which role uses which model, when not to
-switch) in `CYBERPENDA_TASK_GOAL_APPENDIX` — never an API key. See the
-[Hosted configuration guide](docs/tsecbench/README.md#hosted-mode) for the
-subagent model-selector rules.
+projected once; a model id projected twice with a differing protocol, base
+URL, or API key fails bootstrap. Model ids that share their whole effective
+provider tuple share one projected Model Provider. `CYBERPENDA_CONTEXT_WINDOW`
+and `CYBERPENDA_MAX_OUTPUT_TOKENS` apply to every projected model;
+`CYBERPENDA_REASONING_EFFORT` stays a parent-session setting. The parent
+session keeps launching on `CYBERPENDA_MODEL`; additional models widen the
+projected Pi registry only. Write the subagent calling rules (which role uses
+which model, when not to switch) in `CYBERPENDA_TASK_GOAL_APPENDIX` — never an
+API key. See the [Hosted configuration guide](docs/tsecbench/README.md#hosted-mode)
+for the subagent model-selector rules and the discovery procedure.
 
 ## Typical workflow
 

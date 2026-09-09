@@ -79,8 +79,9 @@ Rules:
 - Slot base URLs follow the same gateway rules as the parent: plain HTTP,
   `.tsecbench.gw` host, no user info, query, fragment, or operation suffix.
 - A model id repeated with the same protocol, base URL, and API key is
-  projected once. Different model ids that share the whole effective tuple
-  share one projected Model Provider.
+  projected once. Repeating a model id with a different protocol, base URL,
+  or API key fails bootstrap. Different model ids that share the whole
+  effective tuple share one projected Model Provider.
 - `CYBERPENDA_CONTEXT_WINDOW` and `CYBERPENDA_MAX_OUTPUT_TOKENS` apply to
   every projected model, exactly as they apply to the parent.
 - The parent Pi session keeps launching on `CYBERPENDA_MODEL`. Additional
