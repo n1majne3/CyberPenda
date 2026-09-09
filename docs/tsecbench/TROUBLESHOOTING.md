@@ -52,7 +52,34 @@ Claude Code 对 Claude 模型 ID 和 `[1m]` ID 的窗口覆盖有限制，详见
 
 The model URL must use HTTP and an already converted `.tsecbench.gw` host. It
 must be the protocol Base URL, not an operation URL. Hosted Mode has no public
-Internet access.
+Internet access. The same rules apply to every
+`CYBERPENDA_PI_ADDITIONAL_MODEL_N_BASE_URL` slot.
+
+## Pi additional-model validation fails
+
+`CYBERPENDA_PI_ADDITIONAL_MODEL_N` (N = 1-3) accepts Pi only. Check that:
+
+- `CYBERPENDA_RUNTIME` is `pi`. Any additional-model variable on `codex` or
+  `claude_code` (including the omitted-Runtime default) fails before the
+  Project is created.
+- Every set value is non-empty. These variables have no "blank keeps the
+  default" behavior: omit the variable instead of leaving it blank.
+- `_PROTOCOL`, `_BASE_URL`, and `_API_KEY` are set only together with their
+  matching `_N` model id.
+- The same model id is not configured twice with a different protocol, base
+  URL, or API key. Identical repeats are projected once.
+
+## Subagent selects the wrong model or provider
+
+The `@tintinweb/pi-subagents` bare-model fallback ignores case and treats
+dots and dashes as equal. `model-4.5` and `model-4-5`, or ids that differ
+only in case, can resolve to the first equal-scoring registry entry on the
+wrong provider. The Runtime must read
+`$PI_CODING_AGENT_DIR/models.json`, take the exact `providerID/modelID`
+pair, and pass it verbatim to the Agent tool's model argument — preserving
+case, punctuation, and any slash in the model ID. Provider display names are
+not registry IDs, and generated provider IDs cannot be guessed before
+bootstrap. Put that instruction in `CYBERPENDA_TASK_GOAL_APPENDIX`.
 
 ## Runtime fails
 

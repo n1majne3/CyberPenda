@@ -15,8 +15,9 @@ import (
 )
 
 type hostedApp struct {
-	started []hostedcontroller.HostedEvaluationBootstrap
-	waited  []hostedcontroller.HostedEvaluationReference
+	started    []hostedcontroller.HostedEvaluationBootstrap
+	waited     []hostedcontroller.HostedEvaluationReference
+	secretSets [][]string
 }
 
 func (app *hostedApp) Start(_ context.Context, evaluation hostedcontroller.HostedEvaluationBootstrap) (hostedcontroller.HostedEvaluationReference, error) {
@@ -24,8 +25,9 @@ func (app *hostedApp) Start(_ context.Context, evaluation hostedcontroller.Hoste
 	return hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, nil
 }
 
-func (app *hostedApp) Wait(ctx context.Context, run hostedcontroller.HostedEvaluationReference, _ io.Writer, _ []string) error {
+func (app *hostedApp) Wait(ctx context.Context, run hostedcontroller.HostedEvaluationReference, _ io.Writer, secrets []string) error {
 	app.waited = append(app.waited, run)
+	app.secretSets = append(app.secretSets, secrets)
 	<-ctx.Done()
 	return nil
 }

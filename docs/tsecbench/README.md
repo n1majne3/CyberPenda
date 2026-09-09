@@ -52,6 +52,66 @@ Enter the converted HTTP gateway Base URL with the `.tsecbench.gw` host. Enter
 a protocol Base URL. Do not append `/chat/completions`, `/responses`, or
 `/messages`. Use a dedicated, revocable evaluation model API key.
 
+### Pi additional models
+
+Pi accepts three optional additional-model slots so `@tintinweb/pi-subagents`
+can run subagents on another model. Each slot is
+`CYBERPENDA_PI_ADDITIONAL_MODEL_N` (N = 1-3) with optional `_PROTOCOL`,
+`_BASE_URL`, and `_API_KEY` overrides:
+
+```env
+# Inherits CYBERPENDA_MODEL_PROTOCOL, _BASE_URL, and _API_KEY.
+CYBERPENDA_PI_ADDITIONAL_MODEL_1=pi-scout
+# A second Hosted gateway with its own key.
+CYBERPENDA_PI_ADDITIONAL_MODEL_2=pi-researcher
+CYBERPENDA_PI_ADDITIONAL_MODEL_2_BASE_URL=http://second-model.tsecbench.gw/v1
+CYBERPENDA_PI_ADDITIONAL_MODEL_2_API_KEY=SECOND_DEDICATED_KEY
+```
+
+Rules:
+
+- Pi only. Any of these variables on `codex` or `claude_code` fails
+  configuration validation before challenge work.
+- Slots are sparse and independent. Slot 2 may be set while slot 1 is not,
+  and every omitted override inherits the parent values, never another slot.
+- A present-but-empty value is invalid: omit the variable instead of leaving
+  it blank. An override without its model id is invalid too.
+- Slot base URLs follow the same gateway rules as the parent: plain HTTP,
+  `.tsecbench.gw` host, no user info, query, fragment, or operation suffix.
+- A model id repeated with the same protocol, base URL, and API key is
+  projected once. Different model ids that share the whole effective tuple
+  share one projected Model Provider.
+- `CYBERPENDA_CONTEXT_WINDOW` and `CYBERPENDA_MAX_OUTPUT_TOKENS` apply to
+  every projected model, exactly as they apply to the parent.
+- The parent Pi session keeps launching on `CYBERPENDA_MODEL`. Additional
+  models only widen the projected registry; they are never a replacement.
+- Do not put API keys in `CYBERPENDA_TASK_GOAL_APPENDIX`. Write the calling
+  rules there instead: which role uses which model, and when not to switch.
+
+### Subagent model selectors
+
+The plugin's bare-model fallback ignores case and treats dots and dashes as
+equal, so `model-4.5` and `model-4-5`, or ids differing only in case, can
+select the wrong registry entry. The Runtime must pass the exact
+`providerID/modelID` selector:
+
+1. Read the projected registry at `$PI_CODING_AGENT_DIR/models.json` (also
+   `~/.pi/agent/models.json` inside the Runtime home). Each key of
+   `providers` is a provider ID; each `models[].id` under it is a model ID.
+   Generated provider IDs cannot be guessed before bootstrap and provider
+   display names are never registry IDs.
+2. Pass `providerID/modelID` verbatim to the Agent tool's model argument.
+   Preserve case, punctuation, and any slash inside the model ID exactly as
+   the registry shows it.
+
+A suggested appendix line:
+
+```text
+For subagents, read $PI_CODING_AGENT_DIR/models.json and pass the exact
+"providerID/modelID" value as the Agent tool's model argument. Keep the
+parent session on its own model; switch models only when the appendix says so.
+```
+
 TSecBench injects `BENCHMARK_BASE_URL` and the one-use `BENCHMARK_TOKEN`.
 Hosted Mode uses the isolated TSecBench network. It does not start a VPN and
 has no public Internet access. The Runtime uses only tools already in the

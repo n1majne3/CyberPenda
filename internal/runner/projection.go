@@ -965,6 +965,18 @@ func resolveMaterializedCredentials(profile runtimeprofile.Profile, req Projecti
 			env[key] = value
 		}
 	}
+	// Pre-transaction parity with MaterializeLaunchCredentials: every
+	// launch-ready global Model Provider's key must reach the Runtime process
+	// environment, not only the profile-selected parent. models.json apiKey
+	// entries reference these generated env names, so a Pi child without them
+	// cannot authenticate to its additional providers.
+	if profile.Provider == runtimeprofile.ProviderPi {
+		merged, err := mergePiGlobalProviderCredentials(env, profile, req)
+		if err != nil {
+			return nil, err
+		}
+		env = merged
+	}
 	if len(env) == 0 {
 		return nil, nil
 	}
@@ -1034,11 +1046,7 @@ func MaterializeLaunchCredentials(profile runtimeprofile.Profile, req Projection
 		return nil, err
 	}
 	if profile.Provider == runtimeprofile.ProviderPi {
-		projected, err := listPiLaunchReadyProviders(profile, req)
-		if err != nil {
-			return nil, err
-		}
-		materialized, err = mergePiProjectedCredentials(materialized, projected, req)
+		materialized, err = mergePiGlobalProviderCredentials(materialized, profile, req)
 		if err != nil {
 			return nil, err
 		}
@@ -1047,6 +1055,18 @@ func MaterializeLaunchCredentials(profile runtimeprofile.Profile, req Projection
 		return map[string]string{}, nil
 	}
 	return cloneMaterializedCredentials(materialized), nil
+}
+
+// mergePiGlobalProviderCredentials merges every launch-ready global Model
+// Provider's key into a materialized credential map. It is idempotent: keys
+// already present keep their value, so the pre-transaction and snapshot paths
+// can both run it.
+func mergePiGlobalProviderCredentials(materialized map[string]string, profile runtimeprofile.Profile, req ProjectionRequest) (map[string]string, error) {
+	projected, err := listPiLaunchReadyProviders(profile, req)
+	if err != nil {
+		return nil, err
+	}
+	return mergePiProjectedCredentials(materialized, projected, req)
 }
 
 func validateProjectionOwner(contract owner.Contract) error {

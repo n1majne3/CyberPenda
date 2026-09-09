@@ -60,6 +60,12 @@ func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 }
 
 func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootstrap) (HostedEvaluationReference, error) {
+	// Direct bootstrap callers bypass ConfigFromEnv, so the pure model-plan
+	// checks run again here, before the first HTTP write.
+	groups, err := PlanHostedModelGroups(evaluation.Runtime)
+	if err != nil {
+		return HostedEvaluationReference{}, err
+	}
 	if err := app.request(ctx, http.MethodPut, "/api/skills/"+hostedChallengeSkillID, map[string]any{
 		"name":        hostedChallengeSkillID,
 		"description": "Orchestrates a TSecBench Hosted Evaluation Run with the tested Decide/Execute and FGS protocol.",
@@ -75,27 +81,43 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootst
 		return HostedEvaluationReference{}, fmt.Errorf("publish hosted ctf-orchestrator Skill: %w", err)
 	}
 
-	var provider struct {
-		ID        string `json:"id"`
-		APIKeyEnv string `json:"api_key_env"`
+	// One Model Provider per plan group. The parent group is always first and
+	// the Runtime Profile keeps pointing at it, so the parent session model
+	// does not change. Additional groups only widen the Pi model registry.
+	type createdProvider struct {
+		ID        string
+		APIKeyEnv string
+		APIKey    string
 	}
-	catalog := map[string]any{"manual": []string{evaluation.Runtime.Model}, "default_model": evaluation.Runtime.Model}
-	if evaluation.Runtime.ContextWindow > 0 || evaluation.Runtime.MaxOutputTokens > 0 {
-		limits := map[string]any{}
-		if evaluation.Runtime.ContextWindow > 0 {
-			limits["context_window"] = evaluation.Runtime.ContextWindow
+	providers := make([]createdProvider, 0, len(groups))
+	for _, group := range groups {
+		catalog := map[string]any{"manual": append([]string(nil), group.Models...), "default_model": group.Models[0]}
+		if evaluation.Runtime.ContextWindow > 0 || evaluation.Runtime.MaxOutputTokens > 0 {
+			limits := map[string]any{}
+			if evaluation.Runtime.ContextWindow > 0 {
+				limits["context_window"] = evaluation.Runtime.ContextWindow
+			}
+			if evaluation.Runtime.MaxOutputTokens > 0 {
+				limits["max_output_tokens"] = evaluation.Runtime.MaxOutputTokens
+			}
+			perModel := make(map[string]any, len(group.Models))
+			for _, model := range group.Models {
+				perModel[model] = limits
+			}
+			catalog["limits"] = perModel
 		}
-		if evaluation.Runtime.MaxOutputTokens > 0 {
-			limits["max_output_tokens"] = evaluation.Runtime.MaxOutputTokens
+		var provider struct {
+			ID        string `json:"id"`
+			APIKeyEnv string `json:"api_key_env"`
 		}
-		catalog["limits"] = map[string]any{evaluation.Runtime.Model: limits}
-	}
-	if err := app.request(ctx, http.MethodPost, "/api/model-providers", map[string]any{
-		"name":      "TSecBench Hosted Model",
-		"endpoints": []map[string]string{{"protocol": evaluation.Runtime.ModelProtocol, "base_url": evaluation.Runtime.ModelBaseURL}},
-		"catalog":   catalog,
-	}, &provider); err != nil {
-		return HostedEvaluationReference{}, fmt.Errorf("create hosted Model Provider: %w", err)
+		if err := app.request(ctx, http.MethodPost, "/api/model-providers", map[string]any{
+			"name":      group.Name,
+			"endpoints": []map[string]string{{"protocol": group.Protocol, "base_url": group.BaseURL}},
+			"catalog":   catalog,
+		}, &provider); err != nil {
+			return HostedEvaluationReference{}, fmt.Errorf("create hosted Model Provider: %w", err)
+		}
+		providers = append(providers, createdProvider{ID: provider.ID, APIKeyEnv: provider.APIKeyEnv, APIKey: group.APIKey})
 	}
 
 	var project struct {
@@ -109,7 +131,8 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootst
 	}
 
 	fields := map[string]any{
-		"model_provider_id": provider.ID, "model_provider_protocol": evaluation.Runtime.ModelProtocol,
+		// The parent group is the first plan group by contract.
+		"model_provider_id": providers[0].ID, "model_provider_protocol": evaluation.Runtime.ModelProtocol,
 		"model_override": evaluation.Runtime.Model, "env": evaluation.Runtime.Env,
 		"credential_refs": []string{"BENCHMARK_TOKEN"},
 	}
@@ -136,7 +159,10 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootst
 		return HostedEvaluationReference{}, fmt.Errorf("create hosted Runtime Profile: %w", err)
 	}
 
-	bindings := map[string]string{"BENCHMARK_TOKEN": evaluation.Runtime.Credentials["BENCHMARK_TOKEN"], provider.APIKeyEnv: evaluation.Runtime.ModelAPIKey}
+	bindings := map[string]string{"BENCHMARK_TOKEN": evaluation.Runtime.Credentials["BENCHMARK_TOKEN"]}
+	for _, provider := range providers {
+		bindings[provider.APIKeyEnv] = provider.APIKey
+	}
 	for credentialRef, value := range bindings {
 		if err := app.request(ctx, http.MethodPut, "/api/projects/"+project.ID+"/credential-bindings", map[string]any{
 			"credential_ref": credentialRef,

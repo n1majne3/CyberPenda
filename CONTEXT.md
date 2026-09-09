@@ -732,6 +732,10 @@ _Avoid_: 自动压缩窗口、输入 token 上限、服务端容量扩展
 Optional operator-supplied text appended to the required hosted **Task Goal**. It does not replace the required Skill completion sentence and does not change Hosted Controller behavior.
 _Avoid_: replacement Task Goal, Skill rewrite, vendor prompt file
 
+**Hosted Pi Additional Model**:
+An optional Pi-only numbered slot (1-3) that projects one extra model id, with optional protocol, base URL, and API key overrides, into the same Hosted Pi model registry as the parent `CYBERPENDA_MODEL`. An unset override inherits the parent Hosted Model Configuration. A present-but-empty value, an override without its model id, or any slot on a non-Pi Runtime fails configuration validation. One model id repeated identically across slots is projected once; slots that disagree on protocol, base URL, or API key fail bootstrap. The parent session model stays `CYBERPENDA_MODEL`.
+_Avoid_: second parent model, subagent model switch, automatic model selection, per-model reasoning effort
+
 **Hosted Acceptance Configuration**:
 The reference Runtime and model configuration for Hosted bootstrap, model-call, and simulated Platform validation. It is distinct from real Platform API acceptance.
 _Avoid_: only supported hosted configuration, build-time model selection, production credential

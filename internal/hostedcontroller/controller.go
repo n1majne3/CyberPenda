@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -77,6 +78,26 @@ type Config struct {
 	AutoCompactWindow    int
 	MaxOutputTokens      int
 	ContextWindow        int
+	// PIAdditionalModels holds the validated Pi additional-model slots with
+	// effective provider tuples. It is empty unless the Runtime is Pi.
+	PIAdditionalModels []PIAdditionalModel
+}
+
+// HostedRuntimeBootstrap is the Runtime part of one Hosted bootstrap request.
+type HostedRuntimeBootstrap struct {
+	Provider        string
+	ModelProtocol   string
+	ModelBaseURL    string
+	Model           string
+	ModelAPIKey     string
+	ReasoningEffort string
+	Env             map[string]string
+	Credentials     map[string]string
+	ContextWindow   int
+	MaxOutputTokens int
+	// PIAdditionalModels carries the effective additional-model slots so
+	// bootstrap can create their Model Providers and Credential Bindings.
+	PIAdditionalModels []PIAdditionalModel
 }
 
 // HostedEvaluationBootstrap is the complete normal-domain bootstrap request
@@ -93,18 +114,7 @@ type HostedEvaluationBootstrap struct {
 		Runner        string
 		HostActivated bool
 	}
-	Runtime struct {
-		Provider        string
-		ModelProtocol   string
-		ModelBaseURL    string
-		Model           string
-		ModelAPIKey     string
-		ReasoningEffort string
-		Env             map[string]string
-		Credentials     map[string]string
-		ContextWindow   int
-		MaxOutputTokens int
-	}
+	Runtime HostedRuntimeBootstrap
 }
 
 // HostedEvaluationReference identifies the one Project and Task created for a
@@ -170,16 +180,8 @@ func ConfigFromEnv(env map[string]string) (Config, error) {
 		return Config{}, ErrInvalidConfig
 	}
 	config.ContextWindow = contextWindow
-	modelURL, err := url.Parse(config.ModelBaseURL)
-	if err != nil || modelURL.Scheme != "http" || modelURL.User != nil || modelURL.RawQuery != "" || modelURL.Fragment != "" ||
-		!strings.HasSuffix(strings.ToLower(modelURL.Hostname()), ".tsecbench.gw") {
+	if err := validateHostedModelBaseURL(config.ModelBaseURL); err != nil {
 		return Config{}, ErrInvalidConfig
-	}
-	path := strings.TrimRight(strings.ToLower(modelURL.Path), "/")
-	for _, suffix := range []string{"/chat/completions", "/responses", "/messages"} {
-		if strings.HasSuffix(path, suffix) {
-			return Config{}, ErrInvalidConfig
-		}
 	}
 	if config.Runtime != RuntimePi && config.Runtime != RuntimeCodex && config.Runtime != RuntimeClaudeCode {
 		return Config{}, ErrInvalidConfig
@@ -190,6 +192,14 @@ func ConfigFromEnv(env map[string]string) (Config, error) {
 	benchmarkURL, err := url.Parse(config.BenchmarkBaseURL)
 	if err != nil || (benchmarkURL.Scheme != "http" && benchmarkURL.Scheme != "https") || benchmarkURL.Host == "" {
 		return Config{}, ErrInvalidConfig
+	}
+	additional, err := parsePIAdditionalModels(env, config)
+	if err != nil {
+		return Config{}, err
+	}
+	config.PIAdditionalModels = additional
+	if _, err := PlanHostedModelGroups(evaluationFromConfig(config).Runtime); err != nil {
+		return Config{}, err
 	}
 	return config, nil
 }
@@ -227,6 +237,7 @@ func evaluationFromConfig(config Config) HostedEvaluationBootstrap {
 	evaluation.Runtime.MaxOutputTokens = config.MaxOutputTokens
 	evaluation.Runtime.ContextWindow = config.ContextWindow
 	evaluation.Runtime.Credentials = map[string]string{"BENCHMARK_TOKEN": config.BenchmarkToken}
+	evaluation.Runtime.PIAdditionalModels = config.PIAdditionalModels
 	return evaluation
 }
 
@@ -262,7 +273,20 @@ func RunWithApp(ctx context.Context, env map[string]string, app App, stdout, dia
 	if err != nil {
 		return fmt.Errorf("start hosted evaluation: %w", err)
 	}
-	return app.Wait(ctx, run, stdout, []string{config.BenchmarkToken, config.ModelAPIKey})
+	return app.Wait(ctx, run, stdout, hostedMaskSecrets(config))
+}
+
+// hostedMaskSecrets lists every distinct secret the Hosted Transcript Stream
+// must mask: the Benchmark token plus each effective model key. Slots that
+// inherit the parent key do not add a duplicate entry.
+func hostedMaskSecrets(config Config) []string {
+	secrets := []string{config.BenchmarkToken, config.ModelAPIKey}
+	for _, additional := range config.PIAdditionalModels {
+		if additional.APIKey != "" && !slices.Contains(secrets, additional.APIKey) {
+			secrets = append(secrets, additional.APIKey)
+		}
+	}
+	return secrets
 }
 
 // Run starts one loopback daemon and one non-restartable hosted evaluation.
