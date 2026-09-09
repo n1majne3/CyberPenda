@@ -773,6 +773,7 @@ func TestProjectPiModelsDeclareReasoningCapability(t *testing.T) {
 					ID               string         `json:"id"`
 					Reasoning        bool           `json:"reasoning"`
 					ThinkingLevelMap map[string]any `json:"thinkingLevelMap"`
+					Compat           map[string]any `json:"compat"`
 				} `json:"models"`
 			} `json:"providers"`
 		}
@@ -792,6 +793,14 @@ func TestProjectPiModelsDeclareReasoningCapability(t *testing.T) {
 			}
 			if model.ThinkingLevelMap["xhigh"] != "xhigh" || model.ThinkingLevelMap["max"] != "max" {
 				t.Fatalf("model %q must identity-map xhigh/max: %#v", model.ID, model.ThinkingLevelMap)
+			}
+			// CyberPenda-configured gateways are OpenAI-compatible services,
+			// not OpenAI itself: Pi must send the system prompt with the
+			// classic "system" role. Its default detection pairs
+			// reasoning:true with the OpenAI-only "developer" role, which
+			// gateways such as Kimi reject with HTTP 400.
+			if model.Compat["supportsDeveloperRole"] != false {
+				t.Fatalf("model %q must pin compat.supportsDeveloperRole:false: %#v", model.ID, model.Compat)
 			}
 		}
 	}

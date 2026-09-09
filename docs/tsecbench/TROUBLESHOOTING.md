@@ -81,6 +81,18 @@ case, punctuation, and any slash in the model ID. Provider display names are
 not registry IDs, and generated provider IDs cannot be guessed before
 bootstrap. Put that instruction in `CYBERPENDA_TASK_GOAL_APPENDIX`.
 
+## Model call returns 400 "role 'developer' is not allowed"
+
+Pi sends the system prompt with the OpenAI-only `developer` role when a
+model declares reasoning support and the gateway looks like a standard
+OpenAI endpoint. OpenAI-compatible gateways such as Kimi reject that role.
+CyberPenda projection pins `compat.supportsDeveloperRole: false` on every
+projected model entry, so Pi uses the classic `system` role instead. If the
+error appears on an image built before that projection, rebuild the image;
+as a per-run alternative, switch the slot to the provider's
+Anthropic-compatible endpoint through `_PROTOCOL=anthropic_messages` and
+its Anthropic base URL — the Anthropic protocol has no developer role.
+
 ## Runtime fails
 
 If the initial Runtime never becomes live, the Controller drains retained

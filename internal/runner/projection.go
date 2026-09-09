@@ -1334,12 +1334,18 @@ func redactCodexAuth(auth map[string]string) map[string]any {
 // set_thinking_level to "off" — and reasoning_effort never reaches the
 // provider request — for entries without reasoning metadata. The identity
 // xhigh/max mapping is required because Pi treats those two levels as
-// unavailable unless thinkingLevelMap declares them.
+// unavailable unless thinkingLevelMap declares them. supportsDeveloperRole is
+// pinned false because CyberPenda Model Providers are OpenAI-compatible
+// gateways, not OpenAI itself: Pi's default detection would pair
+// reasoning:true with the OpenAI-only "developer" role for the system prompt,
+// which gateways such as Kimi reject with HTTP 400. The classic "system"
+// role is accepted everywhere.
 func piModelEntry(modelID string, catalog modelprovider.Catalog, cache modelprovider.CapabilityLookup) map[string]any {
 	entry := map[string]any{
 		"id":               modelID,
 		"reasoning":        true,
 		"thinkingLevelMap": map[string]any{"xhigh": "xhigh", "max": "max"},
+		"compat":           map[string]any{"supportsDeveloperRole": false},
 	}
 	resolved := modelprovider.ResolveLimits(modelID, catalog, cache)
 	if resolved.ContextWindow >= 1 {
