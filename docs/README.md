@@ -13,7 +13,7 @@ Evidence files remain stored without conversion to FGS nodes.
 - [FGS Runtime protocol](./specs/fgs-runtime-outbox-protocol.md): confirmed principles, protocol design, and implementation status.
 - [FGS decision](./adr/0035-use-fgs-as-the-blackboard-working-model.md): model replacement and historical-data boundary.
 - [Platform engines](./platform-engines.md): Sandbox Runner support.
-- [TSecBench Hosted delivery](./tsecbench/README.md): image, configuration, and acceptance.
+- [TSecBench Hosted delivery](./tsecbench/README.md): image, configuration, and acceptance, including Pi additional-model slots and subagent model-selector rules.
 
 The Runtime publishes FGS updates through its Outbox. The Harness validates and
 stores accepted updates and Receipts. The UI reads accepted graph state and can
