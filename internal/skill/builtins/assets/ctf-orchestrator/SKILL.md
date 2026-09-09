@@ -16,6 +16,9 @@ blackboard_modes: [disabled, working_graph]
 子线程只要本 step 正文，不要拷主控历史，不要加载本编排 Skill。
 使用当前 Runtime 的原生后台 agent 工具。
 **仅 Codex：** 用 V1 `spawn_agent`，且 `fork_context: false`。
+**仅 Pi 与 Claude Code：** 用 `Agent` 工具派发，`subagent_type: "execute"`，后台运行。
+CyberPenda 已为这两个 Runtime 投影同一 Execute 类型，身份与收束纪律已内置；
+派发 prompt 省略「收束纪律」整段，只保留变量段。
 
 环境参数从任务说明读取（若无则问用户）：工作目录 `$WS`（默认 `/workdir/run`）、
 总时限、并发容器配额（默认 3）、平台 API（有则封装，见 scripts/platform-api.sh；

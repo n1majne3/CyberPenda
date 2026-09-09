@@ -1,6 +1,7 @@
 package runner
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -25,6 +26,15 @@ import (
 )
 
 var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|password|auth)`)
+
+// piExecuteAgentMarkdown is the CyberPenda Execute subagent type projected
+// into every Pi runtime's agent dir. pi-subagents discovers it as the
+// `execute` subagent_type, so orchestrator dispatches stop cloning the
+// generic general-purpose agent. append mode keeps pi's tool-contract prompt;
+// the body carries only the stable Execute identity and fact discipline.
+//
+//go:embed assets/execute_agent.md
+var piExecuteAgentMarkdown []byte
 
 // GlobalModelProviderSnapshot is an immutable List() result captured before any
 // Store transaction that projects runtime config. Projection filters this list
@@ -520,6 +530,13 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 			return ConfigProjection{}, err
 		}
 	}
+	// The same Execute agent definition projected for Pi seeds Claude Code's
+	// project agents directory, so orchestrator dispatch keeps one
+	// CyberPenda-owned source across both runtimes.
+	executeAgentPath := filepath.Join(layout.Workdir, ".claude", "agents", "execute.md")
+	if err := writeOwnerOnlyFile(executeAgentPath, piExecuteAgentMarkdown); err != nil {
+		return ConfigProjection{}, fmt.Errorf("write claude execute agent type: %w", err)
+	}
 
 	settings := map[string]any{"env": env}
 	// Catalog-sourced plugins (install refs from claude-plugins-official) are
@@ -555,9 +572,10 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 	}
 
 	preview := map[string]any{
-		"provider":      string(profile.Provider),
-		"settings_path": settingsPath,
-		"env":           redactEnvMap(env),
+		"provider":       string(profile.Provider),
+		"settings_path":  settingsPath,
+		"env":            redactEnvMap(env),
+		"subagent_types": []string{"execute"},
 	}
 	if profile.Fields.Model != "" {
 		preview["model"] = profile.Fields.Model
@@ -788,10 +806,19 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		return ConfigProjection{}, err
 	}
 
+	// The Execute subagent type rides the same agent-dir contract as
+	// models.json: Config Projection owns the file, host agent files are not
+	// merged, and pi-subagents discovers it without project trust.
+	executeAgentPath := filepath.Join(agentDir, "agents", "execute.md")
+	if err := writeOwnerOnlyFile(executeAgentPath, piExecuteAgentMarkdown); err != nil {
+		return ConfigProjection{}, fmt.Errorf("write pi execute agent type: %w", err)
+	}
+
 	preview := map[string]any{
-		"provider":    string(profile.Provider),
-		"models_path": modelsPath,
-		"models_json": modelsDoc,
+		"provider":       string(profile.Provider),
+		"models_path":    modelsPath,
+		"models_json":    modelsDoc,
+		"subagent_types": []string{"execute"},
 	}
 	if len(packages) > 0 {
 		preview["packages"] = packages

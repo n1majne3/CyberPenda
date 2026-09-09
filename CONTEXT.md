@@ -404,6 +404,10 @@ _Avoid_: hidden runtime context, raw bundle dump
 The task-local directory containing enabled **Skills** for one **Task**, exposed to the selected **Runtime** through that runtime's skill discovery path.
 _Avoid_: global skills directory, host runtime home, package install location
 
+**Execute Agent Type**:
+CyberPenda 为 Pi 与 Claude Code **Runtime** 经 **Config Projection** 投影的自定义子代理类型(`execute`),两个 Runtime 使用同一份 CyberPenda 定义(分别写入 Pi agent 目录与 workdir `.claude/agents/`),内置 ctf-orchestrator Execute 进程的身份与收束纪律,使派发不必使用通用 general-purpose 克隆。不绑定任何 Challenge Platform。
+_Avoid_: hosted-only agent, per-runtime duplicate definitions, general-purpose specialization, per-dispatch discipline text
+
 **Runtime-Specific Extension**:
 A provider-native plugin, package, or configuration bundle represented as a **Runtime Extension** but scoped to a specific **Runtime Plugin** family.
 _Avoid_: Skill, Runtime Plugin

@@ -399,3 +399,49 @@ func newHostedSkillTestServer(t *testing.T, handler http.Handler) *httptest.Serv
 	server.Start()
 	return server
 }
+
+func TestTSecBenchSkillPinsExecuteSubagentTypeForPiAndClaudeCode(t *testing.T) {
+	files := captureHostedSkillFiles(t)
+	for _, required := range []string{
+		`subagent_type: "execute"`,
+		"省略「收束纪律」",
+		"仅 Pi 与 Claude Code",
+	} {
+		if !strings.Contains(files["SKILL.md"], required) {
+			t.Errorf("hosted Skill missing execute dispatch rule %q", required)
+		}
+		if !strings.Contains(files["references/execute-prompt.md"], required) {
+			t.Errorf("hosted execute-prompt.md missing execute dispatch rule %q", required)
+		}
+	}
+}
+
+func TestBuiltinCTFOrchestratorPinsExecuteSubagentTypeForPiAndClaudeCode(t *testing.T) {
+	bundles, err := skill.BuiltinBundles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var files map[string]string
+	for _, bundle := range bundles {
+		if bundle.Metadata.ID != "ctf-orchestrator" {
+			continue
+		}
+		files = bundle.Files
+		break
+	}
+	if strings.TrimSpace(files["SKILL.md"]) == "" {
+		t.Fatal("normal ctf-orchestrator Built-in Skill is missing")
+	}
+	for _, required := range []string{
+		`subagent_type: "execute"`,
+		"省略「收束纪律」",
+		"仅 Pi 与 Claude Code",
+	} {
+		if !strings.Contains(files["SKILL.md"], required) {
+			t.Errorf("builtin Skill missing execute dispatch rule %q", required)
+		}
+		if !strings.Contains(files["references/execute-prompt.md"], required) {
+			t.Errorf("builtin execute-prompt.md missing execute dispatch rule %q", required)
+		}
+	}
+}

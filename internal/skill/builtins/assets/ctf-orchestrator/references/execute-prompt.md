@@ -3,6 +3,8 @@
 派发必须**后台异步**。Decide 发出后立即返回，禁止同步等到子线程结束。
 prompt 结构固定三段：背景图 → 单 step → 收束纪律。**图放最前、step 放最后**（前缀稳定，命中缓存）。
 子线程只要本 step 正文。**仅 Codex：** `spawn_agent` 且 `fork_context: false`。
+**仅 Pi 与 Claude Code：** `Agent` 派发用 `subagent_type: "execute"`（CyberPenda 已为这两个
+Runtime 投影同一 Execute 类型，身份与收束纪律已内置），派发 prompt 省略「收束纪律」整段，只保留变量段。
 
 模板（`{}` 为占位符，其余逐字保留）：
 

@@ -7,6 +7,11 @@ prompt 结构固定三段：背景图 → 单 step → 收束纪律。**图放�
 子线程只要本 step 正文，不要主控历史、不要 Skill 开局指令。
 Execute 只做这一个 step，禁止调用 ctf-orchestrator，禁止 list/start/hint/close/abandon。
 
+**仅 Pi 与 Claude Code：** 用 `Agent` 工具派发：`subagent_type: "execute"`、后台运行。该 Execute
+类型由 CyberPenda 投影（两个 Runtime 用同一份定义），身份与收束纪律已内置；派发 prompt
+省略「收束纪律」整段，只保留变量段（预算、背景图、step 与互斥范围、目标与题目、
+fact 编号与文件名、提交命令原文、环境）。
+
 模板（`{}` 为占位符，其余逐字保留）：
 
 ```text

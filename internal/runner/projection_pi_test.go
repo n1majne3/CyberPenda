@@ -949,3 +949,85 @@ func TestProjectPiModelsWriteResolvedContextWindowAndMaxTokens(t *testing.T) {
 		t.Fatalf("override model = %#v", byID["override-model"])
 	}
 }
+
+// TestProjectPiConfigWritesExecuteSubagentType proves Config Projection
+// seeds the pi-subagents custom agent dir with the CyberPenda Execute type,
+// so orchestrator dispatch can target subagent_type "execute" instead of the
+// generic general-purpose clone.
+func TestProjectPiConfigWritesExecuteSubagentType(t *testing.T) {
+	isolatePiHostHome(t)
+	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	providers := modelprovider.NewService(db)
+	created, err := providers.Create(modelprovider.CreateRequest{
+		Name:    "Execute Gateway",
+		BaseURL: "https://execute.example.test/v1",
+		Protocols: []modelprovider.Protocol{
+			modelprovider.ProtocolOpenAIChatCompletions,
+		},
+		Catalog: modelprovider.Catalog{
+			Manual:       []string{"exec-model"},
+			DefaultModel: "exec-model",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	t.Setenv(created.APIKeyEnv, "sk-execute-test")
+
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-execute", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderPi,
+		Fields: runtimeprofile.Fields{
+			ModelProviderID: created.ID,
+		},
+	}
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		ModelProviders: providers,
+	})
+	if err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	agentPath := filepath.Join(layout.ProviderHome, "agent", "agents", "execute.md")
+	raw, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatalf("read projected execute agent type: %v", err)
+	}
+	content := string(raw)
+	for _, required := range []string{
+		"name: execute",
+		// append mode keeps pi's tool-contract prompt; replace would drop it.
+		"prompt_mode: append",
+		// Stable Execute discipline from the orchestrator dispatch contract.
+		"90 秒",
+		"fact 骨架",
+		"勿再试",
+		"tmux",
+		"已收束于 fact_{NNN}",
+	} {
+		if !strings.Contains(content, required) {
+			t.Errorf("projected execute agent type missing %q", required)
+		}
+	}
+	if strings.Contains(content, "tsecbench") {
+		t.Error("projected execute agent type must not bind to the TSecBench client")
+	}
+	info, err := os.Stat(agentPath)
+	if err != nil {
+		t.Fatalf("stat execute agent type: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("execute agent type mode = %v, want 0600", info.Mode().Perm())
+	}
+	types, ok := projection.Config["subagent_types"].([]string)
+	if !ok || len(types) != 1 || types[0] != "execute" {
+		t.Fatalf("expected subagent_types preview [execute], got %#v", projection.Config["subagent_types"])
+	}
+}

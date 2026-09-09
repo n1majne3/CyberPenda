@@ -39,6 +39,11 @@ description: Orchestrate a timed multi-target offensive/CTF session with a Decid
 不要传 `fork_turns` 或 `task_name`。不要用 V2 的 `send_message` / `interrupt_agent`。
 Execute 子线程禁止调用 ctf-orchestrator，禁止当 Decide；只执行派发模板里的那一个 step。
 
+**仅 Pi 与 Claude Code：** 用 `Agent` 工具派发，`subagent_type: "execute"`，后台运行。
+CyberPenda 已为这两个 Runtime 投影同一 Execute 类型，身份与收束纪律已内置；
+派发 prompt 省略「收束纪律」整段，只保留变量段：
+预算、背景知识图、step 正文与互斥范围、目标与题目信息、fact 编号与文件名、提交命令原文、环境。
+
 环境参数从任务说明读取。开局先执行 `WS="$(pwd -P)"; export WS`，实际 Runtime Workdir 是唯一 `$WS`。
 总时限从任务说明读取；并发容器配额默认 3。Hosted Task 使用 Disabled Blackboard Mode，
 `$WS` 下的 FGS 是唯一 agent-managed working state。平台操作只用 `pentest-tsecbench-client`。

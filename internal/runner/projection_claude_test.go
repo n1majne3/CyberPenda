@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pentest/internal/credential"
@@ -253,5 +254,57 @@ func TestClaudeModelLimitsKeepNativeEnvAndUnknownDefaults(t *testing.T) {
 				t.Fatal("model limits disabled compaction")
 			}
 		})
+	}
+}
+
+// TestProjectClaudeSettingsWritesExecuteSubagentType proves the Claude Code
+// projection seeds the same Execute agent definition as Pi into the project
+// agents directory, so orchestrator dispatch uses one CyberPenda-owned
+// definition across both runtimes.
+func TestProjectClaudeSettingsWritesExecuteSubagentType(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "resolved-token-value")
+
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-claude-execute", runtimeprofile.ProviderClaudeCode)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderClaudeCode,
+		Fields: runtimeprofile.Fields{
+			Model:    "glm-5.2",
+			Endpoint: "https://open.bigmodel.cn/api/anthropic",
+		},
+	}
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		Owner: owner.NewTaskContract("task-claude-execute", "project-1", layout.Workdir),
+	})
+	if err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	agentPath := filepath.Join(layout.Workdir, ".claude", "agents", "execute.md")
+	raw, err := os.ReadFile(agentPath)
+	if err != nil {
+		t.Fatalf("read projected execute agent type: %v", err)
+	}
+	content := string(raw)
+	for _, required := range []string{"name: execute", "90 秒", "fact 骨架", "已收束于 fact_{NNN}"} {
+		if !strings.Contains(content, required) {
+			t.Errorf("projected execute agent type missing %q", required)
+		}
+	}
+	if strings.Contains(content, "tsecbench") {
+		t.Error("projected execute agent type must not bind to the TSecBench client")
+	}
+	info, err := os.Stat(agentPath)
+	if err != nil {
+		t.Fatalf("stat execute agent type: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("execute agent type mode = %v, want 0600", info.Mode().Perm())
+	}
+	types, ok := projection.Config["subagent_types"].([]string)
+	if !ok || len(types) != 1 || types[0] != "execute" {
+		t.Fatalf("expected subagent_types preview [execute], got %#v", projection.Config["subagent_types"])
 	}
 }

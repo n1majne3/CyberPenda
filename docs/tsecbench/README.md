@@ -89,6 +89,20 @@ Rules:
 - Do not put API keys in `CYBERPENDA_TASK_GOAL_APPENDIX`. Write the calling
   rules there instead: which role uses which model, and when not to switch.
 
+### Pi and Claude Code Execute agent type
+
+Pi and Claude Code runtimes both ship a projected custom subagent type
+`execute` from one CyberPenda-owned definition: Pi reads it from
+`$PI_CODING_AGENT_DIR/agents/execute.md`, Claude Code from the workdir's
+`.claude/agents/execute.md`. It carries the ctf-orchestrator Execute
+identity and fact discipline, so orchestrator dispatches pass
+`subagent_type: "execute"` instead of cloning `general-purpose`, and the
+per-dispatch prompt keeps only the variable parts (budget, knowledge graph,
+step, target, fact id, submit command, environment). On Pi a failed type
+file falls back to `general-purpose`, which is the previous behavior. The
+type is platform-neutral: the submit command still comes from the dispatch
+message.
+
 ### Subagent model selectors
 
 The plugin's bare-model fallback ignores case and treats dots and dashes as
