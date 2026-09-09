@@ -337,6 +337,10 @@ func TestDisabledTaskHTTPSteerCreatesOrdinaryContinuationWithoutBlackboard(t *te
 		t.Fatal(err)
 	}
 
+	// The accepted create response precedes durable Runtime startup; native
+	// steer requires the running state.
+	waitForDisabledTaskPublicStatus(t, server, projectID, created.ID, task.StatusRunning)
+
 	steer := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{
 		"request_id":"disabled-task-steer",
 		"message":"focus on the alternate path"

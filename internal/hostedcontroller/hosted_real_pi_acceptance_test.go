@@ -311,7 +311,9 @@ func (model *realPiControlledModel) serveHTTP(response http.ResponseWriter, requ
 	model.calls++
 	call := model.calls
 	model.lastRequest = append([]byte(nil), body...)
-	if bytes.Contains(body, []byte("Runtime 工具术语")) {
+	// The section heading is unique to the projected SKILL.md, so a request
+	// containing it proves the Runtime read the hosted-only Skill.
+	if bytes.Contains(body, []byte("Runtime 派发")) {
 		model.skillRead = true
 	}
 	model.mu.Unlock()
