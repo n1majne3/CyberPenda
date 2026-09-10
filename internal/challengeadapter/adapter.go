@@ -23,8 +23,11 @@ type Manifest struct {
 	BaseURLEnv            string               `json:"base_url_env"`
 	TokenEnv              string               `json:"token_env"`
 	TokenHeader           string               `json:"token_header"`
+	TokenQuery            string               `json:"token_query,omitempty"`
 	MaxActive             int                  `json:"max_active,omitempty"`
 	Budgets               map[string]int       `json:"budgets,omitempty"`
+	ChallengeFields       map[string]string    `json:"challenge_fields,omitempty"`
+	SubmitCorrect         string               `json:"submit_correct,omitempty"`
 	Operations            map[string]Operation `json:"operations"`
 	CloseRequiresComplete bool                 `json:"close_requires_complete,omitempty"`
 	AbandonViaClose       bool                 `json:"abandon_via_close,omitempty"`

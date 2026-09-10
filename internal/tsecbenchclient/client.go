@@ -44,20 +44,25 @@ type Client struct {
 }
 
 type Challenge struct {
-	UniqueCode       string   `json:"unique_code"`
-	Description      string   `json:"description,omitempty"`
-	Difficulty       any      `json:"difficulty,omitempty"`
-	Level            any      `json:"level,omitempty"`
-	TotalScore       int      `json:"total_score,omitempty"`
-	FlagCount        int      `json:"flag_count,omitempty"`
-	CorrectFlagCount int      `json:"correct_flag_count,omitempty"`
-	IsCompleted      bool     `json:"is_completed"`
-	ContainerStatus  string   `json:"container_status,omitempty"`
-	ContainerAddr    []string `json:"container_addr,omitempty"`
-	ElapsedMin       *int     `json:"elapsed_min,omitempty"`
-	BudgetMin        *int     `json:"budget_min,omitempty"`
-	OverBudget       *bool    `json:"over_budget,omitempty"`
-	AttemptN         *int     `json:"attempt_n,omitempty"`
+	UniqueCode       string          `json:"unique_code"`
+	Description      string          `json:"description,omitempty"`
+	Difficulty       any             `json:"difficulty,omitempty"`
+	Level            any             `json:"level,omitempty"`
+	TotalScore       int             `json:"total_score,omitempty"`
+	FlagCount        int             `json:"flag_count,omitempty"`
+	CorrectFlagCount int             `json:"correct_flag_count,omitempty"`
+	IsCompleted      bool            `json:"is_completed"`
+	ContainerStatus  string          `json:"container_status,omitempty"`
+	ContainerAddr    []string        `json:"container_addr,omitempty"`
+	FileURL          string          `json:"file_url,omitempty"`
+	Category         string          `json:"category,omitempty"`
+	Interactive      any             `json:"interactive,omitempty"`
+	Capabilities     []string        `json:"capabilities,omitempty"`
+	Extensions       json.RawMessage `json:"extensions,omitempty"`
+	ElapsedMin       *int            `json:"elapsed_min,omitempty"`
+	BudgetMin        *int            `json:"budget_min,omitempty"`
+	OverBudget       *bool           `json:"over_budget,omitempty"`
+	AttemptN         *int            `json:"attempt_n,omitempty"`
 }
 
 type ListResult struct {
@@ -65,12 +70,13 @@ type ListResult struct {
 }
 
 type SubmitResult struct {
-	Correct          bool `json:"correct"`
-	Awarded          any  `json:"awarded,omitempty"`
-	CumulativeScore  any  `json:"cumulative_score,omitempty"`
-	CorrectFlagCount int  `json:"correct_flag_count,omitempty"`
-	TotalFlagCount   int  `json:"total_flag_count,omitempty"`
-	MatchedFlagIndex any  `json:"matched_flag_index,omitempty"`
+	Correct          bool   `json:"correct"`
+	Message          string `json:"message,omitempty"`
+	Awarded          any    `json:"awarded,omitempty"`
+	CumulativeScore  any    `json:"cumulative_score,omitempty"`
+	CorrectFlagCount int    `json:"correct_flag_count,omitempty"`
+	TotalFlagCount   int    `json:"total_flag_count,omitempty"`
+	MatchedFlagIndex any    `json:"matched_flag_index,omitempty"`
 }
 
 type CloseRequest struct {

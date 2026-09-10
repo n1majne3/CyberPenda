@@ -62,17 +62,189 @@ func (driver *HTTPDriver) List(ctx context.Context) (tsecbenchclient.ListResult,
 	if err != nil {
 		return result, err
 	}
-	if err := json.Unmarshal(raw, &result.Challenges); err != nil || result.Challenges == nil {
-		var wrapped struct {
-			Challenges []tsecbenchclient.Challenge `json:"challenges"`
-		}
-		if wrapErr := json.Unmarshal(raw, &wrapped); wrapErr != nil || wrapped.Challenges == nil {
+	array, err := driver.challengeArray(raw)
+	if err != nil {
+		return tsecbenchclient.ListResult{}, err
+	}
+	elements := []json.RawMessage{}
+	if err := json.Unmarshal(array, &elements); err != nil {
+		return tsecbenchclient.ListResult{}, errors.New("decode challenge list")
+	}
+	result.Challenges = make([]tsecbenchclient.Challenge, 0, len(elements))
+	for _, element := range elements {
+		var challenge tsecbenchclient.Challenge
+		if err := json.Unmarshal(element, &challenge); err != nil {
 			return tsecbenchclient.ListResult{}, errors.New("decode challenge list")
 		}
-		result.Challenges = wrapped.Challenges
+		if err := driver.applyChallengeFields(&challenge, element); err != nil {
+			return tsecbenchclient.ListResult{}, err
+		}
+		result.Challenges = append(result.Challenges, challenge)
 	}
 	result.Challenges = driver.clock.Annotate(result.Challenges)
 	return result, nil
+}
+
+// challengeArray accepts a bare array, a {"challenges": [...]} wrapper,
+// and an envelope object whose non-zero code means a platform rejection.
+func (driver *HTTPDriver) challengeArray(raw json.RawMessage) (json.RawMessage, error) {
+	var envelope struct {
+		Code    *int            `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Code != nil {
+		if *envelope.Code != 0 {
+			return nil, fmt.Errorf("challenge platform rejected request: %s", strings.ReplaceAll(envelope.Message, driver.token, "[REDACTED]"))
+		}
+		if isArrayJSON(envelope.Data) {
+			return envelope.Data, nil
+		}
+		return nil, errors.New("decode challenge list")
+	}
+	var direct []json.RawMessage
+	if err := json.Unmarshal(raw, &direct); err == nil && direct != nil {
+		return raw, nil
+	}
+	var wrapped struct {
+		Challenges json.RawMessage `json:"challenges"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err == nil && isArrayJSON(wrapped.Challenges) {
+		return wrapped.Challenges, nil
+	}
+	return nil, errors.New("decode challenge list")
+}
+
+func isArrayJSON(raw json.RawMessage) bool {
+	return bytes.HasPrefix(bytes.TrimSpace(raw), []byte("["))
+}
+
+func (driver *HTTPDriver) applyChallengeFields(challenge *tsecbenchclient.Challenge, element json.RawMessage) error {
+	if len(driver.manifest.ChallengeFields) == 0 {
+		return nil
+	}
+	var source map[string]any
+	if err := json.Unmarshal(element, &source); err != nil {
+		return errors.New("decode challenge fields source")
+	}
+	for target, path := range driver.manifest.ChallengeFields {
+		value, ok := resolveJSONPath(source, path)
+		if !ok {
+			continue
+		}
+		if err := assignChallengeField(challenge, target, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func resolveJSONPath(source map[string]any, path string) (any, bool) {
+	var current any = source
+	for _, segment := range strings.Split(path, ".") {
+		object, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if current, ok = object[segment]; !ok {
+			return nil, false
+		}
+	}
+	return current, true
+}
+
+func assignChallengeField(challenge *tsecbenchclient.Challenge, target string, value any) error {
+	switch target {
+	case "unique_code", "description":
+		text, ok := stringValue(value)
+		if !ok {
+			return fmt.Errorf("challenge_fields value for %s is not a string", target)
+		}
+		if target == "unique_code" {
+			challenge.UniqueCode = text
+		} else {
+			challenge.Description = text
+		}
+	case "is_completed":
+		flag, ok := boolValue(value)
+		if !ok {
+			return errors.New("challenge_fields value for is_completed is not a boolean")
+		}
+		challenge.IsCompleted = flag
+	case "total_score":
+		number, ok := intValue(value)
+		if !ok {
+			return errors.New("challenge_fields value for total_score is not a number")
+		}
+		challenge.TotalScore = number
+	case "container_addr":
+		list, ok := stringSliceValue(value)
+		if !ok {
+			return errors.New("challenge_fields value for container_addr is not an address")
+		}
+		challenge.ContainerAddr = list
+	default:
+		return fmt.Errorf("challenge_fields target %s is not supported", target)
+	}
+	return nil
+}
+
+func stringValue(value any) (string, bool) {
+	text, ok := value.(string)
+	return text, ok
+}
+
+func boolValue(value any) (bool, bool) {
+	switch typed := value.(type) {
+	case bool:
+		return typed, true
+	case string:
+		if typed == "true" {
+			return true, true
+		}
+		if typed == "false" {
+			return false, true
+		}
+	}
+	return false, false
+}
+
+func intValue(value any) (int, bool) {
+	number, ok := value.(float64)
+	if !ok {
+		return 0, false
+	}
+	return int(number), true
+}
+
+func stringSliceValue(value any) ([]string, bool) {
+	switch typed := value.(type) {
+	case string:
+		return []string{typed}, true
+	case []any:
+		list := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			list = append(list, text)
+		}
+		return list, true
+	}
+	return nil, false
+}
+
+func truthyValue(value any) bool {
+	switch typed := value.(type) {
+	case bool:
+		return typed
+	case float64:
+		return typed != 0
+	case string:
+		return typed == "true" || typed == "1"
+	}
+	return false
 }
 
 func (driver *HTTPDriver) Start(ctx context.Context, code string) (json.RawMessage, error) {
@@ -80,8 +252,25 @@ func (driver *HTTPDriver) Start(ctx context.Context, code string) (json.RawMessa
 	if err != nil {
 		return raw, err
 	}
+	if err := driver.checkEnvelope(raw); err != nil {
+		return nil, err
+	}
 	_ = driver.clock.RecordStart(code, "", 0)
 	return raw, nil
+}
+
+func (driver *HTTPDriver) checkEnvelope(raw json.RawMessage) error {
+	var envelope struct {
+		Code    *int   `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.Code == nil {
+		return nil
+	}
+	if *envelope.Code != 0 {
+		return fmt.Errorf("challenge platform rejected request: %s", strings.ReplaceAll(envelope.Message, driver.token, "[REDACTED]"))
+	}
+	return nil
 }
 
 func (driver *HTTPDriver) Hint(ctx context.Context, code string) (json.RawMessage, error) {
@@ -94,9 +283,32 @@ func (driver *HTTPDriver) Submit(ctx context.Context, code, candidate string) (t
 	if err != nil {
 		return result, err
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
+	if driver.manifest.SubmitCorrect == "" {
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return tsecbenchclient.SubmitResult{}, errors.New("decode submit result")
+		}
+		return result, nil
+	}
+	var envelope struct {
+		Code    *int   `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return tsecbenchclient.SubmitResult{}, errors.New("decode submit result")
 	}
+	result.Message = envelope.Message
+	if envelope.Code != nil && *envelope.Code != 0 {
+		return result, nil
+	}
+	var source map[string]any
+	if err := json.Unmarshal(raw, &source); err != nil {
+		return tsecbenchclient.SubmitResult{}, errors.New("decode submit result")
+	}
+	value, ok := resolveJSONPath(source, driver.manifest.SubmitCorrect)
+	if !ok {
+		return tsecbenchclient.SubmitResult{}, fmt.Errorf("submit_correct path %s is absent from the submit response", driver.manifest.SubmitCorrect)
+	}
+	result.Correct = truthyValue(value)
 	return result, nil
 }
 
@@ -145,6 +357,9 @@ func (driver *HTTPDriver) call(ctx context.Context, op, code, candidate string) 
 	for key, value := range operation.Query {
 		query.Set(key, replacer.Replace(value))
 	}
+	if driver.manifest.TokenQuery != "" {
+		query.Set(driver.manifest.TokenQuery, driver.token)
+	}
 	endpoint.RawQuery = query.Encode()
 	var body io.Reader
 	if len(operation.JSON) > 0 {
@@ -164,7 +379,9 @@ func (driver *HTTPDriver) call(ctx context.Context, op, code, candidate string) 
 	if err != nil {
 		return nil, errors.New("prepare adapter request")
 	}
-	request.Header.Set(driver.manifest.TokenHeader, driver.token)
+	if driver.manifest.TokenQuery == "" {
+		request.Header.Set(driver.manifest.TokenHeader, driver.token)
+	}
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}

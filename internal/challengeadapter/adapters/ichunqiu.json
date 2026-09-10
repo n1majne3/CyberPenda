@@ -1,0 +1,35 @@
+{
+  "id": "ichunqiu",
+  "display_name": "i春秋 AI智能体解题赛",
+  "base_url_env": "ICHUNQIU_BASE_URL",
+  "token_env": "ICHUNQIU_TOKEN",
+  "token_query": "token",
+  "challenge_fields": {
+    "unique_code": "question_id",
+    "is_completed": "is_solved",
+    "total_score": "score",
+    "container_addr": "connection.docker_url"
+  },
+  "submit_correct": "status",
+  "operations": {
+    "list": {
+      "method": "GET",
+      "path": "/04cb510e425bd8f64fa97ba66f3935e1"
+    },
+    "start": {
+      "method": "GET",
+      "path": "/deed3dba39e57b7cf95ea63ddd84e0c8",
+      "query": {
+        "question_id": "{{code}}"
+      }
+    },
+    "submit": {
+      "method": "GET",
+      "path": "/ff874ef3172cbf4fd6ec2c5653a568e2",
+      "query": {
+        "question_id": "{{code}}",
+        "answer": "{{candidate}}"
+      }
+    }
+  }
+}
