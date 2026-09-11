@@ -29,6 +29,7 @@ import {
   getEventLabel,
   getEventSummary,
   itemFilterKey,
+  stripAnsi,
 } from "./timeline-utils";
 
 // Uniform row-height estimate used by the virtualized window to bound DOM
@@ -674,6 +675,11 @@ function EventDetailContent({ item }: { item: TimelineItem }) {
       );
     }
     case "reasoning":
+      return (
+        <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words p-3 text-[11px] text-muted-foreground">
+          {stripAnsi(item.content ?? "")}
+        </pre>
+      );
     case "text":
     case "harness":
       return (

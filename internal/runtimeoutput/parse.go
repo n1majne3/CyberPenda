@@ -100,7 +100,7 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 				if phase == "" {
 					phase = ReasoningPhaseStreaming
 				}
-				turns := []Turn{{Kind: KindReasoning, Role: roleAssistant, Text: text, ProviderItemID: firstText(record, "item_id", "itemId", "provider_item_id"), LifecyclePhase: phase, Incremental: isTruthy(record["incremental"]), ContentIndex: -1, CreatedAt: createdAt}}
+				turns := []Turn{{Kind: KindReasoning, Role: roleAssistant, Text: stripANSI(text), ProviderItemID: firstText(record, "item_id", "itemId", "provider_item_id"), LifecyclePhase: phase, Incremental: isTruthy(record["incremental"]), ContentIndex: -1, CreatedAt: createdAt}}
 				if opts.AttributeChildStreams {
 					return stampAgentIdentity(turns, record)
 				}
@@ -235,7 +235,7 @@ func parseContentBlocks(content []any, opts ParseOptions, role string, createdAt
 				if !opts.IncludeThinking {
 					continue
 				}
-				if text := thinkingText(value); text != "" {
+				if text := stripANSI(thinkingText(value)); text != "" {
 					turns = append(turns, Turn{Kind: KindReasoning, Role: role, Text: text, ProviderItemID: firstText(value, "id", "item_id", "itemId"), ContentIndex: index, CreatedAt: createdAt})
 				}
 			case "text":
@@ -343,7 +343,7 @@ func parseCodexReasoning(record map[string]any, meta RecordMeta, opts ParseOptio
 	if phase == "started" {
 		return nil
 	}
-	text := firstText(record, "content", "summary")
+	text := stripANSI(firstText(record, "content", "summary"))
 	if text == "" {
 		return nil
 	}
@@ -578,6 +578,7 @@ func parseHermesACPRecord(record map[string]any, opts ParseOptions, createdAt ti
 		turnKind := KindText
 		if kind == "agent_thought_chunk" {
 			turnKind = KindReasoning
+			text = stripANSI(text)
 		}
 		phase := ""
 		if kind == "agent_thought_chunk" {

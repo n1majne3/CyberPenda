@@ -1,5 +1,14 @@
 import type { EventColor, TimelineItem } from "./types";
 
+// Providers sometimes decorate reasoning text with ANSI SGR color codes (pi
+// stores them verbatim). Strip CSI and OSC sequences for display.
+// eslint-disable-next-line no-control-regex
+const ANSI_PATTERN = /\x1b\[[0-9;:?!]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+export function stripAnsi(text: string): string {
+  return text.includes("\x1b") ? text.replace(ANSI_PATTERN, "") : text;
+}
+
 export function getEventColor(item: TimelineItem): EventColor {
   switch (item.type) {
     case "text":
@@ -77,7 +86,7 @@ export function getEventSummary(item: TimelineItem): string {
     case "text":
       return item.content?.split("\n").find((line) => line.trim().length > 0) ?? "";
     case "reasoning":
-      return item.content?.slice(0, 200) ?? "";
+      return stripAnsi(item.content ?? "").slice(0, 200);
     case "tool_use": {
       if (!item.input) return "";
       const inp = item.input as Record<string, string>;
