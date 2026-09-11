@@ -280,14 +280,33 @@ describe("taskLaunchForm", () => {
     ];
     const state = initialLaunchState({
       plugins: [codexPlugin, piPlugin],
-      modelProviders: [mimoProvider],
+      modelProviders: [mimoProvider, anthropicProvider],
       profiles,
       projectRunner: "sandbox",
     });
     expect(state.presetId).toBe("");
     expect(state.presetOpen).toBe(false);
-    expect(state.form.runtime).toBe("codex");
-    expect(state.form.modelProviderId).toBe("mimo");
+    expect(state.form.runtime).toBe("pi");
+    expect(state.form.modelProviderId).toBe("anthropic");
+  });
+
+  it("defaults the launch runtime to Pi when Pi is available", () => {
+    const form = defaultLaunchForm({
+      plugins: [codexPlugin, piPlugin],
+      modelProviders: [mimoProvider, anthropicProvider],
+    });
+    expect(form.runtime).toBe("pi");
+    expect(form.modelProviderId).toBe("anthropic");
+    expect(form.modelOverride).toBe("claude-sonnet-4");
+  });
+
+  it("falls back to the first launch runtime when Pi is unavailable", () => {
+    const form = defaultLaunchForm({
+      plugins: [codexPlugin],
+      modelProviders: [mimoProvider],
+    });
+    expect(form.runtime).toBe("codex");
+    expect(form.modelProviderId).toBe("mimo");
   });
 
   it("builds launch model override payload only for preset launches", () => {

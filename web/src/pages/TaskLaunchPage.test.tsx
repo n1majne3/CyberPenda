@@ -2010,8 +2010,8 @@ describe("TaskLaunchPage", () => {
 
     renderPage();
 
-    await screen.findByRole("option", { name: "MiMo" });
-    expect(screen.getByLabelText("Runtime")).toHaveValue("codex");
+    await screen.findByRole("option", { name: "Anthropic" });
+    expect(screen.getByLabelText("Runtime")).toHaveValue("pi");
 
     await userEvent.click(await screen.findByRole("button", { name: /use a saved Runtime Profile/i }));
     const presetSelect = screen.getByLabelText("Runtime Profile");

@@ -3,6 +3,9 @@ import { displayReasoningEffort, selectableModelProviders } from "@/pages/runtim
 
 export const LAUNCH_RUNTIME_IDS = ["codex", "claude_code", "pi"] as const;
 
+// The default Runtime for a direct launch when the operator has not chosen one.
+export const DEFAULT_LAUNCH_RUNTIME_ID = "pi";
+
 export type LaunchForm = {
   runtime: string;
   modelProviderId: string;
@@ -214,7 +217,7 @@ export function defaultLaunchForm(input: DefaultLaunchFormInput): LaunchForm {
   const runtime =
     fromProfile.runtime && runtimes.some((plugin) => plugin.id === fromProfile.runtime)
       ? fromProfile.runtime
-      : runtimes[0]?.id ?? "";
+      : runtimes.find((plugin) => plugin.id === DEFAULT_LAUNCH_RUNTIME_ID)?.id ?? runtimes[0]?.id ?? "";
   const plugin = input.plugins.find((candidate) => candidate.id === runtime);
   const compatible = selectableModelProviders(input.modelProviders, plugin);
   const modelProviderId =
