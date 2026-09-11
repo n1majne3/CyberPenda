@@ -43,16 +43,19 @@ Preflight reports:
 - **Selected engine** — the engine chosen in the UI (or daemon default)  
 - **Runtime root** / **VPN TUN** as before  
 
-## Podman (Linux / macOS)
+## Engine selection
 
-Daemon default:
+Daemon default is `auto`: probe PATH for `docker` first (historical default),
+then `podman`. An explicit choice always wins over the probe:
 
 ```sh
+pentestd -container-cli podman
+# or
 export PENTEST_CONTAINER_CLI=podman
 ./pentestd
 ```
 
-Or keep the daemon on Docker and pick **Podman** per Task in the launch form.
+Or keep the daemon on one engine and pick **Docker** / **Podman** per Task in the launch form.
 
 - Named volume subpaths use Podman `subpath=` syntax.
 - Host gateway includes both `host.docker.internal` and `host.containers.internal`.
@@ -77,9 +80,12 @@ pentestd.exe  ──docker.exe/podman──►  sandbox container
 
 ```bat
 set PENTEST_RUNTIME_ROOT=C:\CyberPenda\runs
-set PENTEST_CONTAINER_CLI=docker
 pentestd.exe
 ```
+
+The daemon auto-detects the Desktop CLI on PATH (`docker` first, then
+`podman`). Set `PENTEST_CONTAINER_CLI` only to pin one engine when both are
+installed.
 
 4. In Desktop settings, enable **File Sharing** (or WSL integration) for that drive.  
 5. Preflight checks:

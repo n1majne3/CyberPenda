@@ -5,6 +5,9 @@
 SANDBOX_IMAGE ?= ghcr.io/n1majne3/cyberpenda-sandbox:latest
 SANDBOX_SMOKE_IMAGE ?= cyberpenda-sandbox-smoke:ci
 TSECBENCH_HOSTED_IMAGE ?= cyberpenda-tsecbench-hosted:local
+# Container CLI for the dev daemon: docker, podman, or auto (probe PATH,
+# docker first). PENTEST_CONTAINER_CLI in the environment wins over auto.
+CONTAINER_CLI ?= $(or $(PENTEST_CONTAINER_CLI),auto)
 
 # macOS /bin/sh (bash 3.2) has no `wait -n`, so poll: if either child dies,
 # surface the failure instead of silently running the other alone (which hid
@@ -12,9 +15,9 @@ TSECBENCH_HOSTED_IMAGE ?= cyberpenda-tsecbench-hosted:local
 dev: build-ui
 	@set -e; \
 	trap 'kill 0' EXIT INT TERM; \
-	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db -sandbox-image $(SANDBOX_IMAGE) & \
+	go run ./cmd/pentestd -addr 127.0.0.1:8787 -db pentest.db -container-cli $(CONTAINER_CLI) -sandbox-image $(SANDBOX_IMAGE) & \
 	backend_pid=$$!; \
-	echo "dev: backend pid=$$backend_pid — waiting for http://127.0.0.1:8787/health …"; \
+	echo "dev: backend pid=$$backend_pid - waiting for http://127.0.0.1:8787/health ..."; \
 	ready=0; \
 	for _ in $$(seq 1 120); do \
 		if curl -sf http://127.0.0.1:8787/health >/dev/null 2>&1; then ready=1; break; fi; \
@@ -36,7 +39,7 @@ dev: build-ui
 		sleep 0.5; \
 	done; \
 	if ! kill -0 $$backend_pid 2>/dev/null; then \
-		echo "dev: backend exited — see errors above"; \
+		echo "dev: backend exited - see errors above"; \
 	else \
 		echo "dev: frontend exited"; \
 	fi; \

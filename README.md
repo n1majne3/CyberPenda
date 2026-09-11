@@ -307,7 +307,7 @@ Common `pentestd` options (flags or env):
 | `-db` | `PENTEST_DB` | `pentest.db` |
 | `-runtime-root` | `PENTEST_RUNTIME_ROOT` | (empty → daemon default) |
 | `-sandbox-image` | `PENTEST_SANDBOX_IMAGE` | `ghcr.io/n1majne3/cyberpenda-sandbox:latest` |
-| `-container-cli` | `PENTEST_CONTAINER_CLI` | `docker` (or `podman`) |
+| `-container-cli` | `PENTEST_CONTAINER_CLI` | `auto` (PATH probe: `docker`, then `podman`) |
 | `-task-volume` | `PENTEST_TASK_VOLUME` | (empty; Compose sets the named data volume) |
 | `-task-volume-root` | `PENTEST_TASK_VOLUME_ROOT` | `/data` when `-task-volume` is set |
 | `-auth-token` | `PENTEST_AUTH_TOKEN` | (required for non-loopback binds) |
