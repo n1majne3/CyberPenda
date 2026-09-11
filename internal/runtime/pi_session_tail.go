@@ -89,20 +89,23 @@ type piSessionTailFile struct {
 	path   string
 }
 
-// tailPiSession polls sessionDir for *.jsonl session files and follows every
-// one of them, emitting each new line as a runtime_output event. Pi writes a
-// subagent's transcript to its own newer session file, so following only the
-// newest file would strand the parent's settle records (subagents:record)
-// while a child is active. Tracking every file keeps parent and child lines
-// observable. When ctx is cancelled it performs one final read pass across all
-// files so lines written just before the runtime exited are drained rather
-// than dropped, then returns.
+// tailPiSession polls sessionDir for *.jsonl session files and follows the
+// root sessions among them, emitting each new line as a runtime_output event.
+// A subagent writes its own session file with a parentSession header; those
+// child files stay untailed because their lines carry no child attribution.
+// Under a persistent provider session the same content arrives attributed
+// through the bridge-forwarded pi-subagents task transcripts
+// (pi/subagent_output). Following only roots also keeps parent settle records
+// (subagents:record) observable no matter which file is newest. When ctx is
+// cancelled it performs one final read pass across all files so lines written
+// just before the runtime exited are drained rather than dropped, then
+// returns.
 func tailPiSession(ctx context.Context, sessionDir string, observe func(string), emit func(task.EventKind, task.EventPayload)) {
 	tailed := map[string]*piSessionTailFile{}
-	// headerParent caches each discovered file's parentSession so nesting depth
-	// is classified once per file without re-reading complete headers every
-	// pass. Keys use the same stable file identity as the tail state so Windows
-	// path aliases cannot split one physical session into multiple graph nodes.
+	// headerParent caches each discovered file's parentSession so the root
+	// classification happens once per file without re-reading complete headers
+	// every pass. Keys use the same stable file identity as the tail state so
+	// Windows path aliases cannot split one physical session into two tails.
 	headerParent := map[string]string{}
 	closeAll := func() {
 		for _, tf := range tailed {
@@ -119,12 +122,9 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 		case <-time.After(100 * time.Millisecond):
 		}
 
-		// Discover session files, opening any we have not tailed yet. Follow a
-		// root session (no parentSession header) and the session files of its
-		// top-level subagents (parentSession naming a root); skip deeper nested
-		// files, whose settle records are never emitted (the extension reports
-		// top-level agents only), so tailing them would grow open file handles
-		// without adding attribution.
+		// Discover session files, opening any root session we have not tailed
+		// yet. A non-empty parentSession marks a subagent's own session file;
+		// it is classified once and never tailed (see the function comment).
 		for _, path := range listSessionFiles(sessionDir) {
 			key := piSessionFileIdentity(path)
 			if _, ok := tailed[key]; ok {
@@ -140,24 +140,7 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 				headerParent[key] = parent
 			}
 			if parent != "" {
-				// A top-level subagent's parent is a root session (itself no
-				// parentSession). If the parent names its own parent, this file
-				// is a nested (grandchild) transcript — skip it. The header's
-				// parentSession resolves to a stable file identity before lookup
-				// so a short-path or aliased form still finds the same parent.
-				parentKey := piSessionFileIdentity(parent)
-				grandparent, ok := headerParent[parentKey]
-				if !ok {
-					var classified bool
-					grandparent, classified = piSessionParent(parent)
-					if !classified {
-						continue
-					}
-					headerParent[parentKey] = grandparent
-				}
-				if grandparent != "" {
-					continue
-				}
+				continue
 			}
 			f, err := os.Open(path)
 			if err != nil {

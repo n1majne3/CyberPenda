@@ -2,6 +2,18 @@
 
 Date: 2026-08-29
 
+Update 2026-09-11: child conversation content no longer rides the session-file
+tail. The pi tailer follows root session files only (`parentSession == ""`),
+because child session lines carry no attribution. Attributed child content
+comes from the extension's per-agent task transcripts
+(`<tmpdir>/pi-subagents-<uid>/<encoded-cwd>/<parent-session-id>/tasks/<agent>.output`,
+Claude Code-format JSONL with `isSidechain` and `agentId` on every line,
+`dist/output-file.js`): the provider bridge tails them in-process and forwards
+each line as a `pi/subagent_output` notification, which the daemon stores as
+runtime output for the child's Subagent Conversation Block (#272). The
+tailer-level child-file following recommended below was removed again for this
+reason.
+
 Update 2026-09-06: CyberPenda now enables only `@tintinweb/pi-subagents` in
 both images. The unscoped `pi-subagents` product was removed because it
 registers a conflicting `Agent` tool and its detached async children write no

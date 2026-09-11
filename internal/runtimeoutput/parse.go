@@ -115,7 +115,9 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 			return nil
 		}
 		return parseMessageRecord(record, opts, roleFromType(recordType), createdAt)
-	case "assistant", "user", "message", "assistant_message", "agent_message", "agentmessage", "response.output_text", "output_text", "message_delta", "content_block_delta":
+	case "assistant", "user", "message", "assistant_message", "agent_message", "agentmessage", "response.output_text", "output_text", "message_delta", "content_block_delta", "toolresult":
+		// "toolresult" is the pi-subagents child transcript spelling; its
+		// message role ("toolResult") selects the tool-result projection.
 		return stampAgentIdentity(parseMessageRecord(record, opts, roleFromType(recordType), createdAt), record)
 	case "commandexecution":
 		return parseCodexCommandExecution(record, meta, createdAt)

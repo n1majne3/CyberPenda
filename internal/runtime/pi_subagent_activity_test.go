@@ -66,3 +66,49 @@ func TestPiHandleEventIgnoresNonSubagentEntries(t *testing.T) {
 		}
 	}
 }
+
+// A bridge-relayed child transcript line becomes runtime output for this
+// session even between Work Runtime Turns; only the child-attributed lines of
+// the session's own subagents qualify.
+func TestPiHandleEventEmitsSubagentOutputRuntimeOutput(t *testing.T) {
+	session := NewPiProviderSession(PiProviderSessionConfig{
+		Transport: &fakeProviderTransport{}, SessionID: "pi-1",
+		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
+	})
+	var kinds []task.EventKind
+	var events []task.EventPayload
+	session.SetEventSink(func(kind task.EventKind, payload task.EventPayload) {
+		kinds = append(kinds, kind)
+		events = append(events, payload)
+	})
+
+	line := `{"isSidechain":true,"agentId":"d62e4d35-5898-450","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"child progress"}]}}`
+	params, err := json.Marshal(map[string]any{"line": line, "session_id": "pi-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.HandleEvent(SandboxBridgeEvent{Method: "pi/subagent_output", Params: params}, nil)
+
+	if len(events) != 1 || kinds[0] != task.EventKindRuntimeOutput {
+		t.Fatalf("expected one runtime_output event, got %#v", kinds)
+	}
+	found := events[0]
+	if found["text"] != line || found["provider"] != "pi" || found["provider_event"] != "pi/subagent_output" || found["stream"] != "pi_rpc" {
+		t.Fatalf("subagent output payload = %#v", found)
+	}
+
+	for name, params := range map[string]map[string]any{
+		"other session":   {"line": line, "session_id": "pi-2"},
+		"missing agentId": {"line": `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"x"}]}}`, "session_id": "pi-1"},
+		"invalid line":    {"line": "not json", "session_id": "pi-1"},
+	} {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		session.HandleEvent(SandboxBridgeEvent{Method: "pi/subagent_output", Params: raw}, nil)
+		if len(events) != 1 {
+			t.Fatalf("%s: expected the line to be dropped, got %#v", name, events)
+		}
+	}
+}

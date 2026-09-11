@@ -163,6 +163,66 @@ func startChildRuntime(t *testing.T, db *store.DB, owner childhistory.Owner) {
 	}
 }
 
+// Bridge-relayed pi child transcript lines (agentId-attributed, Claude
+// Code-format) join the same child the settled subagents:record creates, and
+// the child's operator-invisible prompt stays out of the page.
+func TestPiChildOutputLinesJoinTheSettledBlock(t *testing.T) {
+	db, err := store.Open("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	owner := childhistory.Owner{Kind: "session", ID: "owner", Base: "/children"}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = childhistory.Record(tx, owner, transcript.Event{ID: "started", Seq: 0, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "pi"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	record := func(seq int, text string) {
+		t.Helper()
+		tx, err := db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		event := transcript.Event{ID: fmt.Sprintf("event-%d", seq), Seq: seq, Kind: "runtime_output", CreatedAt: time.Now(),
+			Payload: map[string]any{"provider": "pi", "stream": "pi_rpc", "text": text}}
+		if err = childhistory.Record(tx, owner, event); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		if err = tx.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(1, `{"isSidechain":true,"agentId":"d62e4d35-5898-450","type":"user","message":{"role":"user","content":"child prompt"}}`)
+	record(2, `{"isSidechain":true,"agentId":"d62e4d35-5898-450","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"child progress"}]}}`)
+	record(3, `{"isSidechain":true,"agentId":"d62e4d35-5898-450","type":"toolResult","message":{"role":"toolResult","toolCallId":"call_1","toolName":"bash","content":[{"type":"text","text":"graph/"}],"isError":false}}`)
+	record(4, `{"type":"custom","customType":"subagents:record","data":{"id":"d62e4d35-5898-450","type":"execute","description":"d-01 S3","status":"completed"}}`)
+
+	summary, found, err := childhistory.Summary(db.DB, owner, "subagent-d62e4d35-5898-450")
+	if err != nil || !found {
+		t.Fatalf("summary found=%v err=%v", found, err)
+	}
+	if summary.Status != "completed" || summary.Details["description"] != "d-01 S3" {
+		t.Fatalf("summary=%+v", summary)
+	}
+	page, found, err := childhistory.Read(db.DB, owner, summary.ID, childhistory.Query{})
+	if err != nil || !found {
+		t.Fatalf("read found=%v err=%v", found, err)
+	}
+	if len(page.Entries) != 2 {
+		t.Fatalf("expected 2 child items (prompt excluded), got %+v", page.Entries)
+	}
+	if page.Entries[0].Text != "child progress" || page.Entries[1].Kind != transcript.KindToolResult || page.Entries[1].Text != "graph/" {
+		t.Fatalf("entries=%+v", page.Entries)
+	}
+}
+
 func TestChildPageBoundsProviderMetadata(t *testing.T) {
 	db, err := store.Open("")
 	if err != nil {

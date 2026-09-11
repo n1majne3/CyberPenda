@@ -405,6 +405,49 @@ func TestCoalescePreservesChildAttribution(t *testing.T) {
 	}
 }
 
+// A pi-subagents child transcript line (Claude Code-format task output) keeps
+// its child attribution through parsing: the assistant message and the
+// toolResult record both carry the agentId onto their turns.
+func TestParseRecordAttributesPiSubagentOutputLines(t *testing.T) {
+	at := time.Date(2026, 9, 11, 4, 15, 46, 0, time.UTC)
+	cases := []struct {
+		name   string
+		line   string
+		kind   runtimeoutput.Kind
+		role   string
+		callID string
+	}{
+		{
+			name: "assistant text and tool call",
+			line: `{"isSidechain":true,"agentId":"d62e4d35-5898-450","type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"plan"},{"type":"toolCall","id":"call_00_x","name":"bash","arguments":{"command":"ls"}}]}}`,
+			kind: runtimeoutput.KindToolUse, role: "assistant", callID: "call_00_x",
+		},
+		{
+			name: "tool result",
+			line: `{"isSidechain":true,"agentId":"d62e4d35-5898-450","type":"toolResult","message":{"role":"toolResult","toolCallId":"call_00_x","toolName":"bash","content":[{"type":"text","text":"graph/"}],"isError":false}}`,
+			kind: runtimeoutput.KindToolResult, role: "tool", callID: "call_00_x",
+		},
+	}
+	for _, tc := range cases {
+		turns, fallback := runtimeoutput.ParseLine(tc.line, at, runtimeoutput.ParseOptions{IncludeThinking: true})
+		if fallback {
+			t.Fatalf("%s: line parsed as plain text fallback", tc.name)
+		}
+		var found *runtimeoutput.Turn
+		for i := range turns {
+			if turns[i].Kind == tc.kind {
+				found = &turns[i]
+			}
+		}
+		if found == nil {
+			t.Fatalf("%s: no %s turn in %#v", tc.name, tc.kind, turns)
+		}
+		if found.AgentID != "d62e4d35-5898-450" || found.Role != tc.role || found.ToolCallID != tc.callID {
+			t.Fatalf("%s: turn = %#v", tc.name, *found)
+		}
+	}
+}
+
 // ReconcileLifecycle merging one child's provider item must preserve the
 // child identity even when the later record omits the marker.
 func TestReconcileLifecyclePreservesChildAttribution(t *testing.T) {

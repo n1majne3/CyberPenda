@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"pentest/internal/adapters"
 	"pentest/internal/blackboardconclusion"
 	"pentest/internal/task"
 )
@@ -74,6 +75,9 @@ func (s *PiProviderSession) HandleEvent(event SandboxBridgeEvent, emit ProviderS
 		// subagent signal on the Pi RPC wire. Project it as runtime output so
 		// the Timeline shows the child agent; the Harness only observes it.
 		s.emitPiSubagentRecord(event, params, emit)
+		return
+	case method == "pi/subagent_output":
+		s.emitPiSubagentOutput(params, emit)
 		return
 	case piStartedBoundary(method):
 		s.emitPiLifecycle(event.Method, params, "started", emit)
@@ -163,6 +167,45 @@ func (s *PiProviderSession) emitPiSubagentRecord(event SandboxBridgeEvent, param
 		"provider_turn_id": turnID,
 		"stream":           "pi_rpc", "text": string(event.Params),
 	})
+}
+
+// emitPiSubagentOutput forwards one bridge-relayed child transcript line as a
+// runtime_output event. The pi-subagents extension writes each child agent's
+// Claude Code-format transcript to a per-agent .output file; the bridge tails
+// it because the Pi RPC stream never carries child content. Every line carries
+// the child agentId, so the Transcript projection attributes it to the child's
+// Subagent Conversation Block and the child read model stores it in the same
+// transaction. Unlike turn-scoped lifecycle events these lines stay valuable
+// between Work Runtime Turns, so no turn lineage is required; the session
+// identity check is the only ownership gate.
+func (s *PiProviderSession) emitPiSubagentOutput(params map[string]any, emit ProviderSessionEmit) {
+	line := providerJSONValue(params, "line")
+	if line == "" {
+		return
+	}
+	var record map[string]any
+	if json.Unmarshal([]byte(line), &record) != nil {
+		return
+	}
+	if providerJSONValue(record, "agentId", "agent_id") == "" {
+		return
+	}
+	if sessionID := providerJSONValue(params, "session_id", "sessionId"); sessionID != "" && sessionID != s.SessionID() {
+		return
+	}
+	if emit == nil {
+		s.mu.Lock()
+		emit = s.eventSink
+		s.mu.Unlock()
+	}
+	if emit == nil {
+		return
+	}
+	emit(task.EventKindRuntimeOutput, task.EventPayload(adapters.Redact(map[string]any{
+		"provider": "pi", "provider_event": "pi/subagent_output",
+		"session_id": s.SessionID(),
+		"stream":     "pi_rpc", "text": line,
+	})))
 }
 
 func (s *PiProviderSession) emitPiLifecycle(providerEvent string, params map[string]any, outcome string, emit ProviderSessionEmit) {
