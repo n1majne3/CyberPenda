@@ -159,8 +159,11 @@ func TestSandboxFGSOutboxLive(t *testing.T) {
 		{"op":"step.transition","key":"step:smoke","from":"open","to":"done","outputs":["fact:smoke"]},
 		{"op":"goal.transition","key":"goal:smoke","from":"open","to":"done","facts":["fact:smoke"],"summary":"Container delivery verified"}
 	]}`, "pentestctl", "working-graph", "emit", "--input", "-")
+	// Emit waits up to 5s for the receipt by default, so the response is
+	// "published" only when acceptance outlasts that window; a fast daemon
+	// receiver returns the settled receipt with state "applied".
 	var emitted struct{ ID, State string }
-	if err = json.Unmarshal(published, &emitted); err != nil || emitted.State != "published" || emitted.ID == "" {
+	if err = json.Unmarshal(published, &emitted); err != nil || (emitted.State != "published" && emitted.State != "applied") || emitted.ID == "" {
 		t.Fatalf("invalid publish response: %s (%v)", published, err)
 	}
 	for {
