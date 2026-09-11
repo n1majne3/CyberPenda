@@ -369,7 +369,11 @@ const readRoutes: Array<[RegExp, unknown | ((path: string) => unknown)]> = [
     if (!found) throw new Error(`Demo data is not available for ${path}`);
     return { ...found, files: { "SKILL.md": `# ${found.name}\n\nRead-only demo instruction body for ${found.name}.\n` } };
   }],
-  [/^\/api\/health$/, { status: "ok" }],
+  [/^\/health$/, {
+    version: "demo",
+    database: { status: "ok" },
+    runner: { container_cli: "docker", engine_kind: "docker", engine_name: "Docker" },
+  }],
 ];
 
 export function demoApiGet(path: string): unknown {

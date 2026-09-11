@@ -62,10 +62,13 @@ type DefaultLaunchFormInput = {
   projectRunner?: string;
 };
 
-export function presetsForRuntime(profiles: RuntimeProfile[], runtime: string): RuntimeProfile[] {
-  const normalized = runtime.trim();
-  if (!normalized) return [];
-  return profiles.filter((profile) => profile.provider === normalized);
+// The Launch Profile Selector lists every Runtime Profile whose Runtime the
+// launch surface can start; it does not filter by the current Runtime
+// selection. Choosing a Profile switches the launch Runtime to the Profile's
+// Runtime (see formFromPreset).
+export function launchableProfiles(profiles: RuntimeProfile[]): RuntimeProfile[] {
+  const allowed = new Set<string>(LAUNCH_RUNTIME_IDS);
+  return profiles.filter((profile) => allowed.has(profile.provider));
 }
 
 export function presetMatchesRuntime(

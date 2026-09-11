@@ -467,8 +467,8 @@ _Avoid_: host runtime mutation, global plugin install, profile edit side effect
 ### Configuration and execution
 
 **Launch Profile Selector**:
-An advanced task-launch control for explicitly choosing an optional **Runtime Profile** filtered to the selected **Runtime Plugin** family.
-_Avoid_: primary launch picker, default profile, model provider switch, raw config editor
+An advanced task-launch control for explicitly choosing an optional **Runtime Profile** from every launchable Profile, unfiltered by the current **Runtime** selection. Choosing a Profile switches the launch Runtime to that Profile's **Runtime Plugin** family.
+_Avoid_: primary launch picker, default profile, model provider switch, raw config editor, runtime-filtered profile list
 
 **Save as Runtime Profile**:
 An explicit operator-confirmed action that creates a named **Runtime Profile** from a direct **Runtime Configuration Snapshot** for later advanced editing and reuse.

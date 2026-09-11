@@ -23,9 +23,9 @@ import {
   initialLaunchState,
   launchSelectionPayload,
   launchRuntimes,
+  launchableProfiles,
   modelsForProvider,
   presetMatchesRuntime,
-  presetsForRuntime,
   simpleLaunchFormForRuntime,
   type LaunchForm,
 } from "@/pages/taskLaunchForm";
@@ -80,7 +80,7 @@ export function useRuntimeLaunchControls({ projectId, defaultBlackboardMode = "d
           apiGet<{ providers: ModelProvider[] }>("/api/model-providers"),
           apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles"),
           projectId ? apiGet<Project>(`/api/projects/${projectId}`) : Promise.resolve(null),
-          apiGet<Health>("/api/health").catch(() => null),
+          apiGet<Health>("/health").catch(() => null),
         ]);
         if (cancelled) return;
         const loadedPlugins = pluginData.plugins ?? [];
@@ -127,7 +127,9 @@ export function useRuntimeLaunchControls({ projectId, defaultBlackboardMode = "d
     [skillsPreview],
   );
   const launchRuntimePlugins = useMemo(() => launchRuntimes(plugins), [plugins]);
-  const runtimePresets = useMemo(() => presetsForRuntime(profiles, form.runtime), [profiles, form.runtime]);
+  // Every launchable Runtime Profile stays visible; the current Runtime
+  // selection does not filter the list.
+  const launchProfiles = useMemo(() => launchableProfiles(profiles), [profiles]);
   const selectedPlugin = useMemo(
     () => plugins.find((plugin) => plugin.id === form.runtime),
     [plugins, form.runtime],
@@ -264,7 +266,7 @@ export function useRuntimeLaunchControls({ projectId, defaultBlackboardMode = "d
     skillsPreviewError,
     enabledSkillsPreview,
     launchRuntimePlugins,
-    runtimePresets,
+    launchProfiles,
     compatibleProviders,
     modelOptions,
     error,
@@ -316,7 +318,7 @@ export function RuntimeLaunchControls({
     skillsPreviewError,
     enabledSkillsPreview,
     launchRuntimePlugins,
-    runtimePresets,
+    launchProfiles,
     compatibleProviders,
     modelOptions,
     error,
@@ -536,7 +538,7 @@ export function RuntimeLaunchControls({
             </p>
           </ConfigAccordion>
 
-          {controller.profiles.length > 0 && (
+          {launchProfiles.length > 0 && (
             <ConfigAccordion
               icon={Bookmark}
               title="Use a saved Runtime Profile"
@@ -548,9 +550,17 @@ export function RuntimeLaunchControls({
                 <Label htmlFor="launch-preset">Runtime Profile</Label>
                 <ControlSelect id="launch-preset" name="runtime_profile" value={presetId} onChange={(event) => updatePreset(event.target.value)}>
                   <option value="">Direct configuration</option>
-                  {runtimePresets.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                  {launchRuntimePlugins.map((plugin) => {
+                    const group = launchProfiles.filter((profile) => profile.provider === plugin.id);
+                    if (group.length === 0) return null;
+                    return (
+                      <optgroup key={plugin.id} label={plugin.name}>
+                        {group.map((profile) => <option key={profile.id} value={profile.id}>{profile.name}</option>)}
+                      </optgroup>
+                    );
+                  })}
                 </ControlSelect>
-                <p className="text-xs text-muted-foreground">A Runtime Profile copies its full advanced configuration into this new {ownerLabel}. Later Profile edits do not change it.</p>
+                <p className="text-xs text-muted-foreground">A Runtime Profile copies its full advanced configuration into this new {ownerLabel}, and the Runtime changes to the Runtime of the Profile. Later Profile edits do not change it.</p>
               </div>
             </ConfigAccordion>
           )}

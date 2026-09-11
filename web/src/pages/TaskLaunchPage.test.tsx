@@ -32,6 +32,35 @@ const mimoProvider = {
   catalog: { manual: ["mimo-v2.5-pro"], default_model: "mimo-v2.5-pro" },
 };
 
+const piPlugin = {
+  ...codexPlugin,
+  id: "pi",
+  name: "Pi",
+  model_provider: {
+    requirement: "required",
+    supported_protocols: ["anthropic_messages"],
+    protocol_preference: ["anthropic_messages"],
+  },
+};
+
+const anthropicProvider = {
+  id: "anthropic",
+  name: "Anthropic",
+  base_url: "https://api.anthropic.com",
+  protocols: ["anthropic_messages"],
+  api_key_env: "ANTHROPIC_API_KEY",
+  catalog: { default_model: "claude-sonnet-4" },
+};
+
+const piPreset = {
+  id: "pi-preset",
+  name: "Pi Default Preset",
+  provider: "pi",
+  fields: { model_provider_id: "anthropic" },
+  created_at: "",
+  updated_at: "",
+};
+
 const codexPreset = {
   id: "codex-preset",
   name: "Codex MCP Preset",
@@ -105,7 +134,7 @@ describe("TaskLaunchPage", () => {
         created_at: "",
         updated_at: "",
       },
-      "/api/health": {
+      "/health": {
         version: "test",
         database: { status: "ok" },
         runner: { container_cli: "docker", engine_kind: "docker", engine_name: "Docker" },
@@ -1734,6 +1763,37 @@ describe("TaskLaunchPage", () => {
     });
   });
 
+  it("defaults the Runner to Podman when health reports a Podman-only machine", async () => {
+    mockApi({
+      "/api/runtime-plugins": { plugins: [codexPlugin] },
+      "/api/model-providers": { providers: [mimoProvider] },
+      "/api/runtime-profiles": { profiles: [] },
+      "/api/skills?": { skills: [] },
+      "/api/projects/project-1": {
+        id: "project-1",
+        name: "Acme",
+        description: "",
+        kind: "pentest",
+        scope: {},
+        defaults: { runner: "sandbox" },
+        created_at: "",
+        updated_at: "",
+      },
+      "/health": {
+        version: "test",
+        database: { status: "ok" },
+        runner: { container_cli: "podman", engine_kind: "podman", engine_name: "Podman" },
+      },
+    });
+
+    renderPage();
+
+    await screen.findByRole("option", { name: "MiMo" });
+    await userEvent.click(await screen.findByRole("button", { name: /runner/i }));
+    expect(screen.getByLabelText("Runner")).toHaveValue("podman");
+    expect(screen.getByLabelText("Podman network")).toBeInTheDocument();
+  });
+
   it("omits host activation from sandbox launch after switching back from host", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -1923,6 +1983,49 @@ describe("TaskLaunchPage", () => {
     expect(presetSelect).toHaveValue("");
     expect(screen.getByLabelText("Runtime")).not.toBeDisabled();
     expect(screen.getByLabelText("Model provider")).not.toBeDisabled();
+  });
+
+  it("lists every launch Runtime Profile and switches the Runtime to the selected Profile", async () => {
+    mockApi({
+      "/api/runtime-plugins": { plugins: [codexPlugin, piPlugin] },
+      "/api/model-providers": { providers: [mimoProvider, anthropicProvider] },
+      "/api/runtime-profiles": { profiles: [codexPreset, piPreset] },
+      "/api/skills?": { skills: [] },
+      "/api/projects/project-1": {
+        id: "project-1",
+        name: "Acme",
+        description: "",
+        kind: "pentest",
+        scope: {},
+        defaults: { runner: "sandbox" },
+        created_at: "",
+        updated_at: "",
+      },
+      "/health": {
+        version: "test",
+        database: { status: "ok" },
+        runner: { container_cli: "docker", engine_kind: "docker", engine_name: "Docker" },
+      },
+    });
+
+    renderPage();
+
+    await screen.findByRole("option", { name: "MiMo" });
+    expect(screen.getByLabelText("Runtime")).toHaveValue("codex");
+
+    await userEvent.click(await screen.findByRole("button", { name: /use a saved Runtime Profile/i }));
+    const presetSelect = screen.getByLabelText("Runtime Profile");
+    // The list is not filtered by the current Runtime; groups name the Runtime.
+    expect(within(presetSelect).getByRole("option", { name: "Codex MCP Preset" })).toBeInTheDocument();
+    expect(within(presetSelect).getByRole("option", { name: "Pi Default Preset" })).toBeInTheDocument();
+    expect(within(presetSelect).getByRole("group", { name: "Pi" })).toBeInTheDocument();
+
+    await userEvent.selectOptions(presetSelect, "pi-preset");
+
+    expect(presetSelect).toHaveValue("pi-preset");
+    expect(screen.getByLabelText("Runtime")).toHaveValue("pi");
+    expect(screen.getByLabelText("Runtime")).toBeDisabled();
+    expect(screen.getByLabelText("Model provider")).toHaveValue("anthropic");
   });
 
   it("explains unavailable launch actions with visible text", async () => {

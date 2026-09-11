@@ -55,7 +55,7 @@ const sessionLaunchRoutes = {
   "/api/model-providers": { providers: [mimoProvider] },
   "/api/runtime-profiles": { profiles: [] },
   "/api/skills?": { skills: [] },
-  "/api/health": {
+  "/health": {
     version: "test",
     database: { status: "ok" },
     runner: { container_cli: "docker", engine_kind: "docker", engine_name: "Docker" },

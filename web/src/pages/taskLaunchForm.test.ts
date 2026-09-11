@@ -11,7 +11,7 @@ import {
   launchSelectionPayload,
   modelsForProvider,
   presetMatchesRuntime,
-  presetsForRuntime,
+  launchableProfiles,
   launchSelectionFromProfile,
 } from "./taskLaunchForm";
 
@@ -190,7 +190,7 @@ describe("taskLaunchForm", () => {
     expect(formFromPreset(missingEffort, [mimoProvider], "sandbox").reasoningEffort).toBe("high");
   });
 
-  it("filters runtime profile presets by runtime", () => {
+  it("lists launch profiles for every launch runtime without filtering by the selected runtime", () => {
     const profiles: RuntimeProfile[] = [
       {
         id: "codex-preset",
@@ -208,8 +208,16 @@ describe("taskLaunchForm", () => {
         created_at: "",
         updated_at: "",
       },
+      {
+        id: "hermes-preset",
+        name: "Hermes Retired",
+        provider: "hermes",
+        fields: {},
+        created_at: "",
+        updated_at: "",
+      },
     ];
-    expect(presetsForRuntime(profiles, "codex").map((profile) => profile.id)).toEqual(["codex-preset"]);
+    expect(launchableProfiles(profiles).map((profile) => profile.id)).toEqual(["codex-preset", "pi-preset"]);
     expect(presetMatchesRuntime("codex-preset", profiles, "codex")).toBe(true);
     expect(presetMatchesRuntime("codex-preset", profiles, "pi")).toBe(false);
   });
@@ -233,7 +241,7 @@ describe("taskLaunchForm", () => {
         updated_at: "",
       },
     ];
-    expect(presetsForRuntime(profiles, "codex").map((profile) => profile.id)).toEqual(["codex-preset", "codex-auto"]);
+    expect(launchableProfiles(profiles).map((profile) => profile.id)).toEqual(["codex-preset", "codex-auto"]);
     expect(presetMatchesRuntime("codex-auto", profiles, "codex")).toBe(true);
   });
 
