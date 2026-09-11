@@ -200,6 +200,11 @@ func TestDisabledTaskHTTPResumePreservesOmittedBlackboardProjection(t *testing.T
 		t.Fatalf("decode disabled Task: %v", err)
 	}
 
+	// The accepted create response precedes durable Runtime startup; Stop must
+	// observe the running state so its cancel reaches the registered Harness
+	// run instead of settling only durable state.
+	waitForDisabledTaskPublicStatus(t, server, projectID, created.ID, task.StatusRunning)
+
 	stoppedResponse := httptest.NewRecorder()
 	server.ServeHTTP(stoppedResponse, httptest.NewRequest(
 		http.MethodPost, "/api/projects/"+projectID+"/tasks/"+created.ID+"/stop", nil,
@@ -268,6 +273,12 @@ func TestDisabledSessionHTTPReplacementPreservesOmittedBlackboardProjection(t *t
 	if err := json.NewDecoder(createdResponse.Body).Decode(&created); err != nil {
 		t.Fatalf("decode disabled Session: %v", err)
 	}
+
+	// The accepted create response precedes durable Runtime startup; Stop must
+	// observe the running state so its cancel reaches the registered Harness
+	// run instead of settling only durable state.
+	initial := waitForDisabledSessionPublicContinuation(t, server, created.ID, 1)
+	assertDisabledSessionPublicContinuation(t, initial, 1, session.RuntimeStatusRunning)
 
 	stoppedResponse := httptest.NewRecorder()
 	server.ServeHTTP(stoppedResponse, httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/stop", nil))
@@ -496,6 +507,10 @@ func TestDisabledTaskHTTPFinishIgnoresOnlyBlackboardReconciliationDebt(t *testin
 func TestDisabledTaskHTTPStopIgnoresTerminalBlackboardReconcilerFailure(t *testing.T) {
 	server, projectID, profileID, factory := newDisabledBlackboardHTTPFixture(t)
 	created := createDisabledTaskHTTP(t, server, projectID, profileID, "stop disabled work")
+	// The accepted create response precedes durable Runtime startup; Stop must
+	// observe the running state so its cancel reaches the registered Harness
+	// run instead of settling only durable state.
+	waitForDisabledTaskPublicStatus(t, server, projectID, created.ID, task.StatusRunning)
 	release := make(chan struct{})
 	server.runtimeStopTimeout = 100 * time.Millisecond
 	server.tasks.SetContinuationReconciler(blockingDisabledTerminalReconciler{release: release})
