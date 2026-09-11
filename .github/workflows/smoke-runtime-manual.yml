@@ -16,11 +16,11 @@ jobs:
             echo "ANTHROPIC_AUTH_TOKEN and OPENAI_API_KEY are required for Runtime smoke." >&2
             exit 1
           fi
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Build sandbox image
