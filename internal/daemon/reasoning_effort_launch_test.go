@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,6 +13,7 @@ import (
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
+	"pentest/internal/runner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
@@ -273,6 +276,62 @@ func TestTaskCreateHTTPAcceptsLaunchReasoningEffortOverrideWithoutMutatingProfil
 		t.Fatalf("profile mutated to %q", stored.Fields.ReasoningEffort)
 	}
 	server.harness.StopAndWait(createdTaskIDFromBody(t, resp.Body.Bytes()), 2*time.Second)
+}
+
+// TestPiLaunchPinsDefaultThinkingLevelForSubagents proves the launch override
+// reaches the Pi settings.json projection: pi-subagents child sessions read
+// defaultThinkingLevel from settings.json, so a max launch must pin max there
+// instead of leaving Pi's built-in default.
+func TestPiLaunchPinsDefaultThinkingLevelForSubagents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	root := t.TempDir()
+	server, err := NewServer(Config{
+		DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		SandboxImage: "cyberpenda:test", DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+
+	projectRecord, err := server.projects.Create("Project", "", project.Scope{Domains: []string{"example.com"}}, project.Defaults{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := server.profiles.Create("Pi", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+		Model: "pi-test", SandboxImage: "cyberpenda:test", ReasoningEffort: "medium",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: projectRecord.ID,
+		Type:      task.TypePentest, Goal: "inspect example.com",
+		RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := server.buildTaskLaunchPlanForBlackboardProjection(created, created.Goal, "", "", "max", runner.BlackboardProjectionOmitted); err != nil {
+		t.Fatal(err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(server.runtimeRoot, created.ID, "runtime-home", "pi", "agent", "settings.json"))
+	if err != nil {
+		t.Fatalf("read projected pi settings.json: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("decode pi settings.json: %v", err)
+	}
+	if got := settings["defaultThinkingLevel"]; got != "max" {
+		t.Fatalf("defaultThinkingLevel = %#v, want max", got)
+	}
 }
 
 type effortProviderSessionFactory struct {

@@ -195,7 +195,12 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	if err := json.Unmarshal(raw, &settings); err != nil {
 		t.Fatalf("decode settings.json: %v", err)
 	}
-	want := map[string]bool{"npm:pi-mcp-adapter": true, "npm:pi-subagents": true}
+	want := map[string]bool{
+		"npm:@tintinweb/pi-subagents": true,
+		"npm:pi-web-access":           true,
+		"npm:pi-mcp-adapter":          true,
+		"npm:pi-subagents":            true,
+	}
 	got := map[string]bool{}
 	for _, p := range settings.Packages {
 		got[p] = true
@@ -205,15 +210,20 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 			t.Fatalf("expected packages to contain %q, got %#v", ref, settings.Packages)
 		}
 	}
-	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 2 {
-		t.Fatalf("expected packages preview with 2 entries, got %#v", projection.Config["packages"])
+	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 4 {
+		t.Fatalf("expected packages preview with 4 entries, got %#v", projection.Config["packages"])
 	}
 }
 
-// TestProjectPiConfigMergesHostSettingsPackages proves that packages configured
-// in host ~/.pi/agent/settings.json are preserved and merged into the task-local
-// settings.json packages list.
-func TestProjectPiConfigMergesHostSettingsPackages(t *testing.T) {
+// TestProjectPiSettingsIgnoresHostSettings locks sandbox projection isolation:
+// host ~/.pi/agent/settings.json is never read. No host key (theme,
+// defaultModel, defaultProvider, defaultThinkingLevel, packages) leaks into
+// the task-local settings.json. packages come only from enabled Runtime
+// Extensions; defaultThinkingLevel, defaultProvider, and defaultModel are
+// pinned to launch-resolved values so pi-subagents child sessions — which read
+// these settings.json defaults instead of inheriting the main session's
+// runtime state — stay on the launch selection.
+func TestProjectPiSettingsIgnoresHostSettings(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 	hostHome := isolatePiHostHome(t)
 
@@ -221,7 +231,7 @@ func TestProjectPiConfigMergesHostSettingsPackages(t *testing.T) {
 	if err := os.MkdirAll(hostPiDir, 0o700); err != nil {
 		t.Fatalf("mkdir host pi agent dir: %v", err)
 	}
-	hostSettings := `{"theme":"dark","packages":["npm:pi-web-access","npm:pi-subagents"]}`
+	hostSettings := `{"theme":"dark","defaultModel":"host-model","defaultProvider":"host-provider","defaultThinkingLevel":"low","packages":["npm:pi-web-access","npm:pi-subagents"]}`
 	if err := os.WriteFile(filepath.Join(hostPiDir, "settings.json"), []byte(hostSettings), 0o600); err != nil {
 		t.Fatalf("write host settings.json: %v", err)
 	}
@@ -237,6 +247,7 @@ func TestProjectPiConfigMergesHostSettingsPackages(t *testing.T) {
 		Provider: runtimeprofile.ProviderPi,
 		Fields: runtimeprofile.Fields{
 			Model: "DeepSeek-V4-Pro",
+			Env:   map[string]string{"PI_PROVIDER_ID": "hub"},
 			RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{
 				{
 					ID:      "npm:@tintinweb/pi-subagents",
@@ -256,38 +267,27 @@ func TestProjectPiConfigMergesHostSettingsPackages(t *testing.T) {
 		t.Fatalf("project config: %v", err)
 	}
 
-	settingsPath := filepath.Join(layout.ProviderHome, "agent", "settings.json")
-	raw, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatalf("read projected settings.json: %v", err)
-	}
-	var settings struct {
-		Theme    string   `json:"theme"`
-		Packages []string `json:"packages"`
-	}
-	if err := json.Unmarshal(raw, &settings); err != nil {
-		t.Fatalf("decode settings.json: %v", err)
-	}
-	if settings.Theme != "dark" {
-		t.Fatalf("expected theme 'dark' preserved from host, got %q", settings.Theme)
-	}
-
-	want := map[string]bool{
-		"npm:pi-web-access":           true,
-		"npm:pi-subagents":            true,
-		"npm:@tintinweb/pi-subagents": true,
-	}
-	got := map[string]bool{}
-	for _, p := range settings.Packages {
-		got[p] = true
-	}
-	for ref := range want {
-		if !got[ref] {
-			t.Fatalf("expected merged packages to contain %q, got %#v", ref, settings.Packages)
+	settings := readJSONFile(t, filepath.Join(layout.ProviderHome, "agent", "settings.json"))
+	for _, leaked := range []string{"theme"} {
+		if _, ok := settings[leaked]; ok {
+			t.Fatalf("host key %q leaked into projected settings.json: %#v", leaked, settings)
 		}
 	}
-	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 3 {
-		t.Fatalf("expected packages preview with 3 entries, got %#v", projection.Config["packages"])
+	if got := settings["defaultProvider"]; got != "hub" {
+		t.Fatalf("defaultProvider = %#v, want launch provider hub (never host-provider)", got)
+	}
+	if got := settings["defaultModel"]; got != "DeepSeek-V4-Pro" {
+		t.Fatalf("defaultModel = %#v, want launch model (never host-model)", got)
+	}
+	if got := settings["defaultThinkingLevel"]; got != "high" {
+		t.Fatalf("defaultThinkingLevel = %#v, want resolved high (never host low)", got)
+	}
+	packages, _ := settings["packages"].([]any)
+	if len(packages) != 2 || packages[0] != "npm:@tintinweb/pi-subagents" || packages[1] != "npm:pi-web-access" {
+		t.Fatalf("packages = %#v, want only the built-in defaults (host packages must not leak)", packages)
+	}
+	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 2 {
+		t.Fatalf("expected packages preview with 2 entries, got %#v", projection.Config["packages"])
 	}
 }
 
@@ -1039,4 +1039,187 @@ func TestProjectPiConfigWritesExecuteSubagentType(t *testing.T) {
 	if !ok || len(types) != 1 || types[0] != "execute" {
 		t.Fatalf("expected subagent_types preview [execute], got %#v", projection.Config["subagent_types"])
 	}
+}
+
+// TestProjectPiSettingsPinDefaultThinkingLevel locks the Subagent Reasoning
+// Effort contract: pi-subagents child sessions inherit settings.json
+// defaultThinkingLevel, not the main session's runtime-set thinking level, so
+// the launch-resolved Requested Reasoning Effort must be pinned there. The
+// Launch Reasoning Effort Override beats the Runtime Profile default, and both
+// beat a host ~/.pi/agent/settings.json defaultThinkingLevel.
+func TestProjectPiSettingsPinDefaultThinkingLevel(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	t.Run("profile default overrides host defaultThinkingLevel", func(t *testing.T) {
+		hostHome := isolatePiHostHome(t)
+		hostPiDir := filepath.Join(hostHome, ".pi", "agent")
+		if err := os.MkdirAll(hostPiDir, 0o700); err != nil {
+			t.Fatalf("mkdir host pi agent dir: %v", err)
+		}
+		hostSettings := `{"defaultThinkingLevel":"high","theme":"dark"}`
+		if err := os.WriteFile(filepath.Join(hostPiDir, "settings.json"), []byte(hostSettings), 0o600); err != nil {
+			t.Fatalf("write host settings.json: %v", err)
+		}
+
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-effort", runtimeprofile.ProviderPi)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		profile := runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields:   runtimeprofile.Fields{Model: "DeepSeek-V4-Pro", ReasoningEffort: "max"},
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{}); err != nil {
+			t.Fatalf("project config: %v", err)
+		}
+
+		settings := readJSONFile(t, filepath.Join(layout.ProviderHome, "agent", "settings.json"))
+		if got := settings["defaultThinkingLevel"]; got != "max" {
+			t.Fatalf("defaultThinkingLevel = %#v, want max", got)
+		}
+		if _, ok := settings["theme"]; ok {
+			t.Fatalf("host theme must not leak into projected settings.json: %#v", settings)
+		}
+	})
+
+	t.Run("launch override beats profile default", func(t *testing.T) {
+		isolatePiHostHome(t)
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-effort-override", runtimeprofile.ProviderPi)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		profile := runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields:   runtimeprofile.Fields{Model: "DeepSeek-V4-Pro", ReasoningEffort: "max"},
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+			RequestedReasoningEffort: "low",
+		}); err != nil {
+			t.Fatalf("project config: %v", err)
+		}
+
+		settings := readJSONFile(t, filepath.Join(layout.ProviderHome, "agent", "settings.json"))
+		if got := settings["defaultThinkingLevel"]; got != "low" {
+			t.Fatalf("defaultThinkingLevel = %#v, want low", got)
+		}
+	})
+
+	t.Run("no effort configured resolves to high", func(t *testing.T) {
+		isolatePiHostHome(t)
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-effort-default", runtimeprofile.ProviderPi)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		profile := runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields:   runtimeprofile.Fields{Model: "DeepSeek-V4-Pro"},
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{}); err != nil {
+			t.Fatalf("project config: %v", err)
+		}
+
+		settings := readJSONFile(t, filepath.Join(layout.ProviderHome, "agent", "settings.json"))
+		if got := settings["defaultThinkingLevel"]; got != "high" {
+			t.Fatalf("defaultThinkingLevel = %#v, want high", got)
+		}
+	})
+
+	t.Run("invalid launch override fails clearly", func(t *testing.T) {
+		isolatePiHostHome(t)
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-effort-invalid", runtimeprofile.ProviderPi)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		profile := runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields:   runtimeprofile.Fields{Model: "DeepSeek-V4-Pro"},
+		}
+		_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+			RequestedReasoningEffort: "ultra",
+		})
+		if err == nil {
+			t.Fatal("expected invalid Requested Reasoning Effort to fail projection")
+		}
+	})
+}
+
+// TestProjectPiSettingsPinsLaunchProviderAndModel proves settings.json carries
+// the launch-resolved provider/model: a pi-subagents spawn without an explicit
+// model falls back to the launch selection instead of a runtime default. The
+// Launch Model Override wins, and a profile without any provider configuration
+// pins no defaultProvider (legacy host models.json fallback keeps its own
+// provider keys).
+func TestProjectPiSettingsPinsLaunchProviderAndModel(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+
+	t.Run("launch provider and model pinned", func(t *testing.T) {
+		isolatePiHostHome(t)
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-pin", runtimeprofile.ProviderPi)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		profile := runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields: runtimeprofile.Fields{
+				Model: "deepseek-flash",
+				Env:   map[string]string{"PI_PROVIDER_ID": "hub"},
+			},
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{}); err != nil {
+			t.Fatalf("project config: %v", err)
+		}
+		settings := readJSONFile(t, filepath.Join(layout.ProviderHome, "agent", "settings.json"))
+		if got := settings["defaultProvider"]; got != "hub" {
+			t.Fatalf("defaultProvider = %#v, want hub", got)
+		}
+		if got := settings["defaultModel"]; got != "deepseek-flash" {
+			t.Fatalf("defaultModel = %#v, want deepseek-flash", got)
+		}
+	})
+
+	t.Run("launch model override wins", func(t *testing.T) {
+		isolatePiHostHome(t)
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-pin-override", runtimeprofile.ProviderPi)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		profile := runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields: runtimeprofile.Fields{
+				Model: "deepseek-flash",
+				Env:   map[string]string{"PI_PROVIDER_ID": "hub"},
+			},
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+			LaunchModelOverride: "deepseek-v4-pro",
+		}); err != nil {
+			t.Fatalf("project config: %v", err)
+		}
+		settings := readJSONFile(t, filepath.Join(layout.ProviderHome, "agent", "settings.json"))
+		if got := settings["defaultModel"]; got != "deepseek-v4-pro" {
+			t.Fatalf("defaultModel = %#v, want launch override deepseek-v4-pro", got)
+		}
+	})
+
+	t.Run("no provider configuration pins no defaultProvider", func(t *testing.T) {
+		isolatePiHostHome(t)
+		layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-pin-none", runtimeprofile.ProviderPi)
+		if err != nil {
+			t.Fatalf("prepare layout: %v", err)
+		}
+		profile := runtimeprofile.Profile{
+			Provider: runtimeprofile.ProviderPi,
+			Fields:   runtimeprofile.Fields{Model: "deepseek-flash"},
+		}
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{}); err != nil {
+			t.Fatalf("project config: %v", err)
+		}
+		settings := readJSONFile(t, filepath.Join(layout.ProviderHome, "agent", "settings.json"))
+		if _, ok := settings["defaultProvider"]; ok {
+			t.Fatalf("defaultProvider must stay unset without provider configuration: %#v", settings)
+		}
+		if got := settings["defaultModel"]; got != "deepseek-flash" {
+			t.Fatalf("defaultModel = %#v, want deepseek-flash", got)
+		}
+	})
 }

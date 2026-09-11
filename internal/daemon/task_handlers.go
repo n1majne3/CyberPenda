@@ -926,6 +926,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot:               capturedModelSnapshot,
 		LaunchModelOverride:         launchModelOverride,
+		RequestedReasoningEffort:    launchReasoningEffort,
 		SkillBundles:                skillBundles,
 		BlackboardMode:              modeskill.Mode(created.RunControls.BlackboardMode),
 		CapabilityCache:             server.capabilityCache,

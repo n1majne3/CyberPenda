@@ -95,6 +95,7 @@ RUN --mount=type=cache,target=/root/.npm \
   && npm install -g \
       @earendil-works/pi-coding-agent@latest \
       @tintinweb/pi-subagents@latest \
+      pi-web-access@latest \
       @openai/codex@latest \
       @anthropic-ai/claude-code@latest \
       agent-browser@latest
@@ -118,10 +119,12 @@ RUN chmod 0755 /usr/local/bin/tsecbench-local-validate \
   && ln -s /usr/local/bin/pentest-tsecbench-client /usr/local/bin/pentest-challenge-client
 
 # Keep Chromium headless and use no runtime browser download. Pi enables only
-# the async-capable tintinweb subagents extension; its background Agent tool
-# writes the parent-session subagents:record entries CyberPenda observes.
+# the async-capable tintinweb subagents extension plus pi-web-access; both are
+# installed globally above, so the plain npm: refs resolve offline from the
+# global npm root. The subagents background Agent tool writes the
+# parent-session subagents:record entries CyberPenda observes.
 RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
-  && printf '%s\n' '{"packages":["npm:@tintinweb/pi-subagents"]}' > /root/.pi/agent/settings.json \
+  && printf '%s\n' '{"packages":["npm:@tintinweb/pi-subagents","npm:pi-web-access"]}' > /root/.pi/agent/settings.json \
   && printf '%s\n' '{"executablePath":"/usr/bin/chromium"}' > /root/.agent-browser/config.json \
   && PI_VERSION="$(node -p "require('$(npm root -g)/@earendil-works/pi-coding-agent/package.json').version")" \
      CODEX_VERSION="$(node -p "require('$(npm root -g)/@openai/codex/package.json').version")" \

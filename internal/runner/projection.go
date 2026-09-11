@@ -91,6 +91,12 @@ type ProjectionRequest struct {
 	// CapabilityCache resolves Model Context Window and Max Output Tokens
 	// when a Catalog override is empty. Nil means no cache lookup.
 	CapabilityCache modelprovider.CapabilityLookup
+	// RequestedReasoningEffort is the launch-level Reasoning Effort (Launch
+	// Reasoning Effort Override or resolved Runtime Turn Selection). Pi
+	// projection pins it as settings.json defaultThinkingLevel so subagent
+	// sessions spawned by pi-subagents inherit the launch effort instead of a
+	// host-copied default.
+	RequestedReasoningEffort string
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -799,9 +805,9 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		}
 	}
 
-	// Catalog-sourced runtime extensions (npm: install refs) and host packages
-	// from ~/.pi/agent/settings.json are merged into settings.json packages.
-	packages, err := projectPiSettings(agentDir, profile)
+	// settings.json is projection-owned: packages come from catalog-sourced
+	// Runtime Extensions, never from host ~/.pi/agent/settings.json.
+	packages, err := projectPiSettings(agentDir, profile, req)
 	if err != nil {
 		return ConfigProjection{}, err
 	}
@@ -1724,61 +1730,87 @@ func copyHostPiAuth(agentDir string) (bool, error) {
 	return true, nil
 }
 
-func projectPiSettings(agentDir string, profile runtimeprofile.Profile) ([]string, error) {
-	profilePackages := enabledExtensionInstallRefs(profile)
-	home, err := os.UserHomeDir()
-	var hostSettings map[string]any
-	if err == nil {
-		hostPath := filepath.Join(home, ".pi", "agent", "settings.json")
-		if raw, readErr := os.ReadFile(hostPath); readErr == nil {
-			var parsed map[string]any
-			if unmarshalErr := json.Unmarshal(raw, &parsed); unmarshalErr == nil {
-				hostSettings = parsed
-			}
+// piDefaultPackages are the Pi packages CyberPenda always projects:
+// pi-subagents powers Execute subagent dispatch and pi-web-access provides web
+// fetch/search. Both are installed globally in the Sandbox and Hosted images,
+// and plain npm: refs without a version range resolve from Pi's global npm
+// root without network access, so launches stay offline-safe.
+var piDefaultPackages = []string{"npm:@tintinweb/pi-subagents", "npm:pi-web-access"}
+
+// projectPiSettings writes the task-local settings.json from projection-owned
+// values only. Host ~/.pi/agent/settings.json is never read: the sandbox
+// projection is independent of host configuration. packages come only from the
+// profile's enabled Runtime Extensions. defaultThinkingLevel is pinned to the
+// launch-resolved Requested Reasoning Effort, and defaultProvider/defaultModel
+// to the launch selection, because pi-subagents child sessions read these
+// settings.json defaults instead of inheriting the main session's runtime
+// state — pi/set_thinking_level and --provider/--model apply only to the main
+// session.
+func projectPiSettings(agentDir string, profile runtimeprofile.Profile, req ProjectionRequest) ([]string, error) {
+	packages := append([]string(nil), piDefaultPackages...)
+	seen := make(map[string]bool, len(packages))
+	for _, pkg := range packages {
+		seen[pkg] = true
+	}
+	for _, ref := range enabledExtensionInstallRefs(profile) {
+		if !seen[ref] {
+			seen[ref] = true
+			packages = append(packages, ref)
 		}
 	}
 
-	var combinedPackages []string
-	seen := make(map[string]bool)
-	if hostSettings != nil {
-		if rawPkgs, ok := hostSettings["packages"].([]any); ok {
-			for _, item := range rawPkgs {
-				if str, ok := item.(string); ok && strings.TrimSpace(str) != "" {
-					str = strings.TrimSpace(str)
-					if !seen[str] {
-						seen[str] = true
-						combinedPackages = append(combinedPackages, str)
-					}
-				}
-			}
-		}
-	}
-	for _, pkg := range profilePackages {
-		pkg = strings.TrimSpace(pkg)
-		if pkg != "" && !seen[pkg] {
-			seen[pkg] = true
-			combinedPackages = append(combinedPackages, pkg)
-		}
+	effort, err := runtimeprofile.ResolveRequestedReasoningEffort("", req.RequestedReasoningEffort, profile.Fields.ReasoningEffort)
+	if err != nil {
+		return nil, err
 	}
 
-	if hostSettings == nil && len(combinedPackages) == 0 {
-		return nil, nil
+	settings := map[string]any{"defaultThinkingLevel": string(effort)}
+	if len(packages) > 0 {
+		settings["packages"] = packages
 	}
-
-	settings := make(map[string]any)
-	if hostSettings != nil {
-		for k, v := range hostSettings {
-			settings[k] = v
-		}
+	if provider := piLaunchProviderKey(profile); provider != "" {
+		settings["defaultProvider"] = provider
 	}
-	if len(combinedPackages) > 0 {
-		settings["packages"] = combinedPackages
+	if model := piLaunchModel(profile, req); model != "" {
+		settings["defaultModel"] = model
 	}
 	settingsPath := filepath.Join(agentDir, "settings.json")
 	if err := writeJSONConfigFile(settingsPath, settings); err != nil {
 		return nil, err
 	}
-	return combinedPackages, nil
+	return packages, nil
+}
+
+// piLaunchProviderKey returns the models.json provider key for the launch's
+// selected Model Provider, mirroring piProviderArgs: the injected
+// PI_PROVIDER_ID (the Model Provider ID once a snapshot is applied), or the
+// legacy "custom" key when a single-provider profile configures an endpoint or
+// Model Provider directly. Empty when the profile has no provider
+// configuration at all, so a host models.json fallback keeps its own keys.
+func piLaunchProviderKey(profile runtimeprofile.Profile) string {
+	if id := strings.TrimSpace(profile.Fields.Env["PI_PROVIDER_ID"]); id != "" {
+		return id
+	}
+	if strings.TrimSpace(profile.Fields.ModelProviderID) != "" || strings.TrimSpace(profile.Fields.Endpoint) != "" {
+		return "custom"
+	}
+	return ""
+}
+
+// piLaunchModel returns the launch-resolved model: Launch Model Override,
+// Model Provider Snapshot, profile Model Override, then profile Model.
+func piLaunchModel(profile runtimeprofile.Profile, req ProjectionRequest) string {
+	candidates := []string{req.LaunchModelOverride}
+	if req.ModelSnapshot != nil {
+		candidates = append(candidates, req.ModelSnapshot.Model)
+	}
+	candidates = append(candidates, profile.Fields.ModelOverride, profile.Fields.Model)
+	for _, candidate := range candidates {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // ClaudeProcessEnv returns env vars that must be present on the Claude process.

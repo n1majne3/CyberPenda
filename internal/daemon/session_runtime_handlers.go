@@ -364,11 +364,12 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		ModelProviders: server.modelProviders, GlobalModelProviderSnapshot: globalSnapshot,
 		ModelSnapshot: modelSnapshot, RuntimePlugins: server.runtimePlugins,
 		RuntimeExtensions: server.runtimeExtensions, SkillBundles: skillBundles,
-		BlackboardMode:       modeskill.Mode(found.RunControls.BlackboardMode),
-		LaunchModelOverride:  selection.Model,
-		Sandbox:              run == session.RunnerSandbox,
-		CapabilityCache:      server.capabilityCache,
-		BlackboardProjection: blackboardProjection,
+		BlackboardMode:           modeskill.Mode(found.RunControls.BlackboardMode),
+		LaunchModelOverride:      selection.Model,
+		RequestedReasoningEffort: selection.RequestedReasoningEffort,
+		Sandbox:                  run == session.RunnerSandbox,
+		CapabilityCache:          server.capabilityCache,
+		BlackboardProjection:     blackboardProjection,
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, launchProfile, projectionRequest)
 	if err != nil {

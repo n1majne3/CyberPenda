@@ -567,8 +567,8 @@ A project override that explicitly prevents a **Credential Reference** from usin
 _Avoid_: missing binding, broken secret
 
 **Config Projection**:
-The Runtime Owner-local preparation of runtime configuration from a **Runtime Configuration Snapshot**, **Model Provider**, and **Credential References**.
-_Avoid_: host config edit, config sync
+The Runtime Owner-local preparation of runtime configuration from a **Runtime Configuration Snapshot**, **Model Provider**, and **Credential References**. Projected runtime settings files contain only projection-owned values — launch-resolved provider, model, and **Requested Reasoning Effort** are pinned explicitly so Runtime-spawned subagent sessions inherit the launch selection; host runtime settings are never merged.
+_Avoid_: host config edit, host settings copy, config sync
 
 **Preflight**:
 A read-only startup check phase that resolves a non-persistent configuration preview and determines whether a **Task** or **Session** can launch its **Runtime**.

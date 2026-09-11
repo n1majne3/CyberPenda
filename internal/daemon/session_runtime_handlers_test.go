@@ -288,6 +288,48 @@ func TestSessionPiSandboxUsesTheSharedBootstrapWrapper(t *testing.T) {
 	}
 }
 
+// TestSessionPiLaunchPinsDefaultThinkingLevelForSubagents proves the Session
+// Launch Reasoning Effort Override reaches the Pi settings.json projection:
+// pi-subagents child sessions read defaultThinkingLevel from settings.json, so
+// a max launch must pin max there instead of leaving Pi's built-in default.
+func TestSessionPiLaunchPinsDefaultThinkingLevelForSubagents(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(), DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	found, err := server.sessions.Create(session.CreateRequest{Input: "run pi"})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
+	}
+	profile, err := server.profiles.Create("Session Pi", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+		DefaultRunner: "sandbox", Model: "pi-model", SandboxImage: "kalilinux/kali-rolling", ReasoningEffort: "medium",
+	})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	if _, err := server.buildSessionRuntimePlan(found, "inspect", sessionRuntimeInput{ReasoningEffort: "max"}, profile, session.RunnerSandbox, "token", ""); err != nil {
+		t.Fatalf("build Session Pi plan: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(found.Workdir, ".runtime", "runtime-home", "pi", "agent", "settings.json"))
+	if err != nil {
+		t.Fatalf("read projected pi settings.json: %v", err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("decode pi settings.json: %v", err)
+	}
+	if got := settings["defaultThinkingLevel"]; got != "max" {
+		t.Fatalf("defaultThinkingLevel = %#v, want max", got)
+	}
+}
+
 func TestSessionSandboxProjectsWorkingGraphPathsThroughWorkdirMount(t *testing.T) {
 	server, err := NewServer(Config{
 		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(), DisableBuiltinSkills: true,
