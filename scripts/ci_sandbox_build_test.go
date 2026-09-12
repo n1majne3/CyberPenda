@@ -135,6 +135,11 @@ func TestSandboxDockerfileInstallsPipOnlyToolsViaPip(t *testing.T) {
 	if !strings.Contains(dockerfile, pipLine) {
 		t.Fatalf("sandbox Dockerfile should install pip-only tools together: %s", pipLine)
 	}
+	// Crypto/RE python libs (pycryptodome, z3-solver) ride pip for portability.
+	cryptoPipLine := "pip3 install --no-cache-dir pycryptodome z3-solver --break-system-packages"
+	if !strings.Contains(dockerfile, cryptoPipLine) {
+		t.Fatalf("sandbox Dockerfile should install crypto/RE python libs via pip: %s", cryptoPipLine)
+	}
 	// The apt block spans from "apt-get install" to the next RUN; pip-only
 	// tools must not appear inside any apt-get package list.
 	aptStart := strings.Index(dockerfile, "apt-get install")

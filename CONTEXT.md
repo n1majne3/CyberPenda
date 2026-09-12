@@ -259,8 +259,12 @@ Non-authoritative reference limits for known models, subordinate to operator **M
 _Avoid_: Model Catalog, Runtime Plugin table, family heuristic
 
 **Model Catalog Limit Override**:
-Optional per-identifier window and max-output numbers stored on a **Model Catalog**. They beat the **Model Capability Cache** and survive catalog name refresh and cache refresh.
+Optional per-identifier window and max-output numbers stored on a **Model Catalog**. They beat the **Model Capability Cache** and survive catalog name refresh and cache refresh. The local HUB **Model Provider** carries overrides for `deepseek-flash` / `deepseek-v4-flash` / `deepseek-v4-flash-0731` / `deepseek-v4-flash-vision-exp` (`context_window=1000000, max_output_tokens=131072`) because Pi models.json otherwise leaves the window unset and long sessions die by output-budget collapse.
 _Avoid_: Runtime Profile field, inferred model family limit
+
+**HUB Flash Alias Equivalence**:
+On the local HUB **Model Provider**, `deepseek-flash`, `deepseek-v4-flash`, and the retired `deepseek-v4.1-flash-expires-on-0910` name the same underlying DeepSeek-V4-Flash model. Treat benchmark score differences between hosted and local runs of these aliases as scheduling/stack differences, never as a model-quality difference.
+_Avoid_: distinct hosted model, separate flash variant
 
 **Model Capability Cache Refresh**:
 An explicit operator update of the model-limit reference data in the **Model Capability Cache**.

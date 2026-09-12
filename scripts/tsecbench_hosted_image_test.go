@@ -126,6 +126,7 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"python3-requests",
 		"python3-pyinstaller",
 		"python3-pycryptodome",
+		"z3-solver",
 		"volatility3",
 		"uncompyle6",
 		"pyinstxtractor-ng",

@@ -76,6 +76,7 @@ RUN for bin in /usr/bin/qemu-*; do \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip3 install --no-cache-dir --break-system-packages \
       volatility3 \
+      z3-solver \
       'uncompyle6>=3.9.2' \
       'xdis>=6.1.1,<6.2.0' \
  && pip3 install --no-cache-dir --break-system-packages --no-deps \
