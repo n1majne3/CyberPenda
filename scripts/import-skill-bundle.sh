@@ -12,7 +12,7 @@ if [ ! -f "$bundle_dir/SKILL.md" ]; then
   exit 2
 fi
 
-python3 - "$bundle_dir" "$base_url" <<'PY'
+python - "$bundle_dir" "$base_url" <<'PY'
 import json
 import pathlib
 import re
