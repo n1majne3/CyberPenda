@@ -1,10 +1,24 @@
 # CyberPenda
 
+[English](README.md) · [中文](README.zh-CN.md)
+
 **Local-first pentest agent** for **authorized** testing: a Go control plane, React dashboard, and Codex / Claude Code / Pi runtimes — with project scope, approvals, a Goal/Step/Fact Blackboard, and tools that run in the sandbox (not proxied through the daemon).
 
 > **Use only against systems you are authorized to test.** Scope, approvals, and host-runner activation are first-class product concepts for a reason.
 
 **[Open the live demo →](https://cyberpenda-demo.vercel.app)** · read-only sample project (no `pentestd`, no runtime, no exploit tools)
+
+### TSecBench v1 result
+
+Official [TSecBench](https://tsecbench.zc.tencent.com/) Agentic leaderboard (**TSecBench v1**): **#3 · 93.82 / 100**
+
+| Web | Binary | Exploitation | Penetration | Cloud | Evasion |
+| --- | --- | --- | --- | --- | --- |
+| 98.12 | 100 | 100 | 71.43 | 100 | 100 |
+
+Run config recorded on the board: `deepseek-v3.1-flash-expires-on-0910` · wall time ~5h 31m. CyberPenda publishes a Hosted Mode image for this benchmark — see [TSecBench Hosted evaluation](#tsecbench-hosted-evaluation).
+
+![TSecBench v1 official leaderboard — CyberPenda #3](docs/assets/tsecbench-v1-leaderboard.png)
 
 ### Who it's for
 
