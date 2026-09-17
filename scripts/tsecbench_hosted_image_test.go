@@ -132,22 +132,10 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"pyinstxtractor-ng",
 		"ARG RUNTIME_RELEASE_CACHE_BUST",
 		`test -n "${RUNTIME_RELEASE_CACHE_BUST}"`,
-		"ARG HACKTRICKS_SHA=",
-		"ARG PATT_SHA=",
-		"ARG SECLISTS_SHA=",
-		"/opt/knowledge/hacktricks",
-		"/opt/knowledge/payloads-all-the-things",
-		"/opt/knowledge/wordlists",
-		"--filter=blob:none",
-		"sparse-checkout",
-		"Discovery/Web-Content/common.txt",
-		"raft-small-directories.txt",
-		"10k-most-common.txt",
-		"100k-most-used-passwords-NCSC.txt",
-		"top-usernames-shortlist.txt",
-		"cirt-default-usernames.txt",
+		"COPY docker/knowledge-baseline/install.sh /tmp/install-knowledge-baseline.sh",
+		"bash /tmp/install-knowledge-baseline.sh",
+		"COPY docker/knowledge-baseline/pentest-knowledge-lookup.sh /usr/local/bin/pentest-knowledge-lookup",
 		"pentest-knowledge-lookup",
-		"rm -rf /opt/knowledge/hacktricks/.git",
 	} {
 		assertContains(t, dockerfile, required)
 	}
@@ -189,10 +177,42 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	// Kali qemu-user ships qemu-x86_64. Do not treat qemu-x86_64-static as that name.
 	assertContains(t, dockerfile, "command -v qemu-x86_64 ||")
 
+	// The offline knowledge baseline is shared with the Sandbox image. The
+	// pinned SHAs, blob-less sparse fetches, marker checks, and cleanup live
+	// in the shared installer so both images carry identical reference data.
+	installerBytes, err := os.ReadFile(filepath.Join(repoRoot(t), "docker", "knowledge-baseline", "install.sh"))
+	if err != nil {
+		t.Fatalf("read knowledge baseline installer: %v", err)
+	}
+	installer := string(installerBytes)
+	for _, required := range []string{
+		"HACKTRICKS_SHA",
+		"PATT_SHA",
+		"SECLISTS_SHA",
+		"/opt/knowledge/hacktricks",
+		"/opt/knowledge/payloads-all-the-things",
+		"/opt/knowledge/wordlists",
+		"--filter=blob:none",
+		"sparse-checkout",
+		"Discovery/Web-Content/common.txt",
+		"raft-small-directories.txt",
+		"raft-medium-directories.txt",
+		"10k-most-common.txt",
+		"100k-most-used-passwords-NCSC.txt",
+		"top-usernames-shortlist.txt",
+		"cirt-default-usernames.txt",
+		"rm -rf /opt/knowledge/hacktricks/.git",
+		"test -s /opt/knowledge/hacktricks/src/SUMMARY.md",
+		"chmod -R a+r /opt/knowledge",
+	} {
+		assertContains(t, installer, required)
+	}
+
 	// The knowledge baseline ships a curated sparse wordlist subset from the
 	// SecLists sources instead of the full seclists package, so "seclists" is
 	// no longer excluded as a raw string. Full-size dictionary content stays
-	// excluded: rockyou-scale files do not fit the delivery size limit.
+	// excluded: rockyou-scale files do not fit the delivery size limit. The
+	// guard covers both the Dockerfile and the shared installer.
 	for _, excluded := range []string{
 		"kali-linux-headless", "ghidra", "android-sdk", "rockyou",
 		"docker.io", "docker-ce", "docker-cli", "podman", "openvpn", "wireguard", "tunneling",
@@ -201,6 +221,9 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		if strings.Contains(strings.ToLower(dockerfile), strings.ToLower(excluded)) {
 			t.Fatalf("Hosted Image Dockerfile includes excluded content %q", excluded)
 		}
+	}
+	if strings.Contains(strings.ToLower(installer), "rockyou") {
+		t.Fatal("knowledge baseline installer must not add full-size dictionary content")
 	}
 }
 

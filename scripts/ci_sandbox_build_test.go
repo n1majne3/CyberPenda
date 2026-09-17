@@ -69,6 +69,28 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	}
 }
 
+func TestSandboxDockerfileInstallsTheOfflineKnowledgeBaseline(t *testing.T) {
+	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot(t), "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read sandbox Dockerfile: %v", err)
+	}
+	dockerfile := string(dockerfileBytes)
+
+	// The Sandbox image carries the same offline knowledge baseline as the
+	// TSecBench Hosted Image through the shared installer, so challenge work
+	// sees an identical /opt/knowledge layout and lookup tool in both images.
+	for _, required := range []string{
+		"COPY docker/knowledge-baseline/install.sh /tmp/install-knowledge-baseline.sh",
+		"bash /tmp/install-knowledge-baseline.sh",
+		"COPY docker/knowledge-baseline/pentest-knowledge-lookup.sh /usr/local/bin/pentest-knowledge-lookup",
+		"command -v pentest-knowledge-lookup",
+	} {
+		if !strings.Contains(dockerfile, required) {
+			t.Fatalf("sandbox Dockerfile must install the shared knowledge baseline; missing %q", required)
+		}
+	}
+}
+
 func TestSandboxDockerfileProvidesQemuUserEmulation(t *testing.T) {
 	repoRoot := repoRoot(t)
 	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))

@@ -713,7 +713,7 @@ A **Host Runner** execution inside the **TSecBench Hosted Image** container, wit
 _Avoid_: Sandbox Runner, physical host access, Docker-in-Docker, privileged container
 
 **Hosted Tool Baseline**:
-The bounded set of general-purpose tools and curated offline reference data included in the **TSecBench Hosted Image** for Runtime challenge work. The reference data lives read-only under `/opt/knowledge` (HackTricks methodology, payload and technique references, and a wordlist subset under `web`/`passwords`/`usernames`), pinned by upstream commit SHA at build time and searched with `pentest-knowledge-lookup`; the full seclists package and full-size dictionaries stay excluded for delivery size.
+The bounded set of general-purpose tools and curated offline reference data included in the **TSecBench Hosted Image** for Runtime challenge work. The reference data lives read-only under `/opt/knowledge` (HackTricks methodology, payload and technique references, and a wordlist subset under `web`/`passwords`/`usernames`), pinned by upstream commit SHA at build time and searched with `pentest-knowledge-lookup`; the full seclists package and full-size dictionaries stay excluded for delivery size. The **Sandbox** image carries the same reference data through the shared installer `docker/knowledge-baseline/install.sh`.
 _Avoid_: full Sandbox image, runtime package installation, per-challenge image
 
 **Hosted Model Configuration**:

@@ -20,8 +20,10 @@ dictionaries.
 
 ## Decision
 
-The TSecBench Hosted Image now carries an offline knowledge baseline under
-`/opt/knowledge`, as part of the Hosted Tool Baseline:
+The TSecBench Hosted Image and the Sandbox image now carry the same offline
+knowledge baseline under `/opt/knowledge`, built by the shared installer
+`docker/knowledge-baseline/install.sh` so both images hold identical
+reference data:
 
 - `/opt/knowledge/hacktricks` — the HackTricks methodology markdown sources
   (`src/`, without image, banner, and binary attachment directories).
@@ -35,17 +37,21 @@ The TSecBench Hosted Image now carries an offline knowledge baseline under
 Build rules:
 
 - Each upstream is pinned by a full commit SHA (`HACKTRICKS_SHA`, `PATT_SHA`,
-  `SECLISTS_SHA` build arguments), fetched with `--depth 1
-  --filter=blob:none`, checked out detached, and stripped of `.git` so the
-  layer stays small and reproducible. Bumping a SHA is the only way upstream
-  content changes.
-- The full seclists package and full-size dictionaries stay excluded. The
-  image contract test now guards the curated subset and keeps
-  `rockyou`-scale content on the exclusion list.
+  `SECLISTS_SHA` defaults in the shared installer, overridable from the build
+  environment), fetched with `--depth 1 --filter=blob:none`, checked out
+  detached, and stripped of `.git` so the layer stays small and
+  reproducible. Bumping a SHA in the installer is the only way upstream
+  content changes, and it changes both images together.
+- The full seclists package and full-size dictionaries stay excluded from
+  the Hosted Image. The image contract test now guards the curated subset
+  and keeps `rockyou`-scale content on the exclusion list for both the
+  Dockerfile and the installer. The Sandbox image keeps its full seclists
+  apt package alongside the curated `/opt/knowledge` subset.
 - A new `pentest-knowledge-lookup` command searches the baseline by keyword
-  (fixed-string, case-insensitive; content matches plus path-name matches)
-  and prints up to 20 reference files with a read-in-full hint. The command
-  is part of the build-time tool verification and the image smoke test.
+  (fixed-string, case-insensitive; path-name matches before content
+  matches) and prints up to 20 reference files with a read-in-full hint.
+  The command is installed into both images and is part of the Hosted Image
+  build-time tool verification and image smoke test.
 
 Usage rules are written into the Runtime-facing instructions: the
 `ctf-orchestrator` Skill environment note, the Execute dispatch template, the
@@ -60,11 +66,12 @@ baked wordlists stay available for brute force and discovery.
 ## Consequences
 
 The Hosted Tool Baseline definition in CONTEXT.md now includes curated
-offline reference data. The delivery bundle grows by the size of the baked
-references; the 3 GB archive limit still applies and is enforced by the
-bundle build, so future additions to the baseline must be weighed against
-the remaining headroom. ADR 0026 otherwise still stands: no Ghidra, no
-Android SDK, no full Kali suite, no runtime package downloads.
+offline reference data, and the Sandbox image carries the same reference
+data through the shared installer. The delivery bundle grows by the size of
+the baked references; the 3 GB archive limit still applies and is enforced
+by the bundle build, so future additions to the baseline must be weighed
+against the remaining headroom. ADR 0026 otherwise still stands: no Ghidra,
+no Android SDK, no full Kali suite, no runtime package downloads.
 
 Upstream content only changes when a pin SHA is bumped deliberately, so
 evaluation runs stay reproducible and the smoke test pins marker files for
