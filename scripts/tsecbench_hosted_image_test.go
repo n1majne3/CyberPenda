@@ -253,7 +253,8 @@ test -s /opt/knowledge/wordlists/passwords/10k-most-common.txt
 test -s /opt/knowledge/wordlists/passwords/100k-most-used-passwords-NCSC.txt
 test -s /opt/knowledge/wordlists/usernames/top-usernames-shortlist.txt
 test -s /opt/knowledge/wordlists/usernames/cirt-default-usernames.txt
-pentest-knowledge-lookup ssrf | grep -qi ssrf
+pentest-knowledge-lookup ssrf >/dev/null
+pentest-knowledge-lookup ssrf | head -n 1 | grep -qi ssrf
 `
 	output, err := exec.Command(docker, "run", "--rm", "--network", "none", "--entrypoint", "sh", image, "-c", smoke).CombinedOutput()
 	if err != nil {
