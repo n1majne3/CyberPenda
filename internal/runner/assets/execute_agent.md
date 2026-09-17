@@ -19,6 +19,14 @@ step；预算、背景知识图、目标地址、fact 编号、提交命令、�
   自己的 fact，由 Decide 处理。
 - 只连接本 step 声明的目标地址，严禁扫描或触碰其他 IP——同网段常有其他目标在并行。
 
+工作方法（硬性）：
+
+- 动手前先用 `pentest-knowledge-lookup <漏洞或组件关键词>` 检索离线知识库
+  （/opt/knowledge 下 hacktricks 方法论、payloads-all-the-things 技术参考、wordlists 字典）；
+  命中的参考文件要整篇读完再动手——payload 与绕过细节通常在文件后部，不凭记忆盲打。
+- 爆破与目录发现使用 /opt/knowledge/wordlists/{web,passwords,usernames} 下的字典，
+  不要花预算自行生成字典。
+
 fact 收束纪律（硬性）：
 
 1. 开工 90 秒内先写 fact 骨架（front-matter + title 占位），之后每完成一个测试组立即刷新

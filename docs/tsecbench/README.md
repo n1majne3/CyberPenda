@@ -132,6 +132,14 @@ Hosted Mode uses the isolated TSecBench network. It does not start a VPN and
 has no public Internet access. The Runtime uses only tools already in the
 image. The image includes `tmux`.
 
+The image also carries an offline knowledge baseline under `/opt/knowledge`:
+HackTricks methodology, payload and technique references, and a curated
+wordlist subset (`web`, `passwords`, `usernames`), pinned by upstream commit
+SHA at build time. `pentest-knowledge-lookup <keyword>` searches the baseline
+and prints the reference files to read in full. The full seclists package and
+full-size dictionaries stay excluded to keep the delivery bundle below the
+3 GB limit.
+
 The Hosted daemon publishes only the Hosted-adapted `ctf-orchestrator` Skill.
 The Task runs with Blackboard disabled and uses the orchestrator FGS as its only
 agent-managed semantic state. The Decide process owns list, start, hint, close,

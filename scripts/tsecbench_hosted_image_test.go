@@ -132,6 +132,22 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"pyinstxtractor-ng",
 		"ARG RUNTIME_RELEASE_CACHE_BUST",
 		`test -n "${RUNTIME_RELEASE_CACHE_BUST}"`,
+		"ARG HACKTRICKS_SHA=",
+		"ARG PATT_SHA=",
+		"ARG SECLISTS_SHA=",
+		"/opt/knowledge/hacktricks",
+		"/opt/knowledge/payloads-all-the-things",
+		"/opt/knowledge/wordlists",
+		"--filter=blob:none",
+		"sparse-checkout",
+		"Discovery/Web-Content/common.txt",
+		"raft-small-directories.txt",
+		"10k-most-common.txt",
+		"100k-most-used-passwords-NCSC.txt",
+		"top-usernames-shortlist.txt",
+		"cirt-default-usernames.txt",
+		"pentest-knowledge-lookup",
+		"rm -rf /opt/knowledge/hacktricks/.git",
 	} {
 		assertContains(t, dockerfile, required)
 	}
@@ -147,7 +163,7 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		"ropper", "ROPgadget", "smali", "vol",
 		"uncompyle6", "pydisasm", "pyi-archive_viewer", "pyinstxtractor-ng",
 		"pentest-provider-bridge", "pentest-claude-sdk-bridge", "pentest-tsecbench-hosted",
-		"pentest-tsecbench-client", "pentest-challenge-client",
+		"pentest-tsecbench-client", "pentest-challenge-client", "pentest-knowledge-lookup",
 	} {
 		assertContains(t, dockerfile, `command -v `+executable)
 	}
@@ -173,8 +189,12 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	// Kali qemu-user ships qemu-x86_64. Do not treat qemu-x86_64-static as that name.
 	assertContains(t, dockerfile, "command -v qemu-x86_64 ||")
 
+	// The knowledge baseline ships a curated sparse wordlist subset from the
+	// SecLists sources instead of the full seclists package, so "seclists" is
+	// no longer excluded as a raw string. Full-size dictionary content stays
+	// excluded: rockyou-scale files do not fit the delivery size limit.
 	for _, excluded := range []string{
-		"kali-linux-headless", "ghidra", "android-sdk", "seclists",
+		"kali-linux-headless", "ghidra", "android-sdk", "rockyou",
 		"docker.io", "docker-ce", "docker-cli", "podman", "openvpn", "wireguard", "tunneling",
 		"/var/run/docker.sock", "--privileged", "--cap-add", "NET_ADMIN", "/dev/net/tun",
 	} {
@@ -217,11 +237,23 @@ func TestTSecBenchHostedImageSmokeWhenAnImageIsConfigured(t *testing.T) {
 
 	smoke := `set -eu
 test "$(id -u)" = 0
-	for command in pi codex claude bash git curl jq rg tmux python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column ffuf gobuster sqlmap hydra john smbclient php exiftool binwalk steghide convert tcpdump redis-cli mysql psql 7z gdb-multiarch nasm upx yara foremost xxd qemu-x86_64 qemu-x86_64-static ropper ROPgadget smali vol uncompyle6 pydisasm pyi-archive_viewer pyinstxtractor-ng pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client pentest-challenge-client; do
+	for command in pi codex claude bash git curl jq rg tmux python3 go gcc g++ make gdb radare2 strace ltrace patchelf checksec nmap nc socat dig ip ss ping ssh openssl chromium agent-browser tesseract java jadx apktool column ffuf gobuster sqlmap hydra john smbclient php exiftool binwalk steghide convert tcpdump redis-cli mysql psql 7z gdb-multiarch nasm upx yara foremost xxd qemu-x86_64 qemu-x86_64-static ropper ROPgadget smali vol uncompyle6 pydisasm pyi-archive_viewer pyinstxtractor-ng pentest-provider-bridge pentest-claude-sdk-bridge pentest-tsecbench-hosted pentest-tsecbench-client pentest-challenge-client pentest-knowledge-lookup; do
   command -v "$command" >/dev/null
 done
 python3 -c 'import pwn, capstone, pefile, yara, unicorn, volatility3, xdis, uncompyle6, PyInstaller; from PIL import Image'
 test -s /opt/cyberpenda/runtime-versions.json
+test -s /opt/knowledge/hacktricks/src/SUMMARY.md
+test -d /opt/knowledge/hacktricks/src/pentesting-web
+test -d /opt/knowledge/hacktricks/src/binary-exploitation
+test -s "/opt/knowledge/payloads-all-the-things/SQL Injection/README.md"
+test -d "/opt/knowledge/payloads-all-the-things/Server Side Request Forgery"
+test -s /opt/knowledge/wordlists/web/common.txt
+test -s /opt/knowledge/wordlists/web/raft-small-directories.txt
+test -s /opt/knowledge/wordlists/passwords/10k-most-common.txt
+test -s /opt/knowledge/wordlists/passwords/100k-most-used-passwords-NCSC.txt
+test -s /opt/knowledge/wordlists/usernames/top-usernames-shortlist.txt
+test -s /opt/knowledge/wordlists/usernames/cirt-default-usernames.txt
+pentest-knowledge-lookup ssrf | grep -qi ssrf
 `
 	output, err := exec.Command(docker, "run", "--rm", "--network", "none", "--entrypoint", "sh", image, "-c", smoke).CombinedOutput()
 	if err != nil {

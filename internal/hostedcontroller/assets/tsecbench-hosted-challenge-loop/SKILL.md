@@ -30,6 +30,10 @@ Before platform work, after every accepted flag, before abandoning a challenge, 
 
 Platform state is the recovery source for containers and completion. Blackboard is the durable semantic source for reasoning and handoff.
 
+## Offline knowledge baseline
+
+The image carries a read-only reference set under `/opt/knowledge`: HackTricks methodology, payload and technique references, and a curated wordlist subset. Before acting on an unfamiliar vulnerability class or component, run `pentest-knowledge-lookup <keyword>` and read the matched reference files in full; payload and bypass details are usually deep in the file. Use the wordlists under `/opt/knowledge/wordlists/{web,passwords,usernames}` for brute force and discovery instead of generating dictionaries during a pass.
+
 ## Build the challenge portfolio
 
 Start with a complete list:
