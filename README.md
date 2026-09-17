@@ -1,22 +1,25 @@
 # CyberPenda
 
-CyberPenda is a **local-first pentest agent** for coordinating **authorized** security testing inside a scoped project.
-
-It combines a Go daemon, React dashboard, agent runtimes (Codex, Claude Code, Pi), project scope controls, a Goal/Step/Fact Blackboard, skills and runtime extensions, and Markdown result export.
-
-The daemon is the control plane, memory plane, task lifecycle plane, and reporting plane. Pentest tools run inside the selected runtime environment — not as a tool proxy through the daemon.
+**Local-first pentest agent** for **authorized** testing: a Go control plane, React dashboard, and Codex / Claude Code / Pi runtimes — with project scope, approvals, a Goal/Step/Fact Blackboard, and tools that run in the sandbox (not proxied through the daemon).
 
 > **Use only against systems you are authorized to test.** Scope, approvals, and host-runner activation are first-class product concepts for a reason.
 
-## Live demo
+**[Open the live demo →](https://cyberpenda-demo.vercel.app)** · read-only sample project (no `pentestd`, no runtime, no exploit tools)
 
-[Open the CyberPenda read-only demo](https://cyberpenda-demo.vercel.app)
+### Who it's for
 
-The demo uses the real React dashboard, routes, Project pages, Blackboard,
-Findings, Evidence, and Report views from this repository. It uses fixed sample
-Project data through a read-only API adapter. It does not run `pentestd`, a
-Runtime, Docker or Podman, or security-testing tools. Run Controls and data
-changes are disabled.
+- Red team / AppSec engineers who want an **on-machine** agent workspace with durable findings
+- Teams already using **Codex, Claude Code, or Pi** and needing scoped pentest sessions
+- Anyone who refuses to send target credentials and browser sessions to a cloud agent browser
+
+### Why this repo
+
+| | CyberPenda | Typical CLI skill packs | Cloud pentest / AI browsers |
+| --- | --- | --- | --- |
+| Where it runs | Your machine (SQLite + local UI) | Your terminal | Vendor cloud |
+| Runtimes | Codex, Claude Code, Pi plugins | Usually one model/CLI | Built-in agent only |
+| Scope & approvals | First-class project controls | Prompt-only | Vendor policy |
+| Tool execution | Inside sandbox / host runner | Ad hoc shell | Vendor sandbox |
 
 ## Architecture
 
