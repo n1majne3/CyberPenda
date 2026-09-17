@@ -16,7 +16,7 @@
 | --- | --- | --- | --- | --- | --- |
 | 98.12 | 100 | 100 | 71.43 | 100 | 100 |
 
-榜单记录配置：`deepseek-v3.1-flash-expires-on-0910` · 有效耗时约 5h 31m。CyberPenda 提供该基准的 Hosted Mode 镜像，详见英文 README 的 [TSecBench Hosted evaluation](README.md#tsecbench-hosted-evaluation) 与 [docs/tsecbench/README.md](docs/tsecbench/README.md)。
+榜单记录配置：`deepseek-v4.1-flash-expires-on-0910` · 有效耗时约 5h 31m。CyberPenda 提供该基准的 Hosted Mode 镜像，详见英文 README 的 [TSecBench Hosted evaluation](README.md#tsecbench-hosted-evaluation) 与 [docs/tsecbench/README.md](docs/tsecbench/README.md)。
 
 ![TSecBench v1 官方榜 — CyberPenda 第 3](docs/assets/tsecbench-v1-leaderboard.png)
 
