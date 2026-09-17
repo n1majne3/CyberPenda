@@ -41,6 +41,8 @@ The update input schema is in .pentest/fgs-input.schema.json. Use low, normal, o
 If a reporting command fails, use the supplied schema and error to correct the input. Do not reverse engineer the CLI or guess undocumented types. If reporting remains unavailable, keep local result files, report the blocker, and continue independent authorized work toward the user's goal. Do not write under the read-only .pentest directory. PENTEST_API_URL is the CyberPenda API, not a Challenge Platform API.
 Read accepted state with ` + "`pentestctl working-graph read`" + ` before planning and after resume. Local graph files are working state. Reconcile accepted state and Receipts without replacing local drafts.
 
+An offline knowledge baseline lives read-only under /opt/knowledge: HackTricks methodology, payload and technique references, and a wordlist subset under web, passwords, and usernames. It is an on-demand resource, not a required first step. Follow your own judgment first; when work stalls, for example when hypotheses are exhausted or verification keeps failing, run ` + "`pentest-knowledge-lookup <keyword>`" + ` and read the matched reference files in full. Payload and bypass details are usually deep in the file.
+
 - Goal: state the desired result and success criteria. Use goal.create, goal.describe, and goal.transition.
 - Step: state work under a Goal. Use step.create, step.describe, and step.transition. Use inputs for Fact keys and after for earlier Step keys.
 - Fact: append an observed result with fact.append. Supply a Step key, summary, and optional body. Facts are immutable. Correct an inaccurate Fact with a new Fact whose corrects field names the earlier Fact.

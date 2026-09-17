@@ -73,3 +73,28 @@ func TestFGSProjectionPreservesUserInstructionsAcrossResume(t *testing.T) {
 		t.Fatal("FGS projected legacy Mode Skill")
 	}
 }
+
+func TestFGSProjectionDocumentsTheOfflineKnowledgeBaseline(t *testing.T) {
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-knowledge", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runner.ProjectFGSFiles(layout, runner.RuntimeOwnerContext{
+		Owner: owner.NewTaskContract("task-knowledge", "project", layout.Workdir), BlackboardMode: string(modeskill.ModeWorkingGraph), BlackboardProtocol: "fgs",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(layout.Workdir, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	// The work instructions must present /opt/knowledge as an on-demand
+	// resource, not a required first step, in every Runtime.
+	for _, required := range []string{"/opt/knowledge", "pentest-knowledge-lookup", "on-demand", "not a required first step"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("FGS instructions miss the offline knowledge baseline note %q: %s", required, text)
+		}
+	}
+}

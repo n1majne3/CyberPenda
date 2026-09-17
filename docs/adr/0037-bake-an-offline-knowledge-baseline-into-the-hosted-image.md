@@ -53,7 +53,8 @@ Build rules:
   The command is installed into both images and is part of the Hosted Image
   build-time tool verification and image smoke test.
 
-Usage rules are written into the Runtime-facing instructions: the
+Usage rules are written into the Runtime-facing instructions: the projected
+Runtime work instructions (`AGENTS.md`/`CLAUDE.md` FGS section), the
 `ctf-orchestrator` Skill environment note, the Execute dispatch template, the
 projected `execute` agent type, and the `tsecbench-hosted-challenge-loop`
 Skill all present the baseline as an on-demand resource. Challenge work
