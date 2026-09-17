@@ -16,7 +16,7 @@ Official [TSecBench](https://tsecbench.zc.tencent.com/) Agentic leaderboard (**T
 | --- | --- | --- | --- | --- | --- |
 | 98.12 | 100 | 100 | 71.43 | 100 | 100 |
 
-Run config recorded on the board: `deepseek-v3.1-flash-expires-on-0910` · wall time ~5h 31m. CyberPenda publishes a Hosted Mode image for this benchmark — see [TSecBench Hosted evaluation](#tsecbench-hosted-evaluation).
+Run config recorded on the board: `deepseek-v4.1-flash-expires-on-0910` · wall time ~5h 31m. CyberPenda publishes a Hosted Mode image for this benchmark — see [TSecBench Hosted evaluation](#tsecbench-hosted-evaluation).
 
 ![TSecBench v1 official leaderboard — CyberPenda #3](docs/assets/tsecbench-v1-leaderboard.png)
 
