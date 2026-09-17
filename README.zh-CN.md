@@ -26,7 +26,7 @@
 - 已在使用 **Codex、Claude Code 或 Pi**，并需要带范围约束的渗透会话
 - 不愿把目标凭证和浏览器会话交给云端 Agent 浏览器的人
 
-### 为什么是这个仓库
+### 为什么是选择Cyberpenda
 
 | | CyberPenda | 常见 CLI skill 包 | 云端渗透 / AI 浏览器 |
 | --- | --- | --- | --- |
@@ -159,7 +159,7 @@ make tsecbench-hosted-runtime-inventory
 
 ### Hosted 环境变量
 
-Hosted Mode 下，TSecBench 会注入 `BENCHMARK_BASE_URL` 与一次性 `BENCHMARK_TOKEN`。其余 `CYBERPENDA_*` 值在 TSecBench 页面填写（密钥从不存入本仓库）：
+Hosted Mode 下，TSecBench 会注入 `BENCHMARK_BASE_URL` 与一次性 `BENCHMARK_TOKEN`。其余 `CYBERPENDA_*` 值在 TSecBench 页面填写：
 
 | 变量 | 含义 |
 | --- | --- |
