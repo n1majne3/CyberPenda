@@ -48,8 +48,8 @@ CyberPenda 已为这两个 Runtime 投影同一 Execute 类型，身份与收束
 总时限从任务说明读取；并发容器配额默认 3。Hosted Task 使用 Disabled Blackboard Mode，
 `$WS` 下的 FGS 是唯一 agent-managed working state。平台操作只用 `pentest-tsecbench-client`。
 离线知识库在 /opt/knowledge（hacktricks 方法论、payloads-all-the-things 技术参考、
-wordlists 字典子集），检索用 `pentest-knowledge-lookup <关键词>`；派发时通过模板「环境」项
-提醒 Execute 先检索再动手。
+wordlists 字典子集），卡壳时检索用 `pentest-knowledge-lookup <关键词>`；派发时通过模板
+「环境」项告知 Execute 这一按需资源，不作硬性前置。
 
 ## 平台权限边界
 

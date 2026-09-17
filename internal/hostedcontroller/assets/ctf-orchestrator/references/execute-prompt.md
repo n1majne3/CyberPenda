@@ -46,9 +46,9 @@ fact 编号与文件名、提交命令原文、环境）。
    启动并确认存活后在 {$WS}/graph/tmux-registry.md 追加一行登记，不要原地等待结果。
 5. 只连接本 step 的目标地址，严禁扫描其他 IP（同网段常有其他目标在并行）。
 6. 环境：{按任务说明注入：可用工具、架构限制、网络限制}。本环境为 kali 沙箱,已预装大量工具，可直接调用。
-   动手前先用 `pentest-knowledge-lookup <漏洞或组件关键词>` 检索离线知识库
-   （/opt/knowledge 下 hacktricks 方法论、payloads-all-the-things 技术参考、wordlists 字典）；
-   命中的参考文件整篇读完再动手，不凭记忆盲打；爆破与目录发现直接用 wordlists 下的字典。
+   卡壳时（假设反复验证失败、想不到新角度）可用 `pentest-knowledge-lookup <漏洞或组件关键词>`
+   检索离线知识库（/opt/knowledge 下 hacktricks 方法论、payloads-all-the-things 技术参考、
+   wordlists 字典），命中的参考文件整篇读完再动手；爆破与目录发现可用 wordlists 下的字典。
 7. 到点：写完 fact 文件立即结束，最终报告只需一句“已收束于 fact_{NNN}”。
 ```
 
@@ -59,7 +59,7 @@ fact 编号与文件名、提交命令原文、环境）。
 - [ ] 互斥范围写明（同资源其他 agent 在做什么）
 - [ ] fact 编号 NNN 已分配且不冲突
 - [ ] ledger.tsv 已追加（code, agent_id, budget, hard_stop = now + N*60）
-- [ ] 不贴长方法论清单——方法论由 agent 用 `pentest-knowledge-lookup` 自取，探索知识由它在轮内沉淀进图
+- [ ] 不贴长方法论清单——方法论由 agent 按需用 `pentest-knowledge-lookup` 自取，探索知识由它在轮内沉淀进图
 
 ## 补刀派发（换角度/续命/疑似坏实例重开）
 
