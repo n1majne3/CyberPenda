@@ -50,9 +50,12 @@ Build rules:
 Usage rules are written into the Runtime-facing instructions: the
 `ctf-orchestrator` Skill environment note, the Execute dispatch template, the
 projected `execute` agent type, and the `tsecbench-hosted-challenge-loop`
-Skill all direct challenge work to look up techniques first, read matched
-reference files completely, and use the baked wordlists instead of generating
-dictionaries during a pass.
+Skill all present the baseline as an on-demand resource. Challenge work
+follows its own judgment first and consults the baseline when a pass stalls
+(hypotheses exhausted, repeated verification failures), then reads matched
+reference files completely. A mandatory lookup-first step is deliberately
+avoided so the baseline does not constrain the model's own approach. The
+baked wordlists stay available for brute force and discovery.
 
 ## Consequences
 
@@ -66,4 +69,4 @@ Android SDK, no full Kali suite, no runtime package downloads.
 Upstream content only changes when a pin SHA is bumped deliberately, so
 evaluation runs stay reproducible and the smoke test pins marker files for
 each knowledge root. The Runtime-facing instructions spend a few extra lines
-per dispatch on the lookup discipline.
+per dispatch on the on-demand lookup note.

@@ -32,7 +32,7 @@ Platform state is the recovery source for containers and completion. Blackboard 
 
 ## Offline knowledge baseline
 
-The image carries a read-only reference set under `/opt/knowledge`: HackTricks methodology, payload and technique references, and a curated wordlist subset. Before acting on an unfamiliar vulnerability class or component, run `pentest-knowledge-lookup <keyword>` and read the matched reference files in full; payload and bypass details are usually deep in the file. Use the wordlists under `/opt/knowledge/wordlists/{web,passwords,usernames}` for brute force and discovery instead of generating dictionaries during a pass.
+The image carries a read-only reference set under `/opt/knowledge`: HackTricks methodology, payload and technique references, and a curated wordlist subset. It is an on-demand resource, not a required first step: follow your own judgment first, and when a pass stalls — hypotheses exhausted, repeated verification failures — run `pentest-knowledge-lookup <keyword>` and read the matched reference files in full; payload and bypass details are usually deep in the file. The wordlists under `/opt/knowledge/wordlists/{web,passwords,usernames}` stay available for brute force and discovery.
 
 ## Build the challenge portfolio
 
