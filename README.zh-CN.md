@@ -3,20 +3,21 @@
 [English](README.md) · [中文](README.zh-CN.md)
 
 **本地优先的授权渗透测试 Agent**：Go 控制面、React 控制台，以及 Codex / Claude Code / Pi 运行时，带项目范围与审批、Goal/Step/Fact 黑板 Blackboard；工具在沙箱内执行（不经 daemon 代理）。
+CyberPenda 在独立的沙箱里面运行你喜爱的Agent runtime，配合上FGS黑板机制和供应商投影，可以安全，便捷地进行渗透测试，CTF解题等任务。
 
-> **仅可对你有权测试的系统使用。** 范围、审批与主机 runner 激活是一等产品概念，有其用意。
+> **仅可对你有权测试的系统使用。** 
 
 **[打开在线 Demo →](https://cyberpenda-demo.vercel.app)** · 只读样例项目（不含 `pentestd`、运行时或利用工具）
 
 ### TSecBench v1 成绩
 
-官方 [TSecBench](https://tsecbench.zc.tencent.com/) Agentic 排行榜（**TSecBench v1**）：**#3 · 93.82 / 100**
+官方 [[TSecBench](https://tsecbench.zc.tencent.com/](https://tsecbench.zc.tencent.com/agent/16290)) Agentic 排行榜（**TSecBench v1**）：**#3 · 93.82 / 100**
 
 | Web | 二进制 | 利用 | 渗透 | 云 | 规避 |
 | --- | --- | --- | --- | --- | --- |
 | 98.12 | 100 | 100 | 71.43 | 100 | 100 |
 
-榜单记录的运行配置：`deepseek-v4.1-flash-expires-on-0910` · 墙钟时间约 5h 31m。CyberPenda 为该基准发布 Hosted Mode 镜像，见 [TSecBench Hosted 评测](#tsecbench-hosted-评测)。
+榜单记录的运行配置：`deepseek-v4.1-flash` · 墙钟时间约 5h 31m。CyberPenda 为该基准发布 Hosted Mode 镜像，见 [TSecBench Hosted 评测](#tsecbench-hosted-评测)。
 
 ![TSecBench v1 官方排行榜 — CyberPenda #3](docs/assets/tsecbench-v1-leaderboard.png)
 
