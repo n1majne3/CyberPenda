@@ -44,6 +44,7 @@ pentest 2.db-wal
 .qoder/repowiki
 
 # Local evaluation outputs
+/.tsecbench-analysis/
 /scripts/*.log
 /scripts/*-report.json
 /scripts/cybergym-report-*.json
