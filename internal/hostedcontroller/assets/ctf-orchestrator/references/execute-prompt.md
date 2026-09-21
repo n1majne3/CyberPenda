@@ -1,67 +1,57 @@
-# Execute Agent 派发模板
+# Execute Agent 派发模板(模板本体由 scripts/dispatch.py 持有)
 
-派发必须**后台异步**。Decide 发出后立即返回，禁止同步等到子线程结束。
-prompt 结构固定三段：背景图 → 单 step → 收束纪律。**图放最前、step 放最后**（前缀稳定，命中缓存）。
+派发必须**后台异步**,禁止同步等到子线程结束。**仅 Codex:** V1 `spawn_agent`,
+`fork_context: false`。
+**仅 Pi 与 Claude Code:** `Agent` 派发用 `subagent_type: "execute"`
+(CyberPenda 已投影同一 Execute 类型,身份与收束纪律已内置)。
+**派发 prompt 省略「收束纪律」整段,只保留模板生成的变量段**——
+Execute 类型自带收束纪律,转发 outbox prompt 时不要再附加纪律文本。
 
-**仅 Codex：** `spawn_agent` 且 `fork_context: false`。禁止 `fork_context: true`。
-子线程只要本 step 正文，不要主控历史、不要 Skill 开局指令。
-Execute 只做这一个 step，禁止调用 ctf-orchestrator，禁止 list/start/hint/close/abandon。
+## 薄调度模式的派发流程
 
-**仅 Pi 与 Claude Code：** 用 `Agent` 工具派发：`subagent_type: "execute"`、后台运行。该 Execute
-类型由 CyberPenda 投影（两个 Runtime 用同一份定义），身份与收束纪律已内置；派发 prompt
-省略「收束纪律」整段，只保留变量段（预算、背景图、step 与互斥范围、目标与题目、
-fact 编号与文件名、提交命令原文、环境）。
+Decide **不手写 prompt**。prompt 由 `dispatch.py assemble` 生成到
+`graph/outbox/<did>-<code>.prompt.md`,结构固定:
 
-模板（`{}` 为占位符，其余逐字保留）：
-
-```text
-你只负责下面这【一个 step】，预算 {N} 分钟，到点必须收束并结束。
-
-【背景知识图】
-{该题相关 facts 全文 + 全局可复用技巧摘要（主动维护一个 skills-notes 类摘要文件）}
-{不要全量粘贴所有 facts——图超过 ~30 条后按题过滤，控制 prompt 尺寸}
-{steps.yaml 中与该题相关的 open/dispatched 条目}
-
-【你负责的 step】step_{XXX}：{action 一句话}
-（互斥范围：{与哪些并行 step 不重叠，如“只碰上传接口，不动登录面”}）
-目标：{资源地址}；题目：{code} {难度} {分值} {flag数}
-描述全文：{description}
-
-收束纪律（硬性）：
-1. **开工 90 秒内先写 fact 骨架**（front-matter + title 占位），之后**每完成一个测试组立即刷新 fact 文件**——
-   agent 可能随时被 infra 中断，任何时刻死亡都要有留痕可收割；这比结尾一次性写盘优先级更高。
-   90 秒骨架也是主控的投递确认依据：超时未出现，主控会判定消息投递失败并重派。
-2. 结束前把结论补全到 {$WS}/graph/facts/{NNN}-{主题}.md，front-matter：
-   id: fact_{NNN} / step: step_{XXX} / challenge: {code} / title: 一句话结论
-   content 只写新增客观事实，新凭证新端点加粗；大输出写
-   {$WS}/graph/data/stepXXX-*.{txt,json} 并在 content 引用文件名。
-   没有结果就如实记“已试X、观察到Y、未达成Z”；
-   禁止“此路不通/已穷尽/勿再试”等否定或绝对结论。
-3. 拿到 flag 立即通过标准输入提交：
-   printf '%s' "$flag" | pentest-tsecbench-client submit "{code}"
-   核对结果，并把**提交返回的 JSON 原文回写 fact**
-   （correct/awarded/cumulative_score/correct_flag_count——平台对账兜底依据）。
-   多 flag 目标逐枚提交。严禁调用 list/start/hint/close/abandon；这些操作只由 Decide 执行。
-4. 长任务（爆破/隧道/监听）一律 tmux 后台：会话名 step{XXX}-{主题}，
-   启动并确认存活后在 {$WS}/graph/tmux-registry.md 追加一行登记，不要原地等待结果。
-5. 只连接本 step 的目标地址，严禁扫描其他 IP（同网段常有其他目标在并行）。
-6. 环境：{按任务说明注入：可用工具、架构限制、网络限制}。本环境为 kali 沙箱,已预装大量工具，可直接调用。
-   卡壳时（假设反复验证失败、想不到新角度）可用 `pentest-knowledge-lookup <漏洞或组件关键词>`
-   检索离线知识库（/opt/knowledge 下 hacktricks 方法论、payloads-all-the-things 技术参考、
-   wordlists 字典），命中的参考文件整篇读完再动手；爆破与目录发现可用 wordlists 下的字典。
-7. 到点：写完 fact 文件立即结束，最终报告只需一句“已收束于 fact_{NNN}”。
+```
+固定头(授权书 + 题面:目标/题目/题号/flag 数)     ← 该题内逐字节稳定
+【本段目标】{里程碑:来自上一段 next_milestone}
+【已排除的面】{该题此前退场报告蒸馏,硬顶截断}
+【家族经验】{同家族已解题经验,总量硬顶,超限指针化}
+工作方式(recon → submit-flag 流程 + /opt/knowledge 检索技巧)  ← 全局固定
+【退场协议】(attempts/<code>/<k>.md 必填字段 + 预算)          ← 全局固定
 ```
 
-## 派发检查单（每次 spawn 前过一遍）
+排序原则:**固定内容在前、每段变化的内容在后**,跨段前缀稳定利于缓存。
+注入硬顶:家族经验 ~8K 字符、已排除面 ~2.4K 字符;超限写
+"(全文见 graph/attempts/…)"由 Execute 自行读取。
 
-- [ ] Codex：`spawn_agent` 带 `fork_context: false`（禁止 true）
-- [ ] step 足够小（≤15 分钟可完成一轮试探）
-- [ ] 互斥范围写明（同资源其他 agent 在做什么）
-- [ ] fact 编号 NNN 已分配且不冲突
-- [ ] ledger.tsv 已追加（code, agent_id, budget, hard_stop = now + N*60）
-- [ ] 不贴长方法论清单——方法论由 agent 按需用 `pentest-knowledge-lookup` 自取，探索知识由它在轮内沉淀进图
+## Decide 的派发动作(逐字转发)
 
-## 补刀派发（换角度/续命/疑似坏实例重开）
+1. read `graph/outbox/<did>-<code>.prompt.md`;
+2. Agent(execute)后台派发,prompt = 文件**逐字全文**,不改写;
+3. `python3 scripts/dispatch.py mark <did> dispatched --ws $WS`。
 
-同一模板，额外加一段“上一棒情报”：粘贴相关 facts 全文 + 已排除路径清单 +
-“你的任务是与上一棒不同的角度：{具体差异}”。禁止原样重派同一个 step。
+漏做第 3 步:看门狗会在 grace 期后把该段记 infra_dead 并重派,浪费一棒。
+
+## 模板变量说明(供人工核对 assemble 输出)
+
+| 变量 | 来源 |
+| --- | --- |
+| 目标/题面/分值/flag 数 | challenges.json(platform list) |
+| 里程碑 | 上一段退场报告 `next_milestone`;首段默认"解出本题"/多 flag 题"取第 1 枚" |
+| 已排除的面 | 该题全部历史退场报告的「试过的面」节 |
+| 家族经验 | 同家族已解题的末段退场报告 + graph/facts 同家族条目 |
+| 预算 | ledger 按难度映射(easy 15 / medium 25 / hard 35 / 链题 60 分钟) |
+
+## 退场协议要点(模板尾部原文,Execute 必须遵守)
+
+1. 结束前把退场报告写到 `graph/attempts/<code>/<k>.md`,front-matter
+   challenge / attempt / outcome(solved|stalled|budget_stop) / flags_gained /
+   foothold / next_milestone 缺一不可;
+2. 大输出落 `graph/data/<code>-<k>-*.{txt,json}`,报告只引用文件名;
+3. 没有结果就如实写"已试X、观察到Y、未达成Z",禁绝对化结论;
+4. 拿到 flag 立即 submit-flag,返回 JSON 原文粘进报告;
+5. 只连接本题目标;写完报告立即结束,最终回复只需一句收束指针。
+
+报告缺字段或 solved 无提交 JSON → 派发器校验失败 → 按 infra_dead 记账,
+该段结论不被采信(等于白干)。

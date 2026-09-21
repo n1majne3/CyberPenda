@@ -24,6 +24,9 @@ var hostedChallengeGraphProtocol string
 //go:embed assets/ctf-orchestrator/references/execute-prompt.md
 var hostedChallengeExecutePrompt string
 
+//go:embed assets/ctf-orchestrator/scripts/dispatch.py
+var hostedChallengeDispatchScript string
+
 // HTTPApp uses only the normal daemon HTTP surface for hosted bootstrap and
 // observation. It does not add TSecBench routes to the daemon.
 type HTTPApp struct {
@@ -76,6 +79,7 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootst
 			"SKILL.md":                     hostedChallengeSkillInstruction,
 			"references/graph-protocol.md": hostedChallengeGraphProtocol,
 			"references/execute-prompt.md": hostedChallengeExecutePrompt,
+			"scripts/dispatch.py":          hostedChallengeDispatchScript,
 		},
 	}, nil); err != nil {
 		return HostedEvaluationReference{}, fmt.Errorf("publish hosted ctf-orchestrator Skill: %w", err)

@@ -1,101 +1,89 @@
-# FGS 图协议（Fact-Goal-Step）
+# FGS 图协议与薄调度文件(ledger / attempts / outbox / escalations)
 
-目录布局：
+目录布局:
 
-```text
+```
 $WS/
-  ledger.tsv              # code<TAB>agent_id<TAB>budget_min<TAB>hard_stop_epoch
-  queue.tsv               # 预排序题目队列（code, score, difficulty, flags, note）
-  challenges.json         # 最近一次 Hosted Challenge Client list 原始 JSON
-  deadline                # 仅在任务说明给出总时限时存在
-  state.md
+  deadline                 # epoch 秒;仅任务明示时限时存在
+  challenges.json          # platform.sh list 原始输出
+  platform.sh              # 平台适配层(list|start|close|hint|submit)
+  scripts/dispatch.py      # 薄调度器(从 ctf-orchestrator skill 复制)
+  ledger.tsv               # (旧接力模式遗留;薄调度模式不再维护)
   graph/
-    leader.lock           # 主控心跳：单行 epoch；≤300 秒新鲜（见下方 schema）
-    facts/                # 每条事实一个文件，只追加不修改
-      001-端口面.md
-    data/                 # 大块输出（扫描/源码/dump），fact 里引用文件名
-    steps.yaml            # 步骤池（唯一可变文件，Decide 维护）
-    goals.yaml            # 链题子目标链（可选，链题必用）
-    tmux-registry.md      # 活动中的 tmux 会话清单
+    ledger.json            # 唯一调度事实源(dispatch.py 维护,禁止手改)
+    attempts/<code>/<k>.md # 退场报告:每段 Execute 的收束结论
+    outbox/                # <did>-<code>.prompt.md + ENDGAME 标记
+    escalations/QUEUE.md   # 升级问题队列(Decide 消费)
+    facts/                 # (兼容)fact 文件,只追加;并入家族经验注入
+    data/                  # 大块输出,退场报告里引用文件名
 ```
 
-## leader.lock（主控单例）
+## ledger.json
 
-单行 epoch（`date +%s`），代表主控最近一次心跳。
+由 dispatch.py 独占写入。关键字段:
 
-- 主控在主循环每次轮转（≤2 分钟）重写该文件。
-- 开机会话（含 spawn 子线程与后续唤醒线程）：锁缺失或心跳距今 >300 秒 → 接管（写入当前 epoch）；
-  锁新鲜 → 降级为 Execute，从 steps.yaml 认领 open step。
-- spawn 消息可能投递失败：空白唤醒的线程**没有默认身份**，一切以上述分支为准。
-- 任何会话不得删除或绕过该文件；接管时原样覆盖，不追加历史。
+```json
+{
+  "challenges": {
+    "a-04": {
+      "code": "a-04", "name": "…", "score": 300, "difficulty": "medium",
+      "flags_total": 1, "flags_correct": 1,
+      "state": "solved",
+      "attempt": 2, "restarts": 1, "infra_deaths": 0,
+      "budget_min": 25, "spent_min": 41,
+      "foothold": "", "milestone": null, "instance": null,
+      "family_grew": false
+    }
+  },
+  "dispatches": {
+    "d012": {"code": "a-04", "attempt": 2, "state": "dispatched",
+             "hard_stop": 1758…, "prompt": "graph/outbox/d012-a-04.prompt.md"}
+  },
+  "seq": 12
+}
+```
 
-`ledger.tsv` 只管理 Execute agent 生命周期。不得写入 `elapsed_min`、`budget_min`、
-`over_budget` 或 `attempt_n`；这些 challenge pass 字段只来自 Hosted Challenge Client list
-的 Challenge Pass Clock 投影。
+state 取值:`pending → running → solved | partial | blocked | exhausted`。
+默认预算:easy 15 / medium 25 / hard 35 / 多 flag 链题 60 分钟(累计容器时间)。
+重试护栏:非零进展的题第 3 次 stalled 后 exhausted;
+同题 infra 死亡 ≥4 次升级决策。
 
-## fact 文件格式
+## 退场报告 attempts/<code>/<k>.md
+
+```markdown
+---
+challenge: a-04
+attempt: 2
+outcome: stalled        # solved | stalled | budget_stop
+flags_gained: 0
+foothold: "admin 会话 cookie 仍存活"   # 无则空串
+next_milestone: "用 admin 会话读 /admin/config 拿 flag"
+---
+## 试过的面(下一段不要重复)
+- SQLi 于 /search,union 被 WAF 拦
+## 证据指针
+- graph/data/a04-2-sqli.txt
+```
+
+校验规则(dispatch.py validate,派发前自动执行):
+
+- front-matter 必填 challenge / attempt / outcome / next_milestone,取值合法;
+- `solved` 必须在正文含提交返回 JSON(`"correct": true` 或 `"code": "duplicate"`);
+- 校验失败 → 该段按 **infra_dead** 记账:结论不采信、已排除面不注入、
+  不占重试上限。
+
+## fact 文件(兼容层)
 
 ```markdown
 ---
 id: fact_007
-step: step_012
+step: attempt_a-04_2        # 薄调度模式下用 attempt 标识
 challenge: a-04
-title: 一句话可判读的结论（含关键值）
+title: 一句话可判读的结论(含关键值)
 ---
-content：只写本 step 新增的客观事实（做了什么/观察到什么/依据）。
-新凭证/新端点单独成行并加粗。大输出引用 graph/data/stepXXX-xxx.txt。
-没有结果时如实写：已试 X，观察到 Y，未达成 Z。
-禁止写“此路不通/已穷尽/勿再试”等否定或绝对结论。
+content:只写新增客观事实;禁"此路不通/已穷尽/勿再试"类绝对结论。
 ```
 
-规则：
-
-- 编号全局单调递增，一个 step 至少产一条 fact（成败都要）。
-- **fact id 全局唯一，一个 id 恰好一个文件**：agent 产 fact_022，Decide 的成果摘要不得复用 022——
-  要么只更新 steps.yaml（to: 挂 agent 的 fact id + 摘要写 action 注记），要么另起新编号新文件。
-- title 里放可检索的关键信息（URL、凭证名、漏洞编号），Decide 靠 title 扫图。
-
-## steps.yaml 格式
-
-```yaml
-- id: step_012
-  challenge: a-04            # 所属题（跨题横向可为 null）
-  action: 对上传接口做扩展名黑名单绕过，与 step_011 的 JS 泄露面不重叠
-  from: [fact_005]           # 依赖的 facts
-  priority: high             # high / normal / low
-  budget_min: 12
-  state: open                # open / dispatched / done / blocked
-  to: null                   # 完成后挂产出的 fact id
-```
-
-派生规则：
-
-- 每条含新凭证/新端点的 fact 至少派生一个后续 step。
-- `blocked` 的 step 释放资源重试一次后仍恒定失败才允许沉底，且不删记录。
-- 同一 challenge 的 `dispatched` step 数 ≤3（攻击面互斥）。
-
-## goals.yaml（链题）
-
-```yaml
-- challenge: b-02
-  goal: 全链路渗透达成最终目标
-  subgoals:
-    - id: g1
-      text: 外网立足点
-      state: done            # open / active / done
-      evidence: fact_003
-    - id: g2
-      text: 内网横向到目标主机
-      state: active
-      from: [g1]
-```
-
-## tmux-registry.md 格式
-
-```text
-| 会话名 | 目标 | 启动时间 | 命令摘要 | 登记step |
-| stepXXX-sshbrute | 10.0.0.2:22 admin | 03:41 | hydra -L u -P p rockyou | step_029 |
-```
-
-收割 agent 的动作：`tmux capture-pane -p -t <会话> | tail -50`，命中即提交/记录并写 fact，
-未命中写“仍在跑，已尝试 N 条”。
+规则不变:编号全局单调递增、一个 id 一个文件、只追加。
+同家族(题号前缀)已解题的退场报告与 fact 会被派发器注入到新段 prompt,
+注入总量硬顶(超限以文件指针引用)。

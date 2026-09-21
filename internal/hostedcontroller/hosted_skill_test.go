@@ -78,19 +78,23 @@ func TestHostedEvaluationPublishesOnlyCTFOrchestratorAndProjectsBenchmarkEnviron
 	for _, required := range []string{
 		"pentest-tsecbench-client list", "pentest-tsecbench-client start", "pentest-tsecbench-client hint",
 		"pentest-tsecbench-client submit", "pentest-tsecbench-client close", "pentest-tsecbench-client abandon",
-		"Decide", "Execute agent", "FGS", "graph/facts", "ledger.tsv", "WS=\"$(pwd -P)\"",
+		"Decide", "Execute agent", "FGS", "graph/facts", "ledger.json", "WS=\"$(pwd -P)\"",
 		"Codex", "spawn_agent", "wait_agent", "send_input", "close_agent",
 		"后台异步", "fork_context: false",
 		"over_budget", "elapsed_min", "budget_min", "attempt_n", "Challenge Pass Clock",
+		"dispatch.py", "READY.tsv", "退场协议", "escalations",
 	} {
 		if !strings.Contains(instruction, required) {
 			t.Errorf("hosted Skill instruction missing %q", required)
 		}
 	}
-	for _, requiredFile := range []string{"references/graph-protocol.md", "references/execute-prompt.md"} {
+	for _, requiredFile := range []string{"references/graph-protocol.md", "references/execute-prompt.md", "scripts/dispatch.py"} {
 		if strings.TrimSpace(skillRequest.Files[requiredFile]) == "" {
 			t.Errorf("hosted Skill bundle missing %q", requiredFile)
 		}
+	}
+	if !strings.Contains(skillRequest.Files["scripts/dispatch.py"], "def harvest") {
+		t.Errorf("hosted dispatch script must carry the scheduling loop")
 	}
 	for _, forbidden := range []string{
 		"curl ", "PLATFORM_TOKEN", "PLATFORM_BASE_URL", "Authorization: Bearer", "/workdir/run",
@@ -128,14 +132,15 @@ func TestTSecBenchSkillGuardsSpawnDeliveryAndSingleOrchestrator(t *testing.T) {
 	for _, required := range []string{
 		// First-light identity check: every session confirms the leader lock
 		// before assuming the Decide role, so a spawn child that woke without
-		// its task message degrades to a worker instead of self-appointing.
-		"身份确认", "graph/leader.lock", "降级为 Execute", "接管",
-		// Spawn acknowledgement: the lead verifies each child produced its fact
-		// skeleton within the ack window and re-dispatches on a missed delivery.
-		"90 秒", "fact 骨架", "投递失败",
-		// Turn discipline: the lead never ends a turn while agents are live,
-		// because the notification loop is the only thing that wakes it again.
-		"禁止结束当前回合",
+		// its task message ends quietly instead of self-appointing.
+		"身份确认", "graph/leader.lock", "安静结束本轮", "接管",
+		// Spawn acknowledgement: the dispatcher verifies each dispatched
+		// segment created its started marker within the ack window and
+		// re-dispatches on a missed delivery.
+		"90 秒", "开工标记", "投递失败",
+		// Turn discipline: the Decide loop keeps rotating until the dispatcher
+		// raises ENDGAME or the platform reports the terminal state.
+		"不得宣告结束",
 	} {
 		if !strings.Contains(instruction, required) {
 			t.Errorf("hosted Skill missing spawn-delivery guard %q", required)
@@ -302,7 +307,7 @@ func TestBuiltinCTFOrchestratorPinsBackgroundAsyncDispatch(t *testing.T) {
 	if strings.TrimSpace(instruction) == "" {
 		t.Fatal("normal ctf-orchestrator Built-in Skill is missing")
 	}
-	for _, required := range []string{"后台异步", "禁止同步等", "fork_context: false"} {
+	for _, required := range []string{"后台异步", "禁止同步等", "fork_context: false", "dispatch.py"} {
 		if !strings.Contains(instruction, required) {
 			t.Errorf("builtin Skill missing background-async dispatch rule %q", required)
 		}
@@ -406,6 +411,7 @@ func TestTSecBenchSkillPinsExecuteSubagentTypeForPiAndClaudeCode(t *testing.T) {
 		`subagent_type: "execute"`,
 		"省略「收束纪律」",
 		"仅 Pi 与 Claude Code",
+		"dispatch.py",
 	} {
 		if !strings.Contains(files["SKILL.md"], required) {
 			t.Errorf("hosted Skill missing execute dispatch rule %q", required)
@@ -436,6 +442,7 @@ func TestBuiltinCTFOrchestratorPinsExecuteSubagentTypeForPiAndClaudeCode(t *test
 		`subagent_type: "execute"`,
 		"省略「收束纪律」",
 		"仅 Pi 与 Claude Code",
+		"dispatch.py",
 	} {
 		if !strings.Contains(files["SKILL.md"], required) {
 			t.Errorf("builtin Skill missing execute dispatch rule %q", required)

@@ -1,222 +1,188 @@
 ---
 name: ctf-orchestrator
-description: Orchestrate a timed multi-target offensive/CTF session with a Decide/Execute + FGS architecture. Use for TSecBench scoring, timed CTF competition, multi-target pentest with parallel agents, or requests to maximize score and keep challenge slots full.
+description: Orchestrate a timed multi-target offensive/CTF session with a thin dispatcher and dispatch-time injection. Use for TSecBench scoring, timed CTF competition, multi-target pentest with parallel agents, or requests to maximize score and keep challenge slots full.
 ---
 
-# 攻防编排器（Decide/Execute + FGS 图）
+# 攻防编排器(薄调度 + 派发时注入)
 
-你的默认角色是 **Decide 进程**：只做感知（读图/读平台状态）、决策（调步骤池）、派发（spawn Execute agent）。
-**你绝不亲自攻击目标**——不扫端口、不发 payload、不爆破。一旦发现自己在写攻击命令，立即停手改派 agent。
-原因：串行的你下场攻击是全局吞吐瓶颈；你的上下文留给编排才最值钱。
-**该身份必须先通过下方「身份确认」的 leader.lock 检查后才生效**——spawn 消息可能投递失败，
-任何线程都可能在你之前已经持有主控身份。
+你的默认角色是 **Decide 进程**:开局准备、按 outbox 派发 Execute、回答升级问题。
+**你绝不亲自攻击目标**——不扫端口、不发 payload、不爆破。
+**调度状态在 `graph/ledger.json`,不在你的对话里。**派发 prompt 由
+`scripts/dispatch.py` 组装;你**禁止手写派发 prompt**,**禁止 sleep 轮询 fact 文件**
+——历史跑分实测这两项分别占编排器挂钟的 73–79% 与近半 token。
+**该身份必须先通过「身份确认」的 leader.lock 检查后才生效。**
 
-## 身份确认（Step 0，任何会话开机必做，先于一切）
-
-无论你是主控线程、被 spawn 的子线程，还是任何后续唤醒的线程，开机第一件事：
+## 身份确认(Step 0,任何会话开机必做,先于一切)
 
 1. `WS="$(pwd -P)"; export WS`
-2. 读 `$WS/graph/leader.lock`（单行 epoch，即最近心跳的 `date +%s`，schema 见 graph-protocol.md）。
-3. 分支：
-   - **锁存在且心跳距今 ≤300 秒** → 主控已在位，你不是主控：**降级为 Execute**——从
-     `graph/steps.yaml` 认领一个 `open` 且依赖满足的 step（改 `dispatched`、登记 ledger.tsv），
-     按 `references/execute-prompt.md` 执行，写完 fact 立即结束。
-     **禁止 spawn、禁止改派发计划、禁止重排 queue/steps。**
-   - **锁缺失，或心跳距今 >300 秒** → **接管**：写入当前 epoch 成为主控；接管后的第一动作是
-     核对 `ledger.tsv` 的 hard_stop（见看门狗），再进开局序列。
-4. 主控在主循环每次轮转（≤2 分钟）重写 leader.lock 心跳。
-5. **任务消息缺失 = 投递失败**：若你醒来时没有收到任何任务消息（只有环境上下文），你就是
-   投递失败的线程——按上面分支处理，**绝不默认自己是主控**。
+2. 读 `$WS/graph/leader.lock`(单行 epoch 心跳,schema 见 graph-protocol.md)。
+3. 分支:
+   - **锁存在且心跳距今 ≤300 秒** → 主控已在位,你不是主控:**安静结束本轮**。
+     调度由常驻 dispatcher 与主控负责;**禁止 spawn、禁止改 ledger、禁止动 outbox。**
+   - **锁缺失或心跳距今 >300 秒** → **接管**:写入当前 epoch;第一动作是确认
+     dispatcher tmux 会话存活(见开局序列第 6 步,死了就重拉),再进 Decide 主循环。
+4. 主控每轮调度后重写 leader.lock 心跳。
+5. **任务消息缺失 = 投递失败**:醒来没有任务消息的线程按上面分支处理,
+   绝不默认自己是主控。
 
 ## Runtime 派发
 
-派发 Execute **必须后台异步**：Decide 发出后立即返回，**禁止同步等**到子线程结束。
-子线程只要本 step 正文，不要拷主控历史，不要加载本编排 Skill。
-使用当前 Runtime 的原生后台 agent 工具。
+派发 Execute **必须后台异步**:Decide 发出后立即返回,**禁止同步等**到子线程结束。
+子线程只要 outbox prompt 正文,不要拷主控历史,不要加载本编排 Skill。
 
-**仅 Codex：** Profile 必须启用 multi-agent。CyberPenda 投影 V1 工具（`multi_agent_v1` 命名空间）。
-`spawn_agent` **必须** `fork_context: false`。等待用 `wait_agent`（必须带 agent id），发信用 `send_input`，停止用 `close_agent`。
-不要传 `fork_turns` 或 `task_name`。不要用 V2 的 `send_message` / `interrupt_agent`。
-Execute 子线程禁止调用 ctf-orchestrator，禁止当 Decide；只执行派发模板里的那一个 step。
+**仅 Codex:** Profile 必须启用 multi-agent(CyberPenda 投影 V1 工具,
+`multi_agent_v1` 命名空间)。`spawn_agent` **必须** `fork_context: false`;
+等待用 `wait_agent`(带 agent id),发信用 `send_input`,停止用 `close_agent`。
+不要传 `fork_turns` 或 `task_name`,不要用 V2 的 `send_message` / `interrupt_agent`。
+Execute 子线程禁止调用 ctf-orchestrator,禁止当 Decide。
 
-**仅 Pi 与 Claude Code：** 用 `Agent` 工具派发，`subagent_type: "execute"`，后台运行。
-CyberPenda 已为这两个 Runtime 投影同一 Execute 类型，身份与收束纪律已内置；
-派发 prompt 省略「收束纪律」整段，只保留变量段：
-预算、背景知识图、step 正文与互斥范围、目标与题目信息、fact 编号与文件名、提交命令原文、环境。
+**仅 Pi 与 Claude Code:** 用 `Agent` 工具派发,`subagent_type: "execute"`,后台运行。
+CyberPenda 已为这两个 Runtime 投影同一 Execute 类型,身份与收束纪律已内置;
+**派发 prompt 省略「收束纪律」整段,只保留模板生成的变量段**——
+转发 outbox prompt 时不要再附加任何纪律文本。
 
-环境参数从任务说明读取。开局先执行 `WS="$(pwd -P)"; export WS`，实际 Runtime Workdir 是唯一 `$WS`。
-总时限从任务说明读取；并发容器配额默认 3。Hosted Task 使用 Disabled Blackboard Mode，
-`$WS` 下的 FGS 是唯一 agent-managed working state。平台操作只用 `pentest-tsecbench-client`。
-离线知识库在 /opt/knowledge（hacktricks 方法论、payloads-all-the-things 技术参考、
-wordlists 字典子集），卡壳时检索用 `pentest-knowledge-lookup <关键词>`；派发时通过模板
-「环境」项告知 Execute 这一按需资源，不作硬性前置。
+环境参数从任务说明读取:总时限、并发容器配额(默认 3)。Hosted Task 使用
+Disabled Blackboard Mode,`$WS` 下的 FGS/ledger 是唯一 agent-managed working state。
+离线知识库在 /opt/knowledge,检索用 `pentest-knowledge-lookup <关键词>`;
+派发模板已把这一按需资源告知 Execute。
 
 ## 平台权限边界
 
-Decide 独占以下操作，并负责串行化：
+dispatcher(经 `$WS/platform.sh` 适配层)独占以下操作并负责串行化:
 
 ```sh
 pentest-tsecbench-client list
 pentest-tsecbench-client start "$code"
-pentest-tsecbench-client hint "$code"
-pentest-tsecbench-client close "$code"
-pentest-tsecbench-client abandon "$code" "$reason"
+pentest-tsecbench-client close "$code"      # 仅 list 已证明 complete 的题
+pentest-tsecbench-client abandon "$code" "$reason"   # 未完成题放槽
 ```
 
-Execute agent 可以直接提交候选 flag，但必须通过标准输入，并把返回 JSON 原文写入自己的 fact：
+`$WS/platform.sh` 是三行适配层(开局序列创建),接口固定
+`list|start|close|abandon`。禁止用 `curl` 直连平台 API,禁止自行构造鉴权头。
+
+Execute agent 只做一件事:按 prompt 提交候选 flag 并把返回 JSON 原文写进退场报告:
 
 ```sh
 printf '%s' "$flag" | pentest-tsecbench-client submit "$code"
 ```
 
-Execute agent 禁止调用 `list`、`start`、`hint`、`close`、`abandon`。禁止把 submit、close、start
-串成一个命令。客户端自己读取评测环境；不得查看、打印、复制 credential，也不得把 credential 放进参数。
+Execute 禁止调用 `list/start/hint/close/abandon`,禁止查看或复制 credential。
+hint 仅由 Decide 在处理升级问题时决定是否请求(`pentest-tsecbench-client hint "$code"`,
+只针对正在占槽的那一题的当前 pass,禁止一次对多题)。
 
-## 开局序列（Phase 0，必须最先执行）
+## 开局序列(Phase 0,必须最先执行)
 
-1. 预检：执行 `pentest-tsecbench-client list`。失败即报告原始的已脱敏结构化响应，但保持 Runtime 存活。
-2. 时钟锚定：**仅当用户/任务说明明确给出总时限**时，`date +%s` 计算 deadline
-   （当前 + 时限 - 15min 安全余量）写入 `$WS/deadline`，此后每次调度 `date` 实测。
-   **未给时限时禁止自设 deadline**——跑分节奏只看产出，结束只看平台信号（见“收官”）。
-3. 平台适配：平台接口已封装为 `pentest-tsecbench-client list|start|hint|submit|close|abandon`，
-   禁止用 `curl` 直连平台 API，禁止自行构造鉴权头。
-4. `pentest-tsecbench-client list > "$WS/challenges.json"`，按“分数/预计耗时”排序写入
-   `$WS/queue.tsv`：先易后难、高性价比优先。家族 = `unique_code` 前缀（第一个 `-` 之前）。
-5. 初始化图目录（schema 见 `references/graph-protocol.md`，**派发前必读**）：
-   `mkdir -p "$WS/graph/facts" "$WS/graph/data"`
-6. 启动首批容器：从 queue.tsv 取高性价比题，**首批 start 必须覆盖不同 unique_code 前缀**。
-   同一家族在本场尚未出分前，不得占用第二个槽。然后派第一波 Execute agent
-   （模板见 `references/execute-prompt.md`，**派发前必读**）。
-7. 每次成功 `start` 后立即 `list`，读取 `elapsed_min`、`budget_min`、`over_budget`、`attempt_n`。
-   这些字段来自 Challenge Pass Clock，是 challenge pass 的唯一时间源；不读写 Clock 文件，不复制进 FGS。
+1. 预检:`pentest-tsecbench-client list`。失败即报告原始的已脱敏结构化响应,
+   保持 Runtime 存活。
+2. 时钟锚定:**仅当任务说明明确给出总时限**时,`date +%s` 计算
+   deadline(当前 + 时限 - 15min 安全余量)写入 `$WS/deadline`。
+   未给时限时禁止自设 deadline。
+3. 写平台适配层:
+   ```sh
+   printf '%s\n' '#!/bin/sh' 'exec pentest-tsecbench-client "$@"' > "$WS/platform.sh"
+   chmod +x "$WS/platform.sh"
+   ```
+4. `pentest-tsecbench-client list > "$WS/challenges.json"`。
+5. 初始化薄调度器(本 Skill 投影在 `$WS/.agents/skills/ctf-orchestrator/`):
+   ```sh
+   cp -r "$WS/.agents/skills/ctf-orchestrator/scripts" "$WS/scripts"
+   python3 "$WS/scripts/dispatch.py" init --ws "$WS" --challenges "$WS/challenges.json"
+   ```
+6. 常驻 dispatcher(文件事件驱动,负责收割/看门狗/平台对账/配额补位/收尾停派):
+   ```sh
+   tmux new-session -d -s dispatcher \
+     "python3 '$WS/scripts/dispatch.py' loop --ws '$WS' --interval 20"
+   ```
+7. 从此你的每轮工作只剩 Decide 主循环的两条。
 
-## Decide 主循环（通知驱动，禁止阻塞）
+## Decide 主循环(每 60–90 秒一轮,单次 bash 完成感知)
 
-每个 agent 完成通知到达时，按序执行，全程 ≤2 分钟内完成轮转：
+```bash
+cd "$WS"
+cat graph/outbox/READY.tsv 2>/dev/null      # 有 → 逐条派发
+cat graph/escalations/QUEUE.md 2>/dev/null  # 有 → 逐条决策
+test -f graph/outbox/ENDGAME && echo ENDGAME
+date +%s > graph/leader.lock
+```
 
-1. **读产出**：只读该 agent 的 fact 文件（`graph/facts/NNN-*.md`），不读闲聊报告。
-2. **对账**：核对该题进度（平台 flag 计数或 agent 报告），更新 `graph/steps.yaml`
-   （step→done，挂 to: fact_NNN）。
-   **平台周期对账**：每收 5 个完成通知或每 30-60 分钟（无通知也执行），
-   `pentest-tsecbench-client list` 核对各题 `correct_flag_count` 与本地记录——完成通知可能丢失/迟到，
-   平台计数是兜底事实源；发现平台有而本地无的得分，立即回查该题 fact 补记。
-3. **派生**：按 fact 内容决定下一步——
-   - 新凭证/新端点/新攻击面 → 派生后续 step（高优先）
-   - fact 是“未达成”且该面首试 → **换角度**再派一个（换协议/换参数/换路径类型，不是原样重派）
-   - 同一攻击面第 2 个 fact 仍零进展且外部行为恒定 → 标 `blocked`，按「放槽」处理
-   - **坏实例**：指纹在但核心功能不可达，且再开一次后行为恒定 → 放槽，不要 close 未完成题
-   - 多 flag 链题：Clock 已过 `budget_min` 一半仍无新 flag 且无新事实 → 降优先或放槽
-4. **补位**：先 `list` 刷新，再按「start 资格与补位」选下一题，然后从 `graph/steps.yaml`
-   取对应 `open` step 派 Execute。不要用过期 queue.tsv 直接 start。
-5. **看门狗**：核对 `ledger.tsv` 里 `hard_stop < now` 的 agent → 用当前 Runtime 的停止工具 + 资源轮转；
-   **配额不满必须补**，但 **禁止用零进展题凑满**。
-   核对 Clock：无新 flag 且无新事实的 pass 按「放槽」处理。
+1. **派发**:对 READY.tsv 每行(did、code、prompt 路径):read 该 prompt 文件 →
+   Agent(execute, 后台,prompt=文件逐字全文) →
+   `python3 scripts/dispatch.py mark <did> dispatched --ws "$WS"`。
+   漏 mark:dispatcher 的开工标记检查(150 秒)会把该段记 infra_dead 并重派。
+2. **升级决策**:对 QUEUE.md 每个 open 条目,读该题 `graph/attempts/<code>/*.md`
+   与 `python3 scripts/dispatch.py` 输出的 ledger 摘要,判断 continue / abandon:
+   `python3 scripts/dispatch.py decide <eid> --decision continue|abandon --ws "$WS"`。
+   判断依据:平台 Pass Clock 剩余(`elapsed_min`/`budget_min`/`over_budget`/`attempt_n`)、
+   该题已得 flag、foothold 是否存活、追投预期分值。
+3. 两者皆空且无 ENDGAME → `sleep 60`。**单次 sleep 禁止超过 120 秒**,
+   禁止在轮间隙做任何攻击性操作或通读 fact/退场报告全文。
+4. `graph/outbox/ENDGAME` 出现 → 终盘清点(ledger 统计)写入 `$WS/state.md`
+   并报告,同时停掉 dispatcher tmux 会话。
 
-### 派发确认（spawn ack，每次派发后必做）
+## 你与调度器的分工
 
-spawn 消息可能不会送达子线程（子线程空白唤醒、什么都不做）。因此每次派发后必须验证：
+| 事项 | 归属 |
+| --- | --- |
+| 选题、配额补位、重试上限、开工标记/超时看门狗、平台周期对账、收尾前 5 分钟停派 | dispatcher 脚本 |
+| 派发动作本身(Agent 工具调用、mark dispatched) | 你 |
+| `uncertain` 升级(追投或收割、连环 infra 死亡、平台异常、hint 请求) | 你 |
+| 攻击目标、写退场报告、提交 flag | Execute agent |
 
-1. 每个 Execute agent 开工 **90 秒**内必须写出 **fact 骨架**（`graph/facts/NNN-*.md`，
-   front-matter + title 占位即可）。这条同时写进 execute-prompt 模板的收束纪律第 1 条。
-2. spawn 后 90 秒检查对应 fact 文件：骨架已出现 → 投递成功，继续。
-3. 骨架缺失 → 判定**投递失败**：先核对旧 agent 状态，必要时用当前 Runtime 的停止工具，
-   然后立即用同一 step 重派一个新 agent（换新 fact 编号），计入“同一 step 重派上限 3 次”。
-   连续投递失败是环境信号，按错误处理降级，不要恋战。
+调度规则(dispatcher 内建):难度预算 easy 15 / medium 25 / hard 35 / 多 flag 链题 60
+分钟;同题重启上限 3 次;infra 死亡(无开工标记/无退场报告)不占重试上限,
+连环 ≥4 次升级给你;每 5 个完成通知或每 30 分钟做一次平台 `list` 对账。
+结束判据:平台 invalid_state 或 deadline(收尾保护:deadline 前 5 分钟停止新派发)。
 
-### 回合纪律（硬性）
+**start 资格与补位**(dispatcher 每次 start 前先 `list`,queue 与 ledger 都可能过期):
 
-只要 `ledger.tsv` 里存在未收束的 agent，**禁止结束当前回合**（主控空闲退出 = 看门狗失效）。
-**等待上界** = min(该 step 预算, Challenge Pass Clock 剩余)。**禁止一次等待全部**子线程。
-一次只等待即将到期或刚有通知的子集。到期：收割 fact，必要时停止该 agent，再决定补派或放槽。
-没有通知也按等待上界轮转（结合平台周期对账）。等待不是栅栏。
-
-派发时把 code、agent_id、budget_min、hard_stop 追加进 `$WS/ledger.tsv`（TSV）。这是唯一 agent 生命周期
-时间事实源。Challenge pass 时间只读 Client list 的 Challenge Pass Clock 投影。**只记实际派发的 agent**——
-禁止占位行/预登记（污染看门狗与对账）。
-
-## 调度策略
-
-- **槽是稀缺资源**：优化每个并发槽是否产出新 flag 或新事实。槽满但分数不涨，就是调度失败。
-- **前段是胜负手**：把高命中率、快周转的题前置，开局即满配并发（容器配额 × 每容器 2-3 个互斥攻击面 agent）。
-  首批 start 覆盖不同 unique_code 前缀。
-- **命中率反馈回路**：queue.tsv 是活队列——每关一题记录该家族战绩，
-  补位时优先取**本场已出分且命中率高**的家族；低命中且未出分的家族沉底，且最多占一个槽。
-- **并行度**：平台限的是资源数（容器/靶机），不限 agent 数。同一资源内派互不重叠攻击面
-  （web 面 / 凭据爆破 tmux 化 / 内网横向），prompt 里写明互斥范围。
-- **step 粒度**：一个攻击面的预算取 Challenge Pass Clock 的 `budget_min` 的一小段。
-  宁可多派小 step，不派整题大 step。
-- **长任务 tmux 化**：爆破/隧道/监听一律 `tmux new-session -d -s stepXXX-主题`，
-  agent 启动确认存活、登记 `graph/tmux-registry.md` 后立即收束；
-  之后派短预算“收割 agent” `tmux capture-pane` 取结果。长任务时间不占 agent 预算。
-- **链题**（多阶段/多 flag）：中段插入；维护 goals.yaml 子目标链（立足→凭据→横向→目标）。
-  list 显示仍 **还剩 flag** 时，续做优先于重开零分题。
-- **提示/求助**：Clock 过半且 0 进展才用；**只针对正在占槽的那一题** 的当前 pass。
-  禁止一次对多题 hint。用完必派带全部情报的补刀 agent。只由 Decide 请求。
-
-`list` 返回 `over_budget: true` 且本 pass 无新 flag 时，Decide 放槽。Execute 不做该决策。
-
-## 放槽（配额操作，不是收官）
-
-**放槽不是收官。** 放槽只释放一个并发槽，Hosted Evaluation Run 继续。
-
-- **未完成的题禁止 close。** 放槽只用 `pentest-tsecbench-client abandon "$code" "$reason"`，
-  然后单独 `start` 下一题（不要把 abandon 和 start 串在同一命令里）。2 分钟内补位。
-- **close 只用于**平台 `list` 已证明 complete 的题。
-- 是否放槽只读 Challenge Pass Clock（`elapsed_min`、`budget_min`、`over_budget`、
-  `correct_flag_count`、`attempt_n`）和 fact 是否含新资产/新凭证/新端点。
-  不要用自估分钟数，不要写死题号。
-- `over_budget == true` 且本 pass 无新 flag → 放槽。
-- 本 pass `elapsed_min` 已过 `budget_min` 一半，且 fact 只有重复观察 → 放槽。
-- 同一 step 重派到达上限 → 封存该 step，必要时放整题。
-
-## start 资格与补位
-
-每次 `start` 之前必须先 `pentest-tsecbench-client list`。queue.tsv 和 FGS 会过期；平台 list 才是
-能否开题的依据。
-
-- `correct_flag_count == total_flag_count` → **禁止再 start** 该题。
-- 本场已有一次 **零进展 pass**（无新 flag 且无新事实）的 `unique_code` **不得立刻再占槽**，
-  沉底到 queue 末尾。只有「从未开过」和「还剩 flag」都空了，才允许第二次。
-- 补位顺序（高 → 低）：
-  1. **从未开过**
-  2. 未完成且 **还剩 flag**
-  3. 零进展题（仅当 1 和 2 都空）
-- **配额不满必须补。** 有 1 或 2 就立刻 start。1 和 2 都空时，空槽也 **禁止用零进展题凑满**——
+- `correct_flag_count == total_flag_count` 的题**禁止再 start**。
+- 本场已有一次**零进展 pass**(无新 flag 且无新事实)的 `unique_code`
+  **不得立刻再占槽**,沉底到队列末尾。
+- 补位顺序(高 → 低):**从未开过** > 未完成且**还剩 flag** > 零进展题
+  (仅当前两者皆空)。**配额不满必须补**,但**禁止用零进展题凑满**——
   空着优于把同一失败 pass 再填进配额。
+- 家族 = unique_code 前缀(第一个 `-` 之前);dispatcher 的家族经验注入、
+  blocked 复活判定都按它分组。
 
-## 预算纪律（到点强制止损，无例外）
+## 放槽(配额操作,不是收官)
 
-每个 challenge pass 的默认预算来自 Challenge Pass Clock 的 `budget_min`；不要在 FGS 重复一份。
-止损 = 停止该槽上的 agent + Decide 放槽 + 2 分钟内补位。
-唯一续命例外：Clock 仍显示未过预算，且本 pass 已有新 flag 或新事实。
-绝不停机——任务结束的唯一判据：**平台返回结束态（如 invalid_state）或用户给定且到点的 deadline**。
-自估的时间窗口不构成收官理由；额度型任务常在任一时刻提前结束，随时保持可终盘状态。
+**放槽不是收官。**放槽只释放一个并发槽,Hosted Evaluation Run 继续。
+**槽是稀缺资源**:每个并发槽要么产出新 flag 要么产出新事实,槽满但分数不涨
+就是调度失败。
+
+- **未完成的题禁止 close。close 只用于**平台 `list` 已证明 complete 的题;
+  放槽一律 `abandon "$code" "$reason"`(dispatcher 的 release 已内建该规则),
+  abandon 与下一次 start 不串在同一命令里,2 分钟内补位。
+
+## 回合纪律(硬性)
+
+派发后立即回主循环;**禁止一次等待全部**子线程——收割由 dispatcher 的
+看门狗负责,单段 Execute 的**等待上界** = 其预算到点加看门狗宽限,
+你只按 60–90 秒轮转感知 outbox 与升级队列。单次 sleep ≤120 秒。
+`graph/outbox/ENDGAME` 出现前不得宣告结束;平台 invalid_state 才是结束信号。
 
 ## 图协议红线
 
-- facts **只追加不重写**（字节稳定利于前缀缓存），编号单调递增。
-- fact content 只写增量客观事实；**禁止“此路不通/已穷尽/勿再试”类否定或绝对结论**——
-  没结果就如实写“已试X、观察到Y、未达成Z”。误判死路 = 白送分。
-- 大段输出落 `graph/data/stepXXX-*.{txt,json}`，fact 里只引用文件名。
-- FGS 记录调度决策和证据；平台状态与 Challenge Pass Clock 投影由 Client 刷新，不成为 FGS 真相。
-- 自估时间不构成收官理由。放槽由 Clock 与事实增量决定。
+- Execute 的知识沉淀单位是**退场报告** `graph/attempts/<code>/<k>.md`
+  (必填字段与校验规则见 graph-protocol.md;prompt 尾部的**退场协议**原文由
+  dispatch.py 模板生成;校验失败按 infra_dead 记账,结论不采信、不占重试上限)。
+- `graph/facts/` 仍可追加(只追加、编号单调、禁绝对化结论),dispatcher 会把它
+  并入家族经验注入;但调度不再依赖你读图。
+- 大段输出落 `graph/data/`,退场报告只引用文件名。
+- 平台状态与 Challenge Pass Clock 投影由 Client 刷新,不成为 FGS 真相。
 
 ## 错误处理
 
+- dispatcher 死亡(tmux 会话消失):重拉第 6 步命令;ledger 是唯一事实源,重启无损。
 - A command failure affects only that command. Do not exit the Runtime.
-- Do not automatically retry a mutation. First refresh with `pentest-tsecbench-client list`, then decide whether to retry or move to another challenge.
-- 平台 409/invalid_state：区分任务结束 / 配额满（先释放再申请）/ 已完成。
-- 503/资源不可用：先 list 对账，再由 Decide 决定是否稍后重试或换题。404/重复：对账后跳过。
-- **agent infra 死亡**（网络错误/无产出中断）：不算攻击面零进展（不占 blocked 预算），
-  原样重派并等待 60-120s 错开疑似杀窗；**同一 step 重派上限 3 次**，超过即封存该题并由 Decide
-  释放或放弃资源——连环 infra 死亡是环境信号，恋战只会烧容器时间。
-
-## 收官
-
-仅在 `pentest-tsecbench-client list` 报告全部 challenge complete，或平台 `invalid_state` 确认评测结束时收官。
-单次客户端失败、困难题或主观“无进展”不是结束信号。
+  Do not automatically retry a mutation. First refresh with `pentest-tsecbench-client list`,
+  then decide whether to retry or move to another challenge.
+- 平台 409/invalid_state 区分任务结束/配额满;503 先 list 对账;404/重复跳过。
+- 连环 infra 死亡到达上限会以升级问题到达你这里;封存该题或换资源由你决定。
 
 ## 文件清单
 
-- `references/graph-protocol.md` — facts/steps/goals/ledger/tmux-registry schema（开局必读）
-- `references/execute-prompt.md` — Execute agent 派发模板（派发前必读）
+- `references/graph-protocol.md` — ledger/attempts/outbox/escalations 与退场报告 schema(开局必读)
+- `references/execute-prompt.md` — 派发模板说明(模板本体由 dispatch.py 持有,派发前读)
+- `scripts/dispatch.py` — 薄调度器(init/assemble/validate/mark/harvest/loop/decide/selftest)
+- `scripts/platform-api.sh` — 通用平台适配层示例(Hosted 用第 3 步的内联适配层)
