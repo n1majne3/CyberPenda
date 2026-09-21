@@ -1,8 +1,11 @@
 # Execute Agent 派发模板(模板本体由 scripts/dispatch.py 持有)
 
-派发必须**后台异步**。**仅 Codex:** V1 `spawn_agent`,`fork_context: false`。
+派发必须**后台异步**,禁止同步等到子线程结束。**仅 Codex:** V1 `spawn_agent`,
+`fork_context: false`。
 **仅 Pi 与 Claude Code:** `Agent` 派发用 `subagent_type: "execute"`
 (CyberPenda 已投影同一 Execute 类型,身份与收束纪律已内置)。
+**派发 prompt 省略「收束纪律」整段,只保留模板生成的变量段**——
+Execute 类型自带收束纪律,转发 outbox prompt 时不要再附加纪律文本。
 
 ## 薄调度模式的派发流程
 

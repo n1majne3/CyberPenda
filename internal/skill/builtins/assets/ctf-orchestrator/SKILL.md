@@ -15,11 +15,12 @@ prompt 由 `scripts/dispatch.py` 组装;你**禁止手写派发 prompt**,
 
 ## Runtime 派发
 
-派发 Execute **必须后台异步**:发出后立即返回。
-**仅 Codex:** V1 `spawn_agent`,`fork_context: false`。
+派发 Execute **必须后台异步**:Decide 发出后立即返回,**禁止同步等**到子线程结束。
+**仅 Codex:** V1 `spawn_agent`,且 `fork_context: false`。
 **仅 Pi 与 Claude Code:** `Agent` 工具,`subagent_type: "execute"`,后台运行。
 派发正文 = outbox 里 prompt 文件的**逐字全文**(用 read 工具读出后原样传入,
-不改写、不增删)。
+不改写、不增删)。**派发 prompt 省略「收束纪律」整段**——Execute 类型已内置
+身份与收束纪律,转发时不要再附加任何纪律文本。
 
 环境参数从任务说明读取(若无则问用户):工作目录 `$WS`(默认 `/workdir/run`)、
 总时限、并发容器配额(默认 3)、平台 API(有则封装,见 scripts/platform-api.sh)。
