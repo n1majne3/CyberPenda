@@ -1,6 +1,6 @@
 ---
 name: tsecbench-fetch
-description: 通过 TSecBench 平台只读 API 拉取跑分(run)与会话(session)数据:agent 详情、积分时间线、LLM 会话清单与逐事件明细、榜单。凡用户给出 tsecbench.zc.tencent.com/agent/<id> 链接、提到"跑分记录/会话记录/拉数据/复盘/对比跑分"、或要分析某次 Hosted 跑分的 token 消耗、调用节奏、瓶颈时,使用本 skill。
+description: 通过 TSecBench 平台 API 拉取跑分数据、上传 Hosted 镜像、发车与收尾:agent 详情、积分时间线、LLM 会话明细、榜单、COS 直传、创建/结束跑分、实时监控。凡用户给出 tsecbench.zc.tencent.com 链接、提到"跑分记录/会话记录/拉数据/复盘/对比跑分/上传镜像/发车/开始跑分/结束评测"、或要分析某次跑分的 token 消耗、调用节奏、瓶颈时,使用本 skill。
 ---
 
 # TSecBench 跑分数据拉取
@@ -71,3 +71,10 @@ Git Bash 的 `/tmp` 与原生 Python 不互通。重定向目标一律用工作�
 若任务是分析(节奏、吞吐、瓶颈归因),先读
 [references/analysis.md](references/analysis.md)——里面有已验证的口径:
 响应级时间戳、斜率测试、思考占比、并发直方图。不要重新发明这些算法。
+
+## 上传 / 发车 / 收尾 / 实时监控
+
+做平台操作(上传 Hosted 镜像、创建或结束跑分、监控进行中的 run)时,先读
+[references/operations.md](references/operations.md)——含 COS 直传签名、
+create API 的 set_id 字符串坑、浏览器限制与高峰期经验。上传与发车
+**不要走 UI 文件对话框**(扩展模式禁止),按文档走 API。
