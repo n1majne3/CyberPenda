@@ -137,7 +137,7 @@ func TestTSecBenchSkillGuardsSpawnDeliveryAndSingleOrchestrator(t *testing.T) {
 		// Spawn acknowledgement: the dispatcher verifies each dispatched
 		// segment created its started marker within the ack window and
 		// re-dispatches on a missed delivery.
-		"90 秒", "开工标记", "投递失败",
+		"150 秒", "开工标记", "投递失败",
 		// Turn discipline: the Decide loop keeps rotating until the dispatcher
 		// raises ENDGAME or the platform reports the terminal state.
 		"不得宣告结束",

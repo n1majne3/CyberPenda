@@ -95,15 +95,22 @@ hint 仅由 Decide 在处理升级问题时决定是否请求(`pentest-tsecbench
    ```
 7. 从此你的每轮工作只剩 Decide 主循环的两条。
 
-## Decide 主循环(每 60–90 秒一轮,单次 bash 完成感知)
+## Decide 主循环(事件驱动,阻塞式等待,不烧上下文)
 
 ```bash
 cd "$WS"
+timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'
+tmux has-session -t dispatcher 2>/dev/null || tmux new-session -d -s dispatcher "python3 '$WS/scripts/dispatch.py' loop --ws '$WS' --interval 20"
 cat graph/outbox/READY.tsv 2>/dev/null      # 有 → 逐条派发
 cat graph/escalations/QUEUE.md 2>/dev/null  # 有 → 逐条决策
 test -f graph/outbox/ENDGAME && echo ENDGAME
 date +%s > graph/leader.lock
 ```
+
+唯一等待原语是上面的阻塞式 bash——有活立即返回,没活挂住;一条工具调用挂 4 分钟,
+远便宜于定时醒来重读全部历史(21119 实测轮询式烧掉 4 亿 token)。
+超时返回(4 分钟无事件)即兜底巡检:确认 dispatcher 存活、写心跳,再回到阻塞等待。
+子代理完成通知会主动唤醒你——醒来先处理通知,再查 READY 与升级队列。
 
 1. **派发**:对 READY.tsv 每行(did、code、prompt 路径):read 该 prompt 文件 →
    Agent(execute, 后台,prompt=文件逐字全文) →
@@ -114,8 +121,9 @@ date +%s > graph/leader.lock
    `python3 scripts/dispatch.py decide <eid> --decision continue|abandon --ws "$WS"`。
    判断依据:平台 Pass Clock 剩余(`elapsed_min`/`budget_min`/`over_budget`/`attempt_n`)、
    该题已得 flag、foothold 是否存活、追投预期分值。
-3. 两者皆空且无 ENDGAME → `sleep 60`。**单次 sleep 禁止超过 120 秒**,
-   禁止在轮间隙做任何攻击性操作或通读 fact/退场报告全文。
+3. 两者皆空且无 ENDGAME → 回到阻塞等待(重跑上面的 timeout bash)。
+   **禁止无事件的定时 sleep 轮询**,禁止在等待间隙做任何攻击性操作或
+   通读 fact/退场报告全文。
 4. `graph/outbox/ENDGAME` 出现 → 终盘清点(ledger 统计)写入 `$WS/state.md`
    并报告,同时停掉 dispatcher tmux 会话。
 
@@ -156,9 +164,9 @@ date +%s > graph/leader.lock
 
 ## 回合纪律(硬性)
 
-派发后立即回主循环;**禁止一次等待全部**子线程——收割由 dispatcher 的
-看门狗负责,单段 Execute 的**等待上界** = 其预算到点加看门狗宽限,
-你只按 60–90 秒轮转感知 outbox 与升级队列。单次 sleep ≤120 秒。
+派发后立即回阻塞等待;**禁止一次等待全部**子线程——收割由 dispatcher 的
+看门狗负责,单段 Execute 的**等待上界** = 其预算到点加看门狗宽限。
+你只被事件(READY/升级/完成通知/超时巡检)唤醒,不做定时轮询。
 `graph/outbox/ENDGAME` 出现前不得宣告结束;平台 invalid_state 才是结束信号。
 
 ## 图协议红线

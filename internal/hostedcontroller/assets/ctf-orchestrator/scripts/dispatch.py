@@ -313,6 +313,7 @@ def assemble(ws, led, code, reason="manual"):
     led["seq"] += 1
     did = "d%03d" % led["seq"]
     k, attempts_rel, prompt = build_prompt(ws, led, code)
+    (ws.attempts / code).mkdir(parents=True, exist_ok=True)
     rec["attempt"] = k
     rec["state"] = "running"
     rec["milestone"] = None
@@ -361,16 +362,30 @@ def in_endgame(ws):
     return dl is not None and now() > dl - ENDGAME_MARGIN_SEC
 
 
+DIFFICULTY_RANK = {"easy": 0, "medium": 1, "hard": 2}
+
+
 def pick_next(led):
-    """规则:新题 > 部分+foothold > 家族有新经验的 blocked;其余沉底。"""
+    """规则:新题 > 部分+foothold > 家族有新经验的 blocked;其余沉底。
+
+    新题内部排序(命中率反馈回路,来自 21119 的教训——纯分值降序会让
+    三棒全是多阶段硬题):已出分家族优先 > 未开家族;家族内先易后难,
+    再按分值。"""
+    fam_solved = {}
+    for code, rec in led["challenges"].items():
+        f = family_of(code)
+        fam_solved[f] = fam_solved.get(f, 0) + (1 if rec.get("flags_correct") else 0)
+
     def rank(code, rec):
         if rec["state"] == "pending":
-            return (0, -rec["score"])
+            proven = 0 if fam_solved.get(family_of(code), 0) else 1
+            diff = DIFFICULTY_RANK.get(rec.get("difficulty"), 1)
+            return (0, proven, diff, -rec["score"])
         if rec["state"] == "partial" and rec.get("foothold"):
-            return (1, -rec["score"])
+            return (1, 0, 0, -rec["score"])
         if rec["state"] == "blocked" and rec.get("family_grew"):
-            return (2, -rec["score"])
-        return (3, -rec["score"])
+            return (2, 0, 0, -rec["score"])
+        return (3, 0, 0, -rec["score"])
 
     candidates = []
     for code, rec in led["challenges"].items():
@@ -648,6 +663,7 @@ def selftest():
         led = ws.ledger()
         did = assemble(ws, led, "a-01", reason="selftest")
         ws.save_ledger(led)
+        assert ws.attempt_path("a-01", 1).parent.is_dir()  # assemble 预建了 attempts/<code>/
         prompt = (ws.outbox / ("%s-a-01.prompt.md" % did)).read_text(encoding="utf-8")
         assert "题目编号:a-01" in prompt and "退场协议" in prompt
         assert "graph/attempts/a-01/1.md" in prompt

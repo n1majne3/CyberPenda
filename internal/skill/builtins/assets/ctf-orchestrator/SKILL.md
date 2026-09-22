@@ -59,8 +59,10 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
    `graph/attempts/<code>/*.md` 与 ledger 摘要,做出 continue / abandon 判断:
    `python3 scripts/dispatch.py decide <eid> --decision continue|abandon --ws $WS`。
    判断依据:剩余时限、该题已得 flag、foothold 是否存活、追投预期分值。
-3. 两者皆空且无 ENDGAME → `sleep 60` 再来。**禁止 sleep 超过 120 秒**,
-   禁止在轮间隙做任何攻击性操作或读 fact 全文。
+3. 两者皆空且无 ENDGAME → 回到阻塞等待:
+   `timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'`
+   (超时返回即兜底巡检:确认 dispatcher 存活。)禁止无事件的定时 sleep 轮询,
+   禁止在等待间隙做任何攻击性操作或读 fact 全文。
 4. `graph/outbox/ENDGAME` 出现 → 停止派发,做终盘清点:
    `python3 -c "import json;l=json.load(open('$WS/graph/ledger.json'))['challenges'];print(sum(1 for r in l.values() if r['state']=='solved'),'solved /',len(l))"`,
    写 `$WS/state.md` 并向用户报告。
