@@ -62,6 +62,9 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
 3. 两者皆空且无 ENDGAME → 回到阻塞等待:
    `timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'`
    (超时返回即兜底巡检:确认 dispatcher 存活。)禁止无事件的定时 sleep 轮询,
+**事件 + 心跳双驱动**:`graph/leader.lock` 就是你的心跳,每次因任何原因醒来
+(事件/回调/超时臂)都重写它;dispatcher 发现心跳陈旧超 10 分钟会记 CRITICAL
+日志。不要为心跳单独加周期性唤醒——阻塞等待的超时臂已天然兜底。
    禁止在等待间隙做任何攻击性操作或读 fact 全文。
 4. `graph/outbox/ENDGAME` 出现 → 停止派发,做终盘清点:
    `python3 -c "import json;l=json.load(open('$WS/graph/ledger.json'))['challenges'];print(sum(1 for r in l.values() if r['state']=='solved'),'solved /',len(l))"`,

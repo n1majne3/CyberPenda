@@ -111,6 +111,9 @@ date +%s > graph/leader.lock
 远便宜于定时醒来重读全部历史(21119 实测轮询式烧掉 4 亿 token)。
 超时返回(4 分钟无事件)即兜底巡检:确认 dispatcher 存活、写心跳,再回到阻塞等待。
 子代理完成通知会主动唤醒你——醒来先处理通知,再查 READY 与升级队列。
+**事件 + 心跳双驱动**:`graph/leader.lock` 就是你的心跳,每次因任何原因醒来
+(事件/回调/超时臂)都重写它;dispatcher 发现心跳陈旧超 10 分钟会记 CRITICAL
+日志。不要为心跳单独加周期性唤醒——阻塞等待的 240 秒超时臂已天然兜底。
 
 1. **派发**:对 READY.tsv 每行(did、code、prompt 路径):read 该 prompt 文件 →
    Agent(execute, 后台,prompt=文件逐字全文) →

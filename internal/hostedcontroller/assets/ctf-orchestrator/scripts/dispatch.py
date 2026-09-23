@@ -34,6 +34,7 @@ INFRA_DEATH_CAP = 4
 ENDGAME_MARGIN_SEC = 300
 WATCHDOG_GRACE_SEC = 180
 SPAWN_ACK_SEC = 150
+HEARTBEAT_STALE_SEC = 600
 INJECT_CAP_CHARS = 8000
 EXCLUDED_CAP_CHARS = 2400
 
@@ -559,12 +560,35 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
     return actions
 
 
+def check_heartbeat(ws, state):
+    """事件驱动为主(子代理回调/READY),leader.lock 心跳只做兜底:
+    Decide 每次因任何原因醒来都会重写它。陈旧超过阈值说明 pi 运行时
+    挂死或失去调度能力——dispatcher 无法重启它,但必须把事故记录到
+    CRITICAL 日志(21416 的 2.5 小时静默就死在无人观察上)。"""
+    try:
+        beat = int((ws.root / "graph" / "leader.lock").read_text().strip())
+    except (OSError, ValueError):
+        return
+    stale = now() - beat
+    if stale > HEARTBEAT_STALE_SEC and not state.get("stale_logged"):
+        line = "%d CRITICAL decide-heartbeat stale %ds (pi runtime hung or silent); ledger/dispatcher still live" % (now(), stale)
+        (ws.escalations / "CRITICAL.log").parent.mkdir(parents=True, exist_ok=True)
+        with (ws.escalations / "CRITICAL.log").open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+        print(line)
+        state["stale_logged"] = True
+    elif stale <= HEARTBEAT_STALE_SEC:
+        state["stale_logged"] = False
+
+
 def cmd_loop(args):
     ws = WS(args.ws)
     print("loop: interval=%ds quota=%d ws=%s" % (args.interval, args.quota, ws.root))
+    hb_state = {}
     while True:
         try:
             harvest(ws, quota=args.quota)
+            check_heartbeat(ws, hb_state)
         except Exception as exc:  # noqa: BLE001 - 调度循环不允许退出
             print("loop error: %s" % exc)
         time.sleep(args.interval)
