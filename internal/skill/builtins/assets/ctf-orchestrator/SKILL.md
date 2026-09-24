@@ -18,8 +18,7 @@ prompt 由 `scripts/dispatch.py` 组装;你**禁止手写派发 prompt**,
 派发 Execute **必须后台异步**:Decide 发出后立即返回,**禁止同步等**到子线程结束。
 **仅 Codex:** V1 `spawn_agent`,且 `fork_context: false`。
 **仅 Pi 与 Claude Code:** `Agent` 工具,`subagent_type: "execute"`,后台运行。
-派发正文 = outbox 里 prompt 文件的**逐字全文**(用 read 工具读出后原样传入,
-不改写、不增删)。**派发 prompt 省略「收束纪律」整段**——Execute 类型已内置
+派发正文 = **文件引用**:Agent 参数只带 outbox prompt 的路径与读取指引(规范见主循环),禁止全文回显。**派发 prompt 省略「收束纪律」整段**——Execute 类型已内置
 身份与收束纪律,转发时不要再附加任何纪律文本。
 
 环境参数从任务说明读取(若无则问用户):工作目录 `$WS`(默认 `/workdir/run`)、
@@ -53,8 +52,10 @@ cat graph/escalations/QUEUE.md 2>/dev/null  # 有 → 逐条决策
 test -f graph/outbox/ENDGAME && echo ENDGAME
 ```
 
-1. **派发**:对 READY.tsv 每行(did、code、prompt 路径):read 该 prompt 文件 →
-   Agent(execute, 后台) → `python3 scripts/dispatch.py mark <did> dispatched --ws $WS`。
+1. **派发**:对 READY.tsv 每行(did、code、prompt 路径),以**文件引用**派发——
+   Agent(execute, 后台),prompt 只需一句指引:"本次派发的完整指令在文件 {prompt 路径}。
+   第一步用 read 读取该文件,之后逐字遵守其全部内容(文件即全部指令)"。
+   **禁止把 prompt 全文粘进 Agent 参数** → `python3 scripts/dispatch.py mark <did> dispatched --ws $WS`。
 2. **升级决策**:对 QUEUE.md 每个 open 条目,读该题的
    `graph/attempts/<code>/*.md` 与 ledger 摘要,做出 continue / abandon 判断:
    `python3 scripts/dispatch.py decide <eid> --decision continue|abandon --ws $WS`。

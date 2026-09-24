@@ -115,8 +115,10 @@ date +%s > graph/leader.lock
 (事件/回调/超时臂)都重写它;dispatcher 发现心跳陈旧超 10 分钟会记 CRITICAL
 日志。不要为心跳单独加周期性唤醒——阻塞等待的 240 秒超时臂已天然兜底。
 
-1. **派发**:对 READY.tsv 每行(did、code、prompt 路径):read 该 prompt 文件 →
-   Agent(execute, 后台,prompt=文件逐字全文) →
+1. **派发**:对 READY.tsv 每行(did、code、prompt 路径),以**文件引用**派发——
+   Agent(execute, 后台),prompt 只需一句指引:"本次派发的完整指令在文件 {prompt 路径}。
+   第一步用 read 读取该文件,之后逐字遵守其全部内容(文件即全部指令)"。
+   **禁止把 prompt 全文粘进 Agent 参数**(21917 实测全文回显是上下文主因) →
    `python3 scripts/dispatch.py mark <did> dispatched --ws "$WS"`。
    漏 mark:dispatcher 的开工标记检查(150 秒)会把该段记 infra_dead 并重派。
 2. **升级决策**:对 QUEUE.md 每个 open 条目,读该题 `graph/attempts/<code>/*.md`

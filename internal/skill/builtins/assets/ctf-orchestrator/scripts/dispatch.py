@@ -31,6 +31,7 @@ DIFFICULTY_BUDGET_MIN = {"easy": 15, "medium": 25, "hard": 35, "chain": 60}
 DEFAULT_QUOTA = 3
 RESTART_CAP = 3
 INFRA_DEATH_CAP = 4
+SESSION_CHURN_SOFT_CAP = 4
 ENDGAME_MARGIN_SEC = 300
 WATCHDOG_GRACE_SEC = 180
 SPAWN_ACK_SEC = 150
@@ -239,17 +240,12 @@ def collect_family_knowledge(ws, code):
                 if all(rel != piece[1] for piece in pieces):
                     pieces.append((fc, rel, p.read_text(encoding="utf-8")))
     out = []
-    used = 0
     for src, rel, body in pieces:
-        trimmed = body.strip()
-        if used + len(trimmed) > INJECT_CAP_CHARS and out:
-            out.append("(%s 经验过长,读 %s 获取全文)" % (src, rel))
-            continue
-        out.append("【%s 已解经验 | 全文 %s】\n%s" % (src, rel, trimmed[:INJECT_CAP_CHARS]))
-        used += len(trimmed)
+        first = " ".join(body.strip().split())[:160]
+        out.append("【%s 已解经验】%s …(细节读 %s)" % (src, first, rel))
     if not out:
         return "(该家族尚无已解经验。)"
-    return "\n\n".join(out)
+    return "\n".join(out)
 
 
 def collect_excluded(ws, code):
@@ -311,6 +307,12 @@ def assemble(ws, led, code, reason="manual"):
     rec = led["challenges"].get(code)
     if not rec:
         die("ledger 里没有 %s" % code)
+    if rec["attempt"] >= SESSION_CHURN_SOFT_CAP and reason == "fill":
+        rec["state"] = "blocked"
+        escalate(ws, code, "会话数已达软顶 %d 次仍 %s;追投还是放弃?"
+                 % (SESSION_CHURN_SOFT_CAP, rec["state"]))
+        print("CHURN-CAP %s blocked, escalated" % code)
+        return None
     led["seq"] += 1
     did = "d%03d" % led["seq"]
     k, attempts_rel, prompt = build_prompt(ws, led, code)
@@ -545,8 +547,10 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
                 if led["challenges"][code]["infra_deaths"] >= INFRA_DEATH_CAP:
                     led["challenges"][code]["state"] = "exhausted"
                 break
-            assemble(ws, led, code, reason="fill")
-            running += 1
+            if assemble(ws, led, code, reason="fill") is not None:
+                running += 1
+            else:
+                break
     else:
         for did, d in led["dispatches"].items():
             if d["state"] == "ready":
@@ -611,6 +615,13 @@ def cmd_mark(args):
         rec["state"] = "pending" if not rec["flags_correct"] else "partial"
     ws.save_ledger(led)
     print("mark %s %s" % (args.id, args.state))
+
+
+FILE_REF_WRAPPER = """本次派发的完整指令在文件 {prompt_path}。
+第一步:用 read 工具读取该文件,之后逐字遵守其全部内容(授权边界、
+本段目标、工作方式、退场协议)。除读取该文件外,不要向父会话询问任何
+补充上下文;文件内容即全部指令。
+"""
 
 
 def ready_lines(ws):
