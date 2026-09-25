@@ -386,8 +386,12 @@ def pick_next(led):
             return (0, proven, diff, -rec["score"])
         if rec["state"] == "partial" and rec.get("foothold"):
             return (1, 0, 0, -rec["score"])
-        if rec["state"] == "blocked" and rec.get("family_grew"):
-            return (2, 0, 0, -rec["score"])
+        if rec["state"] == "blocked":
+            # easy 的 blocked 重试便宜(c-03 类四代没轮到的教训),优先复活;
+            # 其余 blocked 仅在家族有新解题时复活。
+            easy = 0 if rec.get("difficulty") == "easy" else 1
+            grew = 0 if rec.get("family_grew") else 1
+            return (2, easy, grew, -rec["score"])
         return (3, 0, 0, -rec["score"])
 
     candidates = []
@@ -601,6 +605,21 @@ def cmd_loop(args):
 # ---------------------------------------------------------------- outbox / escalations
 
 
+def cmd_take(args):
+    """原子取件:取出全部 ready 派发并标记 dispatched(省去逐条 mark)。
+    若随后 Agent 派发失败,开工标记看门狗(150 秒)会兜底记 infra_dead。"""
+    ws = WS(args.ws)
+    led = ws.ledger()
+    out = []
+    for did, d in sorted(led["dispatches"].items()):
+        if d["state"] == "ready":
+            d["state"] = "dispatched"
+            out.append("%s	%s	%s" % (did, d["code"], d["prompt"]))
+    ws.save_ledger(led)
+    for line in out:
+        print(line)
+
+
 def cmd_mark(args):
     ws = WS(args.ws)
     led = ws.ledger()
@@ -760,6 +779,9 @@ def main():
     p.add_argument("code")
     p.add_argument("attempt", type=int)
     p.set_defaults(func=cmd_validate)
+    p = sub.add_parser("take")
+    p.add_argument("--ws", required=True)
+    p.set_defaults(func=cmd_take)
     p = sub.add_parser("mark")
     p.add_argument("--ws", required=True)
     p.add_argument("id")

@@ -52,10 +52,11 @@ cat graph/escalations/QUEUE.md 2>/dev/null  # 有 → 逐条决策
 test -f graph/outbox/ENDGAME && echo ENDGAME
 ```
 
-1. **派发**:对 READY.tsv 每行(did、code、prompt 路径),以**文件引用**派发——
+1. **派发**:先 `python3 scripts/dispatch.py take --ws "$WS"`(原子取出全部 ready
+   并标记 dispatched,输出 did/code/prompt 路径),再对每行以**文件引用**派发——
    Agent(execute, 后台),prompt 只需一句指引:"本次派发的完整指令在文件 {prompt 路径}。
    第一步用 read 读取该文件,之后逐字遵守其全部内容(文件即全部指令)"。
-   **禁止把 prompt 全文粘进 Agent 参数** → `python3 scripts/dispatch.py mark <did> dispatched --ws $WS`。
+   **禁止把 prompt 全文粘进 Agent 参数**;take 已完成标记,漏派的由开工标记检查(150 秒)兜底。
 2. **升级决策**:对 QUEUE.md 每个 open 条目,读该题的
    `graph/attempts/<code>/*.md` 与 ledger 摘要,做出 continue / abandon 判断:
    `python3 scripts/dispatch.py decide <eid> --decision continue|abandon --ws $WS`。
