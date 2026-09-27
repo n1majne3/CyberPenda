@@ -128,7 +128,7 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 		if len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
 			target = layout.SkillsRoot
 			if req.Sandbox {
-				target = "/task/skills"
+				target = sandboxTaskSkillsPath
 			}
 		}
 		if err := PrepareSandboxSkills(layout, profile.Provider, target); err != nil {
@@ -1737,6 +1737,20 @@ func copyHostPiAuth(agentDir string) (bool, error) {
 // root without network access, so launches stay offline-safe.
 var piDefaultPackages = []string{"npm:@tintinweb/pi-subagents", "npm:pi-web-access"}
 
+// Provider-resilience defaults projected into pi settings.json. pi reads no
+// *TIMEOUT* env for these; settings.json is the only channel.
+// piHTTPIdleTimeoutMs bounds a hung gateway stream (connection open, no bytes)
+// before pi's undici dispatcher drops it. It must stay strictly positive: pi
+// maps 0 to "never time out" (2147483647 ms). 120s is far above a healthy
+// streaming byte gap yet far below the 53-min stall that froze run 22762.
+// piProviderMaxRetries/maxRetryDelayMs give retryProviderRequest a bounded
+// backoff for the retryable idle-timeout class without storming the gateway.
+const (
+	piHTTPIdleTimeoutMs       = 120000
+	piProviderMaxRetries      = 3
+	piProviderMaxRetryDelayMs = 30000
+)
+
 // projectPiSettings writes the task-local settings.json from projection-owned
 // values only. Host ~/.pi/agent/settings.json is never read: the sandbox
 // projection is independent of host configuration. packages come only from the
@@ -1767,6 +1781,19 @@ func projectPiSettings(agentDir string, profile runtimeprofile.Profile, req Proj
 	settings := map[string]any{"defaultThinkingLevel": string(effort)}
 	if len(packages) > 0 {
 		settings["packages"] = packages
+	}
+	// Provider resilience: bound a hung gateway stream so pi drops and retries
+	// it instead of freezing every session (run 22762 stalled 53 min on a
+	// step-5 gateway hang). pi has no env mapping for these; settings.json is
+	// the only projection channel. httpIdleTimeoutMs must stay strictly
+	// positive — pi maps 0 to "never time out". maxRetries>0 lets pi's
+	// retryProviderRequest actually retry the retryable idle-timeout class.
+	settings["httpIdleTimeoutMs"] = piHTTPIdleTimeoutMs
+	settings["retry"] = map[string]any{
+		"provider": map[string]any{
+			"maxRetries":      piProviderMaxRetries,
+			"maxRetryDelayMs": piProviderMaxRetryDelayMs,
+		},
 	}
 	if provider := piLaunchProviderKey(profile); provider != "" {
 		settings["defaultProvider"] = provider
@@ -2022,7 +2049,7 @@ func processEnvRenderContext(layout Layout, profile runtimeprofile.Profile, sand
 func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx RuntimeOwnerContext, req ProjectionRequest) (map[string]string, error) {
 	env := launchProcessEnv(layout, profile, sandbox, ctx, req.RuntimePlugins)
 	if sandbox && len(req.SkillBundles) > 0 {
-		env["PENTEST_SKILLS_DIR"] = "/task/skills"
+		env["PENTEST_SKILLS_DIR"] = sandboxTaskSkillsPath
 	}
 	for key, value := range profile.Fields.Env {
 		env[key] = value

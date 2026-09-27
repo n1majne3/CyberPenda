@@ -1143,6 +1143,50 @@ func TestProjectPiSettingsPinDefaultThinkingLevel(t *testing.T) {
 	})
 }
 
+// TestProjectPiSettingsProjectsProviderResilience proves settings.json carries the
+// provider-resilience knobs so a hung gateway stream is detected, dropped, and
+// retried inside pi instead of freezing the whole run (run 22762 stalled 53 min
+// on a step-5 gateway hang because nothing bounded the request). httpIdleTimeoutMs
+// must be present and strictly positive: pi treats 0 as "never time out".
+func TestProjectPiSettingsProjectsProviderResilience(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+	isolatePiHostHome(t)
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-pi-resilience", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	profile := runtimeprofile.Profile{
+		Provider: runtimeprofile.ProviderPi,
+		Fields:   runtimeprofile.Fields{Model: "step-5-preview"},
+	}
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{}); err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+
+	settings := readJSONFile(t, filepath.Join(layout.ProviderHome, "agent", "settings.json"))
+
+	idle, ok := settings["httpIdleTimeoutMs"].(float64)
+	if !ok {
+		t.Fatalf("httpIdleTimeoutMs missing or not a number: %#v", settings["httpIdleTimeoutMs"])
+	}
+	if idle <= 0 {
+		t.Fatalf("httpIdleTimeoutMs must be strictly positive (0 disables the timeout): got %v", idle)
+	}
+
+	retry, ok := settings["retry"].(map[string]any)
+	if !ok {
+		t.Fatalf("retry object missing: %#v", settings["retry"])
+	}
+	provider, ok := retry["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("retry.provider object missing: %#v", retry["provider"])
+	}
+	maxRetries, ok := provider["maxRetries"].(float64)
+	if !ok || maxRetries < 1 {
+		t.Fatalf("retry.provider.maxRetries must be >= 1: %#v", provider["maxRetries"])
+	}
+}
+
 // TestProjectPiSettingsPinsLaunchProviderAndModel proves settings.json carries
 // the launch-resolved provider/model: a pi-subagents spawn without an explicit
 // model falls back to the launch selection instead of a runtime default. The
