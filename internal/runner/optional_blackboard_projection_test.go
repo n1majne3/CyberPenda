@@ -472,6 +472,7 @@ func TestRuntimeProvidersRejectProjectInterfaceTokensWithoutChangingConfig(t *te
 }
 
 func TestRuntimeProvidersRejectKnownProjectionSymlinksWithoutDeletion(t *testing.T) {
+	requireSymlinkSupport(t)
 	for _, provider := range optionalProjectionProviders() {
 		t.Run(string(provider), func(t *testing.T) {
 			taskID := "omitted-symlink-" + string(provider)

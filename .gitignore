@@ -43,6 +43,9 @@ pentest 2.db-wal
 .playwright/
 .qoder/repowiki
 
+# Local TSecBench run analysis and upload working data (never committed)
+/.tsecbench-analysis/
+
 # Local evaluation outputs
 /scripts/*.log
 /scripts/*-report.json

@@ -168,7 +168,7 @@ func projectCodexV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, 
 		if len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
 			target = layout.SkillsRoot
 			if req.Sandbox {
-				target = "/task/skills"
+				target = sandboxTaskSkillsPath
 			}
 		}
 		if err := PrepareSandboxSkills(layout, profile.Provider, target); err != nil {
@@ -276,7 +276,7 @@ func prepareBlackboardV2Skills(layout Layout, profile runtimeprofile.Profile, re
 		if len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
 			target = layout.SkillsRoot
 			if req.Sandbox {
-				target = "/task/skills"
+				target = sandboxTaskSkillsPath
 			}
 		}
 		if err := PrepareSandboxSkills(layout, profile.Provider, target); err != nil {

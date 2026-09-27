@@ -14,6 +14,7 @@ import (
 )
 
 func TestProjectRuntimeConfigWritesScopeSnapshot(t *testing.T) {
+	requireSymlinkSupport(t)
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-scope", runtimeprofile.ProviderClaudeCode)
 	if err != nil {

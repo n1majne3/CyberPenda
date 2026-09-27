@@ -41,6 +41,7 @@ func TestBuildSandboxCommandMountsPentestDirectoryReadOnlyWithoutSnapshotInodeMo
 }
 
 func TestBuildSandboxCommandRejectsEscapingOrSymlinkedReadOnlyDirectory(t *testing.T) {
+	requireSymlinkSupport(t)
 	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-v2-confined-mount", runtimeprofile.ProviderCodex)
 	if err != nil {
 		t.Fatalf("prepare layout: %v", err)

@@ -9,6 +9,18 @@ import (
 	"pentest/internal/runtimeprofile"
 )
 
+// requireSymlinkSupport skips the test when the host denies symlink creation.
+// Windows without SeCreateSymbolicLinkPrivilege (Developer Mode disabled and
+// no elevation) cannot create the real links these tests verify; the copy
+// fallback for that case is covered by the internal sandbox skills tests.
+func requireSymlinkSupport(t *testing.T) {
+	t.Helper()
+	probe := filepath.Join(t.TempDir(), "probe-link")
+	if err := os.Symlink(t.TempDir(), probe); err != nil {
+		t.Skipf("host does not permit symlink creation: %v", err)
+	}
+}
+
 func TestSkillsWorkdirRelPath(t *testing.T) {
 	if got := runner.SkillsWorkdirRelPath(runtimeprofile.ProviderClaudeCode); got != ".claude/skills" {
 		t.Fatalf("claude skills path = %q", got)
@@ -19,6 +31,7 @@ func TestSkillsWorkdirRelPath(t *testing.T) {
 }
 
 func TestPrepareSandboxSkillsLinksClaudeWorkdirAndProviderHome(t *testing.T) {
+	requireSymlinkSupport(t)
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-1", runtimeprofile.ProviderClaudeCode)
 	if err != nil {
@@ -42,6 +55,7 @@ func TestPrepareSandboxSkillsLinksClaudeWorkdirAndProviderHome(t *testing.T) {
 }
 
 func TestPrepareSandboxSkillsLinksCodexWorkdirAndProviderHome(t *testing.T) {
+	requireSymlinkSupport(t)
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-1", runtimeprofile.ProviderCodex)
 	if err != nil {

@@ -209,6 +209,7 @@ func TestProjectCodexConfigWritesResolvedModelLimits(t *testing.T) {
 }
 
 func TestProjectCodexConfigUsesSandboxModelCatalogPath(t *testing.T) {
+	requireSymlinkSupport(t)
 	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-codex-sandbox-catalog", runtimeprofile.ProviderCodex)
 	if err != nil {
 		t.Fatalf("prepare layout: %v", err)
