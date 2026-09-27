@@ -10,6 +10,10 @@ import (
 
 const sandboxSkillsImagePath = "/opt/pentest/skills"
 
+// sandboxTaskSkillsPath is the container-side location of the Task Skills
+// Root: the Sandbox mounts the task root at /task.
+const sandboxTaskSkillsPath = "/task/skills"
+
 // SkillsWorkdirRelPath is the project-relative directory where a runtime discovers
 // task-provisioned skills inside the task workdir.
 func SkillsWorkdirRelPath(provider runtimeprofile.Provider) string {
