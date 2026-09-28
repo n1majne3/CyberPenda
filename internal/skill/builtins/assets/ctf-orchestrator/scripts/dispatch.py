@@ -127,14 +127,21 @@ def parse_challenges(path):
     items = raw["challenges"] if isinstance(raw, dict) and "challenges" in raw else raw
     out = []
     for c in items:
-        code = c.get("challenge_code") or c.get("code") or c.get("id")
+        # fallback 链同时覆盖规范 schema(challenge_code/challenge_name/
+        # challenge_score)与 TsecBench 平台原始 schema(unique_code/
+        # description/total_score),让三行 exec 适配层的透传输出可直接入账,
+        # Decide 不必在运行时手写归一化适配层。
+        code = (c.get("challenge_code") or c.get("code")
+                or c.get("unique_code") or c.get("id"))
         if not code:
             continue
         flags = c.get("total_flag_count") or c.get("flag_count") or c.get("flags") or 1
         out.append({
             "code": str(code),
-            "name": c.get("challenge_name") or c.get("name") or code,
-            "score": c.get("challenge_score") or c.get("score") or 0,
+            "name": (c.get("challenge_name") or c.get("name")
+                     or c.get("description") or code),
+            "score": (c.get("challenge_score") or c.get("score")
+                      or c.get("total_score") or 0),
             "difficulty": (c.get("difficulty") or "medium").lower(),
             "flags_total": int(flags),
             "addr": c.get("container_addr") or c.get("addr") or c.get("target") or "",
@@ -755,6 +762,25 @@ def selftest():
                       "next_milestone: x\n---\n没有 JSON\n", encoding="utf-8")
         ok, reason, _ = validate_report(ws, "a-02", 1)
         assert not ok and reason == "solved_without_submit_json"
+        # 平台原始 schema(unique_code/description/total_score/flag_count)必须
+        # 直接可用,否则每个 run 的 Decide 都要在运行时手写归一化适配层。
+        tmp2 = Path(tempfile.mkdtemp(prefix="dispatch-selftest2-"))
+        try:
+            ws2 = WS(tmp2)
+            (tmp2 / "platform-list.json").write_text(json.dumps([
+                {"unique_code": "d-01", "description": "AWS S3 ACL Public Read",
+                 "total_score": 200, "flag_count": 1, "is_completed": False},
+                {"unique_code": "f2-05", "description": "Conquest holdout",
+                 "total_score": 800, "flag_count": 1, "is_completed": False},
+            ]), encoding="utf-8")
+            cmd_init(argparse.Namespace(ws=str(tmp2), challenges=str(tmp2 / "platform-list.json")))
+            led2 = ws2.ledger()
+            assert "d-01" in led2["challenges"], "平台 schema 题目未被记账"
+            assert led2["challenges"]["d-01"]["name"] == "AWS S3 ACL Public Read"
+            assert led2["challenges"]["d-01"]["score"] == 200
+            assert led2["challenges"]["f2-05"]["flags_total"] == 1
+        finally:
+            shutil.rmtree(tmp2, ignore_errors=True)
         print("selftest: 全部通过")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
