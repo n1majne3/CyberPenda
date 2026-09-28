@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"pentest/internal/runner"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -985,4 +986,25 @@ func disabledFakeProviderSession(t *testing.T, factory *recordingProviderSession
 		t.Fatalf("Disabled ProviderSession boundary = %T", factory.session)
 	}
 	return provider
+}
+
+// TestDisabledModeStateFileReminderOmittedInHostedProcess pins the hosted
+// exception: a Hosted evaluation owns its FGS working trace, so the Disabled
+// launch goal carries no state-file reminder while the projection stays
+// Omitted. Local (non-hosted) Disabled owners keep the reminder.
+func TestDisabledModeStateFileReminderOmittedInHostedProcess(t *testing.T) {
+	t.Setenv("CYBERPENDA_HOSTED_DATA_ROOT", "/data/hosted")
+	launch := resolveOwnerBlackboardRuntimeLaunch("goal", true)
+	if strings.Contains(launch.goal, disabledBlackboardStateFileReminder) {
+		t.Fatalf("hosted Disabled launch goal carries the state-file reminder: %q", launch.goal)
+	}
+	if launch.projection != runner.BlackboardProjectionOmitted {
+		t.Fatalf("hosted Disabled projection = %v, want Omitted", launch.projection)
+	}
+
+	t.Setenv("CYBERPENDA_HOSTED_DATA_ROOT", "")
+	local := resolveOwnerBlackboardRuntimeLaunch("goal", true)
+	if !strings.Contains(local.goal, disabledBlackboardStateFileReminder) {
+		t.Fatalf("local Disabled launch goal lost the state-file reminder: %q", local.goal)
+	}
 }

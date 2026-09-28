@@ -33,7 +33,7 @@ func TestHostedTranscriptReadsChildPagesAtSourceBoundary(t *testing.T) {
 				t.Errorf("child read lost source boundary: %s", r.URL)
 			}
 			if r.URL.Query().Get("after") == "0" {
-				writeStreamJSON(t, w, map[string]any{"entries": []any{streamEntry("child-1", 2, "message", "assistant", "first secret", "2026-09-07T00:00:00Z")}, "cursor": 20, "has_newer": true})
+				writeStreamJSON(t, w, map[string]any{"entries": []any{streamEntry("child-1", 2, "tool_call", "assistant", "first secret", "2026-09-07T00:00:00Z")}, "cursor": 20, "has_newer": true})
 			} else {
 				item := streamEntry("child-2", 7, "tool_result", "tool", "preview", "2026-09-07T00:00:00Z")
 				item["truncated"] = true
@@ -89,14 +89,14 @@ func TestHostedChildSummaryOnlyBackwardPages(t *testing.T) {
 			block := streamEntry("subagent-a", seq, "subagent_block", "runtime", "Child A", "2026-09-07T00:00:00Z")
 			block["details"] = map[string]any{"history": history}
 			if seq == 800 {
-				block["details"].(map[string]any)["legacy_items"] = []any{streamEntry("legacy", 600, "message", "assistant", "legacy child work", "2026-09-07T00:00:00Z")}
+				block["details"].(map[string]any)["legacy_items"] = []any{streamEntry("legacy", 600, "tool_call", "assistant", "legacy child work", "2026-09-07T00:00:00Z")}
 			}
 			writeStreamJSON(t, w, map[string]any{"entries": []any{block}, "cursor": 1200, "before": before, "has_older": older})
 		case history:
 			if r.URL.Query().Get("through") != "1200" {
 				t.Errorf("lost latest child snapshot: %s", r.URL)
 			}
-			writeStreamJSON(t, w, map[string]any{"entries": []any{streamEntry("child-item", 2, "message", "assistant", "retained child work", "2026-09-07T00:00:00Z")}, "cursor": 1, "has_newer": false})
+			writeStreamJSON(t, w, map[string]any{"entries": []any{streamEntry("child-item", 2, "tool_result", "tool", "retained child work", "2026-09-07T00:00:00Z")}, "cursor": 1, "has_newer": false})
 		case base:
 			writeStreamJSON(t, w, map[string]any{"status": "failed"})
 		default:
@@ -147,7 +147,7 @@ func TestHostedTruncatedMixedChildHistory(t *testing.T) {
 					if seq == mixedSeq {
 						block["truncated"] = true
 						block["detail"] = base + "/transcript/entries/mixed"
-						block["details"].(map[string]any)["legacy_items"] = []any{streamEntry("legacy", 600, "message", "assistant", "legacy child work", "2026-09-07T00:00:00Z")}
+						block["details"].(map[string]any)["legacy_items"] = []any{streamEntry("legacy", 600, "tool_call", "assistant", "legacy child work", "2026-09-07T00:00:00Z")}
 					}
 					writeStreamJSON(t, w, map[string]any{"entries": []any{block}, "cursor": 1200, "before": before, "has_older": older})
 				case base + "/transcript/entries/mixed":
@@ -159,7 +159,7 @@ func TestHostedTruncatedMixedChildHistory(t *testing.T) {
 					if r.URL.Query().Get("through") != "1200" {
 						t.Errorf("lost latest child snapshot: %s", r.URL)
 					}
-					writeStreamJSON(t, w, map[string]any{"entries": []any{streamEntry("child-item", 2, "message", "assistant", "retained child work", "2026-09-07T00:00:00Z")}, "cursor": 1, "has_newer": false})
+					writeStreamJSON(t, w, map[string]any{"entries": []any{streamEntry("child-item", 2, "tool_result", "tool", "retained child work", "2026-09-07T00:00:00Z")}, "cursor": 1, "has_newer": false})
 				case base:
 					writeStreamJSON(t, w, map[string]any{"status": "failed"})
 				default:

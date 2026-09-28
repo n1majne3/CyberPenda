@@ -144,6 +144,13 @@ func (app *HTTPApp) drainTranscript(ctx context.Context, run HostedEvaluationRef
 
 func (app *HTTPApp) emitTranscriptEntries(ctx context.Context, run HostedEvaluationReference, output io.Writer, masker *exactMasker, entries []transcript.Entry, afterEvent int) error {
 	for _, preview := range entries {
+		if suppressedLLMTranscriptKind(preview.Kind) {
+			// LLM conversation lines never reach hosted stdout: TSecBench
+			// meters model traffic at its gateway and never scores from the
+			// container log, so these lines are pure volume. Skipping before
+			// the detail fetch also avoids one request per truncated message.
+			continue
+		}
 		entry := preview
 		if preview.Truncated {
 			complete, err := app.transcriptEntryDetail(ctx, run, preview)
@@ -163,6 +170,13 @@ func (app *HTTPApp) emitTranscriptEntries(ctx context.Context, run HostedEvaluat
 		}
 	}
 	return nil
+}
+
+// suppressedLLMTranscriptKind reports whether one transcript entry kind carries
+// LLM conversation content (operator/user prompts, assistant messages, model
+// reasoning). The Hosted Transcript Stream omits these kinds entirely.
+func suppressedLLMTranscriptKind(kind string) bool {
+	return kind == transcript.KindMessage || kind == transcript.KindReasoning
 }
 
 func (app *HTTPApp) transcriptEntryDetail(ctx context.Context, run HostedEvaluationReference, preview transcript.Entry) (transcript.Entry, error) {
@@ -322,7 +336,11 @@ func (app *HTTPApp) emitChildTranscript(ctx context.Context, run HostedEvaluatio
 		if page.Cursor < cursor || (page.HasNewer && page.Cursor <= cursor) {
 			return errorsInvalidTranscriptPage("child cursor did not advance")
 		}
-		for i, entry := range page.Entries {
+		kept := make([]transcript.Entry, 0, len(page.Entries))
+		for _, entry := range page.Entries {
+			if suppressedLLMTranscriptKind(entry.Kind) {
+				continue
+			}
 			if entry.Seq <= afterEvent || entry.Seq > summary.Seq {
 				return errorsInvalidTranscriptPage("child entry outside source boundary")
 			}
@@ -331,9 +349,11 @@ func (app *HTTPApp) emitChildTranscript(ctx context.Context, run HostedEvaluatio
 				if err != nil {
 					return err
 				}
-				page.Entries[i] = full
+				entry = full
 			}
+			kept = append(kept, entry)
 		}
+		page.Entries = kept
 		if len(page.Entries) > 0 || (!emitted && !page.HasNewer) {
 			block := summary
 			block.Details = make(map[string]any, len(summary.Details)+1)
@@ -377,6 +397,13 @@ func legacyChildBlock(entry transcript.Entry) (transcript.Entry, bool) {
 	entry.Details = maps.Clone(entry.Details)
 	delete(entry.Details, "history")
 	delete(entry.Details, "legacy_items")
-	entry.Details["items"] = items
+	kept := make([]any, 0, len(items))
+	for _, item := range items {
+		if kind, ok := item.(map[string]any)["kind"].(string); ok && suppressedLLMTranscriptKind(kind) {
+			continue
+		}
+		kept = append(kept, item)
+	}
+	entry.Details["items"] = kept
 	return entry, true
 }

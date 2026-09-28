@@ -95,7 +95,7 @@ func TestHTTPAppWaitStreamsCompleteMaskedTranscriptAndFinalDrain(t *testing.T) {
 		t.Fatalf("Wait error = %v, want failure after final drain", err)
 	}
 	entries := decodeStreamJSONL(t, stdout.Bytes())
-	wantIDs := []string{"goal", "entry-1", "entry-2a", "entry-2b", "entry-3", "entry-4", "entry-5", "entry-6"}
+	wantIDs := []string{"entry-1", "entry-2a", "entry-2b", "entry-3", "entry-5", "entry-6"}
 	if len(entries) != len(wantIDs) {
 		t.Fatalf("JSONL entries = %d, want %d: %s", len(entries), len(wantIDs), stdout.String())
 	}
@@ -104,16 +104,19 @@ func TestHTTPAppWaitStreamsCompleteMaskedTranscriptAndFinalDrain(t *testing.T) {
 			t.Fatalf("entry %d id = %v, want %q", index, entries[index]["id"], want)
 		}
 	}
+	if strings.Contains(stdout.String(), "saw ") || strings.Contains(stdout.String(), `"kind":"message"`) {
+		t.Fatalf("LLM conversation lines reached hosted stdout: %s", stdout.String())
+	}
 	for _, secret := range []string{benchmarkToken, modelKey} {
 		if strings.Contains(stdout.String(), secret) {
-			t.Fatalf("stdout disclosed exact secret %q", secret)
+			t.Fatalf("stdout disclosed exact secret %q: %s", secret, stdout.String())
 		}
 	}
 	if !strings.Contains(stdout.String(), "keep-sk-abcdefghijklmnop") {
 		t.Fatalf("exact masking changed unrelated content: %s", stdout.String())
 	}
-	if entries[4]["text"] != "full [REDACTED]" || entries[4]["truncated"] != nil || entries[4]["detail"] != nil {
-		t.Fatalf("detail entry was not emitted complete: %#v", entries[4])
+	if entries[3]["text"] != "full [REDACTED]" || entries[3]["truncated"] != nil || entries[3]["detail"] != nil {
+		t.Fatalf("detail entry was not emitted complete: %#v", entries[3])
 	}
 	if detailSource["text"] != "full "+benchmarkToken {
 		t.Fatalf("masking mutated retained source: %#v", detailSource)
@@ -133,22 +136,22 @@ func TestHTTPAppWaitStreamsEveryEntryOnceAcrossThreeBackwardPages(t *testing.T) 
 			switch request.URL.RawQuery {
 			case "":
 				writeStreamPage(t, response, 8, true,
-					streamEntry("entry-7", 7, "message", "assistant", "seven", createdAt),
-					streamEntry("entry-8", 8, "message", "assistant", "eight", createdAt))
+					streamEntry("entry-7", 7, "tool_call", "assistant", "seven", createdAt),
+					streamEntry("entry-8", 8, "tool_call", "assistant", "eight", createdAt))
 			case "before=7":
 				// BuildWindow includes the synthetic Task Goal on every
 				// backward page. More retained Event history still exists.
 				writeStreamPage(t, response, 8, true,
-					streamEntry("goal", 0, "message", "user", "goal", createdAt),
-					streamEntry("entry-4", 4, "message", "assistant", "four", createdAt),
-					streamEntry("entry-5", 5, "message", "assistant", "five", createdAt),
-					streamEntry("entry-6", 6, "message", "assistant", "six", createdAt))
+					streamEntry("goal", 0, "tool_call", "user", "goal", createdAt),
+					streamEntry("entry-4", 4, "tool_call", "assistant", "four", createdAt),
+					streamEntry("entry-5", 5, "tool_call", "assistant", "five", createdAt),
+					streamEntry("entry-6", 6, "tool_call", "assistant", "six", createdAt))
 			case "before=4":
 				writeStreamPage(t, response, 8, false,
-					streamEntry("goal", 0, "message", "user", "goal", createdAt),
-					streamEntry("entry-1", 1, "message", "assistant", "one", createdAt),
-					streamEntry("entry-2", 2, "message", "assistant", "two", createdAt),
-					streamEntry("entry-3", 3, "message", "assistant", "three", createdAt))
+					streamEntry("goal", 0, "tool_call", "user", "goal", createdAt),
+					streamEntry("entry-1", 1, "tool_call", "assistant", "one", createdAt),
+					streamEntry("entry-2", 2, "tool_call", "assistant", "two", createdAt),
+					streamEntry("entry-3", 3, "tool_call", "assistant", "three", createdAt))
 			case "after=8":
 				writeStreamPage(t, response, 8, false)
 			default:
@@ -196,7 +199,7 @@ func TestHTTPAppWaitCommitsEmptyTranscriptCursorProgress(t *testing.T) {
 			case "0":
 				writeStreamPage(t, response, 5, false)
 			case "5":
-				writeStreamPage(t, response, 6, false, streamEntry("entry-6", 6, "message", "assistant", "visible", "2026-08-12T00:00:00Z"))
+				writeStreamPage(t, response, 6, false, streamEntry("entry-6", 6, "tool_call", "assistant", "visible", "2026-08-12T00:00:00Z"))
 			case "6":
 				writeStreamPage(t, response, 6, false)
 			}
@@ -247,7 +250,7 @@ func TestHTTPAppWaitKeepsALiveRuntimeAfterStdoutAndTaskFailures(t *testing.T) {
 					writeStreamPage(t, response, 0, false)
 					return
 				}
-				writeStreamPage(t, response, 1, false, streamEntry("entry-1", 1, "message", "assistant", "live", "2026-08-12T00:00:00Z"))
+				writeStreamPage(t, response, 1, false, streamEntry("entry-1", 1, "tool_call", "assistant", "live", "2026-08-12T00:00:00Z"))
 				return
 			}
 			writeStreamJSON(t, response, map[string]any{"status": "running"})
@@ -332,7 +335,7 @@ func TestHTTPAppWaitReturnsTranscriptAndStdoutFailures(t *testing.T) {
 	t.Run("stdout", func(t *testing.T) {
 		handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			if strings.HasSuffix(request.URL.Path, "/transcript") {
-				writeStreamPage(t, response, 1, false, streamEntry("entry-1", 1, "message", "assistant", "hello", "2026-08-12T00:00:00Z"))
+				writeStreamPage(t, response, 1, false, streamEntry("entry-1", 1, "tool_call", "assistant", "hello", "2026-08-12T00:00:00Z"))
 			}
 		})
 		err := newTranscriptHTTPApp(handler).Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, streamFailWriter{}, nil)
@@ -440,4 +443,64 @@ func decodeStreamJSONL(t *testing.T, output []byte) []map[string]any {
 		entries = append(entries, entry)
 	}
 	return entries
+}
+
+// TestHostedTranscriptOmitsLLMConversationKinds locks the stdout contract:
+// message and reasoning entries never reach hosted stdout, a truncated message
+// never triggers a detail fetch, and non-conversation kinds still stream.
+func TestHostedTranscriptOmitsLLMConversationKinds(t *testing.T) {
+	const base = "/api/projects/project-1/tasks/task-1"
+	detailReads := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/transcript/entries/llm-big"):
+			detailReads++
+			writeStreamJSON(t, w, streamEntry("llm-big", 3, "message", "assistant", "huge model answer", "2026-09-28T00:00:00Z"))
+		case r.URL.Path == base+"/transcript":
+			if r.URL.Query().Has("after") {
+				writeStreamPage(t, w, 6, false)
+				return
+			}
+			msg := streamEntry("llm-big", 3, "message", "assistant", "preview", "2026-09-28T00:00:00Z")
+			msg["truncated"] = true
+			msg["detail"] = base + "/transcript/entries/llm-big"
+			writeStreamPage(t, w, 6, false,
+				streamEntry("u-1", 1, "message", "user", "operator prompt", "2026-09-28T00:00:00Z"),
+				streamEntry("r-1", 2, "reasoning", "assistant", "thinking", "2026-09-28T00:00:00Z"),
+				msg,
+				streamEntry("t-1", 4, "tool_call", "assistant", "call", "2026-09-28T00:00:00Z"),
+				streamEntry("t-2", 5, "tool_result", "tool", "result", "2026-09-28T00:00:00Z"))
+		case r.URL.Path == base:
+			writeStreamJSON(t, w, map[string]any{"status": "failed"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
+		BaseURL: "http://hosted.test", Client: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w.Result(), nil
+		})}, PollPeriod: time.Millisecond,
+	})
+	var stdout bytes.Buffer
+	if err := app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil); err == nil || !strings.Contains(err.Error(), "hosted Runtime failed") {
+		t.Fatalf("Wait = %v", err)
+	}
+	entries := decodeStreamJSONL(t, stdout.Bytes())
+	wantIDs := []string{"t-1", "t-2"}
+	if len(entries) != len(wantIDs) {
+		t.Fatalf("entries = %d, want %d: %s", len(entries), len(wantIDs), stdout.String())
+	}
+	for i, want := range wantIDs {
+		if entries[i]["id"] != want {
+			t.Fatalf("entry %d = %v, want %q", i, entries[i]["id"], want)
+		}
+	}
+	if detailReads != 0 {
+		t.Fatalf("truncated message triggered %d detail fetches", detailReads)
+	}
+	if strings.Contains(stdout.String(), "operator prompt") || strings.Contains(stdout.String(), "thinking") || strings.Contains(stdout.String(), "huge model answer") {
+		t.Fatalf("LLM conversation text reached stdout: %s", stdout.String())
+	}
 }
