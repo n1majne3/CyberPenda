@@ -301,10 +301,13 @@ var secretPatterns = []*regexp.Regexp{
 // letter that happens to equal a credential) is not mangled.
 const minRedactableSecretLen = 8
 
-// Redactor masks secret values in event payloads. It always applies the
-// shape-based secretPatterns; when seeded with known secret values it also masks
-// those values by exact match, closing the gap for opaque tokens that lack a
-// recognized prefix/shape (issue #161).
+// Redactor masks secret values on non-content surfaces: launch and lifecycle
+// diagnostics, configuration previews, and error text. It never applies to LLM
+// output (assistant messages, reasoning, tool-call content, runtime
+// stdout/stderr): those events are persisted byte-for-byte (issue #288). It
+// always applies the shape-based secretPatterns; when seeded with known secret
+// values it also masks those values by exact match, closing the gap for opaque
+// tokens that lack a recognized prefix/shape (issue #161).
 type Redactor struct {
 	secrets []string
 }

@@ -175,7 +175,7 @@ Rules:
 
 Runtime plugins may declare credential environment names they can consume, but they do not store secret values.
 
-Credential values continue to resolve through credential references and bindings during preflight and launch. Redaction remains centralized in runtime event emission.
+Credential values continue to resolve through credential references and bindings during preflight and launch. Redaction of resolved secret values applies only to non-content surfaces: launch and lifecycle diagnostics, configuration previews, and error text. LLM output events are persisted byte-for-byte without redaction (issue #288).
 
 ## MCP
 

@@ -76,6 +76,23 @@ func TestScanOutputDropsIgnorableProviderNoise(t *testing.T) {
 	}
 }
 
+// TestScanOutputKeepsSecretShapedContent pins issue #288: runtime stdout/stderr
+// lines are LLM output and pass through byte-for-byte, even when a line matches
+// a secret shape.
+func TestScanOutputKeepsSecretShapedContent(t *testing.T) {
+	line := `assistant: flag is triskaidekaphobia@flare-on.com and note bearer secret-scan-token-123456`
+	var emitted []task.EventPayload
+	runtime.ScanOutput(bytes.NewReader([]byte(line+"\n")), "stdout", 1024, func(_ task.EventKind, payload task.EventPayload) {
+		emitted = append(emitted, payload)
+	})
+	if len(emitted) != 1 {
+		t.Fatalf("expected 1 stored line, got %d: %#v", len(emitted), emitted)
+	}
+	if text, _ := emitted[0]["text"].(string); text != line {
+		t.Fatalf("runtime output was rewritten, got %q want %q", text, line)
+	}
+}
+
 func TestReadBoundedLineReturnsEOFWithoutErrorForEmptyStream(t *testing.T) {
 	line, truncated, err := runtime.ReadBoundedLine(bufio.NewReader(strings.NewReader("")), 1024)
 	if err != io.EOF || truncated || line != "" {

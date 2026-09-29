@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"pentest/internal/adapters"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
@@ -156,26 +155,28 @@ func (server *Server) persistSessionProviderSessionEvent(sessionID string, kind 
 	server.persistSessionProviderEventForContinuation(sessionID, "", kind, payload)
 }
 
+// sessionProviderEventPayload copies the fixed correlation allowlist into the
+// Session event. LLM output text is carried byte-for-byte, without redaction
+// (issue #288).
 func sessionProviderEventPayload(kind task.EventKind, payload task.EventPayload, continuationID string) (session.EventKind, session.EventPayload) {
-	payload = task.EventPayload(adapters.Redact(map[string]any(payload)))
-	redacted := session.EventPayload{}
+	filtered := session.EventPayload{}
 	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "provider_item_id", "mode", "outcome", "permission_request_id", "permission_decision", "error_code", "phase"} {
 		if value, ok := payload[key]; ok {
-			redacted[key] = value
+			filtered[key] = value
 		}
 	}
 	if kind == task.EventKindRuntimeOutput {
 		for _, key := range []string{"stream", "text"} {
 			if value, ok := payload[key]; ok {
-				redacted[key] = value
+				filtered[key] = value
 			}
 		}
 	}
-	if redacted["mode"] == string(runtime.ProviderSessionModePermissionResponse) && redacted["outcome"] == "requested" {
-		redacted["phase"] = "provider_permission_requested"
+	if filtered["mode"] == string(runtime.ProviderSessionModePermissionResponse) && filtered["outcome"] == "requested" {
+		filtered["phase"] = "provider_permission_requested"
 	}
 	if strings.TrimSpace(continuationID) != "" {
-		redacted["continuation_id"] = continuationID
+		filtered["continuation_id"] = continuationID
 	}
 	var mappedKind session.EventKind
 	switch kind {
@@ -184,7 +185,7 @@ func sessionProviderEventPayload(kind task.EventKind, payload task.EventPayload,
 	case task.EventKindSteering:
 		mappedKind = session.EventKindSteering
 	case task.EventKindLifecycle:
-		if redacted["phase"] == "provider_permission_requested" {
+		if filtered["phase"] == "provider_permission_requested" {
 			mappedKind = session.EventKindPermission
 		} else {
 			mappedKind = session.EventKindLifecycle
@@ -192,7 +193,7 @@ func sessionProviderEventPayload(kind task.EventKind, payload task.EventPayload,
 	default:
 		mappedKind = session.EventKindTurn
 	}
-	return mappedKind, redacted
+	return mappedKind, filtered
 }
 
 func (server *Server) persistSessionProviderEventForContinuation(sessionID, continuationID string, kind task.EventKind, payload task.EventPayload) {
@@ -201,41 +202,41 @@ func (server *Server) persistSessionProviderEventForContinuation(sessionID, cont
 			continuationID = continuation.ID
 		}
 	}
-	mappedKind, redacted := sessionProviderEventPayload(kind, payload, continuationID)
-	_, _ = server.sessions.AppendEvent(sessionID, mappedKind, redacted)
+	mappedKind, filtered := sessionProviderEventPayload(kind, payload, continuationID)
+	_, _ = server.sessions.AppendEvent(sessionID, mappedKind, filtered)
 }
 
 // persistProviderSessionEvent is the only daemon entry point for unsolicited
 // provider notifications. It copies a fixed correlation allowlist and chooses
 // the current Continuation at receipt time, so raw protocol payload cannot be
-// persisted or leak into the Task Conversation.
+// persisted or leak into the Task Conversation. LLM output text is persisted
+// byte-for-byte, without redaction (issue #288).
 func (server *Server) persistProviderSessionEvent(taskID string, kind task.EventKind, payload task.EventPayload) {
-	payload = task.EventPayload(adapters.Redact(map[string]any(payload)))
-	redacted := task.EventPayload{}
+	filtered := task.EventPayload{}
 	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "provider_item_id", "mode", "outcome", "permission_request_id", "phase"} {
 		if value, ok := payload[key]; ok {
-			redacted[key] = value
+			filtered[key] = value
 		}
 	}
 	if kind == task.EventKindRuntimeOutput {
 		for _, key := range []string{"stream", "text"} {
 			if value, ok := payload[key]; ok {
-				redacted[key] = value
+				filtered[key] = value
 			}
 		}
 	}
-	if redacted["mode"] == string(runtime.ProviderSessionModePermissionResponse) && redacted["outcome"] == "requested" {
-		redacted["phase"] = "provider_permission_requested"
+	if filtered["mode"] == string(runtime.ProviderSessionModePermissionResponse) && filtered["outcome"] == "requested" {
+		filtered["phase"] = "provider_permission_requested"
 	}
 	continuation, err := server.tasks.ActiveContinuation(taskID)
 	if err != nil {
 		return
 	}
 	if continuation != nil {
-		_, _ = server.tasks.AppendContinuationEvent(taskID, continuation.ID, kind, redacted)
+		_, _ = server.tasks.AppendContinuationEvent(taskID, continuation.ID, kind, filtered)
 		return
 	}
-	_, _ = server.tasks.AppendEvent(taskID, kind, redacted)
+	_, _ = server.tasks.AppendEvent(taskID, kind, filtered)
 }
 
 func (server *Server) closeProviderSession(taskID string) error {

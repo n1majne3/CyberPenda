@@ -223,6 +223,65 @@ func TestCommandRuntimeAdapterExecutesProviderProcessAndStreamsOutput(t *testing
 	}
 }
 
+// TestCommandRuntimeOutputKeepsSecretShapedContent pins issue #288: runtime
+// stdout/stderr is LLM output and passes through byte-for-byte, even when it
+// contains an exact launch-env secret value. The same secret stays redacted on
+// the non-content process_started lifecycle event.
+func TestCommandRuntimeOutputKeepsSecretShapedContent(t *testing.T) {
+	skipUnlessPOSIXProcessDoubles(t)
+
+	const opaque = "opaque-launch-secret-value-42" // no sk-/bearer/=_KEY shape
+	binary := filepath.Join(t.TempDir(), "content-test")
+	script := "#!/bin/sh\necho \"flag:$1 env:$FLAG_VALUE shape:bearer secret-echo-token-123456\"\n"
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatalf("write content binary: %v", err)
+	}
+
+	adapter := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+		Name:    "content-test",
+		Program: binary,
+		Args:    []string{opaque},
+		Env:     map[string]string{"FLAG_VALUE": opaque},
+	})
+	var events []task.EventPayload
+	var kinds []task.EventKind
+	emit := func(kind task.EventKind, payload task.EventPayload) {
+		kinds = append(kinds, kind)
+		events = append(events, payload)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := adapter.Run(ctx, "goal", emit); err != nil {
+		t.Fatalf("run content adapter: %v", err)
+	}
+
+	var sawContent bool
+	var sawLifecycle bool
+	for i, event := range events {
+		switch kinds[i] {
+		case task.EventKindRuntimeOutput:
+			text, _ := event["text"].(string)
+			if strings.Contains(text, "flag:"+opaque+" env:"+opaque+" shape:bearer secret-echo-token-123456") {
+				sawContent = true
+			}
+		case task.EventKindLifecycle:
+			if event["phase"] != "process_started" {
+				continue
+			}
+			sawLifecycle = true
+			if args, _ := event["args"].([]string); len(args) == 1 && args[0] == opaque {
+				t.Fatalf("process_started args kept the launch secret: %#v", event)
+			}
+		}
+	}
+	if !sawContent {
+		t.Fatalf("runtime output lost byte-for-byte LLM content: %#v", events)
+	}
+	if !sawLifecycle {
+		t.Fatalf("expected process_started lifecycle event, got %#v", events)
+	}
+}
+
 func TestCommandRuntimeAdapterRecordsNativeSessionFromClaudeInitOutput(t *testing.T) {
 	skipUnlessPOSIXProcessDoubles(t)
 	harness, tasks, projects := newServices(t)

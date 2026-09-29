@@ -78,7 +78,11 @@ func TestReasoningDeltaBatcherIgnoresStaleTimerFromCompletedSegment(t *testing.T
 	}
 }
 
-func TestReasoningEmitterShapeRedactsRawContent(t *testing.T) {
+// TestReasoningEmitterKeepsRawContentUnredacted pins issue #288: LLM output
+// is operator-visible execution trace. Secret-shaped or secret-matching text
+// inside a Runtime Reasoning Entry must persist byte-for-byte; redaction stays
+// on non-content surfaces only.
+func TestReasoningEmitterKeepsRawContentUnredacted(t *testing.T) {
 	adapter := newProviderSessionAdapter("claude_code", &fakeProviderTransport{}, "session-1", "turn-1", runtimeplugin.Capabilities{}, providerWireMethods{})
 	var payload task.EventPayload
 	adapter.emitReasoningRuntimeOutput(func(_ task.EventKind, got task.EventPayload) { payload = got }, reasoningRuntimeOutput{
@@ -91,8 +95,8 @@ func TestReasoningEmitterShapeRedactsRawContent(t *testing.T) {
 		Text:          `{"delta":{"thinking":"bearer secret-runtime-token-123456"}}`,
 	})
 	text, _ := payload["text"].(string)
-	if strings.Contains(text, "secret-runtime-token-123456") || !strings.Contains(text, "bearer [REDACTED]") {
-		t.Fatalf("reasoning emitter did not redact content: %#v", payload)
+	if !strings.Contains(text, "bearer secret-runtime-token-123456") {
+		t.Fatalf("reasoning emitter rewrote LLM content: %#v", payload)
 	}
 }
 

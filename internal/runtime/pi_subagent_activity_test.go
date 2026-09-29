@@ -82,7 +82,9 @@ func TestPiHandleEventEmitsSubagentOutputRuntimeOutput(t *testing.T) {
 		events = append(events, payload)
 	})
 
-	line := `{"isSidechain":true,"agentId":"d62e4d35-5898-450","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"child progress"}]}}`
+	// The line carries a secret-shaped token on purpose: subagent output is LLM
+	// content and must persist byte-for-byte (issue #288).
+	line := `{"isSidechain":true,"agentId":"d62e4d35-5898-450","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"child progress: bearer secret-child-token-123456"}]}}`
 	params, err := json.Marshal(map[string]any{"line": line, "session_id": "pi-1"})
 	if err != nil {
 		t.Fatal(err)

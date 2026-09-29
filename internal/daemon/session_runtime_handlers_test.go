@@ -811,8 +811,8 @@ func TestSessionProviderRuntimeOutputKeepsReasoningCorrelationFields(t *testing.
 		t.Fatalf("provider runtime output lost reasoning correlation: %#v", payload)
 	}
 	text, _ := payload["text"].(string)
-	if strings.Contains(text, "secret-session-token-123456") || !strings.Contains(text, "bearer [REDACTED]") {
-		t.Fatalf("session reasoning was not shape-redacted: %q", text)
+	if text != `{"type":"content_block_delta","delta":{"thinking":"bearer secret-session-token-123456"}}` {
+		t.Fatalf("session reasoning must persist byte-for-byte (issue #288), got: %q", text)
 	}
 	if _, leaked := payload["raw"]; leaked {
 		t.Fatalf("provider runtime output leaked raw payload: %#v", payload)

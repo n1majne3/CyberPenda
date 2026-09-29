@@ -130,10 +130,19 @@ func (a *dockerSandboxAdapter) recordRuntimeLineMetadata(line string) {
 func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
 	redactor := adapters.NewRedactor(a.config.SecretValues)
 	var emitMu sync.Mutex
+	// safeEmit redacts container lifecycle and image-pull diagnostics
+	// (non-content surface).
 	safeEmit := func(kind task.EventKind, payload task.EventPayload) {
 		emitMu.Lock()
 		defer emitMu.Unlock()
 		emit(kind, redactor.Redact(payload))
+	}
+	// contentEmit forwards container stdout/stderr (LLM output) byte-for-byte,
+	// without redaction (issue #288).
+	contentEmit := func(kind task.EventKind, payload task.EventPayload) {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		emit(kind, payload)
 	}
 	cli := strings.TrimSpace(a.config.ContainerCLI)
 	if cli == "" {
@@ -245,11 +254,11 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		ScanOutputWithObserver(stdout, "stdout", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, safeEmit)
+		ScanOutputWithObserver(stdout, "stdout", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, contentEmit)
 	}()
 	go func() {
 		defer wg.Done()
-		ScanOutputWithObserver(stderr, "stderr", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, safeEmit)
+		ScanOutputWithObserver(stderr, "stderr", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, contentEmit)
 	}()
 	wg.Wait()
 	waitErr := start.Wait()

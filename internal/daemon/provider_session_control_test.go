@@ -162,8 +162,8 @@ func TestProviderRuntimeOutputPersistsOnlyTranscriptFields(t *testing.T) {
 		t.Fatalf("runtime output lost reasoning correlation fields: %#v", events[0].Payload)
 	}
 	text, _ := events[0].Payload["text"].(string)
-	if strings.Contains(text, "secret-provider-token-123456") || !strings.Contains(text, "bearer [REDACTED]") {
-		t.Fatalf("runtime output reasoning was not shape-redacted: %q", text)
+	if text != `{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"use bearer secret-provider-token-123456 next"}]}}` {
+		t.Fatalf("runtime output reasoning must persist byte-for-byte (issue #288), got: %q", text)
 	}
 	if _, leaked := events[0].Payload["raw"]; leaked {
 		t.Fatalf("runtime output leaked raw provider payload: %#v", events[0].Payload)

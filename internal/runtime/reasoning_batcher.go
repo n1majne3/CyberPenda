@@ -5,7 +5,6 @@ import (
 	"sync"
 	"time"
 
-	"pentest/internal/adapters"
 	"pentest/internal/task"
 )
 
@@ -26,8 +25,8 @@ type reasoningRuntimeOutput struct {
 }
 
 // emitReasoningRuntimeOutput is the single provider-session boundary for a
-// Runtime Reasoning Entry. It applies the normal shape-based redaction before
-// forwarding the bounded correlation payload to the Harness or daemon sink.
+// Runtime Reasoning Entry. Reasoning text is LLM output: it is forwarded
+// byte-for-byte, without redaction (issue #288).
 func (s *providerSessionAdapter) emitReasoningRuntimeOutput(emit ProviderSessionEmit, output reasoningRuntimeOutput) {
 	if s == nil || output.Text == "" {
 		return
@@ -46,7 +45,7 @@ func (s *providerSessionAdapter) emitReasoningRuntimeOutput(emit ProviderSession
 		"provider_item_id": output.ItemID, "phase": output.Phase,
 		"stream": output.Stream, "text": output.Text,
 	}
-	emit(task.EventKindRuntimeOutput, task.EventPayload(adapters.Redact(map[string]any(payload))))
+	emit(task.EventKindRuntimeOutput, payload)
 }
 
 // reasoningDeltaBatcher accumulates reasoning deltas for one streaming segment

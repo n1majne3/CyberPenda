@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"pentest/internal/adapters"
 	"pentest/internal/runtimeoutput"
 	"pentest/internal/task"
 )
@@ -170,10 +169,12 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 						if runtimeoutput.ShouldIgnoreForStorage(trimmed) {
 							continue
 						}
-						emit(task.EventKindRuntimeOutput, task.EventPayload(adapters.Redact(map[string]any{
+						// Tailed session lines are LLM output: they are
+						// forwarded byte-for-byte, without redaction (#288).
+						emit(task.EventKindRuntimeOutput, task.EventPayload{
 							"stream": "pi_session",
 							"text":   trimmed,
-						})))
+						})
 					}
 				}
 				if err != nil {

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	"pentest/internal/adapters"
 	"pentest/internal/blackboardconclusion"
 	"pentest/internal/task"
 )
@@ -201,11 +200,13 @@ func (s *PiProviderSession) emitPiSubagentOutput(params map[string]any, emit Pro
 	if emit == nil {
 		return
 	}
-	emit(task.EventKindRuntimeOutput, task.EventPayload(adapters.Redact(map[string]any{
+	// The line is LLM output: it is forwarded byte-for-byte, without redaction
+	// (issue #288).
+	emit(task.EventKindRuntimeOutput, task.EventPayload{
 		"provider": "pi", "provider_event": "pi/subagent_output",
 		"session_id": s.SessionID(),
 		"stream":     "pi_rpc", "text": line,
-	})))
+	})
 }
 
 func (s *PiProviderSession) emitPiLifecycle(providerEvent string, params map[string]any, outcome string, emit ProviderSessionEmit) {

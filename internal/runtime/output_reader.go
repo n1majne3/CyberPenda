@@ -5,7 +5,6 @@ import (
 	"io"
 	"strings"
 
-	"pentest/internal/adapters"
 	"pentest/internal/runtimeoutput"
 	"pentest/internal/task"
 )
@@ -67,7 +66,8 @@ func ScanOutput(reader io.Reader, stream string, maxLineBytes int, emit func(tas
 
 // ScanOutputWithObserver reads provider stdout/stderr like ScanOutput, while
 // also exposing every raw line to observe before storage filters drop provider
-// metadata such as Claude Code session init records.
+// metadata such as Claude Code session init records. Emitted lines are LLM
+// output and pass through byte-for-byte, without redaction (issue #288).
 func ScanOutputWithObserver(reader io.Reader, stream string, maxLineBytes int, observe func(string), emit func(task.EventKind, task.EventPayload)) {
 	if maxLineBytes <= 0 {
 		maxLineBytes = maxRuntimeOutputLineBytes
@@ -87,15 +87,15 @@ func ScanOutputWithObserver(reader io.Reader, stream string, maxLineBytes int, o
 				if truncated {
 					payload["truncated"] = true
 				}
-				emit(task.EventKindRuntimeOutput, adapters.Redact(payload))
+				emit(task.EventKindRuntimeOutput, payload)
 			}
 		}
 		if err != nil {
 			if err != io.EOF {
-				emit(task.EventKindRuntimeOutput, adapters.Redact(task.EventPayload{
+				emit(task.EventKindRuntimeOutput, task.EventPayload{
 					"stream": stream,
 					"text":   "read " + stream + ": " + err.Error(),
-				}))
+				})
 			}
 			return
 		}

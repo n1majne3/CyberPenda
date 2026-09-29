@@ -157,7 +157,10 @@ func TestPiSessionTailProjectsReasoningBlock(t *testing.T) {
 	}
 }
 
-func TestPiSessionTailShapeRedactsReasoning(t *testing.T) {
+// TestPiSessionTailKeepsReasoningUnredacted pins issue #288: tailed Pi session
+// lines are LLM output and must reach the event store byte-for-byte, even when
+// the text matches a secret shape.
+func TestPiSessionTailKeepsReasoningUnredacted(t *testing.T) {
 	root := t.TempDir()
 	sessionDir := filepath.Join(root, "sessions", "--task-workdir--")
 	adapter := runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, sessionDir)
@@ -171,8 +174,8 @@ func TestPiSessionTailShapeRedactsReasoning(t *testing.T) {
 	writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"reasoning","reasoning":"use bearer secret-pi-token-123456"}]}}`)
 	waitForCount(t, getEmits, 2, 2*time.Second)
 	text, _ := getEmits()[1].payload["text"].(string)
-	if strings.Contains(text, "secret-pi-token-123456") || !strings.Contains(text, "bearer [REDACTED]") {
-		t.Fatalf("Pi reasoning was not shape-redacted: %q", text)
+	if !strings.Contains(text, "bearer secret-pi-token-123456") {
+		t.Fatalf("Pi session tail rewrote LLM content: %q", text)
 	}
 }
 

@@ -10,7 +10,7 @@ Add a readable, complete-as-retained runtime transcript to the task detail page.
 
 ## Context
 
-Task execution currently emits ordered `task_events`. Runtime stdout and stderr are stored as redacted `runtime_output` events, while lifecycle and steering actions use their own event kinds. The task detail page renders these records as a diagnostic Timeline.
+Task execution currently emits ordered `task_events`. Runtime stdout and stderr are stored as `runtime_output` events byte-for-byte — LLM output is never redacted (issue #288) — while lifecycle and steering actions use their own event kinds. The task detail page renders these records as a diagnostic Timeline.
 
 The Timeline is useful for debugging but does not provide a readable conversation. The new transcript is a projection over the same retained events, not a replacement for the Timeline or a second source of truth.
 
@@ -149,9 +149,9 @@ Expanded content renders structured details as formatted JSON and plain details 
 
 ## Redaction And Security
 
-The transcript reads the already-redacted event payloads. It must not inspect runtime profile credentials, auth projections, or process environment values to enrich the display.
+The transcript reads the retained event payloads as stored. Since issue #288, LLM output events (assistant messages, reasoning, tool-call content, runtime stdout/stderr) are persisted byte-for-byte without redaction; redaction remains only on non-content surfaces (credential responses, configuration previews, launch and lifecycle diagnostics). The transcript must not inspect runtime profile credentials, auth projections, or process environment values to enrich the display.
 
-The endpoint applies normal project/task authorization and returns no filesystem paths beyond content already present in the retained events. Unknown output is displayed verbatim only after existing runtime redaction.
+The endpoint applies normal project/task authorization and returns no filesystem paths beyond content already present in the retained events. Unknown output is displayed verbatim as retained.
 
 ## Error Handling
 

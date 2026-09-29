@@ -163,8 +163,8 @@ func NewCommandAdapter(config CommandAdapterConfig) Adapter {
 
 // EnvSecretValues returns the secret values from a resolved runtime env map so a
 // Redactor can mask them by exact match. Keys are ignored: only the resolved
-// values are sensitive. Used to seed output redaction with the credentials a
-// runtime actually launches with.
+// values are sensitive. Used to seed redaction of launch and diagnostic events
+// (non-content surfaces); LLM output is never redacted (issue #288).
 func EnvSecretValues(env map[string]string) []string {
 	if len(env) == 0 {
 		return nil
@@ -234,10 +234,18 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 	}
 	redactor := adapters.NewRedactor(EnvSecretValues(a.config.Env))
 	var emitMu sync.Mutex
+	// safeEmit redacts launch and lifecycle diagnostics (non-content surface).
 	safeEmit := func(kind task.EventKind, payload task.EventPayload) {
 		emitMu.Lock()
 		defer emitMu.Unlock()
 		emit(kind, redactor.Redact(payload))
+	}
+	// contentEmit forwards runtime stdout/stderr (LLM output) byte-for-byte,
+	// without redaction (issue #288).
+	contentEmit := func(kind task.EventKind, payload task.EventPayload) {
+		emitMu.Lock()
+		defer emitMu.Unlock()
+		emit(kind, payload)
 	}
 
 	cmd := exec.CommandContext(ctx, a.config.Program, a.config.Args...)
@@ -271,11 +279,11 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		ScanOutputWithObserver(stdout, "stdout", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, safeEmit)
+		ScanOutputWithObserver(stdout, "stdout", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, contentEmit)
 	}()
 	go func() {
 		defer wg.Done()
-		ScanOutputWithObserver(stderr, "stderr", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, safeEmit)
+		ScanOutputWithObserver(stderr, "stderr", maxRuntimeOutputLineBytes, a.recordRuntimeLineMetadata, contentEmit)
 	}()
 	wg.Wait()
 
