@@ -27,7 +27,7 @@ describe("demo API", () => {
     const result = await apiGet<{ projects: Array<{ id: string; name: string }> }>("/api/projects");
 
     expect(result.projects).toEqual([
-      expect.objectContaining({ id: "demo-project", name: "Acme External" }),
+      expect.objectContaining({ id: "demo-project", name: "VulnCastle" }),
     ]);
     expect(fetchMock).not.toHaveBeenCalled();
   });
