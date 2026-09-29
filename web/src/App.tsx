@@ -3,6 +3,7 @@ import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { ShieldAlert, Menu, X } from "lucide-react";
 import { Logo } from "@/components/Logo";
+import { OperatorCredentialGate } from "@/components/OperatorCredentialGate";
 import { WorkspaceSidebar } from "@/components/WorkspaceSidebar";
 import { cn } from "@/lib/utils";
 
@@ -258,5 +259,9 @@ function createAppRouter() {
 
 export default function App() {
   const router = useMemo(() => createAppRouter(), []);
-  return <RouterProvider router={router} />;
+  return (
+    <OperatorCredentialGate>
+      <RouterProvider router={router} />
+    </OperatorCredentialGate>
+  );
 }

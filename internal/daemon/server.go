@@ -1041,6 +1041,7 @@ func (server *Server) routes() {
 	server.registerBlackboardV2Routes()
 	server.registerFGSRoutes()
 	server.mux.HandleFunc("POST /api/operator-session", server.handleOperatorSession)
+	server.mux.HandleFunc("DELETE /api/operator-session", server.handleOperatorSessionDelete)
 	server.registerSPA()
 }
 

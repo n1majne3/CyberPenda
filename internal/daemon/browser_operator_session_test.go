@@ -87,8 +87,7 @@ func TestBrowserSessionDoesNotBootstrapRemoteOrRuntimeAuthority(t *testing.T) {
 		{"cross-site", "", "127.0.0.1:1234", "127.0.0.1:8787", "cross-site", ""},
 		{"foreign-host", "", "127.0.0.1:1234", "example.test", "same-origin", ""},
 		{"configured-auth", "configured-secret", "127.0.0.1:1234", "127.0.0.1:8787", "same-origin", ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	} {		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			s, err := NewServer(Config{DBPath: filepath.Join(root, "test.db"), RuntimeRoot: filepath.Join(root, "runs"), AuthToken: tc.token, DisableBuiltinSkills: true})
 			if err != nil {
@@ -105,5 +104,101 @@ func TestBrowserSessionDoesNotBootstrapRemoteOrRuntimeAuthority(t *testing.T) {
 				t.Fatalf("untrusted bootstrap: %d", w.Code)
 			}
 		})
+	}
+}
+
+// A browser that closes must not lose the operator session: the cookie carries
+// a persistence lifetime instead of dying with the browser session.
+func TestOperatorSessionCookiePersistsBeyondBrowserSession(t *testing.T) {
+	root := t.TempDir()
+	s, err := NewServer(Config{DBPath: filepath.Join(root, "test.db"), RuntimeRoot: filepath.Join(root, "runs"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8787/api/operator-session", nil)
+	r.RemoteAddr = "127.0.0.1:12345"
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("browser session: %d %s", w.Code, w.Body.String())
+	}
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("expected one session cookie, got %d", len(cookies))
+	}
+	if cookies[0].MaxAge <= 0 {
+		t.Fatalf("operator session cookie is browser-scoped (MaxAge=%d)", cookies[0].MaxAge)
+	}
+}
+
+// An operator with the configured token signs in from a non-loopback peer
+// (SSH tunnel, container gateway) by presenting the bearer credential; the
+// daemon answers with the persistent browser cookie.
+func TestConfiguredTokenBrowserSignInFromRemotePeer(t *testing.T) {
+	root := t.TempDir()
+	s, err := NewServer(Config{DBPath: filepath.Join(root, "test.db"), RuntimeRoot: filepath.Join(root, "runs"), ListenAddr: "0.0.0.0:8787", AuthToken: "configured-secret", DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	r := httptest.NewRequest(http.MethodPost, "http://172.17.0.1:8787/api/operator-session", nil)
+	r.RemoteAddr = "172.17.0.2:12345"
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
+	r.Header.Set("Authorization", "Bearer configured-secret")
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, r)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("bearer sign-in: %d %s", w.Code, w.Body.String())
+	}
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].MaxAge <= 0 {
+		t.Fatalf("bearer sign-in must issue a persistent cookie: %+v", cookies)
+	}
+}
+
+// Sign-out expires the browser cookie so the session does not survive on a
+// shared machine. Only a same-origin browser request may expire it.
+func TestOperatorSessionDeleteExpiresBrowserCookie(t *testing.T) {
+	root := t.TempDir()
+	s, err := NewServer(Config{DBPath: filepath.Join(root, "test.db"), RuntimeRoot: filepath.Join(root, "runs"), AuthToken: "configured-secret", DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	signIn := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:8787/api/operator-session", nil)
+	signIn.RemoteAddr = "127.0.0.1:12345"
+	signIn.Header.Set("Sec-Fetch-Site", "same-origin")
+	signIn.Header.Set("Authorization", "Bearer configured-secret")
+	signInRecorder := httptest.NewRecorder()
+	s.ServeHTTP(signInRecorder, signIn)
+	if signInRecorder.Code != http.StatusNoContent || len(signInRecorder.Result().Cookies()) != 1 {
+		t.Fatalf("bearer sign-in: %d", signInRecorder.Code)
+	}
+	sessionCookie := signInRecorder.Result().Cookies()[0]
+	deleteSession := func(site string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodDelete, "http://127.0.0.1:8787/api/operator-session", nil)
+		r.RemoteAddr = "127.0.0.1:12345"
+		if site != "" {
+			r.Header.Set("Sec-Fetch-Site", site)
+		}
+		if cookie != nil {
+			r.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		return w
+	}
+	if w := deleteSession("cross-site", sessionCookie); w.Code == http.StatusNoContent {
+		t.Fatal("cross-site request expired the browser session")
+	}
+	w := deleteSession("same-origin", sessionCookie)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("sign-out: %d %s", w.Code, w.Body.String())
+	}
+	cookies := w.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != operatorSessionCookie || cookies[0].MaxAge >= 0 {
+		t.Fatalf("sign-out must expire the operator cookie: %+v", cookies)
 	}
 }

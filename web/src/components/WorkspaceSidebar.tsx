@@ -15,6 +15,7 @@ import {
 import {
   apiGet,
   archiveSession,
+  clearOperatorCredential,
   getSession,
   listSessions,
   renameSession,
@@ -437,6 +438,21 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
           <span className="px-2 text-xs text-muted-foreground">Theme</span>
           <ThemeToggle />
         </div>
+        {import.meta.env.VITE_DEMO_MODE !== "true" && (
+          <div className="mt-1 flex items-center justify-between">
+            <span className="px-2 text-xs text-muted-foreground">Operator session</span>
+            <button
+              type="button"
+              onClick={() => void clearOperatorCredential()}
+              className={cn(
+                "inline-flex h-7 items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
+                sidebarFocusClass,
+              )}
+            >
+              Sign out
+            </button>
+          </div>
+        )}
       </aside>
       <PromptDialog
         open={renameTarget !== null}

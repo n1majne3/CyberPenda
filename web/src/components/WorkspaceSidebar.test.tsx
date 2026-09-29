@@ -2,6 +2,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { operatorCredentialIsNeeded, resetOperatorCredentialStateForTests } from "@/lib/api";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { ThemeProvider } from "./ThemeProvider";
 
@@ -70,6 +71,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   window.sessionStorage.clear();
   Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+  resetOperatorCredentialStateForTests();
 });
 
 describe("WorkspaceSidebar", () => {
@@ -1107,5 +1109,45 @@ describe("WorkspaceSidebar", () => {
     expect(within(nonProject).getByRole("link", { name: /offline session/i })).toHaveTextContent("· Stopped");
     expect(within(nonProject).getByRole("link", { name: /orphaned session/i })).toHaveTextContent("· Unknown");
     expect(within(nonProject).getByRole("link", { name: /failed session/i })).toHaveTextContent("· Failed");
+  });
+
+  it("signs out by clearing the tab token and expiring the daemon cookie", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.setItem("pentest.authToken", "tab-token");
+    const fetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/api/operator-session" && method === "DELETE") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      if (url === "/api/operator-session" && method === "POST") {
+        // A fixed-token daemon behind a tunnel cannot re-establish the session.
+        return Promise.resolve(new Response(null, { status: 401 }));
+      }
+      if (url.startsWith("/api/workspace/navigation")) return response({ projects: [] });
+      if (url.startsWith("/api/sessions")) return response({ sessions: [] });
+      return response({});
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/sessions"]}>
+          <WorkspaceSidebar />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+    await screen.findByRole("region", { name: /non-project/i });
+
+    await act(async () => {
+      await user.click(screen.getByRole("button", { name: "Sign out" }));
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/operator-session",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(window.sessionStorage.getItem("pentest.authToken")).toBeNull();
+    expect(operatorCredentialIsNeeded()).toBe(true);
   });
 });

@@ -8,15 +8,99 @@ const authTokenParam = "token";
 const authTokenStorageKey = "pentest.authToken";
 let browserSessionRequest: Promise<boolean> | undefined;
 
+let operatorCredentialNeeded = false;
+const operatorCredentialListeners = new Set<() => void>();
+
+// The one GET a failed bootstrap interrupted. Sign-in replays it exactly once;
+// a denied mutation is never recorded, so it is never replayed.
+let deniedRequestRetry: { path: string } | null = null;
+
+export function takeDeniedRequestRetry(): { path: string } | null {
+  const retry = deniedRequestRetry;
+  deniedRequestRetry = null;
+  return retry;
+}
+
+function setOperatorCredentialNeeded(needed: boolean) {
+  if (operatorCredentialNeeded === needed) return;
+  operatorCredentialNeeded = needed;
+  for (const listener of operatorCredentialListeners) listener();
+}
+
+export function subscribeOperatorCredentialState(listener: () => void): () => void {
+  operatorCredentialListeners.add(listener);
+  return () => {
+    operatorCredentialListeners.delete(listener);
+  };
+}
+
+export function operatorCredentialIsNeeded(): boolean {
+  return operatorCredentialNeeded;
+}
+
+export function resetOperatorCredentialStateForTests(): void {
+  deniedRequestRetry = null;
+  setOperatorCredentialNeeded(false);
+}
+
 function refreshBrowserSession(): Promise<boolean> {
   if (!browserSessionRequest) {
     browserSessionRequest = fetch("/api/operator-session", {
       method: "POST", credentials: "same-origin",
-    }).then((response) => response.ok).catch(() => false).finally(() => {
+    }).then((response) => {
+      if (response.ok) setOperatorCredentialNeeded(false);
+      return response.ok;
+    }).catch(() => false).finally(() => {
       browserSessionRequest = undefined;
     });
   }
   return browserSessionRequest;
+}
+
+// The operator submits a token through the sign-in form. The daemon validates
+// it before anything is stored: a rejected token never reaches sessionStorage.
+export async function submitOperatorToken(token: string): Promise<void> {
+  const candidate = token.trim();
+  if (!candidate) throw new Error("An operator token is required.");
+  const response = await fetch("/api/operator-session", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { Authorization: `Bearer ${candidate}` },
+  });
+  if (!response.ok) {
+    let message = `operator sign-in failed (${response.status})`;
+    try {
+      message = extractErrorMessage(await response.json()) ?? message;
+    } catch {
+      // non-JSON error; keep the status message
+    }
+    throw new ApiError(message, response.status, undefined);
+  }
+  try {
+    window.sessionStorage.setItem(authTokenStorageKey, candidate);
+  } catch {
+    // Session storage may be disabled; the daemon cookie still carries the session.
+  }
+  setOperatorCredentialNeeded(false);
+}
+
+// Sign-out clears the tab credential and expires the daemon's browser cookie.
+// A local generated-token daemon transparently re-establishes the session, so
+// the credential prompt only appears when the daemon truly cannot authorize.
+export async function clearOperatorCredential(): Promise<void> {
+  try {
+    window.sessionStorage.removeItem(authTokenStorageKey);
+  } catch {
+    // Storage can be disabled.
+  }
+  try {
+    await fetch("/api/operator-session", { method: "DELETE", credentials: "same-origin" });
+  } catch {
+    // An unreachable daemon leaves no session to expire.
+  }
+  if (!(await refreshBrowserSession())) {
+    setOperatorCredentialNeeded(true);
+  }
 }
 
 export class ApiError extends Error {
@@ -46,15 +130,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
   });
   // A direct link or daemon restart can leave this tab without a valid login.
-  // The daemon establishes the browser session; never retry a mutation or
-  // replace credentials explicitly supplied by an API caller.
-  if ((res.status === 401 || res.status === 403) && (init?.method ?? "GET") === "GET" &&
-      !new Headers(init?.headers).has("Authorization") && await refreshBrowserSession()) {
-    try { window.sessionStorage.removeItem(authTokenStorageKey); } catch { /* Storage can be disabled. */ }
-    for (const key of Object.keys(headers)) {
-      if (key.toLowerCase() === "authorization") delete headers[key];
+  // The daemon establishes the browser session; never replace credentials
+  // explicitly supplied by an API caller, and never replay a mutation — a
+  // repaired cookie lets the operator's next attempt succeed instead.
+  const explicitCredential = new Headers(init?.headers).has("Authorization");
+  if ((res.status === 401 || res.status === 403) && !explicitCredential) {
+    if (await refreshBrowserSession()) {
+      if ((init?.method ?? "GET") === "GET") {
+        try { window.sessionStorage.removeItem(authTokenStorageKey); } catch { /* Storage can be disabled. */ }
+        for (const key of Object.keys(headers)) {
+          if (key.toLowerCase() === "authorization") delete headers[key];
+        }
+        res = await fetch(base + path, { ...init, headers, credentials: "same-origin" });
+      }
+    } else {
+      // The daemon cannot authorize this browser (fixed token behind a tunnel,
+      // or no usable credential). A stored token that the daemon rejected is
+      // stale, so the sign-in form starts from an empty credential.
+      try { window.sessionStorage.removeItem(authTokenStorageKey); } catch { /* Storage can be disabled. */ }
+      deniedRequestRetry = (init?.method ?? "GET") === "GET" ? { path } : null;
+      setOperatorCredentialNeeded(true);
     }
-    res = await fetch(base + path, { ...init, headers, credentials: "same-origin" });
   }
   if (!res.ok) {
     let message = `${res.status} ${res.statusText}`;
