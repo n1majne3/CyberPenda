@@ -7,7 +7,8 @@ Status: 持续维护的演进日志。每版 = 一次 bundle 发布 + 至少一�
 Domain terms: [CONTEXT.md](../CONTEXT.md)。
 
 基线: 旧编排器会话架构 step-5 最优 16,100(run 20699,135M token);
-CyberPenda 历史最高 21,670(94.95%,deepseek-flash,run 16290)。
+CyberPenda 历史最高 **21,800(94.95%,deepseek-flash,run 22289,即本系列 p6)**,
+已公开(官方榜第 14)。其前一档为旧架构 21,670(93.82%,run 16290)。
 
 | 版本 | 主题 | 关键改动 | 实测 run | 结果与教训 |
 | --- | --- | --- | --- | --- |
