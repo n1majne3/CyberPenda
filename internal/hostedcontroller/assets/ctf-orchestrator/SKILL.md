@@ -136,7 +136,7 @@ date +%s > graph/leader.lock
 
 | 事项 | 归属 |
 | --- | --- |
-| 选题、配额补位、重试上限、开工标记/超时看门狗、平台周期对账、收尾前 5 分钟停派 | dispatcher 脚本 |
+| 选题、配额补位、重试上限、开工标记/超时看门狗、闲置槽回收(非 running 题的活实例立即放槽)、首段 8 分钟探针预算、平台周期对账、收尾前 5 分钟停派 | dispatcher 脚本 |
 | 派发动作本身(Agent 工具调用、mark dispatched) | 你 |
 | `uncertain` 升级(追投或收割、连环 infra 死亡、平台异常、hint 请求) | 你 |
 | 攻击目标、写退场报告、提交 flag | Execute agent |
@@ -164,8 +164,11 @@ date +%s > graph/leader.lock
 就是调度失败。
 
 - **未完成的题禁止 close。close 只用于**平台 `list` 已证明 complete 的题;
-  放槽一律 `abandon "$code" "$reason"`(dispatcher 的 release 已内建该规则),
+  放槽一律 `abandon "$code" "$reason"`(dispatcher 的 release 已内建该规则,
+  harvest 的闲置槽回收会把非 running 题的活实例自动放槽),
   abandon 与下一次 start 不串在同一命令里,2 分钟内补位。
+- **每题第一棒是探针棒**(预算 8 分钟):找到立足点或 flag 才转深挖全额预算,
+  空探针沉底等复活。不要跳过探针直接深挖。
 
 ## 回合纪律(硬性)
 

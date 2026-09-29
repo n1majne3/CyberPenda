@@ -28,6 +28,10 @@ import time
 from pathlib import Path
 
 DIFFICULTY_BUDGET_MIN = {"easy": 15, "medium": 25, "hard": 35, "chain": 60}
+# p10 首段探针:每题第一次开工只给 8 分钟。找到立足点(报告 foothold 非空
+# 或拿到 flag)才转深挖全额预算;空探针沉底等复活。目的是压缩每 pass 占槽
+# 时长——容器配额 3 是平台上限,吞吐只能靠车道换手率。
+PROBE_BUDGET_MIN = 8
 DEFAULT_QUOTA = 3
 RESTART_CAP = 3
 INFRA_DEATH_CAP = 4
@@ -289,9 +293,11 @@ def next_milestone(led, code):
 # ---------------------------------------------------------------- assemble
 
 
-def build_prompt(ws, led, code):
+def build_prompt(ws, led, code, budget_min=None):
     rec = led["challenges"][code]
     k = rec["attempt"] + 1
+    if budget_min is None:
+        budget_min = rec["budget_min"]
     attempts_rel = "graph/attempts/%s/%d.md" % (code, k)
     started_rel = "graph/attempts/%s/%d.started" % (code, k)
     milestone = next_milestone(led, code)
@@ -304,7 +310,7 @@ def build_prompt(ws, led, code):
         "【家族经验】\n%s" % collect_family_knowledge(ws, code),
         WORK_STYLE.format(started_marker=started_rel, code=code),
         EXIT_PROTOCOL.format(attempts_path=attempts_rel, code=code,
-                             attempt=k, budget_min=rec["budget_min"]),
+                             attempt=k, budget_min=budget_min),
     ]
     return k, attempts_rel, "\n\n".join(parts)
 
@@ -322,7 +328,15 @@ def assemble(ws, led, code, reason="manual"):
         return None
     led["seq"] += 1
     did = "d%03d" % led["seq"]
-    k, attempts_rel, prompt = build_prompt(ws, led, code)
+    # p10:每题第一棒是探针(短预算);探针棒顺带记家族事实观测,供复盘
+    # 家族门控是否值得启用(门控本身本轮否决,防 c-03 类饿死)。
+    probe = rec["attempt"] == 0
+    budget = PROBE_BUDGET_MIN if probe else rec["budget_min"]
+    fam = family_of(code)
+    fam_facts = "yes" if any(
+        family_of(c) == fam and r.get("flags_correct")
+        for c, r in led["challenges"].items()) else "no"
+    k, attempts_rel, prompt = build_prompt(ws, led, code, budget)
     (ws.attempts / code).mkdir(parents=True, exist_ok=True)
     rec["attempt"] = k
     rec["state"] = "running"
@@ -331,8 +345,9 @@ def assemble(ws, led, code, reason="manual"):
     p.write_text(prompt, encoding="utf-8")
     led["dispatches"][did] = {
         "code": code, "attempt": k, "state": "ready",
-        "created": now(), "hard_stop": now() + rec["budget_min"] * 60,
+        "created": now(), "hard_stop": now() + budget * 60,
         "reason": reason, "prompt": str(p.relative_to(ws.root)).replace("\\", "/"),
+        "probe": probe, "family_facts": fam_facts,
     }
     print("READY %s %s attempt=%d reason=%s prompt=%s" % (did, code, k, reason, p.name))
     return did
@@ -477,6 +492,15 @@ def _last_dispatch(led, code):
     return best
 
 
+def _deep_dispatch_of(led, code):
+    """返回该题最近的非探针派发(探针转深挖的验证用)。"""
+    best, best_t = None, -1
+    for did, d in led["dispatches"].items():
+        if d["code"] == code and not d.get("probe") and d.get("created", 0) > best_t:
+            best, best_t = d, d["created"]
+    return best
+
+
 def _mark_family_grew(led, solved_code):
     fam = family_of(solved_code)
     for code, rec in led["challenges"].items():
@@ -533,6 +557,12 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
                          % rec["infra_deaths"])
                 rec["state"] = "exhausted"
             actions.append("watchdog %s %s infra_deaths=%d" % (did, code, rec["infra_deaths"]))
+    # 2.5) 闲置槽回收(p10):非 running 题的活实例立即放槽——槽是稀缺
+    # 资源,占着不出分就是浪费。放槽从平台节奏改成调度器节奏。
+    for code, rec in led["challenges"].items():
+        if rec.get("instance") and rec["state"] != "running":
+            release_instance(ws, led, code)
+            actions.append("idle-slot-release %s state=%s" % (code, rec["state"]))
     # 3) 平台周期对账(有 platform.sh 才做)
     if ws.platform.exists():
         for code, rec in led["challenges"].items():
@@ -781,6 +811,49 @@ def selftest():
             assert led2["challenges"]["f2-05"]["flags_total"] == 1
         finally:
             shutil.rmtree(tmp2, ignore_errors=True)
+        # p10:首段探针预算、立足点转深挖、闲置槽回收、家族事实观测。
+        tmp3 = Path(tempfile.mkdtemp(prefix="dispatch-selftest3-"))
+        try:
+            ws3 = WS(tmp3)
+            (tmp3 / "challenges.json").write_text(json.dumps({"challenges": [
+                {"challenge_code": "a-01", "challenge_name": "T1", "challenge_score": 500,
+                 "difficulty": "hard", "total_flag_count": 1},
+            ]}), encoding="utf-8")
+            cmd_init(argparse.Namespace(ws=str(tmp3), challenges=str(tmp3 / "challenges.json")))
+            led3 = ws3.ledger()
+            didp = assemble(ws3, led3, "a-01", reason="fill")
+            ws3.save_ledger(led3)
+            d = led3["dispatches"][didp]
+            assert d["hard_stop"] - d["created"] == PROBE_BUDGET_MIN * 60, "首段必须是探针预算"
+            assert d.get("probe") is True and "family_facts" in d, "探针棒缺观测字段"
+            pr = (ws3.outbox / ("%s-a-01.prompt.md" % didp)).read_text(encoding="utf-8")
+            assert "本段预算 8 分钟" in pr, "探针棒 prompt 预算必须是 8 分钟"
+            # 探针报告:有立足点,预算停 → partial,下一棒转深挖全额预算
+            led3["dispatches"][didp]["state"] = "dispatched"
+            ws3.save_ledger(led3)
+            p = ws3.attempt_path("a-01", 1)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("---\nchallenge: a-01\nattempt: 1\noutcome: budget_stop\n"
+                         "flags_gained: 0\nfoothold: \"登录绕过 OK\"\nnext_milestone: x\n---\n"
+                         "# 试过的面\n- 探到\n提交返回 {\"correct\": false}\n", encoding="utf-8")
+            harvest(ws3, quota=3, dry=False)
+            led3 = ws3.ledger()
+            # partial+foothold 立即被补位重派(ranks 第一),第二棒全额预算
+            assert led3["challenges"]["a-01"]["state"] == "running", "立足点题应被立即重派"
+            dd = _deep_dispatch_of(led3, "a-01")
+            assert dd is not None and dd["attempt"] == 2, "缺第二棒深挖派发"
+            assert dd["hard_stop"] - dd["created"] == 35 * 60, "立足点后必须全额预算"
+            assert not dd.get("probe"), "第二棒起不再是探针"
+            # 闲置槽回收:非 running 题挂活实例 → harvest 即放槽
+            led3["challenges"]["a-01"]["instance"] = {"addr": "1.2.3.4:80", "since": now()}
+            led3["challenges"]["a-01"]["state"] = "partial"
+            ws3.save_ledger(led3)
+            acts = harvest(ws3, quota=3, dry=False)
+            led3 = ws3.ledger()
+            assert led3["challenges"]["a-01"]["instance"] is None, "闲置实例未被回收"
+            assert any(a.startswith("idle-slot-release a-01") for a in acts), "缺 idle-slot-release 动作行"
+        finally:
+            shutil.rmtree(tmp3, ignore_errors=True)
         print("selftest: 全部通过")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
