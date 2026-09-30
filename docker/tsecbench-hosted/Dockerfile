@@ -64,6 +64,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     fonts-unifont fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/*
 
+# Kali's nmap ships /usr/lib/nmap/nmap with file capabilities that are not
+# all inside Docker's default container capability bounding set, so execve(2)
+# fails with EPERM (#286). The TSecBench Hosted Image runs as root, and
+# CAP_NET_RAW is in the bounding set, so nmap needs no file capabilities.
+# The nmap --version guard executes the real binary under the same bounding
+# set: a future Kali package with out-of-set caps then fails the image
+# build, not a Benchmark Challenge. The later command -v nmap check only
+# proves that the wrapper is on PATH. Keep this comment general; a content
+# test rejects certain capability names in this Dockerfile.
+RUN setcap -r /usr/lib/nmap/nmap \
+  && nmap --version >/dev/null
+
 # Kali qemu-user 11 ships qemu-<arch>, not qemu-<arch>-static.
 RUN for bin in /usr/bin/qemu-*; do \
       base="${bin##*/}"; \

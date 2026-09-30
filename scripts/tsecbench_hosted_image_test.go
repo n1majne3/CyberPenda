@@ -227,6 +227,35 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	}
 }
 
+func TestTSecBenchHostedDockerfileStripsNmapFileCapabilities(t *testing.T) {
+	root := repoRoot(t)
+	contents, err := os.ReadFile(filepath.Join(root, "docker", "tsecbench-hosted", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read Hosted Image Dockerfile: %v", err)
+	}
+	dockerfile := string(contents)
+
+	for _, required := range []string{
+		// Kali's nmap ships /usr/lib/nmap/nmap with file capabilities that are
+		// not all inside Docker's default container capability bounding set;
+		// execve(2) then fails with EPERM (#286).
+		"setcap -r /usr/lib/nmap/nmap",
+		// The guard must execute the real binary: the later command -v checks
+		// only prove the wrapper is on PATH. Build RUN steps use the same
+		// default bounding set, so a future Kali nmap package with out-of-set
+		// file caps fails the build instead of a challenge task.
+		"nmap --version >/dev/null",
+	} {
+		assertContains(t, dockerfile, required)
+	}
+
+	aptInstall := strings.Index(dockerfile, "apt-get install")
+	strip := strings.Index(dockerfile, "setcap -r /usr/lib/nmap/nmap")
+	if aptInstall == -1 || strip == -1 || strip < aptInstall {
+		t.Fatal("the nmap file-capability strip must run after the apt layer installs nmap")
+	}
+}
+
 func TestTSecBenchHostedImageSmokeWhenAnImageIsConfigured(t *testing.T) {
 	image := strings.TrimSpace(os.Getenv(hostedImageEnvironment))
 	if image == "" {

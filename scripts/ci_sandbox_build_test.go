@@ -69,6 +69,34 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	}
 }
 
+func TestSandboxDockerfileStripsNmapFileCapabilities(t *testing.T) {
+	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot(t), "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read sandbox Dockerfile: %v", err)
+	}
+	dockerfile := string(dockerfileBytes)
+
+	for _, required := range []string{
+		// Kali's nmap ships /usr/lib/nmap/nmap with file capabilities that
+		// include cap_net_admin, which is outside Docker's default container
+		// capability bounding set; execve(2) then fails with EPERM (#286).
+		"setcap -r /usr/lib/nmap/nmap",
+		// The guard must execute the real binary, not only test that it is on
+		// PATH: build RUN steps use the same default bounding set, so a future
+		// Kali nmap package with out-of-set file caps fails the build instead
+		// of a sandbox task.
+		"nmap --version >/dev/null",
+	} {
+		assertContains(t, dockerfile, required)
+	}
+
+	aptInstall := strings.Index(dockerfile, "apt-get install")
+	strip := strings.Index(dockerfile, "setcap -r /usr/lib/nmap/nmap")
+	if aptInstall == -1 || strip == -1 || strip < aptInstall {
+		t.Fatal("the nmap file-capability strip must run after the apt layer installs nmap")
+	}
+}
+
 func TestSandboxDockerfileInstallsTheOfflineKnowledgeBaseline(t *testing.T) {
 	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot(t), "docker", "pentest-sandbox", "Dockerfile"))
 	if err != nil {
