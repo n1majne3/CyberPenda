@@ -32,6 +32,16 @@ DIFFICULTY_BUDGET_MIN = {"easy": 15, "medium": 25, "hard": 35, "chain": 60}
 # 或拿到 flag)才转深挖全额预算;空探针沉底等复活。目的是压缩每 pass 占槽
 # 时长——容器配额 3 是平台上限,吞吐只能靠车道换手率。
 PROBE_BUDGET_MIN = 8
+# p11 攻坚模式:holdout 的卡点是每棒太短+续作失效(23972 复盘:c-03/a-18 烧 23% 调用
+# 零产出,深挖棒刚进状态就到点,下一棒重做侦察)。
+# SIEGE_BUDGET_MIN: 有立足点的续作棒(围城棒)预算下限——链式工作不被预算切断;
+# ZERO_PROGRESS_STEP/BUDGET_CEILING: 连续零进展(无 flag 且无立足点)自动加深预算,
+# 治难度误标(c-03 标 easy 实为深题);
+# ENDGAME_SIEGE_SEC: 终盘窗口内停止开新题探针,车道只续作有足迹的题。
+SIEGE_BUDGET_MIN = 60
+ZERO_PROGRESS_STEP = 15
+BUDGET_CEILING = 90
+ENDGAME_SIEGE_SEC = 3600
 DEFAULT_QUOTA = 3
 RESTART_CAP = 3
 INFRA_DEATH_CAP = 4
@@ -293,7 +303,7 @@ def next_milestone(led, code):
 # ---------------------------------------------------------------- assemble
 
 
-def build_prompt(ws, led, code, budget_min=None):
+def build_prompt(ws, led, code, budget_min=None, siege=False):
     rec = led["challenges"][code]
     k = rec["attempt"] + 1
     if budget_min is None:
@@ -301,6 +311,9 @@ def build_prompt(ws, led, code, budget_min=None):
     attempts_rel = "graph/attempts/%s/%d.md" % (code, k)
     started_rel = "graph/attempts/%s/%d.started" % (code, k)
     milestone = next_milestone(led, code)
+    if siege:
+        milestone = ("【围城续作】上一棒的立足点仍有效,本棒从其里程碑直接续作;"
+                     "禁止重验已排除面与已完成步骤,失败面不重走。目标:%s" % milestone)
     parts = [
         FIXED_HEADER.format(addr=rec.get("addr") or "(见平台 list 输出)",
                             name=rec["name"], code=code,
@@ -331,12 +344,15 @@ def assemble(ws, led, code, reason="manual"):
     # p10:每题第一棒是探针(短预算);探针棒顺带记家族事实观测,供复盘
     # 家族门控是否值得启用(门控本身本轮否决,防 c-03 类饿死)。
     probe = rec["attempt"] == 0
+    siege = bool(rec.get("foothold")) and not probe
     budget = PROBE_BUDGET_MIN if probe else rec["budget_min"]
+    if siege:
+        budget = max(budget, SIEGE_BUDGET_MIN)
     fam = family_of(code)
     fam_facts = "yes" if any(
         family_of(c) == fam and r.get("flags_correct")
         for c, r in led["challenges"].items()) else "no"
-    k, attempts_rel, prompt = build_prompt(ws, led, code, budget)
+    k, attempts_rel, prompt = build_prompt(ws, led, code, budget, siege=siege)
     (ws.attempts / code).mkdir(parents=True, exist_ok=True)
     rec["attempt"] = k
     rec["state"] = "running"
@@ -347,7 +363,7 @@ def assemble(ws, led, code, reason="manual"):
         "code": code, "attempt": k, "state": "ready",
         "created": now(), "hard_stop": now() + budget * 60,
         "reason": reason, "prompt": str(p.relative_to(ws.root)).replace("\\", "/"),
-        "probe": probe, "family_facts": fam_facts,
+        "probe": probe, "siege": siege, "family_facts": fam_facts,
     }
     print("READY %s %s attempt=%d reason=%s prompt=%s" % (did, code, k, reason, p.name))
     return did
@@ -387,15 +403,22 @@ def in_endgame(ws):
     return dl is not None and now() > dl - ENDGAME_MARGIN_SEC
 
 
+def near_deadline(ws, margin):
+    dl = ws.deadline()
+    return dl is not None and now() > dl - margin
+
+
 DIFFICULTY_RANK = {"easy": 0, "medium": 1, "hard": 2}
 
 
-def pick_next(led):
+def pick_next(led, exclude_fresh=False):
     """规则:新题 > 部分+foothold > 家族有新经验的 blocked;其余沉底。
 
     新题内部排序(命中率反馈回路,来自 21119 的教训——纯分值降序会让
     三棒全是多阶段硬题):已出分家族优先 > 未开家族;家族内先易后难,
-    再按分值。"""
+    再按分值。
+    exclude_fresh(p11 终盘围城):deadline 前 ENDGAME_SIEGE_SEC 内不再开
+    新题探针,车道只续作有足迹(attempt>0)的题。"""
     fam_solved = {}
     for code, rec in led["challenges"].items():
         f = family_of(code)
@@ -419,6 +442,8 @@ def pick_next(led):
     candidates = []
     for code, rec in led["challenges"].items():
         if rec["state"] in ("running", "solved", "exhausted"):
+            continue
+        if exclude_fresh and rec.get("attempt", 0) == 0:
             continue
         if rec.get("restarts", 0) >= RESTART_CAP and not rec.get("flags_correct"):
             continue
@@ -479,6 +504,10 @@ def account_report(ws, led, code, k, meta):
             rec["state"] = "exhausted"
         else:
             rec["state"] = "partial"
+    # p11: 零进展棒(无新 flag 且无立足点)加深预算——治难度误标(c-03 类
+    # 标 easy 实为深题,每棒 15 分钟刚进状态就到点)。
+    if gained == 0 and not (meta.get("foothold") or rec.get("foothold")):
+        rec["budget_min"] = min(rec["budget_min"] + ZERO_PROGRESS_STEP, BUDGET_CEILING)
     if rec["state"] == "solved":
         release_instance(ws, led, code)
         _mark_family_grew(led, code)
@@ -577,8 +606,10 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
     # 4) 补位:配额内组装下一段
     if not dry and not in_endgame(ws):
         running = sum(1 for r in led["challenges"].values() if r["state"] == "running")
+        # p11 终盘围城:deadline 前 60 分钟不再开新题探针,只续作有足迹的题
+        exclude_fresh = near_deadline(ws, ENDGAME_SIEGE_SEC)
         while running < quota:
-            code = pick_next(led)
+            code = pick_next(led, exclude_fresh=exclude_fresh)
             if not code:
                 break
             ok, err = start_instance(ws, led, code)
@@ -842,8 +873,10 @@ def selftest():
             assert led3["challenges"]["a-01"]["state"] == "running", "立足点题应被立即重派"
             dd = _deep_dispatch_of(led3, "a-01")
             assert dd is not None and dd["attempt"] == 2, "缺第二棒深挖派发"
-            assert dd["hard_stop"] - dd["created"] == 35 * 60, "立足点后必须全额预算"
+            # p11 后立足点续作升为围城棒:预算至少 SIEGE_BUDGET_MIN(60),非 35
+            assert dd["hard_stop"] - dd["created"] >= SIEGE_BUDGET_MIN * 60, "立足点续作必须是围城预算"
             assert not dd.get("probe"), "第二棒起不再是探针"
+            assert dd.get("siege") is True, "立足点续作必须标记 siege"
             # 闲置槽回收:非 running 题挂活实例 → harvest 即放槽
             led3["challenges"]["a-01"]["instance"] = {"addr": "1.2.3.4:80", "since": now()}
             led3["challenges"]["a-01"]["state"] = "partial"
@@ -854,6 +887,43 @@ def selftest():
             assert any(a.startswith("idle-slot-release a-01") for a in acts), "缺 idle-slot-release 动作行"
         finally:
             shutil.rmtree(tmp3, ignore_errors=True)
+        # p11 攻坚模式:围城棒(立足点续作≥60min)、零进展预算加深、终盘停新探针。
+        tmp4 = Path(tempfile.mkdtemp(prefix="dispatch-selftest4-"))
+        try:
+            ws4 = WS(tmp4)
+            (tmp4 / "challenges.json").write_text(json.dumps({"challenges": [
+                {"challenge_code": "a-01", "challenge_name": "T1", "challenge_score": 500,
+                 "difficulty": "easy", "total_flag_count": 1},
+                {"challenge_code": "b-01", "challenge_name": "T2", "challenge_score": 800,
+                 "difficulty": "medium", "total_flag_count": 1},
+            ]}), encoding="utf-8")
+            cmd_init(argparse.Namespace(ws=str(tmp4), challenges=str(tmp4 / "challenges.json")))
+            led4 = ws4.ledger()
+            # ① 零进展两棒 → budget_min 15→30→45(easy 误标题自动加深)
+            led4["challenges"]["a-01"]["foothold"] = ""
+            led4["challenges"]["a-01"]["attempt"] = 2
+            account_report(ws4, led4, "a-01", 1, {"outcome": "budget_stop", "flags_gained": 0, "foothold": ""})
+            assert led4["challenges"]["a-01"]["budget_min"] == 30, "首棒零进展应加深预算"
+            account_report(ws4, led4, "a-01", 2, {"outcome": "blocked", "flags_gained": 0, "foothold": ""})
+            assert led4["challenges"]["a-01"]["budget_min"] == 45, "二棒零进展应再加深"
+            # ② 有立足点 → 围城棒:预算至少 60,prompt 带续作指令
+            led4["challenges"]["a-01"]["foothold"] = "HMAC key extracted"
+            led4["challenges"]["a-01"]["milestone"] = "forge token"
+            dids = assemble(ws4, led4, "a-01", reason="fill")
+            ws4.save_ledger(led4)
+            dd4 = led4["dispatches"][dids]
+            assert dd4["hard_stop"] - dd4["created"] >= SIEGE_BUDGET_MIN * 60, "围城棒预算至少 60 分钟"
+            pr4 = (ws4.outbox / ("%s-a-01.prompt.md" % dids)).read_text(encoding="utf-8")
+            assert "续作" in pr4, "围城棒 prompt 必须带续作指令"
+            assert "禁止重验" in pr4, "围城棒必须禁止重验已排除面"
+            # ③ 终盘(deadline 前 60min 内)不再派新题探针,只续作有 attempt 的题
+            led4["challenges"]["a-01"]["state"] = "partial"  # 模拟围城棒退场后的续作资格
+            ws4.save_ledger(led4)
+            (tmp4 / "deadline").write_text(str(now() + 1800), encoding="utf-8")
+            pick = pick_next(ws4.ledger(), exclude_fresh=True)
+            assert pick == "a-01", "终盘必须跳过从未开工的 b-01,选有足迹的 a-01"
+        finally:
+            shutil.rmtree(tmp4, ignore_errors=True)
         print("selftest: 全部通过")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

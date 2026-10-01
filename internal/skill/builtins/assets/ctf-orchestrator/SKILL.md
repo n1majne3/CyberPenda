@@ -76,7 +76,7 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
 
 | 事项 | 归属 |
 | --- | --- |
-| 选题、配额、补位、重试上限、看门狗、闲置槽回收(非 running 题的活实例立即放槽)、首段 8 分钟探针预算、平台对账、收尾停派 | dispatcher(脚本,规则见 spec §6) |
+| 选题、配额、补位、重试上限、看门狗、闲置槽回收(非 running 题的活实例立即放槽)、首段 8 分钟探针预算、围城续作棒(立足点题预算下限 60 分钟+续作指令)、零进展预算加深、终盘 60 分钟停新题探针、平台对账、收尾停派 | dispatcher(脚本,规则见 spec §6) |
 | 派发动作本身(Agent 工具调用) | 你(逐字转发 outbox prompt) |
 | `uncertain` 升级(追投 or 收割、连环 infra 死亡、平台异常) | 你(唯一需要判断的地方) |
 | 攻击目标、写 fact、提交 flag | Execute agent(在直连会话内) |
