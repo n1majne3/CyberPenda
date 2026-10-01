@@ -319,11 +319,30 @@ func Run(ctx context.Context, dataRoot string, env map[string]string, stdout, di
 		<-serveDone
 	}()
 	app := NewHTTPApp(HTTPAppConfig{
-		BaseURL:       "http://" + listener.Addr().String(),
-		RuntimeBinary: strings.TrimSpace(env["CYBERPENDA_RUNTIME_BINARY"]),
-		Diagnostics:   diagnostics,
+		BaseURL:                  "http://" + listener.Addr().String(),
+		RuntimeBinary:            strings.TrimSpace(env["CYBERPENDA_RUNTIME_BINARY"]),
+		Diagnostics:              diagnostics,
+		SilenceReviveSec:         hostedSilenceReviveSec(env),
+		SilenceReviveMax:         5,
+		SilenceReviveCooldownSec: 300,
 	})
 	return RunWithApp(ctx, env, app, stdout, diagnostics)
+}
+
+// hostedSilenceReviveSec reads CYBERPENDA_SILENCE_REVIVE_SEC (seconds).
+// The watchdog defaults on at 480s — well above the orchestrator's 240s
+// blocking-wait cycle, so a healthy Decide loop never trips it — and can be
+// disabled with an explicit 0.
+func hostedSilenceReviveSec(env map[string]string) int {
+	raw := strings.TrimSpace(env["CYBERPENDA_SILENCE_REVIVE_SEC"])
+	if raw == "" {
+		return 480
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 480
+	}
+	return value
 }
 
 // startHostedLoopback binds the loopback daemon and records the concrete

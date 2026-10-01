@@ -35,6 +35,10 @@ type HTTPApp struct {
 	runtimeBinary string
 	pollPeriod    time.Duration
 	diagnostics   io.Writer
+
+	silenceReviveSec         int
+	silenceReviveMax         int
+	silenceReviveCooldownSec int
 }
 
 // HTTPAppConfig describes the loopback daemon used by the hosted process.
@@ -44,7 +48,22 @@ type HTTPAppConfig struct {
 	RuntimeBinary string
 	PollPeriod    time.Duration
 	Diagnostics   io.Writer
+	// SilenceReviveSec enables the hosted silence watchdog when > 0: a
+	// running Task whose Transcript cursor stops advancing for this many
+	// seconds gets one revive steering per cooldown window to wake a parked
+	// orchestrator turn (runs 24147/24160 died this way: the turn ended —
+	// degenerate output or a provider outage beyond the retry budget — and
+	// nothing ever started a new turn).
+	SilenceReviveSec         int
+	SilenceReviveMax         int
+	SilenceReviveCooldownSec int
 }
+
+// reviveSteerMessage is delivered as task steering when the watchdog fires.
+// It must restart the Decide loop without corrupting dispatcher state.
+const reviveSteerMessage = "(CyberPenda hosted watchdog) 长时间无运行事件:上一轮可能已异常终止。" +
+	"请按 ctf-orchestrator 的身份确认流程恢复 Decide 循环:读 leader.lock 与 dispatcher tmux 存活," +
+	"检查 READY/升级队列后继续调度。不要重启容器,不要重置 ledger;若一切正常则回到阻塞等待。"
 
 func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 	client := config.Client
@@ -59,7 +78,14 @@ func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 	if diagnostics == nil {
 		diagnostics = io.Discard
 	}
-	return &HTTPApp{baseURL: strings.TrimRight(config.BaseURL, "/"), client: client, runtimeBinary: config.RuntimeBinary, pollPeriod: period, diagnostics: diagnostics}
+	reviveSec := config.SilenceReviveSec
+	reviveMax := config.SilenceReviveMax
+	reviveCooldown := config.SilenceReviveCooldownSec
+	if reviveCooldown <= 0 {
+		reviveCooldown = reviveSec
+	}
+	return &HTTPApp{baseURL: strings.TrimRight(config.BaseURL, "/"), client: client, runtimeBinary: config.RuntimeBinary, pollPeriod: period, diagnostics: diagnostics,
+		silenceReviveSec: reviveSec, silenceReviveMax: reviveMax, silenceReviveCooldownSec: reviveCooldown}
 }
 
 func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootstrap) (HostedEvaluationReference, error) {
@@ -204,6 +230,11 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 	ticker := time.NewTicker(app.pollPeriod)
 	defer ticker.Stop()
 	sawRunning := false
+	// Silence watchdog state: lastProgress is the moment the Transcript
+	// cursor last advanced; a parked orchestrator turn leaves it frozen.
+	lastProgress := time.Now()
+	var revives int
+	var lastRevive time.Time
 	for {
 		var taskState struct {
 			Status string `json:"status"`
@@ -229,7 +260,27 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 			}
 			app.logOperational("hosted Transcript drain: %v", drainErr)
 		} else {
+			if next != cursor {
+				lastProgress = time.Now()
+			}
 			cursor = next
+		}
+		if sawRunning && app.silenceReviveSec > 0 && taskState.Status == "running" &&
+			time.Since(lastProgress) > time.Duration(app.silenceReviveSec)*time.Second &&
+			(revives == 0 || time.Since(lastRevive) > time.Duration(app.silenceReviveCooldownSec)*time.Second) &&
+			(app.silenceReviveMax <= 0 || revives < app.silenceReviveMax) {
+			payload := map[string]any{
+				"request_id": fmt.Sprintf("revive-%s-%d", run.TaskID, time.Now().Unix()),
+				"message":    reviveSteerMessage,
+			}
+			if err := app.request(ctx, http.MethodPost, "/api/projects/"+run.ProjectID+"/tasks/"+run.TaskID+"/steer", payload, nil); err != nil {
+				app.logOperational("silence watchdog steer failed: %v", err)
+			} else {
+				app.logOperational("silence watchdog: no transcript progress for %s; revive steering sent (%d/%d)",
+					time.Since(lastProgress).Round(time.Second), revives+1, app.silenceReviveMax)
+			}
+			revives++
+			lastRevive = time.Now()
 		}
 		if taskState.Status == "failed" || taskState.Status == "interrupted" || taskState.Status == "stopped" {
 			if !sawRunning {

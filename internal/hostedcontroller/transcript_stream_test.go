@@ -504,3 +504,64 @@ func TestHostedTranscriptOmitsLLMConversationKinds(t *testing.T) {
 		t.Fatalf("LLM conversation text reached stdout: %s", stdout.String())
 	}
 }
+
+// TestHTTPAppWaitRevivesSilentOrchestrator pins the hosted silence watchdog
+// (provider-resilience B-layer): when a running Task produces no Transcript
+// progress for SilenceReviveSec, Wait sends exactly one revive steering per
+// cooldown window and stops after the revive cap. Both 24147 and 24160 died
+// this way — the orchestrator turn ended (degenerate output / provider
+// outage beyond the retry budget) and nothing ever started a new turn.
+func TestHTTPAppWaitRevivesSilentOrchestrator(t *testing.T) {
+	const base = "/api/projects/project-1/tasks/task-1"
+	var steers []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == base+"/steer" && r.Method == http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			steers = append(steers, string(body))
+			w.WriteHeader(http.StatusAccepted)
+		case r.URL.Path == base+"/transcript":
+			if r.URL.Query().Has("after") {
+				writeStreamPage(t, w, 1, false)
+				return
+			}
+			// one initial entry, then the stream goes silent forever
+			writeStreamPage(t, w, 1, false,
+				streamEntry("entry-1", 1, "tool_result", "tool", "boot", "2026-10-01T03:00:00Z"))
+		case r.URL.Path == base:
+			writeStreamJSON(t, w, map[string]any{"status": "running"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
+		BaseURL: "http://hosted.test", PollPeriod: 20 * time.Millisecond,
+		SilenceReviveSec: 1, SilenceReviveMax: 2, SilenceReviveCooldownSec: 1,
+		Client: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w.Result(), nil
+		})},
+	})
+	var stdout bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(steers) < 2 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Wait returned while running: %v", err)
+	default:
+	}
+	if len(steers) < 2 {
+		t.Fatalf("silence revives = %d, want ≥2 (cooldown respected, cap not hit early): %v", len(steers), steers)
+	}
+	if len(steers) > 3 {
+		t.Fatalf("revive spam: %d steers in window, cooldown not respected", len(steers))
+	}
+	if !strings.Contains(steers[0], "watchdog") || !strings.Contains(steers[0], "ctf-orchestrator") {
+		t.Fatalf("revive payload missing watchdog identity/skill reference: %s", steers[0])
+	}
+}
