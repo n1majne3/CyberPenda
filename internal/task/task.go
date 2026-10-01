@@ -901,7 +901,7 @@ func (s *Service) ListRecentPerProject(projectIDs []string, limit int, excludeID
 // idx_tasks_updated_at index answers the MAX in one indexed read.
 func (s *Service) LatestUpdate() (time.Time, error) {
 	var value string
-	if err := s.db.QueryRow(`SELECT MAX(updated_at) FROM tasks`).Scan(&value); err != nil {
+	if err := s.db.QueryRow(`SELECT COALESCE(MAX(updated_at), '') FROM tasks`).Scan(&value); err != nil {
 		return time.Time{}, fmt.Errorf("latest task update: %w", err)
 	}
 	if value == "" {

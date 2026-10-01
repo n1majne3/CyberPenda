@@ -300,7 +300,7 @@ func validKind(kind string) bool {
 // navigation-visible Project summary change (#201).
 func (s *Service) LatestUpdate() (time.Time, error) {
 	var value string
-	if err := s.db.QueryRow(`SELECT MAX(updated_at) FROM projects`).Scan(&value); err != nil {
+	if err := s.db.QueryRow(`SELECT COALESCE(MAX(updated_at), '') FROM projects`).Scan(&value); err != nil {
 		return time.Time{}, fmt.Errorf("latest project update: %w", err)
 	}
 	if value == "" {

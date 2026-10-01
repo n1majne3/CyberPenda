@@ -184,6 +184,43 @@ func waitForTaskTerminal(t *testing.T, server *daemon.Server, projectID, taskID 
 	t.Fatalf("task %s did not reach a terminal status", taskID)
 }
 
+func TestWorkspaceNavigationWithoutTasks(t *testing.T) {
+	for _, withProject := range []bool{false, true} {
+		name := "no Projects"
+		if withProject {
+			name = "Project without Tasks"
+		}
+		t.Run(name, func(t *testing.T) {
+			server := newDaemon(t)
+			var projectID string
+			if withProject {
+				projectID = createProject(t, server, `{"name":"Empty","scope":{"domains":["example.com"]}}`)
+			}
+
+			revision, changed, projects, _ := getWorkspaceNavigationResponse(t, server, "")
+			if revision == "" || !changed || projects == nil {
+				t.Fatalf("initial navigation revision=%q changed=%v projects=%v", revision, changed, projects)
+			}
+			if withProject {
+				if len(projects) != 1 || projects[0]["id"] != projectID {
+					t.Fatalf("navigation Projects=%v, want Project %s", projects, projectID)
+				}
+				tasks, ok := projects[0]["tasks"].([]any)
+				if !ok || len(tasks) != 0 {
+					t.Fatalf("navigation Tasks=%v, want an empty array", projects[0]["tasks"])
+				}
+			} else if len(projects) != 0 {
+				t.Fatalf("navigation Projects=%v, want an empty array", projects)
+			}
+
+			refreshedRevision, changed, projects, _ := getWorkspaceNavigationResponse(t, server, "?revision="+revision)
+			if refreshedRevision != revision || changed || projects == nil || len(projects) != 0 {
+				t.Fatalf("unchanged navigation revision=%q changed=%v projects=%v", refreshedRevision, changed, projects)
+			}
+		})
+	}
+}
+
 func TestWorkspaceNavigationReturnsEveryProjectWithBoundedTasks(t *testing.T) {
 	server, profileID := navigationFixture(t)
 	projectID := createProject(t, server, `{"name":"Bounded","scope":{"domains":["example.com"]}}`)
