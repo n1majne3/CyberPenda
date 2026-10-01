@@ -181,12 +181,7 @@ func projectCodexV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, 
 		return ConfigProjection{}, err
 	}
 	if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" {
-		value := strings.TrimSpace(os.Getenv(req.ModelSnapshot.APIKeyEnv))
-		if value == "" {
-			if resolved, ok := materializeModelProviderAPIKey(req); ok {
-				value = resolved
-			}
-		}
+		value, _ := resolveModelProviderAPIKeyValue(req.ModelSnapshot.APIKeyEnv, req)
 		if value != "" {
 			materialized = map[string]string{"OPENAI_API_KEY": value}
 		}

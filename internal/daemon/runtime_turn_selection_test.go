@@ -1669,12 +1669,8 @@ func TestPiV2LaunchDoesNotDeadlockListingGlobalProviders(t *testing.T) {
 			done <- err
 			return
 		}
-		if plan.GlobalModelProviderSnapshot == nil {
-			done <- fmt.Errorf("launch plan missing GlobalModelProviderSnapshot")
-			return
-		}
-		if len(plan.GlobalModelProviderSnapshot.Providers) < 2 {
-			done <- fmt.Errorf("snapshot providers = %d, want >= 2", len(plan.GlobalModelProviderSnapshot.Providers))
+		if plan.PreparedProjection == nil {
+			done <- fmt.Errorf("launch plan missing prepared Config Projection")
 			return
 		}
 		_, bound, err := server.prepareBlackboardV2ContinuationLaunch(created, plan, created.Goal)

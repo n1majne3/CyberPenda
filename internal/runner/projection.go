@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -97,6 +98,7 @@ type ProjectionRequest struct {
 	// sessions spawned by pi-subagents inherit the launch effort instead of a
 	// host-copied default.
 	RequestedReasoningEffort string
+	capturedModelCatalog     *modelprovider.Catalog
 }
 
 // ProjectRuntimeConfig writes provider-specific runtime files into the task-local
@@ -613,12 +615,7 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 		return ConfigProjection{}, err
 	}
 	if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" {
-		value := strings.TrimSpace(os.Getenv(req.ModelSnapshot.APIKeyEnv))
-		if value == "" {
-			if materialized, ok := materializeModelProviderAPIKey(req); ok {
-				value = materialized
-			}
-		}
+		value, _ := resolveModelProviderAPIKeyValue(req.ModelSnapshot.APIKeyEnv, req)
 		if value != "" {
 			materialized = map[string]string{"OPENAI_API_KEY": value}
 		}
@@ -887,6 +884,7 @@ func CloneGlobalModelProviderSnapshot(providers []modelprovider.Provider) *Globa
 	cloned := make([]modelprovider.Provider, len(providers))
 	for i, provider := range providers {
 		cloned[i] = provider
+		cloned[i].Catalog.Limits = maps.Clone(provider.Catalog.Limits)
 		if len(provider.Protocols) > 0 {
 			cloned[i].Protocols = append([]modelprovider.Protocol(nil), provider.Protocols...)
 		}
@@ -1301,6 +1299,9 @@ func resolveLaunchModelLimits(profile runtimeprofile.Profile, req ProjectionRequ
 }
 
 func launchModelCatalog(profile runtimeprofile.Profile, req ProjectionRequest) modelprovider.Catalog {
+	if req.capturedModelCatalog != nil {
+		return *req.capturedModelCatalog
+	}
 	providerID := strings.TrimSpace(profile.Fields.ModelProviderID)
 	if req.ModelSnapshot != nil && strings.TrimSpace(req.ModelSnapshot.ModelProviderID) != "" {
 		providerID = strings.TrimSpace(req.ModelSnapshot.ModelProviderID)
@@ -1846,12 +1847,7 @@ func buildClaudeEnv(profile runtimeprofile.Profile, req ProjectionRequest) (map[
 		env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = strconv.Itoa(limits.MaxOutputTokens)
 	}
 	if req.ModelSnapshot != nil && req.ModelSnapshot.APIKeyEnv != "" {
-		value := strings.TrimSpace(os.Getenv(req.ModelSnapshot.APIKeyEnv))
-		if value == "" {
-			if materialized, ok := materializeModelProviderAPIKey(req); ok {
-				value = materialized
-			}
-		}
+		value, _ := resolveModelProviderAPIKeyValue(req.ModelSnapshot.APIKeyEnv, req)
 		if value != "" {
 			env[req.ModelSnapshot.APIKeyEnv] = value
 			if env["ANTHROPIC_API_KEY"] == "" {

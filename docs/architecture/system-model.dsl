@@ -14,7 +14,7 @@ workspace "CyberPenda" "Current-state container and component model of the Cyber
             pentestd = container "pentestd Daemon" "Local HTTP control plane: REST API, auth, Runtime Harness, FGS receiver, domain services, embedded UI." "Go 1.25" {
                 httpApi = component "HTTP API" "v1 routes, Blackboard v2 routes, FGS read routes; bearer token or loopback operator session. /mcp is retired and returns 404." "internal/daemon"
                 harness = component "Runtime Harness" "Launches, resumes, steers, and stops one Runtime per Runtime Owner; owns process lifecycle; executes no pentest tools." "internal/runtime"
-                runnerProjection = component "Runner + Config Projection" "Task-local directories, Generated Runtime Config, Preflight gating, skill and extension projection, launch commands." "internal/runner, internal/preflight"
+                runnerProjection = component "Runner + Config Projection" "Owner-local directories, prepared Config Projection for native files and process environment, read-only Preflight, Skill and Extension projection, separate launch-command construction." "internal/runner, internal/preflight"
                 fgs = component "FGS Store" "Accepted Goal/Step/Fact updates with delivery Receipts (Runtime Outbox settlement)." "internal/fgs"
                 blackboard = component "Blackboard v2 Service" "Durable semantic memory: Entities, Project Facts, Findings, Solutions, Relationships." "internal/blackboardv2 (+contract/grammar/input)"
                 domains = component "Domain Services" "Project, Scope, Task, Session, Skill, Model Provider, Credential, Report, Steering, Finish Readiness." "internal/{project,task,session,skill,modelprovider,credential,report,steering,finishreadiness}"

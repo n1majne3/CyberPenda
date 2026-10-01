@@ -283,7 +283,7 @@ func (server *Server) resolveSessionSnapshot(profile runtimeprofile.Profile, run
 	return runtimeSnapshotMap(snapshot), nil
 }
 
-func (server *Server) taskSnapshotSkillBundles(foundTaskID string) ([]skill.Bundle, error) {
+func (server *Server) taskSnapshotSkillIDs(foundTaskID string) ([]string, error) {
 	versions, err := server.tasks.RuntimeConfigVersions(foundTaskID)
 	if err != nil || len(versions) == 0 {
 		return nil, errors.New("runtime configuration snapshot is missing")
@@ -292,7 +292,7 @@ func (server *Server) taskSnapshotSkillBundles(foundTaskID string) ([]skill.Bund
 	if err != nil {
 		return nil, err
 	}
-	return server.runtimeSnapshotSkillBundles(snapshot)
+	return append([]string{}, snapshot.EnabledSkillIDs...), nil
 }
 
 func (server *Server) runtimeSnapshotSkillBundles(snapshot runtimeconfig.RuntimeConfigurationSnapshot) ([]skill.Bundle, error) {

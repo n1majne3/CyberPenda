@@ -25,7 +25,6 @@ import (
 	"pentest/internal/runtimeconfig"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
-	"pentest/internal/skill"
 	"pentest/internal/steering"
 	"pentest/internal/task"
 	"pentest/internal/timeline"
@@ -330,40 +329,20 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		}
 	}
 
-	globalSnapshot, err := server.snapshotGlobalModelProviders()
-	if err != nil {
-		return sessionRuntimePlan{}, err
-	}
-	materialized, err := runner.MaterializeLaunchCredentials(profile, runner.ProjectionRequest{
-		Owner:       found.OwnerContract(),
-		Credentials: server.creds, ModelProviders: server.modelProviders,
-		GlobalModelProviderSnapshot: globalSnapshot, ModelSnapshot: modelSnapshot,
-		BlackboardProjection: blackboardProjection,
-		BlackboardMode:       modeskill.Mode(found.RunControls.BlackboardMode),
-	})
-	if err != nil {
-		return sessionRuntimePlan{}, err
-	}
 	if server.skills == nil {
 		return sessionRuntimePlan{}, fmt.Errorf("Session Runtime skills service is unavailable")
 	}
-	var skillBundles []skill.Bundle
+	var skillIDs []string
 	if capturedSnapshot != nil {
-		skillBundles, err = server.runtimeSnapshotSkillBundles(*capturedSnapshot)
-	} else {
-		skillBundles, err = server.skills.EnabledSkillBundles(profile.ID)
-	}
-	if err != nil {
-		return sessionRuntimePlan{}, err
+		skillIDs = append([]string{}, capturedSnapshot.EnabledSkillIDs...)
 	}
 	launchProfile := profile
 	projectionRequest := runner.ProjectionRequest{
 		BlackboardProtocol: found.BlackboardProtocol,
-		Owner:              found.OwnerContract(), DaemonAddr: server.listenAddr, AuthToken: interfaceToken,
-		Credentials: server.creds, MaterializedCredentials: materialized,
-		ModelProviders: server.modelProviders, GlobalModelProviderSnapshot: globalSnapshot,
+		Owner:              found.OwnerContract(), DaemonAddr: server.listenAddr,
+		Credentials:   server.creds,
 		ModelSnapshot: modelSnapshot, RuntimePlugins: server.runtimePlugins,
-		RuntimeExtensions: server.runtimeExtensions, SkillBundles: skillBundles,
+		RuntimeExtensions:        server.runtimeExtensions,
 		BlackboardMode:           modeskill.Mode(found.RunControls.BlackboardMode),
 		LaunchModelOverride:      selection.Model,
 		RequestedReasoningEffort: selection.RequestedReasoningEffort,
@@ -371,7 +350,22 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		CapabilityCache:          server.capabilityCache,
 		BlackboardProjection:     blackboardProjection,
 	}
-	projection, err := runner.ProjectRuntimeConfig(layout, launchProfile, projectionRequest)
+	if server.modelProviders != nil {
+		projectionRequest.ModelProviders = server.modelProviders
+	}
+	prepared, err := runner.PrepareConfigProjection(launchProfile, runner.ConfigProjectionInput{
+		ProjectionRequest: projectionRequest, Skills: server.skills, CapturedSkillIDs: skillIDs,
+	})
+	if err != nil {
+		return sessionRuntimePlan{}, err
+	}
+	projectionBinding := runner.ProjectionBinding{InterfaceToken: interfaceToken, ContinuationID: continuationID}
+	if graph != nil {
+		projectionBinding.WorkingGraphRoot = graph.Root
+		projectionBinding.WorkingGraphOutbox = graph.Outbox
+		projectionBinding.WorkingGraphReceipts = graph.Receipts
+	}
+	projection, processEnv, err := prepared.Render(layout, projectionBinding)
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
@@ -404,33 +398,6 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 	} else {
 		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.Model)
 	}
-	launchCtx := runner.RuntimeOwnerContext{
-		BlackboardProtocol: found.BlackboardProtocol,
-		Owner:              found.OwnerContract(), BlackboardMode: string(found.RunControls.BlackboardMode), ContinuationID: continuationID,
-	}
-	if graph != nil {
-		launchCtx.WorkingGraphRoot = graph.Root
-		launchCtx.WorkingGraphOutbox = graph.Outbox
-		launchCtx.WorkingGraphReceipts = graph.Receipts
-	}
-	if blackboardProjection != runner.BlackboardProjectionOmitted && strings.TrimSpace(interfaceToken) != "" {
-		launchCtx.InterfaceToken = interfaceToken
-		launchCtx.APIURL = runner.APIEndpointURL(server.listenAddr, run == session.RunnerSandbox)
-	}
-	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, run == session.RunnerSandbox, launchCtx, runner.ProjectionRequest{
-		Owner: found.OwnerContract(), DaemonAddr: server.listenAddr, AuthToken: interfaceToken,
-		Credentials: server.creds, MaterializedCredentials: materialized,
-		ModelProviders: server.modelProviders, GlobalModelProviderSnapshot: globalSnapshot,
-		ModelSnapshot: projection.ModelSnapshot, RuntimePlugins: server.runtimePlugins,
-		RuntimeExtensions: server.runtimeExtensions, SkillBundles: skillBundles,
-		BlackboardMode:       modeskill.Mode(found.RunControls.BlackboardMode),
-		Sandbox:              run == session.RunnerSandbox,
-		BlackboardProjection: blackboardProjection,
-	})
-	if err != nil {
-		return sessionRuntimePlan{}, err
-	}
-
 	adapter := runtime.Adapter(nil)
 	containerIDFile := ""
 	if run == session.RunnerSandbox {

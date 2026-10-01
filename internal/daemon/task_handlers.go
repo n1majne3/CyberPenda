@@ -229,22 +229,19 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 }
 
 type taskLaunchPlan struct {
-	Adapter                 runtime.Adapter
-	RuntimeConfig           map[string]any
-	CapturedRuntimeConfig   map[string]any
-	MaterializedCredentials map[string]string
-	Metadata                func() (runtime.NativeSessionMetadata, error)
-	StopConfirmation        runtime.StopConfirmation
-	LaunchModelOverride     string
-	LaunchReasoningEffort   string
-	NativeResumeSessionID   string
-	NativeResumeSessionPath string
-	ResolvedProfile         runtimeprofile.Profile
-	ModelSnapshot           *modelprovider.Snapshot
-	// GlobalModelProviderSnapshot is listed before CreateContinuation so
-	// precommit/BindGrant projection never queries modelProviders.Service.
-	GlobalModelProviderSnapshot  *runner.GlobalModelProviderSnapshot
-	SkillBundles                 []skill.Bundle
+	Adapter                      runtime.Adapter
+	RuntimeConfig                map[string]any
+	CapturedRuntimeConfig        map[string]any
+	MaterializedCredentials      map[string]string
+	Metadata                     func() (runtime.NativeSessionMetadata, error)
+	StopConfirmation             runtime.StopConfirmation
+	LaunchModelOverride          string
+	LaunchReasoningEffort        string
+	NativeResumeSessionID        string
+	NativeResumeSessionPath      string
+	ResolvedProfile              runtimeprofile.Profile
+	ModelSnapshot                *modelprovider.Snapshot
+	PreparedProjection           *runner.PreparedConfigProjection
 	LaunchGoal                   string
 	BlackboardProjection         runner.BlackboardProjection
 	BlackboardV2                 bool
@@ -475,15 +472,13 @@ func (server *Server) prepareBlackboardV2ContinuationLaunch(created task.Task, p
 	if !runner.BlackboardV2SupportsProvider(provider) {
 		return task.TaskContinuation{}, taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is unsupported for provider %q", provider)
 	}
-	// Always resolve the global provider snapshot before CreateContinuation so
-	// Precommit/BindGrant projection never re-enters modelProviders.Service
-	// while the continuity transaction holds SQLite locks.
-	if plan.GlobalModelProviderSnapshot == nil {
-		snapshot, err := server.snapshotGlobalModelProviders()
+	if plan.PreparedProjection == nil {
+		prepared, err := server.prepareTaskConfigProjection(created, plan.ResolvedProfile, *plan.ValidatedLayout,
+			plan.LaunchModelOverride, plan.LaunchReasoningEffort, plan.BlackboardProjection, true)
 		if err != nil {
 			return task.TaskContinuation{}, taskLaunchPlan{}, err
 		}
-		plan.GlobalModelProviderSnapshot = snapshot
+		plan.PreparedProjection = prepared
 	}
 	layout, err := runner.PrepareBlackboardV2TaskLayout(server.runtimeRoot, created.ID, provider)
 	if err != nil {
@@ -729,61 +724,53 @@ func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal 
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
-	skillBundles, err := server.taskSnapshotSkillBundles(created.ID)
+	prepared, err := server.prepareTaskConfigProjection(created, profile, layout,
+		launchModelOverride, launchReasoningEffort, runner.BlackboardProjectionRequired, true)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
-	var modelSnapshot *modelprovider.Snapshot
-	if strings.TrimSpace(profile.Fields.ModelProviderID) != "" {
-		resolved, err := modelprovider.Resolve(modelprovider.ResolveRequest{
-			Profile: profile, Providers: server.modelProviders, Plugins: server.runtimePlugins,
-			Credentials: server.creds, ProjectID: created.ProjectID, CheckEnv: true,
-			LaunchModelOverride: launchModelOverride,
-			CapabilityCache:     server.capabilityCache,
-		})
-		if err != nil {
-			return taskLaunchPlan{}, err
-		}
-		if resolved.ModelProviderID != "" {
-			modelSnapshot = &resolved
-			profile = runner.BlackboardV2ProfileWithModelSnapshot(profile, resolved)
-		}
-	}
-	// List globals before CreateContinuation; precommit projection must use
-	// this immutable snapshot only (ADR 0015 fixed set, no SQLite re-entry).
-	globalSnapshot, err := server.snapshotGlobalModelProviders()
-	if err != nil {
-		return taskLaunchPlan{}, err
-	}
-	materializedCredentials, err := runner.MaterializeLaunchCredentials(profile, runner.ProjectionRequest{
-		Owner:                       created.OwnerContract(layout.Workdir),
-		Credentials:                 server.creds,
-		ModelProviders:              server.modelProviders,
-		GlobalModelProviderSnapshot: globalSnapshot,
-		ModelSnapshot:               modelSnapshot,
-	})
-	if err != nil {
-		return taskLaunchPlan{}, err
-	}
+	profile = prepared.Profile()
+	modelSnapshot := prepared.ModelSnapshot()
 	capturedRuntimeConfig, err := server.capturedTaskRuntimeConfig(created, profile, blackboardV2ModelSnapshotPreview(modelSnapshot), launchModelOverride, launchReasoningEffort)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
 	return taskLaunchPlan{
-		CapturedRuntimeConfig:       capturedRuntimeConfig,
-		MaterializedCredentials:     materializedCredentials,
-		LaunchModelOverride:         launchModelOverride,
-		LaunchReasoningEffort:       launchReasoningEffort,
-		NativeResumeSessionID:       nativeResumeSessionID,
-		ResolvedProfile:             profile,
-		ModelSnapshot:               modelSnapshot,
-		GlobalModelProviderSnapshot: globalSnapshot,
-		SkillBundles:                append([]skill.Bundle(nil), skillBundles...),
-		LaunchGoal:                  goal,
-		BlackboardProjection:        runner.BlackboardProjectionRequired,
-		BlackboardV2:                true,
-		ValidatedLayout:             &layout,
+		CapturedRuntimeConfig:   capturedRuntimeConfig,
+		MaterializedCredentials: prepared.Credentials(),
+		LaunchModelOverride:     launchModelOverride,
+		LaunchReasoningEffort:   launchReasoningEffort,
+		NativeResumeSessionID:   nativeResumeSessionID,
+		ResolvedProfile:         profile,
+		ModelSnapshot:           modelSnapshot,
+		PreparedProjection:      prepared,
+		LaunchGoal:              goal,
+		BlackboardProjection:    runner.BlackboardProjectionRequired,
+		BlackboardV2:            true,
+		ValidatedLayout:         &layout,
 	}, nil
+}
+
+func (server *Server) prepareTaskConfigProjection(created task.Task, profile runtimeprofile.Profile, layout runner.Layout, launchModelOverride, launchReasoningEffort string, blackboardProjection runner.BlackboardProjection, v2 bool) (*runner.PreparedConfigProjection, error) {
+	skillIDs, err := server.taskSnapshotSkillIDs(created.ID)
+	if err != nil {
+		return nil, err
+	}
+	req := runner.ProjectionRequest{
+		BlackboardProtocol: created.BlackboardProtocol, Owner: created.OwnerContract(layout.Workdir),
+		ScopeSnapshot: created.ScopeSnapshot, Credentials: server.creds,
+		DaemonAddr: server.listenAddr, Sandbox: created.Runner == task.RunnerSandbox,
+		RuntimePlugins: server.runtimePlugins, RuntimeExtensions: server.runtimeExtensions,
+		LaunchModelOverride: launchModelOverride, RequestedReasoningEffort: launchReasoningEffort,
+		BlackboardMode:       modeskill.Mode(created.RunControls.BlackboardMode),
+		BlackboardProjection: blackboardProjection, CapabilityCache: server.capabilityCache,
+	}
+	if server.modelProviders != nil {
+		req.ModelProviders = server.modelProviders
+	}
+	return runner.PrepareConfigProjection(profile, runner.ConfigProjectionInput{
+		ProjectionRequest: req, Skills: server.skills, CapturedSkillIDs: skillIDs, BlackboardV2: v2,
+	})
 }
 
 // snapshotGlobalModelProviders lists every global Model Provider outside any
@@ -814,16 +801,10 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	}
 
 	var profile runtimeprofile.Profile
-	var skillBundles []skill.Bundle
-	var capturedModelSnapshot *modelprovider.Snapshot
-	var materializedCredentials map[string]string
-	var globalSnapshot *runner.GlobalModelProviderSnapshot
-	if captured != nil && captured.ResolvedProfile.Provider != "" && captured.GlobalModelProviderSnapshot != nil {
-		profile = captured.ResolvedProfile
-		skillBundles = append([]skill.Bundle(nil), captured.SkillBundles...)
-		capturedModelSnapshot = captured.ModelSnapshot
-		materializedCredentials = captured.MaterializedCredentials
-		globalSnapshot = captured.GlobalModelProviderSnapshot
+	var prepared *runner.PreparedConfigProjection
+	if captured != nil && captured.PreparedProjection != nil {
+		prepared = captured.PreparedProjection
+		profile = prepared.Profile()
 	} else {
 		var err error
 		if captured != nil && captured.ResolvedProfile.Provider != "" {
@@ -833,12 +814,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			if err != nil {
 				return taskLaunchPlan{}, err
 			}
-		}
-		// Non-v2 / first-pass path: list before any projection so Pi never
-		// re-enters modelProviders.Service mid-transaction.
-		globalSnapshot, err = server.snapshotGlobalModelProviders()
-		if err != nil {
-			return taskLaunchPlan{}, err
 		}
 	}
 	sandbox := created.Runner == task.RunnerSandbox
@@ -874,17 +849,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, LaunchReasoningEffort: launchReasoningEffort, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal, BlackboardProjection: blackboardProjection}, nil
 	}
-	// Do not re-enter SQLite from BindGrant: that callback runs under
-	// CreateContinuation's open transaction. Load skills only on the
-	// first-pass path that has not already captured them.
-	if captured == nil || captured.GlobalModelProviderSnapshot == nil {
-		var err error
-		skillBundles, err = server.taskSnapshotSkillBundles(created.ID)
-		if err != nil {
-			return taskLaunchPlan{}, err
-		}
-	}
-
 	var layout runner.Layout
 	var err error
 	if v2 {
@@ -905,39 +869,23 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	// projects no token at all, so when a daemon token is configured its trusted
 	// MCP calls cannot authenticate — the denial happens at the daemon, never
 	// through leaked authority.
-	authToken := ""
+	projectionBinding := runner.ProjectionBinding{}
 	if v2 {
-		if binding != nil {
-			authToken = strings.TrimSpace(binding.InterfaceToken)
+		projectionBinding.InterfaceToken = strings.TrimSpace(binding.InterfaceToken)
+		projectionBinding.ContinuationID = binding.ContinuationID
+		if binding.WorkingGraph != nil {
+			projectionBinding.WorkingGraphRoot = binding.WorkingGraph.Root
+			projectionBinding.WorkingGraphOutbox = binding.WorkingGraph.Outbox
+			projectionBinding.WorkingGraphReceipts = binding.WorkingGraph.Receipts
 		}
 	}
-	projectionRequest := runner.ProjectionRequest{
-		BlackboardProtocol:          created.BlackboardProtocol,
-		Owner:                       created.OwnerContract(layout.Workdir),
-		ScopeSnapshot:               created.ScopeSnapshot,
-		Credentials:                 server.creds,
-		MaterializedCredentials:     materializedCredentials,
-		DaemonAddr:                  server.listenAddr,
-		AuthToken:                   authToken,
-		Sandbox:                     sandbox,
-		RuntimePlugins:              server.runtimePlugins,
-		RuntimeExtensions:           server.runtimeExtensions,
-		ModelProviders:              server.modelProviders,
-		GlobalModelProviderSnapshot: globalSnapshot,
-		ModelSnapshot:               capturedModelSnapshot,
-		LaunchModelOverride:         launchModelOverride,
-		RequestedReasoningEffort:    launchReasoningEffort,
-		SkillBundles:                skillBundles,
-		BlackboardMode:              modeskill.Mode(created.RunControls.BlackboardMode),
-		CapabilityCache:             server.capabilityCache,
-		BlackboardProjection:        blackboardProjection,
+	if prepared == nil {
+		prepared, err = server.prepareTaskConfigProjection(created, profile, layout, launchModelOverride, launchReasoningEffort, blackboardProjection, v2)
+		if err != nil {
+			return taskLaunchPlan{}, err
+		}
 	}
-	var projection runner.ConfigProjection
-	if v2 {
-		projection, err = runner.ProjectBlackboardV2RuntimeConfig(layout, profile, projectionRequest)
-	} else {
-		projection, err = runner.ProjectRuntimeConfig(layout, profile, projectionRequest)
-	}
+	projection, processEnv, err := prepared.Render(layout, projectionBinding)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
@@ -998,46 +946,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault
 	sandboxImage := ""
-	launchCtx := runner.RuntimeOwnerContext{
-		BlackboardProtocol: created.BlackboardProtocol,
-		Owner:              created.OwnerContract(layout.Workdir), Sandbox: sandbox,
-		BlackboardMode: string(created.RunControls.BlackboardMode),
-	}
-	if binding != nil {
-		launchCtx.ContinuationID = binding.ContinuationID
-		if binding.WorkingGraph != nil {
-			launchCtx.WorkingGraphRoot = binding.WorkingGraph.Root
-			launchCtx.WorkingGraphOutbox = binding.WorkingGraph.Outbox
-			launchCtx.WorkingGraphReceipts = binding.WorkingGraph.Receipts
-		}
-	}
-	if v2 && authToken != "" {
-		launchCtx.InterfaceToken = authToken
-		launchCtx.APIURL = runner.APIEndpointURL(server.listenAddr, sandbox)
-	}
-	processEnv, err := runner.LaunchProcessEnvWithCredentials(layout, launchProfile, sandbox, launchCtx, runner.ProjectionRequest{
-		Owner:                       created.OwnerContract(layout.Workdir),
-		ScopeSnapshot:               created.ScopeSnapshot,
-		Credentials:                 server.creds,
-		MaterializedCredentials:     materializedCredentials,
-		DaemonAddr:                  server.listenAddr,
-		AuthToken:                   authToken,
-		Sandbox:                     sandbox,
-		RuntimePlugins:              server.runtimePlugins,
-		RuntimeExtensions:           server.runtimeExtensions,
-		ModelProviders:              server.modelProviders,
-		GlobalModelProviderSnapshot: globalSnapshot,
-		ModelSnapshot:               projection.ModelSnapshot,
-		SkillBundles:                skillBundles,
-		BlackboardMode:              modeskill.Mode(created.RunControls.BlackboardMode),
-		BlackboardProjection:        blackboardProjection,
-	})
-	if err != nil {
-		return taskLaunchPlan{}, err
-	}
-	if v2 {
-		processEnv = runner.BlackboardV2ProcessEnv(processEnv, layout, sandbox)
-	}
 	if sandbox {
 		sandboxNetwork = sandboxNetworkMode(created.RunControls)
 		sandboxImage = strings.TrimSpace(profile.Fields.SandboxImage)
@@ -1176,24 +1084,23 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	stopConfirmation := dockerStopConfirmation(created.RunControls.ContainerCLI, server.containerCLI, containerIDFile)
 
 	return taskLaunchPlan{
-		Adapter:                     adapter,
-		RuntimeConfig:               runtimeConfig,
-		CapturedRuntimeConfig:       capturedRuntimeConfig,
-		MaterializedCredentials:     materializedCredentials,
-		Metadata:                    metadata,
-		StopConfirmation:            stopConfirmation,
-		LaunchModelOverride:         launchModelOverride,
-		LaunchReasoningEffort:       launchReasoningEffort,
-		NativeResumeSessionID:       nativeResumeSessionID,
-		ResolvedProfile:             launchProfile,
-		ModelSnapshot:               projection.ModelSnapshot,
-		GlobalModelProviderSnapshot: globalSnapshot,
-		SkillBundles:                append([]skill.Bundle(nil), skillBundles...),
-		LaunchGoal:                  launchGoal,
-		BlackboardProjection:        blackboardProjection,
-		BlackboardV2:                v2,
-		ValidatedLayout:             &layout,
-		Facts:                       launchFacts,
+		Adapter:                 adapter,
+		RuntimeConfig:           runtimeConfig,
+		CapturedRuntimeConfig:   capturedRuntimeConfig,
+		MaterializedCredentials: prepared.Credentials(),
+		Metadata:                metadata,
+		StopConfirmation:        stopConfirmation,
+		LaunchModelOverride:     launchModelOverride,
+		LaunchReasoningEffort:   launchReasoningEffort,
+		NativeResumeSessionID:   nativeResumeSessionID,
+		ResolvedProfile:         launchProfile,
+		ModelSnapshot:           projection.ModelSnapshot,
+		PreparedProjection:      prepared,
+		LaunchGoal:              launchGoal,
+		BlackboardProjection:    blackboardProjection,
+		BlackboardV2:            v2,
+		ValidatedLayout:         &layout,
+		Facts:                   launchFacts,
 	}, nil
 }
 

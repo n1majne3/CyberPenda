@@ -46,6 +46,30 @@ offline knowledge baseline under `/opt/knowledge` (ADR 0037).
 Open a `.dsl` file with Qoder's Structurizr DSL viewer for visual inspection. The DSL files are
 the source of truth; rendered previews are derived artifacts.
 
+## Config Projection ownership
+
+The Config Projection module captures launch dependencies and uses that prepared state
+for native files and the process environment. Grant-dependent rendering receives the
+Continuation grant, Continuation ID, and prepared Working Graph paths without new
+database reads. Native launch-argument construction stays outside this module.
+
+Task and Session keep their own lifecycle ordering, grant issuance, Working Graph
+preparation, and failure settlement. Task Precommit runs before the Continuation
+transaction; BindGrant runs inside it. Session prepares its Continuation and grant
+before projection. Preflight and Runtime Profile configuration previews remain
+read-only; previews do not materialize launch credentials.
+
+Database rollback does not provide whole-projection filesystem rollback. Task retains
+its existing Working Blackboard Snapshot restoration; other projected files can remain
+changed after a failure. Session retains its failed-Continuation settlement without
+restoring projected files. Resume reuses owner-local paths, so these directories must
+not be treated as disposable output from the latest projection attempt.
+
+Tests cross the Config Projection interface and retain the Task and Session launch
+tests. They check matching files and environment, fixed captured inputs, returned
+errors, and existing failure behavior. Inline SQLite persistence remains unchanged
+under ADR 0017.
+
 ## Evidence strength
 
 Almost all nodes and edges are **high confidence**: they trace to package doc comments

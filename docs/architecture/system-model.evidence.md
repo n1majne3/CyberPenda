@@ -29,7 +29,7 @@ Diagram sources: `system-context.dsl` (L1) and `system-model.dsl` (L2 container 
 | ext.vercelDemo | Vercel Demo Deployment | external-system | high | web/vercel.json, web/package.json (`build:demo`), web/src/demo/, README.md:9 |
 | component.httpApi | HTTP API | component | high | internal/daemon/server.go:939-975+, internal/daemon/blackboard_v2_http.go:43-63, internal/daemon/fgs.go:20-23 |
 | component.harness | Runtime Harness | component | high | internal/runtime/runtime.go:1-5 |
-| component.runnerProjection | Runner + Config Projection | component | high | internal/runner/runner.go:1-3, internal/preflight/preflight.go:1-4 |
+| component.runnerProjection | Runner + Config Projection | component | high | internal/runner/runner.go:1-3, internal/runner/prepared_projection.go (capture and paired rendering), internal/runner/prepared_projection_test.go (captured inputs and failure behavior), internal/preflight/preflight.go:1-4 |
 | component.fgs | FGS Store | component | high | internal/fgs/fgs.go:1-2 |
 | component.blackboard | Blackboard v2 Service | component | high | internal/blackboardv2/service.go:1-4 |
 | component.domains | Domain Services | component | high | internal/{project,task,session,skill,modelprovider,credential,report,steering,finishreadiness} package docs |
