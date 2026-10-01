@@ -249,13 +249,6 @@ func NewServer(config Config) (*Server, error) {
 		listenAddr = "127.0.0.1:8787"
 	}
 	authToken := strings.TrimSpace(config.AuthToken)
-	if !isLoopback(listenAddr) && authToken == "" {
-		_ = db.Close()
-		if tempSkillsRoot != "" {
-			_ = os.RemoveAll(tempSkillsRoot)
-		}
-		return nil, fmt.Errorf("non-loopback bind %q requires an auth token; set -auth-token or PENTEST_AUTH_TOKEN", listenAddr)
-	}
 	operatorToken := authToken
 	generatedOperatorToken := false
 	if operatorToken == "" {
@@ -265,9 +258,12 @@ func NewServer(config Config) (*Server, error) {
 			if tempSkillsRoot != "" {
 				_ = os.RemoveAll(tempSkillsRoot)
 			}
-			return nil, fmt.Errorf("generate loopback operator token: %w", err)
+			return nil, fmt.Errorf("generate operator token: %w", err)
 		}
 		generatedOperatorToken = true
+	}
+	if !isLoopback(listenAddr) {
+		authToken = operatorToken
 	}
 	epoch, err := db.CanonicalStore()
 	if err != nil {
@@ -668,14 +664,23 @@ func (server *Server) ListenAddr() string {
 	return server.listenAddr
 }
 
-// GeneratedOperatorAccessURL returns the one startup URL that transfers a
-// generated loopback operator bearer capability to the browser. An explicitly
-// configured daemon token is never returned or logged by this seam.
-func (server *Server) GeneratedOperatorAccessURL() string {
-	if !server.generatedOperatorToken || server.operatorToken == "" {
+// GeneratedOperatorToken exposes only the startup-generated credential, never a configured secret.
+func (server *Server) GeneratedOperatorToken() string {
+	if !server.generatedOperatorToken {
 		return ""
 	}
-	return "http://" + server.listenAddr + "/?token=" + url.QueryEscape(server.operatorToken)
+	return server.operatorToken
+}
+
+// GeneratedOperatorAccessURL returns the one startup URL that transfers a
+// generated operator bearer capability to the browser. An explicitly
+// configured daemon token is never returned or logged by this seam.
+func (server *Server) GeneratedOperatorAccessURL() string {
+	token := server.GeneratedOperatorToken()
+	if token == "" {
+		return ""
+	}
+	return "http://" + server.listenAddr + "/?token=" + url.QueryEscape(token)
 }
 
 func (server *Server) Close() error {
@@ -835,7 +840,15 @@ func (server *Server) publicPath(request *http.Request) bool {
 	case "/", "/index.html":
 		return true
 	}
-	return isStaticAssetPath(clean)
+	if isStaticAssetPath(clean) {
+		return true
+	}
+	if clean == "/api" || strings.HasPrefix(clean, "/api/") || clean == "/mcp" || strings.HasPrefix(clean, "/mcp/") {
+		return false
+	}
+	// Only the SPA fallback is public; registered service routes still require authentication.
+	_, pattern := server.mux.Handler(request)
+	return pattern == "/"
 }
 
 // isStaticAssetPath reports whether the cleaned path is a static asset served

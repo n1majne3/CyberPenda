@@ -20,16 +20,24 @@ const operatorSessionMaxAgeSeconds = 30 * 24 * 60 * 60
 // Browser authority is separate from Runtime bearer grants. Fetch metadata
 // and the origin check prevent other web origins from bootstrapping a session.
 func sameOriginBrowserRequest(r *http.Request) bool {
-	if r.Header.Get("Sec-Fetch-Site") != "same-origin" {
+	site := r.Header.Get("Sec-Fetch-Site")
+	if site != "" && site != "same-origin" {
 		return false
 	}
-	if origin := r.Header.Get("Origin"); origin != "" {
-		u, err := url.Parse(origin)
-		if err != nil || u.Host != r.Host || (u.Scheme != "http" && u.Scheme != "https") {
-			return false
-		}
+	source := r.Header.Get("Origin")
+	// Browsers omit Fetch Metadata on non-loopback HTTP; same-origin GETs also omit Origin.
+	if source == "" && site == "" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		source = r.Referer()
 	}
-	return true
+	if source == "" {
+		return site == "same-origin"
+	}
+	u, err := url.Parse(source)
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	return err == nil && u.User == nil && u.Host == r.Host && u.Scheme == scheme
 }
 
 func (server *Server) operatorRequest(r *http.Request) bool {

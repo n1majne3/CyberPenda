@@ -10,6 +10,33 @@ import (
 	"pentest/internal/session"
 )
 
+func TestBrowserSessionWithoutFetchMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, origin, referer, site string
+		want                                bool
+	}{
+		{"LAN sign-in", "POST", "http://10.222.14.48:8787", "", "", true},
+		{"LAN cookie read", "GET", "", "http://10.222.14.48:8787/sessions", "", true},
+		{"no browser evidence", "POST", "", "", "", false},
+		{"foreign origin", "POST", "http://evil.example", "http://10.222.14.48:8787/", "", false},
+		{"foreign referer", "GET", "", "http://evil.example/", "", false},
+		{"wrong scheme", "POST", "https://10.222.14.48:8787", "", "", false},
+		{"wrong port", "POST", "http://10.222.14.48:9999", "", "", false},
+		{"opaque origin", "POST", "null", "http://10.222.14.48:8787/", "", false},
+		{"explicit cross-site", "POST", "http://10.222.14.48:8787", "", "cross-site", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(tc.method, "http://10.222.14.48:8787/api/operator-session", nil)
+			r.Header.Set("Origin", tc.origin)
+			r.Header.Set("Referer", tc.referer)
+			r.Header.Set("Sec-Fetch-Site", tc.site)
+			if got := sameOriginBrowserRequest(r); got != tc.want {
+				t.Fatalf("same-origin = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLocalBrowserSessionReadsTaskAndSessionBlackboards(t *testing.T) {
 	root := t.TempDir()
 	config := Config{DBPath: filepath.Join(root, "test.db"), RuntimeRoot: filepath.Join(root, "runs"), SessionRoot: filepath.Join(root, "sessions"), DisableBuiltinSkills: true}
@@ -87,7 +114,8 @@ func TestBrowserSessionDoesNotBootstrapRemoteOrRuntimeAuthority(t *testing.T) {
 		{"cross-site", "", "127.0.0.1:1234", "127.0.0.1:8787", "cross-site", ""},
 		{"foreign-host", "", "127.0.0.1:1234", "example.test", "same-origin", ""},
 		{"configured-auth", "configured-secret", "127.0.0.1:1234", "127.0.0.1:8787", "same-origin", ""},
-	} {		t.Run(tc.name, func(t *testing.T) {
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			s, err := NewServer(Config{DBPath: filepath.Join(root, "test.db"), RuntimeRoot: filepath.Join(root, "runs"), AuthToken: tc.token, DisableBuiltinSkills: true})
 			if err != nil {

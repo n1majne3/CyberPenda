@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"pentest/internal/daemon"
@@ -24,24 +25,45 @@ func newAuthTestServer(t *testing.T, listenAddr string, authToken string) *daemo
 	return server
 }
 
-func TestNewServerRefusesNonLoopbackWithoutToken(t *testing.T) {
-	_, err := daemon.NewServer(daemon.Config{
-		DBPath:     ":memory:",
-		ListenAddr: "0.0.0.0:8787",
-		AuthToken:  "",
-	})
-	if err == nil {
-		t.Fatal("expected error when binding non-loopback without an auth token")
+func TestNewServerGeneratesNonLoopbackToken(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:8787", "10.222.14.48:8787"} {
+		t.Run(addr, func(t *testing.T) {
+			server := newAuthTestServer(t, addr, "")
+			t.Cleanup(func() { _ = server.Close() })
+			access, err := url.Parse(server.GeneratedOperatorAccessURL())
+			if err != nil {
+				t.Fatal(err)
+			}
+			token := access.Query().Get("token")
+			if len(token) < 32 || access.Host != addr {
+				t.Fatal("missing generated operator access URL")
+			}
+			if server.GeneratedOperatorToken() != token {
+				t.Fatal("generated token does not match access URL")
+			}
+			for _, route := range []string{"/api/projects", "/mcp"} {
+				resp := httptest.NewRecorder()
+				server.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, route, nil))
+				if resp.Code != http.StatusUnauthorized {
+					t.Fatalf("tokenless %s: got %d", route, resp.Code)
+				}
+			}
+			request := httptest.NewRequest(http.MethodGet, "/api/projects", nil)
+			request.Header.Set("Authorization", "Bearer "+token)
+			resp := httptest.NewRecorder()
+			server.ServeHTTP(resp, request)
+			if resp.Code != http.StatusOK {
+				t.Fatalf("generated token authorization: got %d", resp.Code)
+			}
+		})
 	}
 }
 
 func TestNewServerAcceptsNonLoopbackWithToken(t *testing.T) {
-	if _, err := daemon.NewServer(daemon.Config{
-		DBPath:     ":memory:",
-		ListenAddr: "0.0.0.0:8787",
-		AuthToken:  "a-secret-token",
-	}); err != nil {
-		t.Fatalf("expected non-loopback bind with token to succeed, got %v", err)
+	server := newAuthTestServer(t, "0.0.0.0:8787", "a-secret-token")
+	t.Cleanup(func() { _ = server.Close() })
+	if server.GeneratedOperatorToken() != "" || server.GeneratedOperatorAccessURL() != "" {
+		t.Fatal("explicit token must not be exposed by startup accessors")
 	}
 }
 
@@ -126,12 +148,23 @@ func TestServeHTTPAcceptsSPABrowserAssets(t *testing.T) {
 
 	// The SPA entry and its static assets must load in a browser, which cannot
 	// attach a bearer header to the initial document request.
-	for _, path := range []string{"/", "/favicon.svg", "/assets/index-DoIK4l0W.js"} {
+	for _, path := range []string{"/", "/projects", "/sessions", "/projects/project-1/blackboard", "/favicon.svg", "/assets/index-DoIK4l0W.js"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		resp := httptest.NewRecorder()
 		server.ServeHTTP(resp, req)
 		if resp.Code == http.StatusUnauthorized {
 			t.Fatalf("expected %q to be open without token, got 401", path)
+		}
+	}
+}
+
+func TestServeHTTPKeepsServiceRoutesProtectedWithoutToken(t *testing.T) {
+	server := newAuthTestServer(t, "0.0.0.0:8787", "secret")
+	for _, route := range []string{"/api", "/api/projects", "/api/missing", "/mcp", "/mcp/tools"} {
+		resp := httptest.NewRecorder()
+		server.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, route, nil))
+		if resp.Code != http.StatusUnauthorized {
+			t.Errorf("expected %q to require authentication, got %d", route, resp.Code)
 		}
 	}
 }

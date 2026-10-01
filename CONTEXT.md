@@ -470,6 +470,10 @@ _Avoid_: host runtime mutation, global plugin install, profile edit side effect
 
 ### Configuration and execution
 
+**Operator Token**:
+The daemon credential for operator access. At startup, the daemon uses an explicitly configured token or generates a random token when none is configured. A non-loopback listener always requires that token for API and MCP access; automatic browser session bootstrap remains limited to the local loopback listener.
+_Avoid_: Model API Key, Runtime bearer grant, fixed default password
+
 **Launch Profile Selector**:
 An advanced task-launch control for explicitly choosing an optional **Runtime Profile** from every launchable Profile, unfiltered by the current **Runtime** selection. Choosing a Profile switches the launch Runtime to that Profile's **Runtime Plugin** family.
 _Avoid_: primary launch picker, default profile, model provider switch, raw config editor, runtime-filtered profile list
