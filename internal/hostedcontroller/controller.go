@@ -323,8 +323,12 @@ func Run(ctx context.Context, dataRoot string, env map[string]string, stdout, di
 		RuntimeBinary:            strings.TrimSpace(env["CYBERPENDA_RUNTIME_BINARY"]),
 		Diagnostics:              diagnostics,
 		SilenceReviveSec:         hostedSilenceReviveSec(env),
-		SilenceReviveMax:         5,
+		// Run 24370: five revives burn out in ~65 minutes of outage, then a
+		// recovered provider still finds nobody knocking. Sixty revives at
+		// the 300s cooldown cover the whole 6h run window.
+		SilenceReviveMax:         60,
 		SilenceReviveCooldownSec: 300,
+		PermissionAutoRespond:    hostedPermissionAutoRespond(env),
 	})
 	return RunWithApp(ctx, env, app, stdout, diagnostics)
 }
@@ -341,6 +345,19 @@ func hostedSilenceReviveSec(env map[string]string) int {
 	value, err := strconv.Atoi(raw)
 	if err != nil || value < 0 {
 		return 480
+	}
+	return value
+}
+
+// hostedPermissionAutoRespond reads CYBERPENDA_PERMISSION_AUTO_RESPOND
+// ("allow" default, "deny", "off"). Hosted evaluation has no operator, and an
+// unanswered permission dialog parks the provider turn for the rest of the
+// run (run 24370), so answering is the safe default inside the evaluation
+// container; "off" leaves dialogs pending and only logs them.
+func hostedPermissionAutoRespond(env map[string]string) string {
+	value := strings.ToLower(strings.TrimSpace(env["CYBERPENDA_PERMISSION_AUTO_RESPOND"]))
+	if value == "" {
+		return "allow"
 	}
 	return value
 }

@@ -22,6 +22,9 @@ CyberPenda 历史最高 **21,800(94.95%,deepseek-flash,run 22289,即本系列 p6
 | p8 | provider 韧性 A 层 | 投影 `httpIdleTimeoutMs=120s` + `retry.provider{maxRetries:3,maxRetryDelayMs:30s}` 进 pi settings.json(pi 无 env 映射,settings.json 是唯一通道;0=禁用) | 23068(step-5) | **15,050/48 题,6h 零冻结**(对照 22762 同环境冻死 4,600,+227%)。AC4 结论性成立。附带: HEAD linux 构建断点修复(b91f7eb) |
 | p9 | schema + 提速 | init fallback 链吃平台原生 schema(unique_code/description/total_score),Decide 不再运行时手写归一化适配层;stdout 过滤 message/reasoning 类(且在详情拉取前过滤);hosted 免 state-file 提醒句 | 23386(step-5) | 14,450/46 题,完整 6h 零冻结。**vs 23068: token -36%,调用 -26%,分/M token 91.2→136.7(+50%)**。终局前 2.8h 攻坚零得分但会话活动连续 —— 攻坚未出分,非冻结 |
 | p10 | 探针棒 + 闲置槽回收 | 每题第一棒探针预算 8 分钟(PROBE_BUDGET_MIN,有立足点/flag 才转深挖全额,空探针沉底);harvest 新增闲置槽回收(非 running 题的活实例立即放槽);探针棒记 family_facts 观测(家族门控否决,防 c-03 类饿死)。四硬约束未动(配额 3/文件派发/常驻编排器/A 层) | 23567(step-5,新 key) | **17,600/57 题 —— step-5 新纪录(超 22095 的 17,150)**。T+60min 8,300 vs p9 同期 3,300(+152%),**反超直连 harness 同期 5,300**;~85min 走完 p9 的 120min 路程。会话 102(p9 50),token 258M(效率 68.2 分/M —— 探针换手以 token 换吞吐)。首验 23554 因旧 key 耗尽 wait_expired 未起跑。同架构 deepseek 正式跑 23972:**22,290/72 flag/61 题 —— 总纪录新王**(超 22289 的 21,800 +490),已公开,**官方榜第 8**;开局 347 分/min 史上最快,b-01/b-02 双链 6/6 收网,f2-05 再破;未破 c-03/a-18 |
+| p11 | 围城续作 + 零进展升档 | 有立足点题预算下限抬到 SIEGE_BUDGET_MIN=60(围城棒:从上一棒里程碑直接续作,禁重验已排除面);零进展且无立足点 → 预算 +15/棒,封顶 90(ZERO_PROGRESS_STEP/BUDGET_CEILING);终盘 exclude_fresh(最后 3600s 不发新探针,火力全给围城)。靶子: 23972 的 c-03(24 会话零出分,难度误标)/a-18(21 会话 HMAC 链被切断)烧掉 23% 调用 | 24252(step-5×XBOW 晚间) | **21,100/74.6% 活满 6h 零死亡** —— p11 无罪判定成立(午间两死为环境时段性 provider 风险)。围城在 XBOW 硬尾略亏: 无立足点题吃不到围城预算,终盘停滞早于 p10 ~-1,800。v1 无此对照,p11 调度保留进 p12 |
+| p12 | 静默看门狗(B 层实装) | hosted Wait 循环盯 transcript 游标: running 且 >480s 无推进 → steer 复活(CYBERPENDA_SILENCE_REVIVE_SEC,0 关),冷却 300s,上限 5 发;复活消息带 ctf-orchestrator 身份确认流程 | 24370(step-5×XBOW) | **08:12 全会话冻结 → 5 发全打光未救活,800 分僵尸收官(验证目的达成)**。尸检: ①真根因 = pi 扩展 UI 对话框帧(extension_ui_request confirm 类)阻塞 turn,hosted 无人应答;②看门狗机制成立 —— 第 2 发 interrupt_then_replace 真复活了编排器 11 秒(跑了诊断+心跳),但 4/5 发 in_turn_steer 对 parked turn 必败;③5 发 ~65min 烧光,provider 恢复后无人敲门;④权限 id 提取链缺裸 id 键,daemon 权限阶梯登记不上,应答管道全程通畅但没人扣得动扳机 |
+| p13 | 权限门根修 + 看门狗硬化 | F1 权限事件带身份(bare id 回退 + title/message/method)+ 对话框帧原始 runtime_output 转发(仅 select/confirm/input/editor,notify 不转发);F2 hosted 自动应答器(Wait 见 pending permission 即 POST respond,默认 allow,CYBERPENDA_PERMISSION_AUTO_RESPOND=off/deny 可关,幂等);F3 复活 steer 显式 force_replace(唯一被证实有效的模式);F4 复活预算 5→60 + 复活消息强制推进(禁未派 worker 即回阻塞等待);F6 create body 删 API_TIMEOUT_MS 死键(Claude Code 遗留,pi/本仓库均不读) | 待验证跑 | F5(--approve/trust always)暂缓: asker 未证实是 trust 且会改本地交互行为;F7(Dockerfile 锁 pi 版本)待 artifact 确认现版本。附: 镜像 pi 装 @latest 不锁,pi 1.0 于 10-01 发布 —— 行为漂移通道 |
 
 ## 平台侧事故记录(非我们缺陷)
 
@@ -37,5 +40,7 @@ CyberPenda 历史最高 **21,800(94.95%,deepseek-flash,run 22289,即本系列 p6
 
 ## 待办
 
-- p10 候选(配额 3 为平台上限,不动 DEFAULT_QUOTA): 压缩每 pass 占槽时长 —— 两段式 pass(短探针 5–8min: 找到立足点才转深挖,否则立即放槽);起步前家族事实门控(无新事实的同族重复尝试不开容器);零进展快速放槽已在 p7,需再收紧。
-- provider-resilience B/C 层(守护看门狗 + skill 降级): A 层两连验后降为纵深。
+- p13 验证跑(重新打包 bundle + step-5×XBOW): 看点 ①权限门是否消失(或被 F2 即时应答,运维志应出现 `permission dialog auto-answered`)②看门狗全程无人工干预 ③对话框原始帧入 runtime_output(谁问了什么直接可见)。
+- F7 锁 pi 版本: 24370 artifact 确认镜像实际 pi 版本后,Dockerfile 从 @latest 改为精确版本(研究笔记早已警告"shapes must be treated as moving — pin and re-verify")。
+- 全解瓶颈(未变): 无立足点硬题(c-03/a-18 类)吃不到围城预算 —— 若 p13 验证后冲榜仍差临门,下一方向是围城外再设"攻坚预算"(按难度而非立足点分配)。
+- XBOW 验证纪律: 迭代在 v1 上做,发车前用 set_id=1 防过拟合(p10 22,900/80.9% 已证泛化)。

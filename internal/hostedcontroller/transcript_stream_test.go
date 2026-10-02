@@ -564,4 +564,133 @@ func TestHTTPAppWaitRevivesSilentOrchestrator(t *testing.T) {
 	if !strings.Contains(steers[0], "watchdog") || !strings.Contains(steers[0], "ctf-orchestrator") {
 		t.Fatalf("revive payload missing watchdog identity/skill reference: %s", steers[0])
 	}
+	// Run 24370 evidence: in_turn_steer mode failed on a parked turn four
+	// times out of five; only interrupt_then_replace actually revived the
+	// orchestrator. The watchdog must request the replacement mode.
+	if !strings.Contains(steers[0], `"force_replace":true`) {
+		t.Fatalf("revive payload must force interrupt_then_replace: %s", steers[0])
+	}
+}
+
+// TestHTTPAppWaitAutoRespondsPendingPermissionDialog pins the hosted
+// permission auto-responder: a pending permission dialog parks the provider
+// turn until an extension_ui_response arrives, and run 24370 stayed parked
+// for 5h45m because no operator exists in hosted evaluation. Wait answers
+// each pending dialog once with the configured decision.
+func TestHTTPAppWaitAutoRespondsPendingPermissionDialog(t *testing.T) {
+	const base = "/api/projects/project-1/tasks/task-1"
+	var responds []string
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == base+"/permissions/uuid-2/respond" && r.Method == http.MethodPost:
+			body, _ := io.ReadAll(r.Body)
+			responds = append(responds, r.URL.Path+" "+string(body))
+			w.WriteHeader(http.StatusAccepted)
+		case r.URL.Path == base+"/transcript":
+			if r.URL.Query().Has("after") {
+				writeStreamPage(t, w, 2, false)
+				return
+			}
+			dialog := streamEntry("entry-1", 1, "continuation", "system", "Provider permission requested", "2026-10-02T00:06:11Z")
+			dialog["details"] = map[string]any{
+				"mode": "permission_response", "outcome": "requested",
+				"permission_request_id": "uuid-2", "permission_title": "Trust this project?",
+				"permission_method": "confirm", "provider": "pi",
+			}
+			writeStreamPage(t, w, 2, false, dialog)
+		case r.URL.Path == base:
+			writeStreamJSON(t, w, map[string]any{"status": "running"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
+		BaseURL: "http://hosted.test", PollPeriod: 20 * time.Millisecond,
+		Client: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w.Result(), nil
+		})},
+	})
+	var stdout bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(responds) == 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Wait returned while running: %v", err)
+	default:
+	}
+	if len(responds) == 0 {
+		t.Fatal("pending permission dialog was never answered")
+	}
+	if !strings.Contains(responds[0], `"decision":"allow"`) || !strings.Contains(responds[0], "uuid-2") {
+		t.Fatalf("permission response payload = %s", responds[0])
+	}
+	// One answer per dialog id: re-delivered pending events must not
+	// re-respond.
+	time.Sleep(300 * time.Millisecond)
+	if len(responds) != 1 {
+		t.Fatalf("permission dialog answered %d times, want exactly 1: %v", len(responds), responds)
+	}
+}
+
+// With auto-respond off, a pending dialog must stay unanswered and surface
+// in the operational log instead.
+func TestHTTPAppWaitPermissionAutoRespondOff(t *testing.T) {
+	const base = "/api/projects/project-1/tasks/task-1"
+	var responds int
+	var diagnostics bytes.Buffer
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == base+"/permissions/uuid-2/respond" && r.Method == http.MethodPost:
+			responds++
+			w.WriteHeader(http.StatusAccepted)
+		case r.URL.Path == base+"/transcript":
+			if r.URL.Query().Has("after") {
+				writeStreamPage(t, w, 2, false)
+				return
+			}
+			dialog := streamEntry("entry-1", 1, "continuation", "system", "Provider permission requested", "2026-10-02T00:06:11Z")
+			dialog["details"] = map[string]any{
+				"mode": "permission_response", "outcome": "requested",
+				"permission_request_id": "uuid-2", "permission_title": "Trust this project?",
+			}
+			writeStreamPage(t, w, 2, false, dialog)
+		case r.URL.Path == base:
+			writeStreamJSON(t, w, map[string]any{"status": "running"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
+		BaseURL: "http://hosted.test", PollPeriod: 20 * time.Millisecond, Diagnostics: &diagnostics,
+		PermissionAutoRespond: "off",
+		Client: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w.Result(), nil
+		})},
+	})
+	var stdout bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(diagnostics.String(), "permission") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Wait returned while running: %v", err)
+	default:
+	}
+	if responds != 0 {
+		t.Fatalf("auto-respond off still answered %d times", responds)
+	}
+	if !strings.Contains(diagnostics.String(), "Trust this project?") {
+		t.Fatalf("unanswered dialog not surfaced in operational log: %s", diagnostics.String())
+	}
 }

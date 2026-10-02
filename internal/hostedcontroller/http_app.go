@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"pentest/internal/transcript"
 )
 
 const hostedChallengeSkillID = "ctf-orchestrator"
@@ -39,6 +41,23 @@ type HTTPApp struct {
 	silenceReviveSec         int
 	silenceReviveMax         int
 	silenceReviveCooldownSec int
+
+	// permissionAutoRespond answers pending provider permission dialogs:
+	// "allow", "deny", or "off". answeredPermissions keeps one response per
+	// dialog id; permissionDialogQueue holds pending dialogs seen in the
+	// Transcript whose response has not been delivered yet.
+	permissionAutoRespond string
+	answeredPermissions   map[string]bool
+	permissionDialogQueue []permissionDialog
+}
+
+type permissionDialog struct {
+	ID     string
+	Title  string
+	Method string
+	// Attempts bounds response retries: a dialog the daemon already settled
+	// (it 404s "no longer pending") must not be retried forever.
+	Attempts int
 }
 
 // HTTPAppConfig describes the loopback daemon used by the hosted process.
@@ -57,13 +76,22 @@ type HTTPAppConfig struct {
 	SilenceReviveSec         int
 	SilenceReviveMax         int
 	SilenceReviveCooldownSec int
+	// PermissionAutoRespond answers pending provider permission dialogs with
+	// this decision: "allow" (default), "deny", or "off". Run 24370 parked
+	// for 5h45m on one unanswered dialog — hosted evaluation has no operator
+	// to click it, so the Wait loop answers itself.
+	PermissionAutoRespond string
 }
 
 // reviveSteerMessage is delivered as task steering when the watchdog fires.
-// It must restart the Decide loop without corrupting dispatcher state.
+// It must restart the Decide loop without corrupting dispatcher state. Run
+// 24370: a revived turn that only re-checks and returns to blocking wait
+// re-parks immediately, so the message forces one dispatch action.
 const reviveSteerMessage = "(CyberPenda hosted watchdog) 长时间无运行事件:上一轮可能已异常终止。" +
 	"请按 ctf-orchestrator 的身份确认流程恢复 Decide 循环:读 leader.lock 与 dispatcher tmux 存活," +
-	"检查 READY/升级队列后继续调度。不要重启容器,不要重置 ledger;若一切正常则回到阻塞等待。"
+	"检查 READY/升级队列。若 READY 队列非空,立即派生对应 worker;若确无待派任务且全部在飞," +
+	"跑一轮 harvest 后再等一个 wait_event 周期;禁止未派出任何 worker 就直接回到阻塞等待。" +
+	"不要重启容器,不要重置 ledger。"
 
 func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 	client := config.Client
@@ -84,8 +112,18 @@ func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 	if reviveCooldown <= 0 {
 		reviveCooldown = reviveSec
 	}
+	permissionAutoRespond := strings.ToLower(strings.TrimSpace(config.PermissionAutoRespond))
+	if permissionAutoRespond == "" {
+		permissionAutoRespond = "allow"
+	}
+	if permissionAutoRespond != "allow" && permissionAutoRespond != "deny" {
+		// Fail safe: an unrecognized value must never widen what gets
+		// answered automatically.
+		permissionAutoRespond = "off"
+	}
 	return &HTTPApp{baseURL: strings.TrimRight(config.BaseURL, "/"), client: client, runtimeBinary: config.RuntimeBinary, pollPeriod: period, diagnostics: diagnostics,
-		silenceReviveSec: reviveSec, silenceReviveMax: reviveMax, silenceReviveCooldownSec: reviveCooldown}
+		silenceReviveSec: reviveSec, silenceReviveMax: reviveMax, silenceReviveCooldownSec: reviveCooldown,
+		permissionAutoRespond: permissionAutoRespond, answeredPermissions: map[string]bool{}}
 }
 
 func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootstrap) (HostedEvaluationReference, error) {
@@ -265,6 +303,7 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 			}
 			cursor = next
 		}
+		app.respondPendingPermissions(ctx, run)
 		if sawRunning && app.silenceReviveSec > 0 && taskState.Status == "running" &&
 			time.Since(lastProgress) > time.Duration(app.silenceReviveSec)*time.Second &&
 			(revives == 0 || time.Since(lastRevive) > time.Duration(app.silenceReviveCooldownSec)*time.Second) &&
@@ -272,6 +311,10 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 			payload := map[string]any{
 				"request_id": fmt.Sprintf("revive-%s-%d", run.TaskID, time.Now().Unix()),
 				"message":    reviveSteerMessage,
+				// Run 24370: in_turn_steer fails on a parked turn
+				// (target_turn_changed) — only the replacement mode
+				// actually revived the orchestrator.
+				"force_replace": true,
 			}
 			if err := app.request(ctx, http.MethodPost, "/api/projects/"+run.ProjectID+"/tasks/"+run.TaskID+"/steer", payload, nil); err != nil {
 				app.logOperational("silence watchdog steer failed: %v", err)
@@ -302,6 +345,81 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 		case <-ticker.C:
 		}
 	}
+}
+
+// notePermissionDialog records one pending permission dialog observed in the
+// Transcript. Dialog frames park the provider turn until answered, so every
+// pending id must reach respondPendingPermissions exactly once.
+func (app *HTTPApp) notePermissionDialog(entry transcript.Entry) {
+	if entry.Kind != transcript.KindContinuation {
+		return
+	}
+	details := entry.Details
+	// The lifecycle event payload carries mode "permission_response" with
+	// outcome "requested" while the dialog waits for its answer.
+	if details == nil || details["mode"] != "permission_response" || details["outcome"] != "requested" {
+		return
+	}
+	id, _ := details["permission_request_id"].(string)
+	if id == "" {
+		app.logOperational("pending permission dialog carries no answerable id; cannot respond: %v", entry.Text)
+		return
+	}
+	if app.answeredPermissions[id] {
+		return
+	}
+	for _, dialog := range app.permissionDialogQueue {
+		if dialog.ID == id {
+			return
+		}
+	}
+	dialog := permissionDialog{ID: id}
+	if title, _ := details["permission_title"].(string); title != "" {
+		dialog.Title = title
+	}
+	if method, _ := details["permission_method"].(string); method != "" {
+		dialog.Method = method
+	}
+	app.permissionDialogQueue = append(app.permissionDialogQueue, dialog)
+}
+
+// respondPendingPermissions delivers the configured decision for every
+// queued permission dialog. A failed response keeps the dialog queued so the
+// next poll retries it.
+func (app *HTTPApp) respondPendingPermissions(ctx context.Context, run HostedEvaluationReference) {
+	if len(app.permissionDialogQueue) == 0 {
+		return
+	}
+	remaining := app.permissionDialogQueue[:0]
+	for _, dialog := range app.permissionDialogQueue {
+		if app.permissionAutoRespond == "off" {
+			app.logOperational("pending permission dialog left unanswered (auto-respond off): id=%s method=%s title=%q", dialog.ID, dialog.Method, dialog.Title)
+			app.answeredPermissions[dialog.ID] = true
+			continue
+		}
+		payload := map[string]any{
+			"request_id": fmt.Sprintf("auto-perm-%s-%s", run.TaskID, dialog.ID),
+			"decision":   app.permissionAutoRespond,
+		}
+		path := "/api/projects/" + run.ProjectID + "/tasks/" + run.TaskID + "/permissions/" + dialog.ID + "/respond"
+		if err := app.request(ctx, http.MethodPost, path, payload, nil); err != nil {
+			if contextEnded(err) {
+				return
+			}
+			dialog.Attempts++
+			if dialog.Attempts >= 3 {
+				app.logOperational("permission respond abandoned for %s after %d attempts: %v", dialog.ID, dialog.Attempts, err)
+				app.answeredPermissions[dialog.ID] = true
+				continue
+			}
+			app.logOperational("permission respond failed for %s: %v", dialog.ID, err)
+			remaining = append(remaining, dialog)
+			continue
+		}
+		app.logOperational("permission dialog auto-answered %s: id=%s method=%s title=%q", app.permissionAutoRespond, dialog.ID, dialog.Method, dialog.Title)
+		app.answeredPermissions[dialog.ID] = true
+	}
+	app.permissionDialogQueue = remaining
 }
 
 func (app *HTTPApp) logOperational(format string, args ...any) {

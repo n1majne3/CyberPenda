@@ -936,8 +936,22 @@ func (s *providerSessionAdapter) HandleEvent(event SandboxBridgeEvent, emit Prov
 		"session_id": sessionID, "provider_turn_id": turnID, "mode": string(mode), "outcome": outcome,
 	}
 	if mode == ProviderSessionModePermissionResponse {
-		payload["permission_request_id"] = providerJSONValue(params, "permission_request_id", "permissionRequestId", "permission_id", "permissionId")
+		// Pi dialog frames carry their answerable identity in the bare frame
+		// "id" (extension_ui_request has no permission_request_id field), so
+		// it stays the last fallback and never beats a named id.
+		payload["permission_request_id"] = providerJSONValue(params, "permission_request_id", "permissionRequestId", "permission_id", "permissionId", "id")
 		payload["phase"] = "provider_permission_requested"
+		// Dialog identity: the operator must see which confirmation is asked.
+		// These named UI-text fields are non-secret provider dialog content.
+		if title := providerJSONValue(params, "title"); title != "" {
+			payload["permission_title"] = title
+		}
+		if message := providerJSONValue(params, "message"); message != "" {
+			payload["permission_message"] = message
+		}
+		if dialogMethod := providerJSONValue(params, "method"); dialogMethod != "" {
+			payload["permission_method"] = dialogMethod
+		}
 	}
 	if emit != nil {
 		emit(kind, payload)

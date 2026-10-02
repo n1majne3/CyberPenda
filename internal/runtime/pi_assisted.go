@@ -97,6 +97,13 @@ func (s *PiProviderSession) HandleEvent(event SandboxBridgeEvent, emit ProviderS
 		s.projectPiTerminalLifecycle(event, params, piTerminalStatus(method, params), emit)
 		s.finishPiAssistedTurn(method, params)
 		return
+	case method == "pi/extension_ui_request":
+		// Dialog frames park the provider turn until a matching
+		// extension_ui_response arrives, so their raw line must stay
+		// observable before the generic permission classification runs.
+		s.emitPiDialogFrame(event, params, emit)
+		s.providerSessionAdapter.HandleEvent(event, emit)
+		return
 	default:
 		s.providerSessionAdapter.HandleEvent(event, emit)
 	}
@@ -167,6 +174,41 @@ func (s *PiProviderSession) emitPiSubagentRecord(event SandboxBridgeEvent, param
 		"provider_turn_id": turnID,
 		"stream":           "pi_rpc", "text": string(event.Params),
 	})
+}
+
+// emitPiDialogFrame forwards one blocking extension_ui_request dialog frame
+// as raw runtime output. Dialog frames (select, confirm, input, editor) park
+// the provider turn until a matching extension_ui_response arrives, and the
+// raw line is the only carrier of who asked what: run 24370 stalled on an
+// unanswered dialog whose identity no projected event retained. Fire-and-
+// forget frames (notify, setStatus, ...) never block and are not forwarded.
+func (s *PiProviderSession) emitPiDialogFrame(event SandboxBridgeEvent, params map[string]any, emit ProviderSessionEmit) {
+	switch providerJSONValue(params, "method") {
+	case "select", "confirm", "input", "editor":
+	default:
+		return
+	}
+	if emit == nil {
+		s.mu.Lock()
+		emit = s.eventSink
+		s.mu.Unlock()
+	}
+	if emit == nil {
+		return
+	}
+	sessionID := providerJSONValue(params, "session_id", "sessionId")
+	if sessionID == "" {
+		sessionID = s.SessionID()
+	}
+	turnID := providerJSONValue(params, "turn_id", "turnId")
+	if turnID == "" {
+		turnID = s.currentTurn()
+	}
+	emit(task.EventKindRuntimeOutput, task.EventPayload(adapters.Redact(map[string]any{
+		"provider": "pi", "provider_event": event.Method,
+		"session_id": sessionID, "provider_turn_id": turnID,
+		"stream": "pi_rpc", "text": string(event.Params),
+	})))
 }
 
 // emitPiSubagentOutput forwards one bridge-relayed child transcript line as a

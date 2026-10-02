@@ -144,6 +144,7 @@ func (app *HTTPApp) drainTranscript(ctx context.Context, run HostedEvaluationRef
 
 func (app *HTTPApp) emitTranscriptEntries(ctx context.Context, run HostedEvaluationReference, output io.Writer, masker *exactMasker, entries []transcript.Entry, afterEvent int) error {
 	for _, preview := range entries {
+		app.notePermissionDialog(preview)
 		if suppressedLLMTranscriptKind(preview.Kind) {
 			// LLM conversation lines never reach hosted stdout: TSecBench
 			// meters model traffic at its gateway and never scores from the
