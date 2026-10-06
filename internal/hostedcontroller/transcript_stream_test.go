@@ -638,6 +638,72 @@ func TestHTTPAppWaitAutoRespondsPendingPermissionDialog(t *testing.T) {
 	}
 }
 
+// Fire-and-forget extension UI frames (setStatus, notify, ...) surface as
+// pending permission events too — run 25408 showed permission_method
+// "setStatus" with a full id. Answering them is wasted work, so only dialog
+// methods and method-less permission events (Claude/Codex style) queue for
+// a response.
+func TestHTTPAppWaitSkipsFireAndForgetPermissionFrames(t *testing.T) {
+	const base = "/api/projects/project-1/tasks/task-1"
+	var responds int
+	var diagnostics bytes.Buffer
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/permissions/") && r.Method == http.MethodPost:
+			responds++
+			w.WriteHeader(http.StatusAccepted)
+		case r.URL.Path == base+"/transcript":
+			if r.URL.Query().Has("after") {
+				writeStreamPage(t, w, 3, false)
+				return
+			}
+			setStatus := streamEntry("entry-1", 1, "continuation", "system", "Provider permission requested", "2026-10-05T21:34:38Z")
+			setStatus["details"] = map[string]any{
+				"mode": "permission_response", "outcome": "requested",
+				"permission_request_id": "edd9289f-eb03-4b11-82a6-7734b4a1a864",
+				"permission_method":     "setStatus", "provider": "pi",
+			}
+			legacy := streamEntry("entry-2", 2, "continuation", "system", "Provider permission requested", "2026-10-05T21:35:00Z")
+			legacy["details"] = map[string]any{
+				"mode": "permission_response", "outcome": "requested",
+				"permission_request_id": "perm-legacy-1", "provider": "claude-code",
+			}
+			writeStreamPage(t, w, 3, false, setStatus, legacy)
+		case r.URL.Path == base:
+			writeStreamJSON(t, w, map[string]any{"status": "running"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
+		BaseURL: "http://hosted.test", PollPeriod: 20 * time.Millisecond, Diagnostics: &diagnostics,
+		Client: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w.Result(), nil
+		})},
+	})
+	var stdout bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &stdout, nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(diagnostics.String(), "perm-legacy-1") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("Wait returned while running: %v", err)
+	default:
+	}
+	if responds != 1 {
+		t.Fatalf("responds = %d, want exactly 1 (legacy event only): %s", responds, diagnostics.String())
+	}
+	if strings.Contains(diagnostics.String(), "edd9289f") {
+		t.Fatalf("setStatus frame must not queue a response: %s", diagnostics.String())
+	}
+}
+
 // With auto-respond off, a pending dialog must stay unanswered and surface
 // in the operational log instead.
 func TestHTTPAppWaitPermissionAutoRespondOff(t *testing.T) {

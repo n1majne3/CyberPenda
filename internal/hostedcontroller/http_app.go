@@ -365,6 +365,17 @@ func (app *HTTPApp) notePermissionDialog(entry transcript.Entry) {
 		app.logOperational("pending permission dialog carries no answerable id; cannot respond: %v", entry.Text)
 		return
 	}
+	// Pi fire-and-forget UI frames (setStatus, notify, ...) also surface as
+	// pending permission events with ids — run 25408 showed "setStatus". They
+	// never block a turn, so only dialog methods and method-less events
+	// (Claude/Codex permission style) are answerable.
+	if method, _ := details["permission_method"].(string); method != "" {
+		switch method {
+		case "select", "confirm", "input", "editor":
+		default:
+			return
+		}
+	}
 	if app.answeredPermissions[id] {
 		return
 	}

@@ -24,7 +24,7 @@ CyberPenda 历史最高 **21,800(94.95%,deepseek-flash,run 22289,即本系列 p6
 | p10 | 探针棒 + 闲置槽回收 | 每题第一棒探针预算 8 分钟(PROBE_BUDGET_MIN,有立足点/flag 才转深挖全额,空探针沉底);harvest 新增闲置槽回收(非 running 题的活实例立即放槽);探针棒记 family_facts 观测(家族门控否决,防 c-03 类饿死)。四硬约束未动(配额 3/文件派发/常驻编排器/A 层) | 23567(step-5,新 key) | **17,600/57 题 —— step-5 新纪录(超 22095 的 17,150)**。T+60min 8,300 vs p9 同期 3,300(+152%),**反超直连 harness 同期 5,300**;~85min 走完 p9 的 120min 路程。会话 102(p9 50),token 258M(效率 68.2 分/M —— 探针换手以 token 换吞吐)。首验 23554 因旧 key 耗尽 wait_expired 未起跑。同架构 deepseek 正式跑 23972:**22,290/72 flag/61 题 —— 总纪录新王**(超 22289 的 21,800 +490),已公开,**官方榜第 8**;开局 347 分/min 史上最快,b-01/b-02 双链 6/6 收网,f2-05 再破;未破 c-03/a-18 |
 | p11 | 围城续作 + 零进展升档 | 有立足点题预算下限抬到 SIEGE_BUDGET_MIN=60(围城棒:从上一棒里程碑直接续作,禁重验已排除面);零进展且无立足点 → 预算 +15/棒,封顶 90(ZERO_PROGRESS_STEP/BUDGET_CEILING);终盘 exclude_fresh(最后 3600s 不发新探针,火力全给围城)。靶子: 23972 的 c-03(24 会话零出分,难度误标)/a-18(21 会话 HMAC 链被切断)烧掉 23% 调用 | 24252(step-5×XBOW 晚间) | **21,100/74.6% 活满 6h 零死亡** —— p11 无罪判定成立(午间两死为环境时段性 provider 风险)。围城在 XBOW 硬尾略亏: 无立足点题吃不到围城预算,终盘停滞早于 p10 ~-1,800。v1 无此对照,p11 调度保留进 p12 |
 | p12 | 静默看门狗(B 层实装) | hosted Wait 循环盯 transcript 游标: running 且 >480s 无推进 → steer 复活(CYBERPENDA_SILENCE_REVIVE_SEC,0 关),冷却 300s,上限 5 发;复活消息带 ctf-orchestrator 身份确认流程 | 24370(step-5×XBOW) | **08:12 全会话冻结 → 5 发全打光未救活,800 分僵尸收官(验证目的达成)**。尸检: ①真根因 = pi 扩展 UI 对话框帧(extension_ui_request confirm 类)阻塞 turn,hosted 无人应答;②看门狗机制成立 —— 第 2 发 interrupt_then_replace 真复活了编排器 11 秒(跑了诊断+心跳),但 4/5 发 in_turn_steer 对 parked turn 必败;③5 发 ~65min 烧光,provider 恢复后无人敲门;④权限 id 提取链缺裸 id 键,daemon 权限阶梯登记不上,应答管道全程通畅但没人扣得动扳机 |
-| p13 | 权限门根修 + 看门狗硬化 | F1 权限事件带身份(bare id 回退 + title/message/method)+ 对话框帧原始 runtime_output 转发(仅 select/confirm/input/editor,notify 不转发);F2 hosted 自动应答器(Wait 见 pending permission 即 POST respond,默认 allow,CYBERPENDA_PERMISSION_AUTO_RESPOND=off/deny 可关,幂等);F3 复活 steer 显式 force_replace(唯一被证实有效的模式);F4 复活预算 5→60 + 复活消息强制推进(禁未派 worker 即回阻塞等待);F6 create body 删 API_TIMEOUT_MS 死键(Claude Code 遗留,pi/本仓库均不读) | 待验证跑 | F5(--approve/trust always)暂缓: asker 未证实是 trust 且会改本地交互行为;F7(Dockerfile 锁 pi 版本)待 artifact 确认现版本。附: 镜像 pi 装 @latest 不锁,pi 1.0 于 10-01 发布 —— 行为漂移通道 |
+| p13 | 权限门根修 + 看门狗硬化 | F1 权限事件带身份(bare id 回退 + title/message/method)+ 对话框帧原始 runtime_output 转发(仅 select/confirm/input/editor,notify 不转发);F2 hosted 自动应答器(Wait 见 pending permission 即 POST respond,默认 allow,CYBERPENDA_PERMISSION_AUTO_RESPOND=off/deny 可关,幂等);F3 复活 steer 显式 force_replace(唯一被证实有效的模式);F4 复活预算 5→60 + 复活消息强制推进(禁未派 worker 即回阻塞等待);F6 create body 删 API_TIMEOUT_MS 死键(Claude Code 遗留,pi/本仓库均不读) | 24447(step-5×v1) | **17,650/49 flag —— step-5 v1 新纪录(超 p10 的 17,600)**,6h 零停顿。曲线: 3200@T+32 → 8500@T+86 → 11250@T+122(围城收网) → 14350@T+178 → 17,650 终局。T+14(24370 权限门死亡点)顺利通过。**验证判定: 通过** —— 权限门死类未再现(对话框是否被 F2 即时应答待容器日志/artifact 确认)。F5(--approve)暂缓;F7 锁 pi@1.0.0+pi-subagents@0.19.0 待实施(24370 考古实为 pi 0.99.2;3h00m41s 固定超时释放 park turn,编排器曾自修 dispatch.py flock 泄漏 —— p14 候选) |
 
 ## 平台侧事故记录(非我们缺陷)
 
@@ -40,7 +40,15 @@ CyberPenda 历史最高 **21,800(94.95%,deepseek-flash,run 22289,即本系列 p6
 
 ## 待办
 
-- p13 验证跑(重新打包 bundle + step-5×XBOW): 看点 ①权限门是否消失(或被 F2 即时应答,运维志应出现 `permission dialog auto-answered`)②看门狗全程无人工干预 ③对话框原始帧入 runtime_output(谁问了什么直接可见)。
-- F7 锁 pi 版本: 24370 artifact 确认镜像实际 pi 版本后,Dockerfile 从 @latest 改为精确版本(研究笔记早已警告"shapes must be treated as moving — pin and re-verify")。
-- 全解瓶颈(未变): 无立足点硬题(c-03/a-18 类)吃不到围城预算 —— 若 p13 验证后冲榜仍差临门,下一方向是围城外再设"攻坚预算"(按难度而非立足点分配)。
-- XBOW 验证纪律: 迭代在 v1 上做,发车前用 set_id=1 防过拟合(p10 22,900/80.9% 已证泛化)。
+- p13 双模型验证收官: step-5(24447)= 17,650 纪录,6h 零停顿; **GLM-5.3(25408)= 11,100/34 flag**。
+  05:34 冻结 = BigModel 429 限额耗尽(429 不入平台计量,故调用数纹丝不动;会话 activity 仍在报 = 重试中活着),
+  06:06 恢复 = 用户手动 reset 限额(必要条件);限额恢复后的下一发看门狗复活弹大概率完成了 turn 重启
+  (429 风暴耗尽 pi 重试后 turn park,无外部输入不自愈 —— 24370 教训),复活后首旗 06:22。
+  判定: 权限门死类未再现;看门狗在"限额恢复后重启 parked turn"上大概率有效(artifact 可实锤)。
+- F7 锁 pi 版本: Dockerfile 锁 pi@1.0.0 + pi-subagents@0.19.0(24370 考古实为 pi 0.99.2;对话框行为非 1.0 回归)。
+- p14 候选(按证据排序): ①看门狗识别"全 429 风暴"形态 —— 连续复活弹无成功调用时降频/暂停弹药,
+  避免长限额窗口耗尽 60 发(25408 实证:限额耗尽期每发复活 turn 也撞 429 后 park,纯烧弹药)
+  ②模型调用计数差分作活性信号(25408 定位冻结靠的就是它) ③dispatch.py 锁卫生(24370 flock 泄漏)
+  ④攻坚预算(无立足点硬题尾巴)。
+- 网络纪律: 外网模型端点一律走 <域名>.tsecbench.gw 网关(直连被沙箱挡,25405 秒死实锤)。
+- deepseek 冲榜(p13×v1): 验证已过,等令发车。
