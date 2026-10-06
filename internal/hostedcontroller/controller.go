@@ -323,10 +323,10 @@ func Run(ctx context.Context, dataRoot string, env map[string]string, stdout, di
 		RuntimeBinary:            strings.TrimSpace(env["CYBERPENDA_RUNTIME_BINARY"]),
 		Diagnostics:              diagnostics,
 		SilenceReviveSec:         hostedSilenceReviveSec(env),
-		// Run 24370: five revives burn out in ~65 minutes of outage, then a
-		// recovered provider still finds nobody knocking. Sixty revives at
-		// the 300s cooldown cover the whole 6h run window.
-		SilenceReviveMax:         60,
+		// No revive cap: the host idempotently accepts each 202 and the wait
+		// loop's 300s cooldown bounds the rate; the run wall-clock is the only
+		// budget. (60-shot cap was p13's bound for the 6h window.)
+		SilenceReviveMax:         0,
 		SilenceReviveCooldownSec: 300,
 		PermissionAutoRespond:    hostedPermissionAutoRespond(env),
 	})
