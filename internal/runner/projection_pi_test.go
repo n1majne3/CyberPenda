@@ -197,7 +197,6 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	}
 	want := map[string]bool{
 		"npm:@tintinweb/pi-subagents": true,
-		"npm:pi-web-access":           true,
 		"npm:pi-mcp-adapter":          true,
 		"npm:pi-subagents":            true,
 	}
@@ -210,8 +209,8 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 			t.Fatalf("expected packages to contain %q, got %#v", ref, settings.Packages)
 		}
 	}
-	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 4 {
-		t.Fatalf("expected packages preview with 4 entries, got %#v", projection.Config["packages"])
+	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 3 {
+		t.Fatalf("expected packages preview with 3 entries, got %#v", projection.Config["packages"])
 	}
 }
 
@@ -231,7 +230,7 @@ func TestProjectPiSettingsIgnoresHostSettings(t *testing.T) {
 	if err := os.MkdirAll(hostPiDir, 0o700); err != nil {
 		t.Fatalf("mkdir host pi agent dir: %v", err)
 	}
-	hostSettings := `{"theme":"dark","defaultModel":"host-model","defaultProvider":"host-provider","defaultThinkingLevel":"low","packages":["npm:pi-web-access","npm:pi-subagents"]}`
+	hostSettings := `{"theme":"dark","defaultModel":"host-model","defaultProvider":"host-provider","defaultThinkingLevel":"low","packages":["npm:pi-subagents"]}`
 	if err := os.WriteFile(filepath.Join(hostPiDir, "settings.json"), []byte(hostSettings), 0o600); err != nil {
 		t.Fatalf("write host settings.json: %v", err)
 	}
@@ -283,10 +282,10 @@ func TestProjectPiSettingsIgnoresHostSettings(t *testing.T) {
 		t.Fatalf("defaultThinkingLevel = %#v, want resolved high (never host low)", got)
 	}
 	packages, _ := settings["packages"].([]any)
-	if len(packages) != 2 || packages[0] != "npm:@tintinweb/pi-subagents" || packages[1] != "npm:pi-web-access" {
-		t.Fatalf("packages = %#v, want only the built-in defaults (host packages must not leak)", packages)
+	if len(packages) != 1 || packages[0] != "npm:@tintinweb/pi-subagents" {
+		t.Fatalf("packages = %#v, want only the built-in subagents default (host packages must not leak)", packages)
 	}
-	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 2 {
+	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 1 {
 		t.Fatalf("expected packages preview with 2 entries, got %#v", projection.Config["packages"])
 	}
 }

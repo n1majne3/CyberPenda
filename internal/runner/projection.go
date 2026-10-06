@@ -1731,11 +1731,12 @@ func copyHostPiAuth(agentDir string) (bool, error) {
 }
 
 // piDefaultPackages are the Pi packages CyberPenda always projects:
-// pi-subagents powers Execute subagent dispatch and pi-web-access provides web
-// fetch/search. Both are installed globally in the Sandbox and Hosted images,
-// and plain npm: refs without a version range resolve from Pi's global npm
-// root without network access, so launches stay offline-safe.
-var piDefaultPackages = []string{"npm:@tintinweb/pi-subagents", "npm:pi-web-access"}
+// pi-subagents powers Execute subagent dispatch. pi-web-access was removed
+// from the Hosted/Sandbox images and from this projection because Hosted
+// evaluation sandboxes have no outbound internet — the package only tempted
+// web fetches that could never succeed. Plain npm: refs without a version
+// range resolve from Pi's global npm root without network access.
+var piDefaultPackages = []string{"npm:@tintinweb/pi-subagents"}
 
 // Provider-resilience defaults projected into pi settings.json. pi reads no
 // *TIMEOUT* env for these; settings.json is the only channel.
