@@ -289,9 +289,13 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 	// The watchdog runs on its own ticker so a stalled drain path can never
 	// silence it — run 25771's watchdog never fired because the Wait loop
 	// died in drainTranscript and the watchdog block was never evaluated.
+	// It stops on ctx cancellation AND on Wait's own return paths: the
+	// derived context is cancelled before waiting, so an early error return
+	// cannot deadlock on the done channel.
+	watchCtx, cancelWatchdog := context.WithCancel(ctx)
 	watchdogDone := make(chan struct{})
-	go app.runSilenceWatchdog(ctx, run, watchdogDone)
-	defer func() { <-watchdogDone }()
+	go app.runSilenceWatchdog(watchCtx, run, watchdogDone)
+	defer func() { cancelWatchdog(); <-watchdogDone }()
 	for {
 		var taskState struct {
 			Status string `json:"status"`

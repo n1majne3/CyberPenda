@@ -705,6 +705,44 @@ func TestHTTPAppWaitSkipsFireAndForgetPermissionFrames(t *testing.T) {
 	}
 }
 
+// Wait must return on its own error paths even when the caller never cancels
+// the context: the watchdog goroutine must be stopped by Wait's return, not
+// only by ctx cancellation — otherwise the early-failure path deadlocks on
+// the deferred <-watchdogDone.
+func TestWaitReturnsOnEarlyFailureWithLiveContext(t *testing.T) {
+	const base = "/api/projects/project-1/tasks/task-1"
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == base+"/transcript":
+			writeStreamPage(t, w, 1, false)
+		case r.URL.Path == base:
+			writeStreamJSON(t, w, map[string]any{"status": "failed"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
+		BaseURL: "http://hosted.test", PollPeriod: 20 * time.Millisecond,
+		SilenceReviveSec: 480,
+		Client: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w.Result(), nil
+		})},
+	})
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &out, nil) }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected the failed-task error, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Wait deadlocked on the watchdog goroutine: error return blocked by <-watchdogDone with a live context")
+	}
+}
+
 // drainTranscript must bound its inner loop: a page that keeps returning
 // entries without advancing the cursor (or a daemon that hangs mid-read)
 // must not park the Wait loop forever — run 25771's watchdog never fired
