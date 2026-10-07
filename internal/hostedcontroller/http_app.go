@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"pentest/internal/transcript"
@@ -49,6 +50,16 @@ type HTTPApp struct {
 	permissionAutoRespond string
 	answeredPermissions   map[string]bool
 	permissionDialogQueue []permissionDialog
+
+	// Watchdog state, shared between the Wait loop (which updates lastProgress
+	// and sawRunning) and the independent watchdog goroutine (which reads
+	// them). All three are atomics so the goroutine never blocks on the drain
+	// path — run 25771's watchdog never fired because the Wait loop died in
+	// drainTranscript and the watchdog block was never evaluated again.
+	lastProgressUnix atomic.Int64
+	sawRunningFlag   atomic.Bool
+	reviveCount      atomic.Int64
+	lastReviveUnix   atomic.Int64
 }
 
 type permissionDialog struct {
@@ -96,7 +107,11 @@ const reviveSteerMessage = "(CyberPenda hosted watchdog) 长时间无运行事�
 func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 	client := config.Client
 	if client == nil {
-		client = http.DefaultClient
+		// The loopback daemon is local, but a hung handler must not park the
+		// Wait loop forever — run 25771's watchdog never fired because the
+		// drain path never returned. 30s is far above any healthy loopback
+		// response and far below the 6h run window.
+		client = &http.Client{Timeout: 30 * time.Second}
 	}
 	period := config.PollPeriod
 	if period <= 0 {
@@ -267,12 +282,16 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 	}
 	ticker := time.NewTicker(app.pollPeriod)
 	defer ticker.Stop()
-	sawRunning := false
-	// Silence watchdog state: lastProgress is the moment the Transcript
-	// cursor last advanced; a parked orchestrator turn leaves it frozen.
-	lastProgress := time.Now()
-	var revives int
-	var lastRevive time.Time
+	app.lastProgressUnix.Store(time.Now().Unix())
+	app.sawRunningFlag.Store(false)
+	app.reviveCount.Store(0)
+	app.lastReviveUnix.Store(0)
+	// The watchdog runs on its own ticker so a stalled drain path can never
+	// silence it — run 25771's watchdog never fired because the Wait loop
+	// died in drainTranscript and the watchdog block was never evaluated.
+	watchdogDone := make(chan struct{})
+	go app.runSilenceWatchdog(ctx, run, watchdogDone)
+	defer func() { <-watchdogDone }()
 	for {
 		var taskState struct {
 			Status string `json:"status"`
@@ -281,52 +300,33 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 			if contextEnded(err) {
 				return nil
 			}
-			if !sawRunning {
+			if !app.sawRunningFlag.Load() {
 				return fmt.Errorf("observe hosted Task: %w", err)
 			}
 			app.logOperational("observe hosted Task: %v", err)
 		} else if taskState.Status == "running" {
-			sawRunning = true
+			app.sawRunningFlag.Store(true)
 		}
+		// Read the task state before draining so a stalled drain can never
+		// hide a running task from the watchdog.
 		next, drainErr := app.drainTranscript(ctx, run, stdout, masker, cursor)
 		if drainErr != nil {
 			if contextEnded(drainErr) {
 				return nil
 			}
-			if !sawRunning {
+			if !app.sawRunningFlag.Load() {
 				return drainErr
 			}
 			app.logOperational("hosted Transcript drain: %v", drainErr)
 		} else {
 			if next != cursor {
-				lastProgress = time.Now()
+				app.lastProgressUnix.Store(time.Now().Unix())
 			}
 			cursor = next
 		}
 		app.respondPendingPermissions(ctx, run)
-		if sawRunning && app.silenceReviveSec > 0 && taskState.Status == "running" &&
-			time.Since(lastProgress) > time.Duration(app.silenceReviveSec)*time.Second &&
-			(revives == 0 || time.Since(lastRevive) > time.Duration(app.silenceReviveCooldownSec)*time.Second) &&
-			(app.silenceReviveMax <= 0 || revives < app.silenceReviveMax) {
-			payload := map[string]any{
-				"request_id": fmt.Sprintf("revive-%s-%d", run.TaskID, time.Now().Unix()),
-				"message":    reviveSteerMessage,
-				// Run 24370: in_turn_steer fails on a parked turn
-				// (target_turn_changed) — only the replacement mode
-				// actually revived the orchestrator.
-				"force_replace": true,
-			}
-			if err := app.request(ctx, http.MethodPost, "/api/projects/"+run.ProjectID+"/tasks/"+run.TaskID+"/steer", payload, nil); err != nil {
-				app.logOperational("silence watchdog steer failed: %v", err)
-			} else {
-				app.logOperational("silence watchdog: no transcript progress for %s; revive steering sent (%d/%d)",
-					time.Since(lastProgress).Round(time.Second), revives+1, app.silenceReviveMax)
-			}
-			revives++
-			lastRevive = time.Now()
-		}
 		if taskState.Status == "failed" || taskState.Status == "interrupted" || taskState.Status == "stopped" {
-			if !sawRunning {
+			if !app.sawRunningFlag.Load() {
 				if next, drainErr := app.drainTranscript(ctx, run, stdout, masker, cursor); drainErr != nil {
 					if contextEnded(drainErr) {
 						return nil
@@ -344,6 +344,56 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 			return nil
 		case <-ticker.C:
 		}
+	}
+}
+
+// runSilenceWatchdog fires one revive steering per cooldown window while the
+// Transcript cursor stays frozen past the silence threshold. It reads only
+// atomics, so it never blocks on the drain path.
+func (app *HTTPApp) runSilenceWatchdog(ctx context.Context, run HostedEvaluationReference, done chan<- struct{}) {
+	defer close(done)
+	if app.silenceReviveSec <= 0 {
+		return
+	}
+	ticker := time.NewTicker(time.Duration(app.silenceReviveCooldownSec) * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !app.sawRunningFlag.Load() {
+			continue
+		}
+		lastProgress := time.Unix(app.lastProgressUnix.Load(), 0)
+		if time.Since(lastProgress) <= time.Duration(app.silenceReviveSec)*time.Second {
+			continue
+		}
+		revives := app.reviveCount.Load()
+		if app.silenceReviveMax > 0 && revives >= int64(app.silenceReviveMax) {
+			continue
+		}
+		lastRevive := time.Unix(app.lastReviveUnix.Load(), 0)
+		if revives > 0 && time.Since(lastRevive) <= time.Duration(app.silenceReviveCooldownSec)*time.Second {
+			continue
+		}
+		payload := map[string]any{
+			"request_id": fmt.Sprintf("revive-%s-%d", run.TaskID, time.Now().Unix()),
+			"message":    reviveSteerMessage,
+			// Run 24370: in_turn_steer fails on a parked turn
+			// (target_turn_changed) — only the replacement mode
+			// actually revived the orchestrator.
+			"force_replace": true,
+		}
+		if err := app.request(ctx, http.MethodPost, "/api/projects/"+run.ProjectID+"/tasks/"+run.TaskID+"/steer", payload, nil); err != nil {
+			app.logOperational("silence watchdog steer failed: %v", err)
+		} else {
+			app.logOperational("silence watchdog: no transcript progress for %s; revive steering sent (%d/%d)",
+				time.Since(lastProgress).Round(time.Second), revives+1, app.silenceReviveMax)
+		}
+		app.reviveCount.Add(1)
+		app.lastReviveUnix.Store(time.Now().Unix())
 	}
 }
 

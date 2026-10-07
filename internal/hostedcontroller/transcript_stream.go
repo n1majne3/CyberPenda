@@ -116,7 +116,12 @@ func (app *HTTPApp) streamInitialTranscript(ctx context.Context, run HostedEvalu
 // only after every entry in it reaches stdout.
 func (app *HTTPApp) drainTranscript(ctx context.Context, run HostedEvaluationReference, output io.Writer, masker *exactMasker, cursor int) (int, error) {
 	base := taskTranscriptPath(run)
-	for {
+	// Bound the inner loop: a page that keeps returning entries without
+	// advancing the cursor (or a daemon that hangs mid-read) must not park
+	// the Wait loop forever — run 25771's watchdog never fired because the
+	// drain path never returned.
+	const maxRounds = 64
+	for round := 0; round < maxRounds; round++ {
 		var page transcriptPage
 		path := base + "?after=" + strconv.Itoa(cursor)
 		if err := app.request(ctx, http.MethodGet, path, nil, &page); err != nil {
@@ -140,6 +145,7 @@ func (app *HTTPApp) drainTranscript(ctx context.Context, run HostedEvaluationRef
 			return cursor, nil
 		}
 	}
+	return cursor, errorsInvalidTranscriptPage("live-tail inner loop exceeded the round bound")
 }
 
 func (app *HTTPApp) emitTranscriptEntries(ctx context.Context, run HostedEvaluationReference, output io.Writer, masker *exactMasker, entries []transcript.Entry, afterEvent int) error {

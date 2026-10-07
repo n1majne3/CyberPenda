@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -701,6 +702,143 @@ func TestHTTPAppWaitSkipsFireAndForgetPermissionFrames(t *testing.T) {
 	}
 	if strings.Contains(diagnostics.String(), "edd9289f") {
 		t.Fatalf("setStatus frame must not queue a response: %s", diagnostics.String())
+	}
+}
+
+// drainTranscript must bound its inner loop: a page that keeps returning
+// entries without advancing the cursor (or a daemon that hangs mid-read)
+// must not park the Wait loop forever — run 25771's watchdog never fired
+// because the drain path never returned.
+func TestDrainTranscriptBoundsInnerLoop(t *testing.T) {
+	const base = "/api/projects/project-1/tasks/task-1"
+	calls := 0
+	var mu sync.Mutex
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == base+"/transcript":
+			mu.Lock()
+			calls++
+			mu.Unlock()
+			// Always return one entry but never advance the cursor: the
+			// inner loop must give up after a bounded number of rounds.
+			writeStreamPage(t, w, 1, false,
+				streamEntry("entry-1", 1, "tool_result", "tool", "x", "2026-10-07T00:00:00Z"))
+		case r.URL.Path == base:
+			writeStreamJSON(t, w, map[string]any{"status": "running"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
+		BaseURL: "http://hosted.test", PollPeriod: 20 * time.Millisecond,
+		Client: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w.Result(), nil
+		})},
+	})
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &out, nil) }()
+	// Wait for the first drain to exhaust its round bound and return, then
+	// check that the next drain starts fresh (the Wait loop keeps polling).
+	time.Sleep(500 * time.Millisecond)
+	mu.Lock()
+	firstDrainCalls := calls
+	mu.Unlock()
+	if firstDrainCalls > 64 {
+		t.Fatalf("drain inner loop unbounded: %d transcript reads in the first drain", firstDrainCalls)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Wait returned while the daemon never reports terminal: %v", err)
+	default:
+	}
+}
+
+// The silence watchdog must live on its own ticker, independent of the
+// drain path: a drain that never returns must not silence the watchdog.
+func TestWatchdogFiresWhenDrainStalls(t *testing.T) {
+	const base = "/api/projects/project-1/tasks/task-1"
+	var steers int
+	var mu sync.Mutex
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == base+"/steer" && r.Method == http.MethodPost:
+			mu.Lock()
+			steers++
+			mu.Unlock()
+			t.Logf("STEER received")
+			w.WriteHeader(http.StatusAccepted)
+		case r.URL.Path == base+"/transcript":
+			// The drain stalls: the initial read (no after) returns one entry,
+			// then the daemon hangs forever on the follow-up read.
+			if !r.URL.Query().Has("after") {
+				writeStreamPage(t, w, 1, false,
+					streamEntry("entry-1", 1, "tool_result", "tool", "boot", "2026-10-07T00:00:00Z"))
+				return
+			}
+			select {} // hang forever
+		case r.URL.Path == base:
+			writeStreamJSON(t, w, map[string]any{"status": "running"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
+		BaseURL: "http://hosted.test", PollPeriod: 20 * time.Millisecond,
+		SilenceReviveSec: 1, SilenceReviveCooldownSec: 1,
+		Client: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w.Result(), nil
+		})},
+	})
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &out, nil) }()
+	deadline := time.Now().Add(4 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := steers
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("Wait returned while running: %v", err)
+	default:
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if steers == 0 {
+		t.Fatal("watchdog never fired while the drain path was stalled")
+	}
+}
+
+// The loopback client must carry a timeout: a daemon that accepts the
+// connection but never answers must not park the Wait loop forever.
+func TestLoopbackClientHasTimeout(t *testing.T) {
+	// A hung handler must not park the Wait loop: the default client carries
+	// a 30s timeout, so the request errors out and Wait surfaces it.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(60 * time.Second) // long enough to exceed the client timeout
+	}))
+	defer server.Close()
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{BaseURL: server.URL})
+	done := make(chan error, 1)
+	go func() {
+		var out bytes.Buffer
+		done <- app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "p", TaskID: "t"}, &out, nil)
+	}()
+	select {
+	case <-done:
+		// returned — good (the request errored out, Wait surfaced it)
+	case <-time.After(35 * time.Second):
+		t.Fatal("Wait parked on a hung daemon for >35s — the loopback client has no timeout")
 	}
 }
 
