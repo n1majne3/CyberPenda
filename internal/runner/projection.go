@@ -1731,12 +1731,23 @@ func copyHostPiAuth(agentDir string) (bool, error) {
 }
 
 // piDefaultPackages are the Pi packages CyberPenda always projects:
-// pi-subagents powers Execute subagent dispatch. pi-web-access was removed
-// from the Hosted/Sandbox images and from this projection because Hosted
-// evaluation sandboxes have no outbound internet — the package only tempted
-// web fetches that could never succeed. Plain npm: refs without a version
-// range resolve from Pi's global npm root without network access.
-var piDefaultPackages = []string{"npm:@tintinweb/pi-subagents"}
+// pi-subagents powers Execute subagent dispatch and pi-web-access provides web
+// fetch/search. Both are installed globally in the Sandbox image; plain npm:
+// refs without a version range resolve from Pi's global npm root without
+// network access, so launches stay offline-safe.
+var piDefaultPackages = []string{"npm:@tintinweb/pi-subagents", "npm:pi-web-access"}
+
+// piProjectedDefaultPackages scopes the default package list to the launch
+// environment. A Hosted evaluation (CYBERPENDA_HOSTED_DATA_ROOT set) runs in
+// a sandbox with no outbound internet, and its image does not install
+// pi-web-access, so the package is dropped there only; local and Sandbox
+// runs keep the full list.
+func piProjectedDefaultPackages() []string {
+	if strings.TrimSpace(os.Getenv("CYBERPENDA_HOSTED_DATA_ROOT")) != "" {
+		return []string{"npm:@tintinweb/pi-subagents"}
+	}
+	return piDefaultPackages
+}
 
 // Provider-resilience defaults projected into pi settings.json. pi reads no
 // *TIMEOUT* env for these; settings.json is the only channel.
@@ -1762,7 +1773,7 @@ const (
 // state — pi/set_thinking_level and --provider/--model apply only to the main
 // session.
 func projectPiSettings(agentDir string, profile runtimeprofile.Profile, req ProjectionRequest) ([]string, error) {
-	packages := append([]string(nil), piDefaultPackages...)
+	packages := append([]string(nil), piProjectedDefaultPackages()...)
 	seen := make(map[string]bool, len(packages))
 	for _, pkg := range packages {
 		seen[pkg] = true

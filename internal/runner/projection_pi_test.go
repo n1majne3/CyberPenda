@@ -197,6 +197,7 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	}
 	want := map[string]bool{
 		"npm:@tintinweb/pi-subagents": true,
+		"npm:pi-web-access":           true,
 		"npm:pi-mcp-adapter":          true,
 		"npm:pi-subagents":            true,
 	}
@@ -209,8 +210,43 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 			t.Fatalf("expected packages to contain %q, got %#v", ref, settings.Packages)
 		}
 	}
-	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 3 {
-		t.Fatalf("expected packages preview with 3 entries, got %#v", projection.Config["packages"])
+	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 4 {
+		t.Fatalf("expected packages preview with 4 entries, got %#v", projection.Config["packages"])
+	}
+}
+
+// Hosted evaluation sandboxes have no outbound internet, so the default
+// pi-web-access projection is dropped there only; local and Sandbox runs
+// keep the full default package list.
+func TestPiDefaultPackagesDropWebAccessOnlyInHostedMode(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
+	t.Setenv("CYBERPENDA_HOSTED_DATA_ROOT", t.TempDir())
+	isolatePiHostHome(t)
+
+	root := t.TempDir()
+	layout, err := runner.PrepareTaskLayout(root, "task-pi-hosted-pkgs", runtimeprofile.ProviderPi)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderPi, Fields: runtimeprofile.Fields{Model: "DeepSeek-V4-Pro"}}
+
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		Owner: owner.NewTaskContract("task-pi-hosted", "project-1", layout.Workdir),
+	}); err != nil {
+		t.Fatalf("project config: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "agent", "settings.json"))
+	if err != nil {
+		t.Fatalf("read settings.json: %v", err)
+	}
+	var settings struct {
+		Packages []string `json:"packages"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatalf("decode settings.json: %v", err)
+	}
+	if len(settings.Packages) != 1 || settings.Packages[0] != "npm:@tintinweb/pi-subagents" {
+		t.Fatalf("hosted packages = %#v, want only the subagents default", settings.Packages)
 	}
 }
 
@@ -282,10 +318,10 @@ func TestProjectPiSettingsIgnoresHostSettings(t *testing.T) {
 		t.Fatalf("defaultThinkingLevel = %#v, want resolved high (never host low)", got)
 	}
 	packages, _ := settings["packages"].([]any)
-	if len(packages) != 1 || packages[0] != "npm:@tintinweb/pi-subagents" {
-		t.Fatalf("packages = %#v, want only the built-in subagents default (host packages must not leak)", packages)
+	if len(packages) != 2 || packages[0] != "npm:@tintinweb/pi-subagents" || packages[1] != "npm:pi-web-access" {
+		t.Fatalf("packages = %#v, want the built-in defaults (host packages must not leak)", packages)
 	}
-	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 1 {
+	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 2 {
 		t.Fatalf("expected packages preview with 2 entries, got %#v", projection.Config["packages"])
 	}
 }
