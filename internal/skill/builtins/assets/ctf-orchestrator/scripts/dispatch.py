@@ -41,6 +41,10 @@ PROBE_BUDGET_MIN = 8
 SIEGE_BUDGET_MIN = 60
 ZERO_PROGRESS_STEP = 15
 BUDGET_CEILING = 90
+# p16 攻坚棒:无立足点硬题(或累计投入已深却仍难度误标)给一棒深打预算。
+ASSAULT_BUDGET_MIN = 90
+ASSAULT_MIN_ATTEMPTS = 2
+ASSAULT_SPENT_MIN = 45
 ENDGAME_SIEGE_SEC = 3600
 DEFAULT_QUOTA = 3
 RESTART_CAP = 3
@@ -303,7 +307,7 @@ def next_milestone(led, code):
 # ---------------------------------------------------------------- assemble
 
 
-def build_prompt(ws, led, code, budget_min=None, siege=False):
+def build_prompt(ws, led, code, budget_min=None, siege=False, assault=False):
     rec = led["challenges"][code]
     k = rec["attempt"] + 1
     if budget_min is None:
@@ -314,6 +318,11 @@ def build_prompt(ws, led, code, budget_min=None, siege=False):
     if siege:
         milestone = ("【围城续作】上一棒的立足点仍有效,本棒从其里程碑直接续作;"
                      "禁止重验已排除面与已完成步骤,失败面不重走。目标:%s" % milestone)
+    if assault:
+        milestone = ("【攻坚棒】此题多棒未破且无立足点,本棒单棒深打(%d 分钟):"
+                     "先读完全部历史退场报告,选定一个最可能的假设一路打穿,"
+                     "按里程碑记录中途进展;禁止退化为浅表重扫。目标:%s"
+                     % (budget_min, milestone))
     parts = [
         FIXED_HEADER.format(addr=rec.get("addr") or "(见平台 list 输出)",
                             name=rec["name"], code=code,
@@ -345,14 +354,22 @@ def assemble(ws, led, code, reason="manual"):
     # 家族门控是否值得启用(门控本身本轮否决,防 c-03 类饿死)。
     probe = rec["attempt"] == 0
     siege = bool(rec.get("foothold")) and not probe
+    # p16 攻坚棒:多棒未破、无立足点,且是 hard/chain(或累计投入已深,
+    # 治 c-06 类难度误标)——给一棒 90 分钟深打,不再被浅表预算切碎。
+    assault = (not probe and not siege
+               and rec["attempt"] >= ASSAULT_MIN_ATTEMPTS
+               and (rec.get("difficulty") in ("hard", "chain")
+                    or (rec.get("spent_min") or 0) >= ASSAULT_SPENT_MIN))
     budget = PROBE_BUDGET_MIN if probe else rec["budget_min"]
     if siege:
         budget = max(budget, SIEGE_BUDGET_MIN)
+    if assault:
+        budget = max(budget, ASSAULT_BUDGET_MIN)
     fam = family_of(code)
     fam_facts = "yes" if any(
         family_of(c) == fam and r.get("flags_correct")
         for c, r in led["challenges"].items()) else "no"
-    k, attempts_rel, prompt = build_prompt(ws, led, code, budget, siege=siege)
+    k, attempts_rel, prompt = build_prompt(ws, led, code, budget, siege=siege, assault=assault)
     (ws.attempts / code).mkdir(parents=True, exist_ok=True)
     rec["attempt"] = k
     rec["state"] = "running"
@@ -363,7 +380,7 @@ def assemble(ws, led, code, reason="manual"):
         "code": code, "attempt": k, "state": "ready",
         "created": now(), "hard_stop": now() + budget * 60,
         "reason": reason, "prompt": str(p.relative_to(ws.root)).replace("\\", "/"),
-        "probe": probe, "siege": siege, "family_facts": fam_facts,
+        "probe": probe, "siege": siege, "assault": assault, "family_facts": fam_facts,
     }
     print("READY %s %s attempt=%d reason=%s prompt=%s" % (did, code, k, reason, p.name))
     return did
@@ -429,8 +446,11 @@ def pick_next(led, exclude_fresh=False):
             proven = 0 if fam_solved.get(family_of(code), 0) else 1
             diff = DIFFICULTY_RANK.get(rec.get("difficulty"), 1)
             return (0, proven, diff, -rec["score"])
-        if rec["state"] == "partial" and rec.get("foothold"):
-            return (1, 0, 0, -rec["score"])
+        if rec["state"] == "partial":
+            # p16:b-01 教训——1200 分 partial 链被 blocked 压到桶 3 整场饿死。
+            # partial 一律排在 blocked 之前,有立足点者再优先。
+            foothold = 0 if rec.get("foothold") else 1
+            return (1, foothold, 0, -rec["score"])
         if rec["state"] == "blocked":
             # easy 的 blocked 重试便宜(c-03 类四代没轮到的教训),优先复活;
             # 其余 blocked 仅在家族有新解题时复活。
@@ -442,6 +462,14 @@ def pick_next(led, exclude_fresh=False):
     candidates = []
     for code, rec in led["challenges"].items():
         if rec["state"] in ("running", "solved", "exhausted"):
+            continue
+        # churn 软顶已到的 blocked 题:fill 路径必然被 assemble 拒绝
+        # (reason=fill 且 attempt>=软顶),选了只会白启动一个平台实例再
+        # 被 idle-release 放掉,还把队列前面的题饿死。直接跳过,等
+        # Decide 手动派发(assemble reason=manual 不受软顶约束)。
+        # (26080 编排器 08:17:54 跑中热修原样移植)
+        if (rec["state"] == "blocked"
+                and rec.get("attempt", 0) >= SESSION_CHURN_SOFT_CAP):
             continue
         if exclude_fresh and rec.get("attempt", 0) == 0:
             continue
@@ -537,6 +565,12 @@ def _mark_family_grew(led, solved_code):
             rec["family_grew"] = True
 
 
+def _quota_error(err):
+    """平台槽位配额类失败(非题目基建问题):409 冲突/配额满/活动 run 限制。"""
+    e = (err or "").lower()
+    return any(k in e for k in ("409", "active_run", "quota", "配额"))
+
+
 def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
     led = ws.ledger()
     actions = []
@@ -594,6 +628,18 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
             actions.append("idle-slot-release %s state=%s" % (code, rec["state"]))
     # 3) 平台周期对账(有 platform.sh 才做)
     if ws.platform.exists():
+        running_codes = None
+        r = ws.platform_call("list")
+        if r.returncode == 0:
+            try:
+                items = json.loads(r.stdout)
+                if isinstance(items, dict):
+                    items = items.get("challenges", [])
+                running_codes = {c.get("challenge_code") or c.get("code")
+                                 for c in items
+                                 if c.get("container_status") == "running"}
+            except ValueError:
+                running_codes = None
         for code, rec in led["challenges"].items():
             pf = platform_flags(ws, code)
             if pf is not None and pf > rec["flags_correct"]:
@@ -603,6 +649,20 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
                     release_instance(ws, led, code)
                     _mark_family_grew(led, code)
                     actions.append("reconcile %s flags=%d" % (code, pf))
+        # p16 实例对账(f1-05/a-16 教训):账面与平台的 running 集合漂移会
+        # 让真配额被泄漏实例占死,后续 start 全吃 409。
+        # (a) 账面记着实例但平台已不在跑 → 放掉账面实例;
+        # (b) 平台在跑但账面不是 running(泄漏槽) → 平台侧 abandon 放真配额。
+        if running_codes is not None:
+            for code, rec in led["challenges"].items():
+                if (rec.get("instance") and rec["state"] != "running"
+                        and code not in running_codes):
+                    release_instance(ws, led, code)
+                    actions.append("reconcile-release %s state=%s" % (code, rec["state"]))
+                elif (code in running_codes and rec["state"] not in ("running", "solved")
+                        and not rec.get("instance")):
+                    ws.platform_call("abandon", code)
+                    actions.append("reconcile-abandon %s state=%s" % (code, rec["state"]))
     # 4) 补位:配额内组装下一段
     if not dry and not in_endgame(ws):
         running = sum(1 for r in led["challenges"].values() if r["state"] == "running")
@@ -614,10 +674,15 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
                 break
             ok, err = start_instance(ws, led, code)
             if not ok:
-                led["challenges"][code]["infra_deaths"] += 1
-                actions.append("start-failed %s %s" % (code, err))
-                if led["challenges"][code]["infra_deaths"] >= INFRA_DEATH_CAP:
-                    led["challenges"][code]["state"] = "exhausted"
+                # p16:f1-05 教训——配额类失败(如 409 槽位冲突)不是题的基建
+                # 死亡,不得累计 infra_deaths 把题毒成 exhausted。
+                if _quota_error(err):
+                    actions.append("start-quota %s %s" % (code, (err or "").strip()[:80]))
+                else:
+                    led["challenges"][code]["infra_deaths"] += 1
+                    actions.append("start-failed %s %s" % (code, err))
+                    if led["challenges"][code]["infra_deaths"] >= INFRA_DEATH_CAP:
+                        led["challenges"][code]["state"] = "exhausted"
                 break
             if assemble(ws, led, code, reason="fill") is not None:
                 running += 1
@@ -922,8 +987,55 @@ def selftest():
             (tmp4 / "deadline").write_text(str(now() + 1800), encoding="utf-8")
             pick = pick_next(ws4.ledger(), exclude_fresh=True)
             assert pick == "a-01", "终盘必须跳过从未开工的 b-01,选有足迹的 a-01"
+
         finally:
             shutil.rmtree(tmp4, ignore_errors=True)
+
+        # ---- p16 ----
+        # ④ churn 软顶 blocked 不再被 pick_next 选中(26080 热修移植)
+        led5 = {"challenges": {
+            "x-01": {"code": "x-01", "name": "x-01", "score": 300, "difficulty": "easy",
+                      "flags_total": 1, "addr": "", "state": "blocked", "attempt": 9,
+                      "restarts": 0, "infra_deaths": 0, "budget_min": 15, "spent_min": 0,
+                      "flags_correct": 0, "last_fact_seq": 0, "instance": None, "milestone": None},
+            "y-01": {"code": "y-01", "name": "y-01", "score": 300, "difficulty": "medium",
+                      "flags_total": 1, "addr": "", "state": "pending", "attempt": 0,
+                      "restarts": 0, "infra_deaths": 0, "budget_min": 25, "spent_min": 0,
+                      "flags_correct": 0, "last_fact_seq": 0, "instance": None, "milestone": None},
+        }, "dispatches": {}, "seq": 0}
+        assert pick_next(led5) == "y-01", "churn 软顶 blocked 必须被跳过"
+        # ⑤ partial(无立足点)必须排在 blocked 之前(b-01 饿死教训)
+        led5["challenges"]["x-01"]["state"] = "blocked"
+        led5["challenges"]["x-01"]["attempt"] = 1
+        led5["challenges"]["y-01"]["state"] = "partial"
+        led5["challenges"]["y-01"]["attempt"] = 1
+        led5["challenges"]["y-01"]["score"] = 1200
+        assert pick_next(led5) == "y-01", "高分 partial 不得被 blocked 压死"
+        # ⑥ 攻坚棒:hard + attempt>=2 + 无立足点 → 90 分钟预算 + 攻坚指令
+        led6 = {"challenges": {
+            "z-01": {"code": "z-01", "name": "z-01", "score": 500, "difficulty": "hard",
+                      "flags_total": 1, "addr": "", "state": "partial", "attempt": 2,
+                      "restarts": 1, "infra_deaths": 0, "budget_min": 35, "spent_min": 0,
+                      "flags_correct": 0, "last_fact_seq": 0, "instance": None,
+                      "milestone": None, "foothold": ""},
+        }, "dispatches": {}, "seq": 0}
+        tmp6 = Path(tempfile.mkdtemp(prefix="dispatch-selftest6-"))
+        try:
+            ws6 = WS(str(tmp6))
+            assemble(ws6, led6, "z-01")
+            did6 = sorted(led6["dispatches"])[-1]
+            dd6 = led6["dispatches"][did6]
+            assert dd6["assault"] is True, "hard+attempt2+无立足点必须是攻坚棒"
+            assert dd6["hard_stop"] - dd6["created"] >= ASSAULT_BUDGET_MIN * 60, "攻坚棒预算至少 90 分钟"
+            pr6 = (ws6.outbox / Path(dd6["prompt"]).name).read_text(encoding="utf-8")
+            assert "攻坚棒" in pr6, "攻坚棒 prompt 必须带攻坚指令"
+        finally:
+            shutil.rmtree(tmp6, ignore_errors=True)
+        # ⑦ 配额类失败不毒 infra_deaths
+        assert _quota_error('HTTP 409 {"detail":"配额已满"}') is True
+        assert _quota_error("connection refused") is False
+        print("selftest: p16 断言通过(软顶跳过/partial排序/攻坚棒/409分类)")
+
         print("selftest: 全部通过")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
