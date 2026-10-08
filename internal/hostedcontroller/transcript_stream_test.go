@@ -880,6 +880,95 @@ func TestLoopbackClientHasTimeout(t *testing.T) {
 	}
 }
 
+// p17 in-process runtime recovery: when consecutive revive steers produce no
+// transcript progress (pi turn-state wedged after a provider error storm —
+// run 26425: 34 steer delivery timeouts with quota already restored), the
+// watchdog must stop and resume the Runtime process, which restarts the
+// orchestrator and lets the ctf-orchestrator identity flow recover dispatch.
+func TestWatchdogRecoversRuntimeAfterFailedRevives(t *testing.T) {
+	const base = "/api/projects/project-1/tasks/task-1"
+	var mu sync.Mutex
+	steers, stops, resumes := 0, 0, 0
+	resumed := false
+	var diagnostics bytes.Buffer
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == base+"/steer" && r.Method == http.MethodPost:
+			mu.Lock()
+			steers++
+			mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+		case r.URL.Path == base+"/stop" && r.Method == http.MethodPost:
+			mu.Lock()
+			stops++
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == base+"/resume" && r.Method == http.MethodPost:
+			mu.Lock()
+			resumes++
+			resumed = true
+			mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+		case r.URL.Path == base+"/transcript":
+			if resumed {
+				// After recovery the orchestrator restarts: transcript advances.
+				writeStreamPage(t, w, 2, false,
+					streamEntry("entry-2", 2, "tool_result", "tool", "recovered", "2026-10-09T00:00:00Z"))
+				return
+			}
+			writeStreamPage(t, w, 1, false,
+				streamEntry("entry-1", 1, "tool_result", "tool", "boot", "2026-10-09T00:00:00Z"))
+		case r.URL.Path == base:
+			writeStreamJSON(t, w, map[string]any{"status": "running"})
+		default:
+			http.NotFound(w, r)
+		}
+	})
+	app := hostedcontroller.NewHTTPApp(hostedcontroller.HTTPAppConfig{
+		BaseURL: "http://hosted.test", PollPeriod: 20 * time.Millisecond, Diagnostics: &diagnostics,
+		SilenceReviveSec: 1, SilenceReviveCooldownSec: 1,
+		RuntimeRecoverAfterRevives: 2,
+		Client: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			w := httptest.NewRecorder()
+			handler.ServeHTTP(w, r)
+			return w.Result(), nil
+		})},
+	})
+	var out bytes.Buffer
+	done := make(chan error, 1)
+	go func() { done <- app.Wait(context.Background(), hostedcontroller.HostedEvaluationReference{ProjectID: "project-1", TaskID: "task-1"}, &out, nil) }()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		ok := resumes >= 1 && steers >= 2
+		mu.Unlock()
+		if ok {
+			break
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	time.Sleep(500 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	select {
+	case err := <-done:
+		t.Fatalf("Wait returned while running: %v", err)
+	default:
+	}
+	if steers < 2 {
+		t.Fatalf("revives = %d, want >=2 before recovery", steers)
+	}
+	if stops != 1 || resumes != 1 {
+		t.Fatalf("runtime recovery: stops=%d resumes=%d, want 1/1 after 2 no-progress revives\ndiagnostics:\n%s", stops, resumes, diagnostics.String())
+	}
+	// After recovery the transcript advances: no further steers should fire.
+	got := steers
+	time.Sleep(1500 * time.Millisecond)
+	if steers != got {
+		t.Fatalf("watchdog kept firing after recovery: %d -> %d", got, steers)
+	}
+}
+
 // With auto-respond off, a pending dialog must stay unanswered and surface
 // in the operational log instead.
 func TestHTTPAppWaitPermissionAutoRespondOff(t *testing.T) {

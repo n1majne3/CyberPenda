@@ -329,6 +329,11 @@ func Run(ctx context.Context, dataRoot string, env map[string]string, stdout, di
 		SilenceReviveMax:         0,
 		SilenceReviveCooldownSec: 300,
 		PermissionAutoRespond:    hostedPermissionAutoRespond(env),
+		// p17: a pi session wedged beyond steering (provider error storm;
+		// run 26425 had 34 steer delivery timeouts with the quota already
+		// restored) recovers only through a Runtime restart. Escalate after
+		// 3 consecutive no-progress revives (~30 min of silence).
+		RuntimeRecoverAfterRevives: hostedRuntimeRecoverAfter(env),
 	})
 	return RunWithApp(ctx, env, app, stdout, diagnostics)
 }
@@ -358,6 +363,20 @@ func hostedPermissionAutoRespond(env map[string]string) string {
 	value := strings.ToLower(strings.TrimSpace(env["CYBERPENDA_PERMISSION_AUTO_RESPOND"]))
 	if value == "" {
 		return "allow"
+	}
+	return value
+}
+
+// hostedRuntimeRecoverAfter reads CYBERPENDA_RUNTIME_RECOVER_AFTER (number of
+// consecutive no-progress revives before a Runtime stop+resume; 0 disables).
+func hostedRuntimeRecoverAfter(env map[string]string) int {
+	raw := strings.TrimSpace(env["CYBERPENDA_RUNTIME_RECOVER_AFTER"])
+	if raw == "" {
+		return 3
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return 3
 	}
 	return value
 }

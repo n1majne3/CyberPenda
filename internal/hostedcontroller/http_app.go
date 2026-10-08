@@ -56,10 +56,24 @@ type HTTPApp struct {
 	// them). All three are atomics so the goroutine never blocks on the drain
 	// path — run 25771's watchdog never fired because the Wait loop died in
 	// drainTranscript and the watchdog block was never evaluated again.
+	// lastProgressUnixUnix tracks the Transcript cursor advance moment shared
+	// with the watchdog goroutine (atomics only — never blocks on drain).
 	lastProgressUnix atomic.Int64
 	sawRunningFlag   atomic.Bool
 	reviveCount      atomic.Int64
 	lastReviveUnix   atomic.Int64
+	// failedReviveStreak counts consecutive revives after which the
+	// Transcript cursor still did not advance; runtimeRecoverAfter escalates
+	// that streak to a Runtime stop+resume (pi turn-state wedge recovery).
+	// runtimeRecoveries caps total recoveries per run (<=0: unlimited).
+	failedReviveStreak atomic.Int64
+	// lastProgressAtReviveUnix is the cursor-advance moment as of the last
+	// revive; comparing it against lastProgressUnix tells whether a revive
+	// changed anything.
+	lastProgressAtReviveUnix atomic.Int64
+	runtimeRecoverAfter      int
+	runtimeRecoveries        atomic.Int64
+	runtimeRecoverMax        int
 }
 
 type permissionDialog struct {
@@ -92,6 +106,14 @@ type HTTPAppConfig struct {
 	// for 5h45m on one unanswered dialog — hosted evaluation has no operator
 	// to click it, so the Wait loop answers itself.
 	PermissionAutoRespond string
+	// RuntimeRecoverAfterRevives escalates to an in-process runtime recovery
+	// (stop + resume of the Runtime process) after this many consecutive
+	// revive steers that produced no transcript progress. Run 26425: a
+	// provider error storm wedged pi's turn state — quota was restored an
+	// hour earlier, the watchdog kept firing unlimited revives, and all 34
+	// steer deliveries timed out; only a Runtime restart recovers that
+	// session. 0 disables the escalation.
+	RuntimeRecoverAfterRevives int
 }
 
 // reviveSteerMessage is delivered as task steering when the watchdog fires.
@@ -138,7 +160,8 @@ func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 	}
 	return &HTTPApp{baseURL: strings.TrimRight(config.BaseURL, "/"), client: client, runtimeBinary: config.RuntimeBinary, pollPeriod: period, diagnostics: diagnostics,
 		silenceReviveSec: reviveSec, silenceReviveMax: reviveMax, silenceReviveCooldownSec: reviveCooldown,
-		permissionAutoRespond: permissionAutoRespond, answeredPermissions: map[string]bool{}}
+		permissionAutoRespond: permissionAutoRespond, answeredPermissions: map[string]bool{},
+		runtimeRecoverAfter:   config.RuntimeRecoverAfterRevives}
 }
 
 func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootstrap) (HostedEvaluationReference, error) {
@@ -372,6 +395,7 @@ func (app *HTTPApp) runSilenceWatchdog(ctx context.Context, run HostedEvaluation
 		}
 		lastProgress := time.Unix(app.lastProgressUnix.Load(), 0)
 		if time.Since(lastProgress) <= time.Duration(app.silenceReviveSec)*time.Second {
+			app.failedReviveStreak.Store(0)
 			continue
 		}
 		revives := app.reviveCount.Load()
@@ -380,6 +404,26 @@ func (app *HTTPApp) runSilenceWatchdog(ctx context.Context, run HostedEvaluation
 		}
 		lastRevive := time.Unix(app.lastReviveUnix.Load(), 0)
 		if revives > 0 && time.Since(lastRevive) <= time.Duration(app.silenceReviveCooldownSec)*time.Second {
+			continue
+		}
+		// p17 escalation: count revives that changed nothing. A streak at the
+		// threshold means the pi session is wedged beyond steering (run
+		// 26425: quota restored an hour earlier, all steer deliveries timed
+		// out). Restart the Runtime process; the ctf-orchestrator identity
+		// flow re-anchors dispatch from ledger/leader.lock on the fresh
+		// session.
+		if app.lastProgressUnix.Load() <= app.lastProgressAtReviveUnix.Load() {
+			app.failedReviveStreak.Add(1)
+		} else {
+			app.failedReviveStreak.Store(0)
+		}
+		app.lastProgressAtReviveUnix.Store(app.lastProgressUnix.Load())
+		if app.runtimeRecoverAfter > 0 && app.failedReviveStreak.Load() >= int64(app.runtimeRecoverAfter) {
+			if app.runtimeRecoverMax > 0 && app.runtimeRecoveries.Load() >= int64(app.runtimeRecoverMax) {
+				continue
+			}
+			app.recoverRuntime(ctx, run, revives)
+			app.failedReviveStreak.Store(0)
 			continue
 		}
 		payload := map[string]any{
@@ -399,6 +443,27 @@ func (app *HTTPApp) runSilenceWatchdog(ctx context.Context, run HostedEvaluation
 		app.reviveCount.Add(1)
 		app.lastReviveUnix.Store(time.Now().Unix())
 	}
+}
+
+// recoverRuntime stops and resumes the task Runtime with a long-timeout
+// client: the daemon's stop waits for the (possibly hung) provider session
+// to unwind, which can exceed the loopback client's normal 30s budget. The
+// original Transport is kept so injected test transports stay in effect.
+func (app *HTTPApp) recoverRuntime(ctx context.Context, run HostedEvaluationReference, revives int64) {
+	original := app.client
+	app.client = &http.Client{Timeout: 180 * time.Second, Transport: original.Transport}
+	defer func() { app.client = original }()
+	if err := app.request(ctx, http.MethodPost, "/api/projects/"+run.ProjectID+"/tasks/"+run.TaskID+"/stop", nil, nil); err != nil {
+		app.logOperational("runtime recovery stop failed (revives=%d): %v", revives, err)
+		return
+	}
+	if err := app.request(ctx, http.MethodPost, "/api/projects/"+run.ProjectID+"/tasks/"+run.TaskID+"/resume", nil, nil); err != nil {
+		app.logOperational("runtime recovery resume failed (revives=%d): %v", revives, err)
+		return
+	}
+	app.runtimeRecoveries.Add(1)
+	app.logOperational("runtime recovery: stop+resume delivered after %d no-progress revives (recovery #%d)",
+		revives, app.runtimeRecoveries.Load())
 }
 
 // notePermissionDialog records one pending permission dialog observed in the
