@@ -8,6 +8,8 @@
 
 **[Open the live demo →](https://cyberpenda-demo.vercel.app)** · read-only sample project (no `pentestd`, no runtime, no exploit tools)
 
+https://github.com/user-attachments/assets/97717b99-bdcd-4956-9983-e312c1da0080
+
 ### TSecBench v1 result
 
 Official [TSecBench](https://tsecbench.zc.tencent.com/) Agentic leaderboard (**TSecBench v1**): **#3 · 93.82 / 100**

@@ -9,6 +9,8 @@ CyberPenda 在独立的沙箱里面运行你喜爱的Agent runtime，配合上FG
 
 **[打开在线 Demo →](https://cyberpenda-demo.vercel.app)** · 只读样例项目（不含 `pentestd`、运行时或利用工具）
 
+https://github.com/user-attachments/assets/97717b99-bdcd-4956-9983-e312c1da0080
+
 ### TSecBench v1 成绩
 
 官方 [TSecBench](https://tsecbench.zc.tencent.com/agent/16290) Agentic 排行榜（**TSecBench v1**）：**#3 · 93.82 / 100**
