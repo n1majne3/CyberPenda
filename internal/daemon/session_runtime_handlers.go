@@ -37,18 +37,19 @@ import (
 // activation, but it has no Project defaults, Scope, Project credentials, or
 // Project Interface inputs.
 type sessionRuntimeInput struct {
-	RuntimeProfileID string         `json:"runtime_profile_id"`
-	RuntimePluginID  string         `json:"runtime_plugin_id"`
-	Provider         string         `json:"provider"`
-	RuntimeProvider  string         `json:"runtime_provider"`
-	ModelProviderID  string         `json:"model_provider_id"`
-	Model            string         `json:"model"`
-	ModelOverride    string         `json:"model_override"`
-	ReasoningEffort  string         `json:"reasoning_effort"`
-	ForceReplace     bool           `json:"force_replace,omitempty"`
-	Runner           string         `json:"runner"`
-	HostActivated    bool           `json:"host_activated"`
-	RuntimeConfig    map[string]any `json:"runtime_config"`
+	RuntimeProfileID   string         `json:"runtime_profile_id"`
+	RuntimePluginID    string         `json:"runtime_plugin_id"`
+	Provider           string         `json:"provider"`
+	RuntimeProvider    string         `json:"runtime_provider"`
+	ModelProviderID    string         `json:"model_provider_id"`
+	Model              string         `json:"model"`
+	ModelOverride      string         `json:"model_override"`
+	ReasoningEffort    string         `json:"reasoning_effort"`
+	ForceReplace       bool           `json:"force_replace,omitempty"`
+	Runner             string         `json:"runner"`
+	HostActivated      bool           `json:"host_activated"`
+	HostBrowserEnabled bool           `json:"host_browser_enabled"`
+	RuntimeConfig      map[string]any `json:"runtime_config"`
 	// ContainerCLI / SandboxNetwork / SandboxVPNTun come from run_controls and
 	// select the host container engine for this Session launch.
 	ContainerCLI   string `json:"container_cli,omitempty"`
@@ -298,6 +299,9 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 	if capturedSnapshot != nil {
 		config = runtimeSnapshotMap(*capturedSnapshot)
 	}
+	if server.hostBrowserURL(found.ID, false) != "" {
+		launchGoal += "\n\nHost Browser is explicitly enabled. Use the host_browser MCP tools for the host browser's real session. This MCP service can execute code on the host, including browser_run_code_unsafe. This does not select Host Runner."
+	}
 	selection, err := sessionSelection(profile, config, input)
 	if err != nil {
 		return sessionRuntimePlan{}, err
@@ -338,6 +342,7 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 	}
 	launchProfile := profile
 	projectionRequest := runner.ProjectionRequest{
+		HostBrowserMCPURL:  server.hostBrowserURL(found.ID, run == session.RunnerSandbox),
 		BlackboardProtocol: found.BlackboardProtocol,
 		Owner:              found.OwnerContract(), DaemonAddr: server.listenAddr,
 		Credentials:   server.creds,
@@ -530,6 +535,10 @@ func (server *Server) prepareSessionRuntime(ctx context.Context, mode session.Bl
 		preflightRequest.CapturedSkillIDs = append([]string{}, priorSnapshot.EnabledSkillIDs...)
 	}
 	preflightResult := server.preflight.Run(ctx, preflightRequest)
+	if priorSnapshot != nil {
+		input.HostBrowserEnabled = priorSnapshot.HostBrowserEnabled
+	}
+	server.checkHostBrowser(&preflightResult, input.HostBrowserEnabled, profile.Provider)
 	if !preflightResult.Pass {
 		fails := make([]string, 0, len(preflightResult.Checks))
 		for _, check := range preflightResult.Checks {
@@ -629,6 +638,24 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 		return session.Continuation{}, err
 	}
 	interfaceToken := ""
+	snapshot, err := decodeRuntimeSnapshot(runtimeConfig)
+	if err != nil {
+		server.failSessionProviderLaunch(found.ID, continuation.ID, err)
+		return continuation, err
+	}
+	if err := server.ensureHostBrowser(found.ID, snapshot, filepath.Join(found.Workdir, ".runtime", "host-browser")); err != nil {
+		server.failSessionProviderLaunch(found.ID, continuation.ID, err)
+		return continuation, err
+	}
+	server.hostBrowserMu.Lock()
+	browserProcess := server.hostBrowserProcesses[found.ID]
+	server.hostBrowserMu.Unlock()
+	browserOwnedByHarness := false
+	defer func() {
+		if !browserOwnedByHarness {
+			_ = server.closeHostBrowserProcess(context.Background(), found.ID, browserProcess)
+		}
+	}()
 	if blackboardProjection != runner.BlackboardProjectionOmitted {
 		if _, pinErr := server.blackboardV2.BindSessionContinuation(ctx, found.ID, continuation.ID); pinErr != nil {
 			server.failSessionProviderLaunch(found.ID, continuation.ID, pinErr)
@@ -699,8 +726,10 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 		_ = server.closeSessionProviderSession(found.ID)
 		return continuation, err
 	}
+	browserOwnedByHarness = true
 	go func() {
 		defer server.runtimeLaunchWG.Done()
+		defer server.closeHostBrowserProcess(context.Background(), found.ID, browserProcess)
 		runErr := server.sessionHarness.Launch(launchCtx, runtime.SessionLaunchRequest{
 			SessionID: found.ID, Goal: plan.LaunchGoal, Adapter: plan.Adapter, ContinuationID: continuation.ID,
 			Metadata: plan.Metadata, StopConfirmation: plan.StopConfirmation,
@@ -746,6 +775,7 @@ func (server *Server) handleSessionPreflight(response http.ResponseWriter, reque
 		preflightRequestForSession(server, profile, input, run, input.selectedModel()),
 	)
 	server.logPreflightCustomArgConflict(profile.ID, result)
+	server.checkHostBrowser(&result, input.HostBrowserEnabled, profile.Provider)
 	writeJSON(response, http.StatusOK, result)
 }
 
@@ -1221,10 +1251,11 @@ func sessionRuntimeInputFromCreate(input createSessionInput) sessionRuntimeInput
 		RuntimeProfileID: input.RuntimeProfileID, RuntimePluginID: input.RuntimePluginID, Provider: input.Provider, RuntimeProvider: input.RuntimeProvider,
 		ModelProviderID: input.ModelProviderID, Model: input.Model, ModelOverride: input.ModelOverride,
 		ReasoningEffort: input.ReasoningEffort, Runner: input.Runner, HostActivated: input.HostActivated,
-		RuntimeConfig:  input.RuntimeConfig,
-		ContainerCLI:   input.RunControls.ContainerCLI,
-		SandboxNetwork: input.RunControls.SandboxNetwork,
-		SandboxVPNTun:  input.RunControls.SandboxVPNTun,
+		HostBrowserEnabled: input.HostBrowserEnabled,
+		RuntimeConfig:      input.RuntimeConfig,
+		ContainerCLI:       input.RunControls.ContainerCLI,
+		SandboxNetwork:     input.RunControls.SandboxNetwork,
+		SandboxVPNTun:      input.RunControls.SandboxVPNTun,
 	}
 }
 

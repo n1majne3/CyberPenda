@@ -229,7 +229,7 @@ export function useRuntimeLaunchControls({ projectId, defaultBlackboardMode = "d
     return {
       ...selection,
       runner: form.runner,
-      ...(projectId ? { host_browser_enabled: hostBrowserEnabled } : {}),
+      host_browser_enabled: hostBrowserEnabled,
       ...(form.runner === "host" ? { host_activated: hostActivated } : {}),
       run_controls: launchRunControls(hostActivated, form.runner, containerCLI, sandboxNetwork, sandboxVPNTun, blackboardMode),
     };
@@ -433,26 +433,24 @@ export function RuntimeLaunchControls({
         </div>
       </section>
 
-<div>
-        {ownerLabel === "task" && (
-          <div className="mb-4 rounded-lg border border-border bg-card p-4">
-            <div className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                id="launch-host-browser"
-                checked={controller.hostBrowserEnabled}
-                aria-describedby="launch-host-browser-boundary"
-                onChange={(event) => { controller.setHostBrowserEnabled(event.target.checked); setPreflight(null); }}
-                className="h-4 w-4 accent-primary"
-              />
-              <label htmlFor="launch-host-browser" className="text-sm font-medium">Enable Host Browser</label>
-            </div>
-            <p id="launch-host-browser-boundary" className="mt-2 text-xs text-muted-foreground">
-              Use the host browser&apos;s real session. Playwright MCP can execute Runtime code in the host service process.
-              This does not select Host Runner. When off, use the Sandbox Browser with a temporary session.
-            </p>
+      <div>
+        <div className="mb-4 rounded-lg border border-border bg-card p-4">
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="launch-host-browser"
+              checked={controller.hostBrowserEnabled}
+              aria-describedby="launch-host-browser-boundary"
+              onChange={(event) => { controller.setHostBrowserEnabled(event.target.checked); setPreflight(null); }}
+              className="h-4 w-4 accent-primary"
+            />
+            <label htmlFor="launch-host-browser" className="text-sm font-medium">Enable Host Browser</label>
           </div>
-        )}
+          <p id="launch-host-browser-boundary" className="mt-2 text-xs text-muted-foreground">
+            Use the host browser&apos;s real session. Playwright MCP can execute Runtime code in the host service process.
+            This does not select Host Runner. When off, use the Sandbox Browser with a temporary session.
+          </p>
+        </div>
         <SectionLabel className="mb-2 px-0.5">Advanced configuration</SectionLabel>
         <div className="space-y-2">
           <ConfigAccordion icon={Container} title="Runner and network" summary={runnerSummary}>

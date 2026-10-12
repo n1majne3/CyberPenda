@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"pentest/internal/preflight"
+	"pentest/internal/runtimeconfig"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
@@ -95,12 +96,19 @@ func (server *Server) ensureTaskHostBrowser(created task.Task) error {
 		return errors.New("runtime configuration snapshot is missing")
 	}
 	snapshot, err := decodeRuntimeSnapshot(versions[len(versions)-1].Config)
-	if err != nil || !snapshot.HostBrowserEnabled || snapshot.RuntimePluginID == string(runtimeprofile.ProviderFake) {
+	if err != nil {
 		return err
+	}
+	return server.ensureHostBrowser(created.ID, snapshot, filepath.Join(server.runtimeRoot, created.ID, "host-browser"))
+}
+
+func (server *Server) ensureHostBrowser(ownerID string, snapshot runtimeconfig.RuntimeConfigurationSnapshot, directory string) error {
+	if !snapshot.HostBrowserEnabled || snapshot.RuntimePluginID == string(runtimeprofile.ProviderFake) {
+		return nil
 	}
 	// A new launch owns a new service, even if the prior Harness has released
 	// ownership before its deferred resource cleanup finishes.
-	if err := server.closeTaskHostBrowser(context.Background(), created.ID); err != nil {
+	if err := server.closeHostBrowser(context.Background(), ownerID); err != nil {
 		return err
 	}
 	server.hostBrowserMu.Lock()
@@ -110,9 +118,9 @@ func (server *Server) ensureTaskHostBrowser(created task.Task) error {
 	}
 	ctx, cancel := context.WithCancel(server.runtimeLaunchCtx)
 	process := &hostBrowserProcess{cancel: cancel, ready: make(chan struct{}), done: make(chan struct{})}
-	server.hostBrowserProcesses[created.ID] = process
+	server.hostBrowserProcesses[ownerID] = process
 	go func() {
-		process.err = server.startHostBrowser(ctx, created.ID, process)
+		process.err = server.startHostBrowser(ctx, directory, process)
 		close(process.ready)
 	}()
 	server.hostBrowserMu.Unlock()
@@ -122,7 +130,7 @@ func (server *Server) ensureTaskHostBrowser(created task.Task) error {
 	case <-process.ready:
 	}
 	if process.err != nil {
-		_ = server.closeTaskHostBrowser(context.Background(), created.ID)
+		_ = server.closeHostBrowser(context.Background(), ownerID)
 		return process.err
 	}
 	select {
@@ -133,7 +141,7 @@ func (server *Server) ensureTaskHostBrowser(created task.Task) error {
 	}
 }
 
-func (server *Server) startHostBrowser(ctx context.Context, taskID string, process *hostBrowserProcess) error {
+func (server *Server) startHostBrowser(ctx context.Context, directory string, process *hostBrowserProcess) error {
 	started := false
 	defer func() {
 		if !started {
@@ -151,7 +159,6 @@ func (server *Server) startHostBrowser(ctx context.Context, taskID string, proce
 	_, port, _ := net.SplitHostPort(listener.Addr().String())
 	_ = listener.Close()
 	process.port = port
-	directory := filepath.Join(server.runtimeRoot, taskID, "host-browser")
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return err
 	}
@@ -203,7 +210,7 @@ func (server *Server) startHostBrowser(ctx context.Context, taskID string, proce
 	}
 }
 
-func (server *Server) taskHostBrowserURL(taskID string, sandbox bool) string {
+func (server *Server) hostBrowserURL(taskID string, sandbox bool) string {
 	server.hostBrowserMu.Lock()
 	process := server.hostBrowserProcesses[taskID]
 	server.hostBrowserMu.Unlock()
@@ -226,7 +233,7 @@ func (server *Server) taskHostBrowserURL(taskID string, sandbox bool) string {
 	return "http://" + net.JoinHostPort(host, process.port) + "/mcp"
 }
 
-func (server *Server) closeTaskHostBrowser(ctx context.Context, taskID string) error {
+func (server *Server) closeHostBrowser(ctx context.Context, taskID string) error {
 	server.hostBrowserMu.Lock()
 	process := server.hostBrowserProcesses[taskID]
 	server.hostBrowserMu.Unlock()
@@ -263,7 +270,7 @@ func (server *Server) closeAllHostBrowsers() error {
 	server.hostBrowserMu.Unlock()
 	var result error
 	for _, id := range ids {
-		result = errors.Join(result, server.closeTaskHostBrowser(context.Background(), id))
+		result = errors.Join(result, server.closeHostBrowser(context.Background(), id))
 	}
 	return result
 }

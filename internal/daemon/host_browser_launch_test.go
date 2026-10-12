@@ -255,3 +255,22 @@ func TestHostBrowserPreflightChecksOnlyExplicitEnablement(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionHostBrowserPreflightChecksExplicitEnablement(t *testing.T) {
+	root := t.TempDir()
+	server := newDaemonWithConfig(t, daemon.Config{DBPath: filepath.Join(root, "test.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		DisableBuiltinSkills: true, HostBrowserMCPBinary: filepath.Join(root, "not-installed")})
+	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex","fields":{"binary_path":"/usr/bin/true","model":"test"}}`)
+	for _, enabled := range []bool{false, true} {
+		body, _ := json.Marshal(map[string]any{"runtime_profile_id": profileID, "runner": "host", "host_activated": true, "host_browser_enabled": enabled})
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/sessions/preflight", bytes.NewReader(body)))
+		if response.Code != http.StatusOK {
+			t.Fatalf("Preflight: %d %s", response.Code, response.Body.String())
+		}
+		found := strings.Contains(response.Body.String(), `"name":"host_browser","status":"fail"`)
+		if found != enabled {
+			t.Fatalf("Session Preflight must check only explicit enablement: %s", response.Body.String())
+		}
+	}
+}

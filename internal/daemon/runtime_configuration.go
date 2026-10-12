@@ -233,12 +233,13 @@ func (server *Server) resolveSessionSnapshot(profile runtimeprofile.Profile, run
 	}
 
 	selection := runtimeconfig.LaunchSelection{
-		RuntimeProfileID: input.RuntimeProfileID,
-		RuntimePluginID:  string(profile.Provider),
-		ModelProviderID:  turn.ModelProviderID,
-		Model:            turn.Model,
-		ReasoningEffort:  turn.ReasoningEffort,
-		Runner:           string(run),
+		RuntimeProfileID:   input.RuntimeProfileID,
+		HostBrowserEnabled: input.HostBrowserEnabled,
+		RuntimePluginID:    string(profile.Provider),
+		ModelProviderID:    turn.ModelProviderID,
+		Model:              turn.Model,
+		ReasoningEffort:    turn.ReasoningEffort,
+		Runner:             string(run),
 	}
 	var source *runtimeconfig.ProfileSource
 	if strings.TrimSpace(profile.ID) != "" {

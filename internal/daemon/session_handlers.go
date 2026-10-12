@@ -16,23 +16,24 @@ import (
 )
 
 type createSessionInput struct {
-	Input            string                 `json:"input"`
-	InitialInput     string                 `json:"initial_input"`
-	Message          string                 `json:"message"`
-	Directive        string                 `json:"directive"`
-	RuntimeProfileID string                 `json:"runtime_profile_id"`
-	RuntimePluginID  string                 `json:"runtime_plugin_id"`
-	Provider         string                 `json:"provider"`
-	RuntimeProvider  string                 `json:"runtime_provider"`
-	ModelProviderID  string                 `json:"model_provider_id"`
-	Model            string                 `json:"model"`
-	ModelOverride    string                 `json:"model_override"`
-	ReasoningEffort  string                 `json:"reasoning_effort"`
-	Runner           string                 `json:"runner"`
-	HostActivated    bool                   `json:"host_activated"`
-	RuntimeConfig    map[string]any         `json:"runtime_config"`
-	BlackboardMode   session.BlackboardMode `json:"blackboard_mode"`
-	RunControls      session.RunControls    `json:"run_controls"`
+	Input              string                 `json:"input"`
+	InitialInput       string                 `json:"initial_input"`
+	Message            string                 `json:"message"`
+	Directive          string                 `json:"directive"`
+	RuntimeProfileID   string                 `json:"runtime_profile_id"`
+	RuntimePluginID    string                 `json:"runtime_plugin_id"`
+	Provider           string                 `json:"provider"`
+	RuntimeProvider    string                 `json:"runtime_provider"`
+	ModelProviderID    string                 `json:"model_provider_id"`
+	Model              string                 `json:"model"`
+	ModelOverride      string                 `json:"model_override"`
+	ReasoningEffort    string                 `json:"reasoning_effort"`
+	Runner             string                 `json:"runner"`
+	HostActivated      bool                   `json:"host_activated"`
+	HostBrowserEnabled bool                   `json:"host_browser_enabled"`
+	RuntimeConfig      map[string]any         `json:"runtime_config"`
+	BlackboardMode     session.BlackboardMode `json:"blackboard_mode"`
+	RunControls        session.RunControls    `json:"run_controls"`
 }
 
 var errInvalidSessionBody = errors.New("invalid request body")

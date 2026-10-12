@@ -559,7 +559,7 @@ _Avoid_: Host Browser, shared host profile, persistent browser profile
 _Avoid_: Host Runner, copied cookies, mounted browser profile
 
 **Host Browser Enablement**:
-操作员在 **Task Launch** 时对该 **Task** 使用 **Host Browser** 及其宿主机 MCP 能力的显式选择,包括服务进程中的代码执行能力,与 **Host Runner Activation** 独立。
+操作员在启动 **Task** 或 **Non-Project Session** 时对该 **Runtime Owner** 使用 **Host Browser** 及其宿主机 MCP 能力的显式选择,包括服务进程中的代码执行能力,与 **Host Runner Activation** 独立。默认关闭,由 **Runtime Configuration Snapshot** 保存,后续 **Runtime Continuation** 保留该选择。
 _Avoid_: automatic browser selection, Host Runner Activation, sandbox-only capability
 
 **Credential Reference**:

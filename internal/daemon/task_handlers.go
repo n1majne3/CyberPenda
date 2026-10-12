@@ -206,12 +206,12 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	// the background launch reads the goal that references them.
 	if len(resolvedAttachments) > 0 {
 		if plan.ValidatedLayout == nil {
-			_ = server.closeTaskHostBrowser(context.Background(), created.ID)
+			_ = server.closeHostBrowser(context.Background(), created.ID)
 			writeTaskLaunchError(response, fmt.Errorf("task layout unavailable for attachments"))
 			return
 		}
 		if err := writeTaskAttachments(plan.ValidatedLayout.Workdir, resolvedAttachments); err != nil {
-			_ = server.closeTaskHostBrowser(context.Background(), created.ID)
+			_ = server.closeHostBrowser(context.Background(), created.ID)
 			writeTaskLaunchError(response, err)
 			return
 		}
@@ -264,7 +264,7 @@ type continuationLaunchBinding struct {
 func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchPlan, goal string) (err error) {
 	defer func() {
 		if err != nil {
-			_ = server.closeTaskHostBrowser(context.Background(), created.ID)
+			_ = server.closeHostBrowser(context.Background(), created.ID)
 		}
 	}()
 	if plan.BlackboardProjection != runner.BlackboardProjectionOmitted && !plan.BlackboardV2 {
@@ -716,7 +716,7 @@ func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launch
 func (server *Server) buildTaskLaunchPlanForBlackboardProjection(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string, blackboardProjection runner.BlackboardProjection) (plan taskLaunchPlan, err error) {
 	defer func() {
 		if err != nil {
-			_ = server.closeTaskHostBrowser(context.Background(), created.ID)
+			_ = server.closeHostBrowser(context.Background(), created.ID)
 		}
 	}()
 	server.logTaskLaunchStage(created, "build_plan")
@@ -730,7 +730,7 @@ func (server *Server) buildTaskLaunchPlanForBlackboardProjection(created task.Ta
 	if err := server.ensureTaskHostBrowser(created); err != nil {
 		return taskLaunchPlan{}, err
 	}
-	if server.taskHostBrowserURL(created.ID, false) != "" {
+	if server.hostBrowserURL(created.ID, false) != "" {
 		goal += "\n\nBrowser selection: Sandbox Browser uses agent-browser with a temporary session and no persistent Browser Profile. Host Browser is explicitly enabled. Use the host_browser MCP tools for the host browser's real session. This MCP service can execute code on the host, including browser_run_code_unsafe. Browser access does not grant Project Scope authorization."
 	}
 	if blackboardProjection == runner.BlackboardProjectionOmitted {
@@ -785,7 +785,7 @@ func (server *Server) prepareTaskConfigProjection(created task.Task, profile run
 		BlackboardProtocol: created.BlackboardProtocol, Owner: created.OwnerContract(layout.Workdir),
 		ScopeSnapshot: created.ScopeSnapshot, Credentials: server.creds,
 		DaemonAddr: server.listenAddr, Sandbox: created.Runner == task.RunnerSandbox,
-		HostBrowserMCPURL: server.taskHostBrowserURL(created.ID, created.Runner == task.RunnerSandbox),
+		HostBrowserMCPURL: server.hostBrowserURL(created.ID, created.Runner == task.RunnerSandbox),
 		RuntimePlugins:    server.runtimePlugins, RuntimeExtensions: server.runtimeExtensions,
 		LaunchModelOverride: launchModelOverride, RequestedReasoningEffort: launchReasoningEffort,
 		BlackboardMode:       modeskill.Mode(created.RunControls.BlackboardMode),

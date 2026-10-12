@@ -71,6 +71,29 @@ function renderPage(initialEntries = ["/sessions"], view: "open" | "archived" = 
 }
 
 describe("SessionHomePage", () => {
+  it("sends explicit Host Browser enablement through Session preflight and launch", async () => {
+    const fetchMock = mockApi({
+      ...sessionLaunchRoutes,
+      "/api/sessions?lifecycle=archived": { sessions: [] },
+      "/api/sessions": { sessions: [] },
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("option", { name: "MiMo" });
+    const checkbox = screen.getByRole("checkbox", { name: "Enable Host Browser" });
+    expect(checkbox).not.toBeChecked();
+    await user.click(checkbox);
+    await user.type(screen.getByLabelText("What do you want to explore?"), "Verify the browser");
+    await user.click(screen.getByRole("button", { name: /launch session/i }));
+    await waitFor(() => {
+      for (const endpoint of ["/api/sessions/preflight", "/api/sessions"]) {
+        const request = fetchMock.mock.calls.find(([url, init]) => url === endpoint && init?.method === "POST");
+        expect(request).toBeDefined();
+        expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({ host_browser_enabled: true, runner: "sandbox" });
+      }
+    });
+  });
+
   it("launches a Non-Project Session with Disabled Blackboard Mode", async () => {
     const fetchMock = mockApi({
       ...sessionLaunchRoutes,
@@ -102,6 +125,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "high",
             runner: "sandbox",
+            host_browser_enabled: false,
             run_controls: { container_cli: "docker", blackboard_mode: "disabled" },
           }),
         }),
@@ -149,6 +173,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "xhigh",
             runner: "sandbox",
+            host_browser_enabled: false,
             run_controls: { container_cli: "docker", blackboard_mode: "working_graph" },
           }),
         }),
@@ -248,6 +273,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "high",
             runner: "sandbox",
+            host_browser_enabled: false,
             run_controls: { container_cli: "docker", blackboard_mode: "disabled" },
           }),
         }),
@@ -304,6 +330,7 @@ describe("SessionHomePage", () => {
             model: "mimo-v2.5-pro",
             reasoning_effort: "high",
             runner: "sandbox",
+            host_browser_enabled: false,
             run_controls: { container_cli: "docker", blackboard_mode: "working_graph" },
           }),
         }),

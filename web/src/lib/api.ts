@@ -432,6 +432,7 @@ export interface SessionRuntimeControls {
 }
 
 export interface SessionLaunchOptions {
+  host_browser_enabled?: boolean;
   runtime_profile_id?: string;
   runtime_plugin_id?: string;
   provider?: string;
