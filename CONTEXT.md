@@ -546,6 +546,22 @@ _Avoid_: silent host fallback, implicit host run
 An isolated runtime environment used to separate task filesystem state, dependencies, runtime homes, and process environment from the host.
 _Avoid_: jail, proxy, enforcement boundary
 
+**Browser Profile**:
+浏览器使用的会话数据与配置,包括 Cookie、本地存储和登录状态,与 **Runtime Profile** 独立。
+_Avoid_: Runtime Profile, Model Provider, Runtime conversation
+
+**Sandbox Browser**:
+在 **Sandbox** 内运行的独立浏览器,使用临时会话,不配置持久 **Browser Profile**,不继承宿主机浏览器状态。
+_Avoid_: Host Browser, shared host profile, persistent browser profile
+
+**Host Browser**:
+使用宿主机真实 **Browser Profile** 和用户现有会话的浏览器。其执行位置与 **Runtime** 所选 **Runner** 独立。
+_Avoid_: Host Runner, copied cookies, mounted browser profile
+
+**Host Browser Enablement**:
+操作员在 **Task Launch** 时对该 **Task** 使用 **Host Browser** 及其宿主机 MCP 能力的显式选择,包括服务进程中的代码执行能力,与 **Host Runner Activation** 独立。
+_Avoid_: automatic browser selection, Host Runner Activation, sandbox-only capability
+
 **Credential Reference**:
 A non-secret pointer that lets a task receive required credentials without storing the secret in a **Runtime Profile**.
 _Avoid_: credential value, embedded secret

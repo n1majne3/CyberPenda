@@ -66,6 +66,7 @@ type ProjectionRequest struct {
 	DaemonAddr              string
 	AuthToken               string
 	Sandbox                 bool
+	HostBrowserMCPURL       string
 	RuntimePlugins          *runtimeplugin.Registry
 	RuntimeExtensions       *runtimeextension.Registry
 	ModelProviders          modelprovider.ProviderGetter

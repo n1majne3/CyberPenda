@@ -81,10 +81,21 @@ func splitListenHostPort(addr string) (host, port string) {
 	return addr, "8787"
 }
 
-func collectMCPServers(profile runtimeprofile.Profile, _ ProjectionRequest) ([]runtimeprofile.MCPServer, error) {
+const HostBrowserMCPName = "host_browser"
+
+func collectMCPServers(profile runtimeprofile.Profile, req ProjectionRequest) ([]runtimeprofile.MCPServer, error) {
 	// Blackboard access is CLI + Mode Skill only. MCP servers in a Runtime
-	// Profile are external user configuration and are projected unchanged.
-	return append([]runtimeprofile.MCPServer{}, profile.Fields.MCPServers...), nil
+	// Profile remain external configuration, except the managed Host Browser name.
+	servers := make([]runtimeprofile.MCPServer, 0, len(profile.Fields.MCPServers)+1)
+	for _, server := range profile.Fields.MCPServers {
+		if strings.TrimSpace(server.Name) != HostBrowserMCPName {
+			servers = append(servers, server)
+		}
+	}
+	if req.HostBrowserMCPURL != "" {
+		servers = append(servers, runtimeprofile.MCPServer{Name: HostBrowserMCPName, Mode: runtimeprofile.MCPServerExternal, URL: req.HostBrowserMCPURL})
+	}
+	return servers, nil
 }
 
 func writeProjectionContextFiles(layout Layout, req ProjectionRequest, provider runtimeprofile.Provider, mcpURL string) error {

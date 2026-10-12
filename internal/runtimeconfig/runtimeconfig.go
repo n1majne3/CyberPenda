@@ -23,13 +23,14 @@ var (
 // LaunchSelection is the mutually exclusive input accepted by Preflight and
 // Runtime Owner creation. ModelOverride is only a legacy request alias.
 type LaunchSelection struct {
-	RuntimeProfileID string `json:"runtime_profile_id,omitempty"`
-	RuntimePluginID  string `json:"runtime_plugin_id,omitempty"`
-	ModelProviderID  string `json:"model_provider_id,omitempty"`
-	Model            string `json:"model,omitempty"`
-	ModelOverride    string `json:"model_override,omitempty"`
-	ReasoningEffort  string `json:"reasoning_effort,omitempty"`
-	Runner           string `json:"runner,omitempty"`
+	RuntimeProfileID   string `json:"runtime_profile_id,omitempty"`
+	RuntimePluginID    string `json:"runtime_plugin_id,omitempty"`
+	ModelProviderID    string `json:"model_provider_id,omitempty"`
+	Model              string `json:"model,omitempty"`
+	ModelOverride      string `json:"model_override,omitempty"`
+	ReasoningEffort    string `json:"reasoning_effort,omitempty"`
+	Runner             string `json:"runner,omitempty"`
+	HostBrowserEnabled bool   `json:"host_browser_enabled,omitempty"`
 }
 
 // RuntimeTurnSelection is the only mutable selection at a continuation or
@@ -63,16 +64,17 @@ type ProfileSource struct {
 // RuntimeConfigurationSnapshot is the complete non-secret configuration used
 // by one Runtime Owner configuration version.
 type RuntimeConfigurationSnapshot struct {
-	SnapshotVersion  int                    `json:"snapshot_version"`
-	RuntimeProfile   *ProfileProvenance     `json:"runtime_profile,omitempty"`
-	RuntimePluginID  string                 `json:"runtime_plugin_id"`
-	Runner           string                 `json:"runner"`
-	ModelProvider    modelprovider.Snapshot `json:"model_provider_snapshot"`
-	TurnSelection    RuntimeTurnSelection   `json:"runtime_turn_selection"`
-	Settings         map[string]any         `json:"settings"`
-	EnabledSkillIDs  []string               `json:"enabled_skill_ids"`
-	ModeSkillID      string                 `json:"mode_skill_id,omitempty"`
-	ConfigProjection map[string]any         `json:"config_projection,omitempty"`
+	SnapshotVersion    int                    `json:"snapshot_version"`
+	RuntimeProfile     *ProfileProvenance     `json:"runtime_profile,omitempty"`
+	RuntimePluginID    string                 `json:"runtime_plugin_id"`
+	Runner             string                 `json:"runner"`
+	HostBrowserEnabled bool                   `json:"host_browser_enabled"`
+	ModelProvider      modelprovider.Snapshot `json:"model_provider_snapshot"`
+	TurnSelection      RuntimeTurnSelection   `json:"runtime_turn_selection"`
+	Settings           map[string]any         `json:"settings"`
+	EnabledSkillIDs    []string               `json:"enabled_skill_ids"`
+	ModeSkillID        string                 `json:"mode_skill_id,omitempty"`
+	ConfigProjection   map[string]any         `json:"config_projection,omitempty"`
 }
 
 // Summary is the stable Task/Session API view of the latest Snapshot.
@@ -81,6 +83,7 @@ type Summary struct {
 	RuntimeProfileName string `json:"runtime_profile_name,omitempty"`
 	RuntimePluginID    string `json:"runtime_plugin_id"`
 	Runner             string `json:"runner"`
+	HostBrowserEnabled bool   `json:"host_browser_enabled"`
 	ModelProviderID    string `json:"model_provider_id"`
 	ModelProviderName  string `json:"model_provider_name,omitempty"`
 	Model              string `json:"model"`
@@ -90,9 +93,10 @@ type Summary struct {
 func Summarize(snapshot RuntimeConfigurationSnapshot) Summary {
 	summary := Summary{
 		RuntimePluginID: snapshot.RuntimePluginID, Runner: snapshot.Runner,
-		ModelProviderID:   snapshot.TurnSelection.ModelProviderID,
-		ModelProviderName: snapshot.ModelProvider.ModelProviderName,
-		Model:             snapshot.TurnSelection.Model, ReasoningEffort: snapshot.TurnSelection.ReasoningEffort,
+		HostBrowserEnabled: snapshot.HostBrowserEnabled,
+		ModelProviderID:    snapshot.TurnSelection.ModelProviderID,
+		ModelProviderName:  snapshot.ModelProvider.ModelProviderName,
+		Model:              snapshot.TurnSelection.Model, ReasoningEffort: snapshot.TurnSelection.ReasoningEffort,
 	}
 	if snapshot.RuntimeProfile != nil {
 		summary.RuntimeProfileID = snapshot.RuntimeProfile.ID
@@ -121,6 +125,7 @@ func Resolve(req ResolveRequest) (RuntimeConfigurationSnapshot, error) {
 
 	var snapshot RuntimeConfigurationSnapshot
 	snapshot.SnapshotVersion = SnapshotVersion
+	snapshot.HostBrowserEnabled = selection.HostBrowserEnabled
 	snapshot.ModelProvider = req.ModelProvider
 	if profileSelected {
 		if req.Profile == nil || strings.TrimSpace(req.Profile.ID) != selection.RuntimeProfileID {

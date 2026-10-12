@@ -111,6 +111,38 @@ async function selectPentestTaskType() {
 }
 
 describe("TaskLaunchPage", () => {
+  it("requires explicit Host Browser enablement without selecting Host Runner", async () => {
+    const fetchMock = mockApi({
+      "/api/projects/project-1/preflight": { pass: true, checks: [] },
+      "/api/projects/project-1/tasks": { id: "browser-task" },
+      "/api/runtime-plugins": { plugins: [codexPlugin] },
+      "/api/model-providers": { providers: [mimoProvider] },
+      "/api/runtime-profiles": { profiles: [codexPreset] },
+      "/api/skills": { skills: [] },
+      "/api/projects/project-1": { id: "project-1", kind: "pentest", scope: {}, defaults: { runner: "sandbox" } },
+      "/health": { runner: { container_cli: "docker" } },
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("option", { name: "MiMo" });
+    const checkbox = screen.getByRole("checkbox", { name: "Enable Host Browser" });
+    expect(checkbox).not.toBeChecked();
+    expect(screen.getByText(/execute Runtime code in the host service process/i)).toBeInTheDocument();
+    await user.click(checkbox);
+    await selectPentestTaskType();
+    await user.type(screen.getByLabelText("What do you want to explore?"), "Inspect the target");
+    await user.click(screen.getByRole("button", { name: /^Launch$/i }));
+    await screen.findByText("Task detail");
+    for (const path of ["preflight", "tasks"]) {
+      const call = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith(`/api/projects/project-1/${path}`) && init?.method === "POST");
+      expect(call).toBeDefined();
+      const body = JSON.parse(String(call?.[1]?.body));
+      expect(body.host_browser_enabled).toBe(true);
+      expect(body.runner).toBe("sandbox");
+      expect(body.run_controls.host_activated).not.toBe(true);
+    }
+  });
+
   it("launches a Project Task with Disabled Blackboard Mode", async () => {
     const fetchMock = mockApi({
       "/api/projects/project-1/preflight": { pass: true, checks: [] },
@@ -161,6 +193,7 @@ describe("TaskLaunchPage", () => {
       expect(call).toBeDefined();
       const body = JSON.parse(String(call?.[1]?.body ?? "{}"));
       expect(body.run_controls?.blackboard_mode).toBe("disabled");
+      expect(body.host_browser_enabled).toBe(false);
     });
   });
 

@@ -53,14 +53,17 @@ type Config struct {
 	// ArtifactRoot contains managed Evidence payloads. Empty defaults to the
 	// database directory. EvidenceSourceRoots are the explicit local roots from
 	// which authenticated operators may retain payloads.
-	ArtifactRoot        string
-	EvidenceSourceRoots []string
-	SkillsRoot          string
-	SandboxImage        string
-	ContainerCLI        string
-	TaskVolume          string
-	TaskVolumeRoot      string
-	ListenAddr          string
+	ArtifactRoot          string
+	EvidenceSourceRoots   []string
+	SkillsRoot            string
+	SandboxImage          string
+	ContainerCLI          string
+	TaskVolume            string
+	TaskVolumeRoot        string
+	HostBrowserMCPBinary  string
+	HostBrowserBrowser    string
+	HostBrowserExecutable string
+	ListenAddr            string
 	// AuthToken gates every mutating route when non-empty. A non-loopback bind
 	// refuses to start unless this is set, so a daemon exposed to the network
 	// cannot become an unauthenticated control plane. Loopback dev (make dev)
@@ -134,6 +137,11 @@ type Server struct {
 	operatorToken           string
 	generatedOperatorToken  bool
 	tempSkillsRoot          string
+	hostBrowserMCPBinary    string
+	hostBrowserBrowser      string
+	hostBrowserExecutable   string
+	hostBrowserMu           sync.Mutex
+	hostBrowserProcesses    map[string]*hostBrowserProcess
 	controlMu               sync.Mutex
 	activeControls          map[string]bool
 	providerControlCtx      context.Context
@@ -314,6 +322,10 @@ func NewServer(config Config) (*Server, error) {
 		operatorToken:           operatorToken,
 		generatedOperatorToken:  generatedOperatorToken,
 		tempSkillsRoot:          tempSkillsRoot,
+		hostBrowserMCPBinary:    config.HostBrowserMCPBinary,
+		hostBrowserBrowser:      config.HostBrowserBrowser,
+		hostBrowserExecutable:   config.HostBrowserExecutable,
+		hostBrowserProcesses:    map[string]*hostBrowserProcess{},
 		activeControls:          map[string]bool{},
 		providerControlCtx:      providerControlCtx,
 		providerControlCancel:   providerControlCancel,
@@ -695,7 +707,7 @@ func (server *Server) Close() error {
 	server.runtimeLaunchCancel(runtime.ErrHarnessShutdown)
 	server.controlMu.Unlock()
 	server.providerControlWG.Wait()
-	var err error
+	err := server.closeAllHostBrowsers()
 	taskRunsStopped := server.harness == nil || server.harness.ShutdownAllAndWait(server.runtimeStopTimeout)
 	if !taskRunsStopped {
 		err = fmt.Errorf("Task Runtime shutdown timed out")
@@ -1744,6 +1756,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		RunControls             task.RunControls `json:"run_controls"`
 		CredentialRefsToResolve []string         `json:"credential_refs"`
 		HostActivated           bool             `json:"host_activated"`
+		HostBrowserEnabled      bool             `json:"host_browser_enabled"`
 	}
 	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
@@ -1772,6 +1785,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		RuntimeProfileID: input.RuntimeProfileID, RuntimePluginID: input.RuntimePluginID,
 		ModelProviderID: input.ModelProviderID, Model: model,
 		ReasoningEffort: input.ReasoningEffort, Runner: string(defaulted.runner),
+		HostBrowserEnabled: input.HostBrowserEnabled,
 	}, projectID)
 	var resolvedProfile *runtimeprofile.Profile
 	if err == nil {
@@ -1796,6 +1810,7 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		RuntimeRoot:             server.runtimeRoot,
 	})
 	server.logPreflightCustomArgConflict(defaulted.runtimeProfileID, result)
+	server.checkHostBrowser(&result, input.HostBrowserEnabled, resolvedConfiguration.Profile.Provider)
 
 	// A preflight result is always 200: the body reports pass/fail per check.
 	writeJSON(response, http.StatusOK, result)

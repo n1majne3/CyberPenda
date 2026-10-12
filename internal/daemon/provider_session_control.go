@@ -270,7 +270,7 @@ func (server *Server) closeProviderSessionForStop(ctx context.Context, taskID st
 	for {
 		err := server.providerSessions.closeTask(ctx, taskID)
 		if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
-			return nil
+			return server.closeTaskHostBrowser(ctx, taskID)
 		}
 		if !errors.Is(err, runtime.ErrProviderSessionControlConflict) {
 			return err

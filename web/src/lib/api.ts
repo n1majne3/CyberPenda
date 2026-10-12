@@ -840,6 +840,7 @@ export interface TaskContinuation {
 }
 
 export interface RuntimeConfigurationSummary {
+  host_browser_enabled?: boolean;
   runtime_profile_id?: string;
   runtime_profile_name?: string;
   runtime_plugin_id: string;

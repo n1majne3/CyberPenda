@@ -47,17 +47,18 @@ type resolvedAttachment struct {
 // createTaskInput is the launch configuration decoded from either a JSON body
 // or the JSON "payload" field of a multipart request.
 type createTaskInput struct {
-	Goal             string            `json:"goal"`
-	Type             task.Type         `json:"type"`
-	RuntimeProfileID string            `json:"runtime_profile_id"`
-	RuntimePluginID  string            `json:"runtime_plugin_id,omitempty"`
-	ModelProviderID  string            `json:"model_provider_id,omitempty"`
-	Model            string            `json:"model,omitempty"`
-	ModelOverride    string            `json:"model_override,omitempty"`
-	ReasoningEffort  string            `json:"reasoning_effort,omitempty"`
-	Runner           task.Runner       `json:"runner"`
-	RunControls      task.RunControls  `json:"run_controls"`
-	Extras           map[string]string `json:"extras"`
+	Goal               string            `json:"goal"`
+	Type               task.Type         `json:"type"`
+	RuntimeProfileID   string            `json:"runtime_profile_id"`
+	RuntimePluginID    string            `json:"runtime_plugin_id,omitempty"`
+	ModelProviderID    string            `json:"model_provider_id,omitempty"`
+	Model              string            `json:"model,omitempty"`
+	ModelOverride      string            `json:"model_override,omitempty"`
+	ReasoningEffort    string            `json:"reasoning_effort,omitempty"`
+	Runner             task.Runner       `json:"runner"`
+	HostBrowserEnabled bool              `json:"host_browser_enabled"`
+	RunControls        task.RunControls  `json:"run_controls"`
+	Extras             map[string]string `json:"extras"`
 }
 
 // parseCreateTaskRequest reads the create-task body from either a JSON payload
