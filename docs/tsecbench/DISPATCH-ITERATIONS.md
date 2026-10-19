@@ -38,7 +38,7 @@ CyberPenda 历史最高 **21,800(94.95%,deepseek-flash,run 22289,即本系列 p6
 **p18：接力与平台计分修复。** 基于 dispatcher CLI、公开文件协议和模拟 Hosted Challenge Client 输出验证：
 
 1. Fact 是中途检查点，不能替代派发要求的退场报告。Pi 与 Claude Code 使用同一份 Execute 纪律。
-2. 续作优先注入本题 Fact 和最新报告，附来源指针；不再只注入其他题的记录或先截取最旧报告。
+2. 续作优先注入本题 Fact 和最新报告，附来源指针；不再只注入其他题的记录或先截取最旧报告。中断后保留未完成里程碑，直到新报告替换它；每段都显示已确认 Flag 进度。
 3. 无报告的旧题记为 blocked，不伪装成 pending 新题。持续取得新 Flag 的链题不会被三次重试或四棒软顶提前封存。
 4. `foothold: ""`、null、false 按空值处理。新实例清除旧活会话假设，派发包含全部当前入口地址。
 5. 每轮使用一份平台快照，识别 `unique_code`、`flag_count`、`correct_flag_count`、`is_completed`。1/6 枚 Flag 不算整题 solved；报告不累加平台分数，重复收割不重复加分。

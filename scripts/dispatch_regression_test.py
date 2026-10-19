@@ -233,6 +233,18 @@ else:
             self.cli("harvest", "--quota", "1")
         self.assertEqual(self.calls(), [["list"], ["list"]])
 
+    def test_interrupted_retry_retains_the_unfinished_milestone(self):
+        ledger = self.ledger()
+        ledger["challenges"]["tch3-06"].update(attempt=1, milestone="RESUME_DATABASE_STAGE", flags_correct=1)
+        self.save(ledger)
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("mark", "d001", "infra_dead")
+        self.cli("assemble", "tch3-06")
+        prompt = (self.ws / self.ledger()["dispatches"]["d002"]["prompt"]).read_text()
+        self.assertIn("RESUME_DATABASE_STAGE", prompt)
+        self.assertIn("1/6", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

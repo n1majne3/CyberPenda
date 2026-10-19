@@ -374,6 +374,8 @@ def build_prompt(ws, led, code, budget_min=None, siege=False, assault=False):
                             name=rec["name"], code=code,
                             flags_total=rec["flags_total"]),
         "【本段目标】%s" % milestone,
+        "【已确认进度】%d/%d 枚 Flag。已完成阶段不重复提交，继续未完成阶段。" % (
+            rec.get("flags_correct", 0), rec["flags_total"]),
         "【已排除的面】(来自此前各段退场报告,不要重复)\n%s" % collect_excluded(ws, code),
         "【本题 Fact】先读这些记录及其引用文件；记录可能过时，按最新证据续作。\n%s" % collect_own_facts(ws, code),
         "【家族经验】\n%s" % collect_family_knowledge(ws, code),
@@ -421,7 +423,6 @@ def assemble(ws, led, code, reason="manual"):
     (ws.attempts / code).mkdir(parents=True, exist_ok=True)
     rec["attempt"] = k
     rec["state"] = "running"
-    rec["milestone"] = None
     p = ws.outbox / ("%s-%s.prompt.md" % (did, code))
     p.write_text(prompt, encoding="utf-8")
     led["dispatches"][did] = {
