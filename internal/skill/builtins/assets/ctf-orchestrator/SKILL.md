@@ -47,6 +47,7 @@ prompt 由 `scripts/dispatch.py` 组装;你**禁止手写派发 prompt**,
 
 ```bash
 cd $WS && python3 scripts/dispatch.py harvest --ws $WS --dry >/dev/null 2>&1
+cat graph/outbox/STOP.tsv 2>/dev/null       # 有 → 先确认 Execute 已结束，再标记 infra_dead
 cat graph/outbox/READY.tsv 2>/dev/null      # 有 → 逐条派发
 cat graph/escalations/QUEUE.md 2>/dev/null  # 有 → 逐条决策
 test -f graph/outbox/ENDGAME && echo ENDGAME
@@ -57,12 +58,15 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
    Agent(execute, 后台),prompt 只需一句指引:"本次派发的完整指令在文件 {prompt 路径}。
    第一步用 read 读取该文件,之后逐字遵守其全部内容(文件即全部指令)"。
    **禁止把 prompt 全文粘进 Agent 参数**;take 已完成标记,漏派的由开工标记检查(150 秒)兜底。
+   STOP.tsv 出现时，先用 Runtime 工具确认对应 Execute 已结束或停止它，
+   再 `python3 scripts/dispatch.py mark <did> infra_dead --ws "$WS"`。
+   未确认停止前不得标记；dispatcher 保留槽位以防旧 Execute 在关题后继续提交。
 2. **升级决策**:对 QUEUE.md 每个 open 条目,读该题的
    `graph/attempts/<code>/*.md` 与 ledger 摘要,做出 continue / abandon 判断:
    `python3 scripts/dispatch.py decide <eid> --decision continue|abandon --ws $WS`。
    判断依据:剩余时限、该题已得 flag、foothold 是否存活、追投预期分值。
 3. 两者皆空且无 ENDGAME → 回到阻塞等待:
-   `timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'`
+   `timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || [ -s graph/outbox/STOP.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'`
    (超时返回即兜底巡检:确认 dispatcher 存活。)禁止无事件的定时 sleep 轮询,
 **事件 + 心跳双驱动**:`graph/leader.lock` 就是你的心跳,每次因任何原因醒来
 (事件/回调/超时臂)都重写它;dispatcher 发现心跳陈旧超 10 分钟会记 CRITICAL
@@ -76,7 +80,7 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
 
 | 事项 | 归属 |
 | --- | --- |
-| 选题、配额、补位、重试上限、看门狗、闲置槽回收(非 running 题的活实例立即放槽)、首段 8 分钟探针预算、围城续作棒(立足点题预算下限 60 分钟+续作指令)、零进展预算加深、终盘 60 分钟停新题探针、平台对账、收尾停派 | dispatcher(脚本,规则见 spec §6) |
+| 选题、配额、补位、重试上限、看门狗、闲置槽回收(非 running 题且 Execute 已结束的实例放槽)、首段 8 分钟探针预算、围城续作棒(立足点题预算下限 60 分钟+续作指令)、零进展预算加深、终盘 60 分钟停新题探针、平台对账、收尾停派 | dispatcher(脚本,规则见 spec §6) |
 | 派发动作本身(Agent 工具调用) | 你(逐字转发 outbox prompt) |
 | `uncertain` 升级(追投 or 收割、连环 infra 死亡、平台异常) | 你(唯一需要判断的地方) |
 | 攻击目标、写 fact、提交 flag | Execute agent(在直连会话内) |
@@ -87,7 +91,8 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
   必填字段与校验规则见 `references/graph-protocol.md`。
   派发器对上一段报告校验失败时按 infra_dead 处理:不采信其结论、不占重算上限。
 - `graph/facts/` 仍可追加(fact 协议红线不变:只追加、编号单调、禁绝对化结论),
-  派发器会把它并入家族经验注入;但**调度不再依赖你读图**。
+  派发器先注入本题 Fact 和最新报告。Fact 不能替代退场报告，也不能覆盖平台计分。
+  显式 family 优先；全题集共用的编号前缀不表示技术家族。
 - 多 flag 链题按里程碑续投:每段退场报告的 `next_milestone` 就是下一段目标,
   不存在固定时钟切割。
 

@@ -288,7 +288,7 @@ func TestProjectClaudeSettingsWritesExecuteSubagentType(t *testing.T) {
 		t.Fatalf("read projected execute agent type: %v", err)
 	}
 	content := string(raw)
-	for _, required := range []string{"name: execute", "90 秒", "fact 骨架", "已收束于 fact_{NNN}"} {
+	for _, required := range []string{"name: execute", "90 秒", "fact 骨架", "已收束于 fact_{NNN}", "Fact 不能替代退场报告"} {
 		if !strings.Contains(content, required) {
 			t.Errorf("projected execute agent type missing %q", required)
 		}

@@ -122,6 +122,13 @@ class WS:
         tmp = self.ledger_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
         os.replace(tmp, self.ledger_path)
+        for filename, state in (("READY.tsv", "ready"), ("STOP.tsv", "stop_required")):
+            lines = ["%s\t%s\t%s\n" % (did, d["code"], d["prompt"])
+                     for did, d in sorted(data["dispatches"].items()) if d["state"] == state]
+            target = self.outbox / filename
+            pending = target.with_suffix(".tmp")
+            pending.write_text("".join(lines), encoding="utf-8")
+            os.replace(pending, target)
 
     def deadline(self):
         try:
@@ -134,7 +141,10 @@ class WS:
 
     def platform_call(self, *args):
         cmd = ["bash", str(self.platform)] + list(args)
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        try:
+            return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return subprocess.CompletedProcess(cmd, 1, "", str(exc))
 
 
 # ---------------------------------------------------------------- init
@@ -163,6 +173,7 @@ def parse_challenges(path):
             "difficulty": (c.get("difficulty") or "medium").lower(),
             "flags_total": int(flags),
             "addr": c.get("container_addr") or c.get("addr") or c.get("target") or "",
+            "family": c.get("family") or "",
         })
     return out
 
@@ -198,7 +209,22 @@ def parse_front_matter(text):
     for line in m.group(1).splitlines():
         if ":" in line:
             k, _, v = line.partition(":")
-            meta[k.strip()] = v.strip()
+            value = v.strip()
+            # 报告只允许平面标量。引号不属于值；空值不能变成立足点。
+            if value.lower() in ("null", "~", "false"):
+                value = ""
+            elif value.startswith('"'):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    return None, text
+                if not isinstance(value, str):
+                    return None, text
+            elif value.startswith("'"):
+                if not value.endswith("'") or len(value) < 2:
+                    return None, text
+                value = value[1:-1].replace("''", "'")
+            meta[k.strip()] = value
     return meta, text[m.end():]
 
 
@@ -210,9 +236,11 @@ def validate_report(ws, code, k, quiet=True):
     meta, body = parse_front_matter(p.read_text(encoding="utf-8"))
     if meta is None:
         return False, "front_matter_missing", None
-    for key in ("challenge", "attempt", "outcome", "next_milestone"):
+    for key in ("challenge", "attempt", "outcome"):
         if not meta.get(key):
             return False, "field_missing:" + key, None
+    if "next_milestone" not in meta or (not meta["next_milestone"] and meta.get("outcome") != "solved"):
+        return False, "field_missing:next_milestone", None
     if meta["challenge"] != code:
         return False, "challenge_mismatch", None
     try:
@@ -232,8 +260,13 @@ def validate_report(ws, code, k, quiet=True):
 # ---------------------------------------------------------------- injection pack
 
 
-def family_of(code):
-    return code.split("-")[0]
+def family_of(code, led):
+    explicit = led["challenges"].get(code, {}).get("family")
+    if explicit:
+        return "explicit:" + str(explicit)
+    prefixes = {c.split("-")[0] for c in led["challenges"]}
+    # 全题集共用的版本前缀不表示技术家族。
+    return "prefix:" + code.split("-")[0] if len(prefixes) > 1 else "challenge:" + code
 
 
 def read_report_sections(path):
@@ -246,7 +279,7 @@ def collect_family_knowledge(ws, code):
     led = ws.ledger()
     pieces = []
     for other, rec in sorted(led["challenges"].items()):
-        if other == code or family_of(other) != family_of(code):
+        if other == code or family_of(other, led) != family_of(code, led):
             continue
         if rec.get("flags_correct", 0) <= 0:
             continue
@@ -260,7 +293,7 @@ def collect_family_knowledge(ws, code):
         for p in fact_files:
             meta, _ = read_report_sections(p)
             fc = meta.get("challenge") or ""
-            if fc and fc != code and family_of(fc) == family_of(code):
+            if fc in led["challenges"] and fc != code and family_of(fc, led) == family_of(code, led):
                 rel = "graph/facts/%s" % p.name
                 if all(rel != piece[1] for piece in pieces):
                     pieces.append((fc, rel, p.read_text(encoding="utf-8")))
@@ -270,14 +303,14 @@ def collect_family_knowledge(ws, code):
         out.append("【%s 已解经验】%s …(细节读 %s)" % (src, first, rel))
     if not out:
         return "(该家族尚无已解经验。)"
-    return "\n".join(out)
+    return "\n".join(out)[:INJECT_CAP_CHARS]
 
 
 def collect_excluded(ws, code):
     led = ws.ledger()
     rec = led["challenges"].get(code, {})
     lines = []
-    for k in range(1, rec.get("attempt", 0) + 1):
+    for k in range(rec.get("attempt", 0), 0, -1):
         p = ws.attempt_path(code, k)
         if not p.exists():
             continue
@@ -287,7 +320,8 @@ def collect_excluded(ws, code):
         m = re.search(r"#+\s*试过的面.*?\n(.*?)(?=\n#|\Z)", body, re.S)
         chunk = (m.group(1) if m else body).strip()
         if chunk:
-            lines.append("第 %d 段(outcome=%s):\n%s" % (k, meta.get("outcome"), chunk))
+            lines.append("第 %d 段(outcome=%s,详见 graph/attempts/%s/%d.md):\n%s"
+                         % (k, meta.get("outcome"), code, k, chunk))
     text = "\n".join(lines).strip()
     if not text:
         return "(首段,无历史。)"
@@ -295,12 +329,24 @@ def collect_excluded(ws, code):
                                         if len(text) > EXCLUDED_CAP_CHARS else "")
 
 
+def collect_own_facts(ws, code):
+    """本题 Fact 是接力线索；分数和完成状态仍以平台为准。"""
+    pieces = []
+    for p in sorted(ws.facts.glob("*.md"), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True):
+        meta, body = read_report_sections(p)
+        if meta.get("challenge") == code:
+            pieces.append("%s — %s\n%s" % (p.relative_to(ws.root), meta.get("title", ""), body[:800]))
+    text = "\n\n".join(pieces)
+    return text[:6000] + ("\n(更多本题记录见 graph/facts/)" if len(text) > 6000 else "") if text else "(本题尚无 Fact。)"
+
+
 def next_milestone(led, code):
     rec = led["challenges"][code]
     if rec.get("milestone"):
         return rec["milestone"]
     if rec["flags_total"] > 1:
-        return "取得第 1 枚 flag,并在退场报告写明距下一枚 flag 的最短路径"
+        return "平台已确认 %d/%d 枚 flag；取得第 %d 枚未完成 flag,并在退场报告写明后续最短路径" % (
+            rec.get("flags_correct", 0), rec["flags_total"], rec.get("flags_correct", 0) + 1)
     return "解出本题(取得唯一 flag)"
 
 
@@ -316,19 +362,20 @@ def build_prompt(ws, led, code, budget_min=None, siege=False, assault=False):
     started_rel = "graph/attempts/%s/%d.started" % (code, k)
     milestone = next_milestone(led, code)
     if siege:
-        milestone = ("【围城续作】上一棒的立足点仍有效,本棒从其里程碑直接续作;"
-                     "禁止重验已排除面与已完成步骤,失败面不重走。目标:%s" % milestone)
+        milestone = ("【围城续作】先确认已有会话和立足点仍属于当前实例，再从里程碑续作;"
+                     "禁止重验已有证据确认的已完成步骤；证据变化时更新 Fact。目标:%s" % milestone)
     if assault:
         milestone = ("【攻坚棒】此题多棒未破且无立足点,本棒单棒深打(%d 分钟):"
                      "先读完全部历史退场报告,选定一个最可能的假设一路打穿,"
                      "按里程碑记录中途进展;禁止退化为浅表重扫。目标:%s"
                      % (budget_min, milestone))
     parts = [
-        FIXED_HEADER.format(addr=rec.get("addr") or "(见平台 list 输出)",
+        FIXED_HEADER.format(addr=(rec.get("instance") or {}).get("addr") or rec.get("addr") or "(见平台 list 输出)",
                             name=rec["name"], code=code,
                             flags_total=rec["flags_total"]),
         "【本段目标】%s" % milestone,
         "【已排除的面】(来自此前各段退场报告,不要重复)\n%s" % collect_excluded(ws, code),
+        "【本题 Fact】先读这些记录及其引用文件；记录可能过时，按最新证据续作。\n%s" % collect_own_facts(ws, code),
         "【家族经验】\n%s" % collect_family_knowledge(ws, code),
         WORK_STYLE.format(started_marker=started_rel, code=code),
         EXIT_PROTOCOL.format(attempts_path=attempts_rel, code=code,
@@ -342,7 +389,8 @@ def assemble(ws, led, code, reason="manual"):
     rec = led["challenges"].get(code)
     if not rec:
         die("ledger 里没有 %s" % code)
-    if rec["attempt"] >= SESSION_CHURN_SOFT_CAP and reason == "fill":
+    if (rec["attempt"] >= SESSION_CHURN_SOFT_CAP and reason == "fill"
+            and not rec.get("last_flags_gained")):
         rec["state"] = "blocked"
         escalate(ws, code, "会话数已达软顶 %d 次仍 %s;追投还是放弃?"
                  % (SESSION_CHURN_SOFT_CAP, rec["state"]))
@@ -365,9 +413,9 @@ def assemble(ws, led, code, reason="manual"):
         budget = max(budget, SIEGE_BUDGET_MIN)
     if assault:
         budget = max(budget, ASSAULT_BUDGET_MIN)
-    fam = family_of(code)
+    fam = family_of(code, led)
     fam_facts = "yes" if any(
-        family_of(c) == fam and r.get("flags_correct")
+        family_of(c, led) == fam and r.get("flags_correct")
         for c, r in led["challenges"].items()) else "no"
     k, attempts_rel, prompt = build_prompt(ws, led, code, budget, siege=siege, assault=assault)
     (ws.attempts / code).mkdir(parents=True, exist_ok=True)
@@ -381,6 +429,7 @@ def assemble(ws, led, code, reason="manual"):
         "created": now(), "hard_stop": now() + budget * 60,
         "reason": reason, "prompt": str(p.relative_to(ws.root)).replace("\\", "/"),
         "probe": probe, "siege": siege, "assault": assault, "family_facts": fam_facts,
+        "flags_at_start": rec.get("flags_correct", 0),
     }
     print("READY %s %s attempt=%d reason=%s prompt=%s" % (did, code, k, reason, p.name))
     return did
@@ -396,7 +445,12 @@ def _cli_assemble(args):
 # ---------------------------------------------------------------- harvest / scheduling
 
 
-def platform_flags(ws, code):
+def challenge_code(c):
+    return c.get("unique_code") or c.get("challenge_code") or c.get("code") or c.get("id")
+
+
+def platform_snapshot(ws):
+    """每轮读取一个完整快照；不能把读取失败解释为空列表。"""
     if not ws.platform.exists():
         return None
     r = ws.platform_call("list")
@@ -405,14 +459,12 @@ def platform_flags(ws, code):
     try:
         items = json.loads(r.stdout)
         if isinstance(items, dict):
-            items = items.get("challenges", [])
+            items = items.get("challenges")
     except ValueError:
         return None
-    for c in items:
-        cc = c.get("challenge_code") or c.get("code")
-        if cc == code:
-            return int(c.get("correct_flag_count") or 0)
-    return None
+    if not isinstance(items, list) or any(not isinstance(c, dict) or not challenge_code(c) for c in items):
+        return None
+    return {str(challenge_code(c)): c for c in items}
 
 
 def in_endgame(ws):
@@ -428,7 +480,7 @@ def near_deadline(ws, margin):
 DIFFICULTY_RANK = {"easy": 0, "medium": 1, "hard": 2}
 
 
-def pick_next(led, exclude_fresh=False):
+def pick_next(led, exclude_fresh=False, eligible_codes=None):
     """规则:新题 > 部分+foothold > 家族有新经验的 blocked;其余沉底。
 
     新题内部排序(命中率反馈回路,来自 21119 的教训——纯分值降序会让
@@ -438,15 +490,15 @@ def pick_next(led, exclude_fresh=False):
     新题探针,车道只续作有足迹(attempt>0)的题。"""
     fam_solved = {}
     for code, rec in led["challenges"].items():
-        f = family_of(code)
+        f = family_of(code, led)
         fam_solved[f] = fam_solved.get(f, 0) + (1 if rec.get("flags_correct") else 0)
 
     def rank(code, rec):
-        if rec["state"] == "pending":
-            proven = 0 if fam_solved.get(family_of(code), 0) else 1
+        if rec["state"] == "pending" and rec.get("attempt", 0) == 0:
+            proven = 0 if fam_solved.get(family_of(code, led), 0) else 1
             diff = DIFFICULTY_RANK.get(rec.get("difficulty"), 1)
             return (0, proven, diff, -rec["score"])
-        if rec["state"] == "partial":
+        if rec["state"] == "partial" or (rec["state"] == "pending" and rec.get("flags_correct")):
             # p16:b-01 教训——1200 分 partial 链被 blocked 压到桶 3 整场饿死。
             # partial 一律排在 blocked 之前,有立足点者再优先。
             foothold = 0 if rec.get("foothold") else 1
@@ -461,7 +513,13 @@ def pick_next(led, exclude_fresh=False):
 
     candidates = []
     for code, rec in led["challenges"].items():
+        if eligible_codes is not None and code not in eligible_codes:
+            continue
         if rec["state"] in ("running", "solved", "exhausted"):
+            continue
+        if rec.get("instance"):
+            continue  # 释放失败的实例仍占槽，不能再次 start。
+        if any(d["code"] == code and d["state"] == "stop_required" for d in led["dispatches"].values()):
             continue
         # churn 软顶已到的 blocked 题:fill 路径必然被 assemble 拒绝
         # (reason=fill 且 attempt>=软顶),选了只会白启动一个平台实例再
@@ -486,12 +544,15 @@ def release_instance(ws, led, code, solved=None):
     rec = led["challenges"][code]
     if rec.get("instance") and ws.platform.exists():
         if solved is None:
-            solved = rec.get("flags_correct", 0) >= rec.get("flags_total", 1)
+            solved = rec.get("platform_completed") or rec.get("flags_correct", 0) >= rec.get("flags_total", 1)
         if solved:
-            ws.platform_call("close", code)
+            result = ws.platform_call("close", code)
         else:
-            ws.platform_call("abandon", code, "slot-release")
+            result = ws.platform_call("abandon", code, "slot-release")
+        if result.returncode != 0:
+            return False
     rec["instance"] = None
+    return True
 
 
 def start_instance(ws, led, code):
@@ -500,11 +561,23 @@ def start_instance(ws, led, code):
     r = ws.platform_call("start", code)
     if r.returncode != 0:
         return False, (r.stderr or r.stdout)[:200]
-    addr = ""
-    m = re.search(r"[0-9.]+:\d+", r.stdout)
-    if m:
-        addr = m.group(0)
-    led["challenges"][code]["instance"] = {"addr": addr, "since": now()}
+    rec = led["challenges"][code]
+    rec["foothold"] = ""
+    rec["addr"] = ""
+    rec["instance"] = {"addr": [], "since": now()}
+    try:
+        item = json.loads(r.stdout)
+    except ValueError:
+        item = {}
+    addr = item.get("container_addr") if isinstance(item, dict) else None
+    if not addr:
+        snapshot = platform_snapshot(ws)
+        addr = (snapshot or {}).get(code, {}).get("container_addr")
+    if isinstance(addr, str):
+        addr = [addr]
+    if not isinstance(addr, list) or not addr or any(not isinstance(a, str) or not a.strip() for a in addr):
+        return False, "start 返回无有效目标地址；保留实例待下轮对账"
+    rec["instance"]["addr"] = addr
     return True, ""
 
 
@@ -515,14 +588,25 @@ def account_report(ws, led, code, k, meta):
         gained = int(meta.get("flags_gained") or 0)
     except ValueError:
         gained = 0
-    rec["flags_correct"] += gained
+    gained = max(0, gained)
+    dispatch = next((d for d in led["dispatches"].values()
+                     if d["code"] == code and d["attempt"] == k), {})
+    # 线上分数只取平台快照。离线适配保留报告计数，并以派发起点去重。
+    baseline = dispatch.get("flags_at_start", 0)
+    if not ws.platform.exists():
+        rec["flags_correct"] = min(rec["flags_total"], max(rec["flags_correct"], baseline + gained))
+    gained = max(0, rec["flags_correct"] - baseline)
+    rec["last_flags_gained"] = gained
     rec["foothold"] = meta.get("foothold") or ""
     rec["milestone"] = meta.get("next_milestone") or None
     spent = max(0, int((now() - led["dispatches"].get(
         _last_dispatch(led, code), {}).get("created", now())) / 60) - 0)
     rec["spent_min"] += spent
-    if outcome == "solved" or rec["flags_correct"] >= rec["flags_total"]:
+    if rec.get("platform_completed") or rec["flags_correct"] >= rec["flags_total"]:
         rec["state"] = "solved"
+    elif gained:
+        rec["restarts"] = 0
+        rec["state"] = "partial"
     elif outcome == "budget_stop":
         rec["restarts"] += 1
         rec["state"] = "exhausted" if rec["restarts"] >= RESTART_CAP else "partial"
@@ -537,7 +621,6 @@ def account_report(ws, led, code, k, meta):
     if gained == 0 and not (meta.get("foothold") or rec.get("foothold")):
         rec["budget_min"] = min(rec["budget_min"] + ZERO_PROGRESS_STEP, BUDGET_CEILING)
     if rec["state"] == "solved":
-        release_instance(ws, led, code)
         _mark_family_grew(led, code)
 
 
@@ -559,9 +642,9 @@ def _deep_dispatch_of(led, code):
 
 
 def _mark_family_grew(led, solved_code):
-    fam = family_of(solved_code)
+    fam = family_of(solved_code, led)
     for code, rec in led["challenges"].items():
-        if family_of(code) == fam and rec["state"] == "blocked":
+        if family_of(code, led) == fam and rec["state"] == "blocked":
             rec["family_grew"] = True
 
 
@@ -574,9 +657,28 @@ def _quota_error(err):
 def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
     led = ws.ledger()
     actions = []
+    # 先用同一份平台快照校准，再处理报告，避免重复加分和错误放槽。
+    snapshot = platform_snapshot(ws)
+    if snapshot is not None:
+        for code, rec in led["challenges"].items():
+            item = snapshot.get(code)
+            if item is None:
+                continue
+            rec["flags_correct"] = int(item.get("correct_flag_count") or 0)
+            rec["flags_total"] = int(item.get("flag_count") or item.get("total_flag_count") or rec["flags_total"])
+            rec["platform_completed"] = item.get("is_completed") is True
+            if rec["platform_completed"] or rec["flags_correct"] >= rec["flags_total"]:
+                rec["state"] = "solved"
+                _mark_family_grew(led, code)
+                for d in led["dispatches"].values():
+                    if d["code"] == code and d["state"] == "ready":
+                        d["state"] = "cancelled"
+                actions.append("reconcile %s flags=%d" % (code, rec["flags_correct"]))
+            elif rec["state"] == "solved" or (rec["flags_correct"] and rec["state"] == "pending"):
+                rec["state"] = "partial"
     # 1) 收割:有退场报告的 running 派发
     for did, d in list(led["dispatches"].items()):
-        if d["state"] != "dispatched":
+        if d["state"] not in ("dispatched", "stop_required"):
             continue
         code, k = d["code"], d["attempt"]
         ok, reason, meta = validate_report(ws, code, k)
@@ -584,11 +686,12 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
             account_report(ws, led, code, k, meta)
             d["state"] = "done"
             actions.append("harvest %s %s attempt=%d outcome=%s" % (did, code, k, meta["outcome"]))
-        elif reason != "report_missing":
+        elif reason != "report_missing" and d["state"] != "stop_required":
             rec = led["challenges"][code]
-            rec["state"] = "pending" if not rec["flags_correct"] else "partial"
+            rec["state"] = ("solved" if rec.get("platform_completed") or rec["flags_correct"] >= rec["flags_total"]
+                            else "partial" if rec["flags_correct"] else "blocked")
             rec["infra_deaths"] += 1
-            d["state"] = "invalid"
+            d["state"] = "stop_required" if ws.platform.exists() else "invalid"
             actions.append("invalid-report %s %s reason=%s (按 infra_dead 记账)" % (did, code, reason))
     # 2) 看门狗两级:先查开工标记(投递失败的早期信号),再查 hard_stop
     for did, d in list(led["dispatches"].items()):
@@ -599,8 +702,9 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
                 and not ws.attempt_path(code, k).with_suffix(".started").exists()):
             rec = led["challenges"][code]
             rec["infra_deaths"] += 1
-            rec["state"] = "pending" if not rec["flags_correct"] else "partial"
-            d["state"] = "infra_dead"
+            rec["state"] = ("solved" if rec.get("platform_completed") or rec["flags_correct"] >= rec["flags_total"]
+                            else "partial" if rec["flags_correct"] else "blocked")
+            d["state"] = "stop_required" if ws.platform.exists() else "infra_dead"
             if rec["infra_deaths"] >= INFRA_DEATH_CAP:
                 escalate(ws, code, "infra_deaths=%d 连环死亡,封存或换资源?"
                          % rec["infra_deaths"])
@@ -613,63 +717,45 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
             code = d["code"]
             rec = led["challenges"][code]
             rec["infra_deaths"] += 1
-            rec["state"] = "pending" if not rec["flags_correct"] else "partial"
-            d["state"] = "infra_dead"
+            rec["state"] = ("solved" if rec.get("platform_completed") or rec["flags_correct"] >= rec["flags_total"]
+                            else "partial" if rec["flags_correct"] else "blocked")
+            d["state"] = "stop_required" if ws.platform.exists() else "infra_dead"
             if rec["infra_deaths"] >= INFRA_DEATH_CAP:
                 escalate(ws, code, "infra_deaths=%d 连环死亡,封存或换资源?"
                          % rec["infra_deaths"])
                 rec["state"] = "exhausted"
             actions.append("watchdog %s %s infra_deaths=%d" % (did, code, rec["infra_deaths"]))
-    # 2.5) 闲置槽回收(p10):非 running 题的活实例立即放槽——槽是稀缺
-    # 资源,占着不出分就是浪费。放槽从平台节奏改成调度器节奏。
-    for code, rec in led["challenges"].items():
-        if rec.get("instance") and rec["state"] != "running":
-            release_instance(ws, led, code)
-            actions.append("idle-slot-release %s state=%s" % (code, rec["state"]))
-    # 3) 平台周期对账(有 platform.sh 才做)
-    if ws.platform.exists():
-        running_codes = None
-        r = ws.platform_call("list")
-        if r.returncode == 0:
-            try:
-                items = json.loads(r.stdout)
-                if isinstance(items, dict):
-                    items = items.get("challenges", [])
-                running_codes = {c.get("challenge_code") or c.get("code")
-                                 for c in items
-                                 if c.get("container_status") == "running"}
-            except ValueError:
-                running_codes = None
+    # 活动 Execute 尚无退场报告时，不因平台分数提前销毁实例。
+    active_codes = {d["code"] for d in led["dispatches"].values()
+                    if d["state"] in ("dispatched", "stop_required")}
+    if snapshot is not None or not ws.platform.exists():
         for code, rec in led["challenges"].items():
-            pf = platform_flags(ws, code)
-            if pf is not None and pf > rec["flags_correct"]:
-                rec["flags_correct"] = pf
-                if pf >= rec["flags_total"] and rec["state"] != "solved":
-                    rec["state"] = "solved"
-                    release_instance(ws, led, code)
-                    _mark_family_grew(led, code)
-                    actions.append("reconcile %s flags=%d" % (code, pf))
-        # p16 实例对账(f1-05/a-16 教训):账面与平台的 running 集合漂移会
-        # 让真配额被泄漏实例占死,后续 start 全吃 409。
-        # (a) 账面记着实例但平台已不在跑 → 放掉账面实例;
-        # (b) 平台在跑但账面不是 running(泄漏槽) → 平台侧 abandon 放真配额。
-        if running_codes is not None:
-            for code, rec in led["challenges"].items():
-                if (rec.get("instance") and rec["state"] != "running"
-                        and code not in running_codes):
-                    release_instance(ws, led, code)
-                    actions.append("reconcile-release %s state=%s" % (code, rec["state"]))
-                elif (code in running_codes and rec["state"] not in ("running", "solved")
-                        and not rec.get("instance")):
-                    ws.platform_call("abandon", code)
-                    actions.append("reconcile-abandon %s state=%s" % (code, rec["state"]))
+            if code in active_codes:
+                continue
+            item = (snapshot or {}).get(code)
+            if snapshot is not None and item is None:
+                continue
+            if item is not None:
+                if item.get("container_status") == "stopped":
+                    rec["instance"] = None
+                else:
+                    if not rec.get("instance"):
+                        rec["instance"] = {"addr": item.get("container_addr") or [], "since": now()}
+                    if item.get("container_status") not in ("running", "available"):
+                        continue  # pending / stop_pending 仍占槽，等待明确 stopped。
+            if rec.get("instance") and rec["state"] != "running":
+                if release_instance(ws, led, code):
+                    actions.append("idle-slot-release %s state=%s" % (code, rec["state"]))
+                else:
+                    actions.append("release-failed %s state=%s" % (code, rec["state"]))
     # 4) 补位:配额内组装下一段
-    if not dry and not in_endgame(ws):
-        running = sum(1 for r in led["challenges"].values() if r["state"] == "running")
+    if not dry and not in_endgame(ws) and (snapshot is not None or not ws.platform.exists()):
+        running = sum(1 for code, r in led["challenges"].items()
+                      if r["state"] == "running" or r.get("instance") or code in active_codes)
         # p11 终盘围城:deadline 前 60 分钟不再开新题探针,只续作有足迹的题
         exclude_fresh = near_deadline(ws, ENDGAME_SIEGE_SEC)
         while running < quota:
-            code = pick_next(led, exclude_fresh=exclude_fresh)
+            code = pick_next(led, exclude_fresh=exclude_fresh, eligible_codes=snapshot)
             if not code:
                 break
             ok, err = start_instance(ws, led, code)
@@ -688,7 +774,7 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
                 running += 1
             else:
                 break
-    else:
+    elif in_endgame(ws):
         for did, d in led["dispatches"].items():
             if d["state"] == "ready":
                 d["state"] = "cancelled"
@@ -761,10 +847,14 @@ def cmd_mark(args):
         die("没有派发 %s" % args.id)
     if args.state not in ("dispatched", "infra_dead"):
         die("state 只能是 dispatched / infra_dead")
+    if d["state"] in ("done", "cancelled", "infra_dead", "invalid"):
+        print("mark %s 已结束，忽略迟到标记" % args.id)
+        return
     d["state"] = args.state
     if args.state == "infra_dead":
         rec = led["challenges"][d["code"]]
-        rec["state"] = "pending" if not rec["flags_correct"] else "partial"
+        rec["state"] = ("solved" if rec.get("platform_completed") or rec["flags_correct"] >= rec["flags_total"]
+                            else "partial" if rec["flags_correct"] else "blocked")
     ws.save_ledger(led)
     print("mark %s %s" % (args.id, args.state))
 

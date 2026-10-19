@@ -12,9 +12,9 @@ $WS/
   graph/
     ledger.json            # 唯一调度事实源(dispatch.py 维护,禁止手改)
     attempts/<code>/<k>.md # 退场报告:每段 Execute 的收束结论
-    outbox/                # <did>-<code>.prompt.md + ENDGAME 标记
+    outbox/                # prompt + READY.tsv + STOP.tsv + ENDGAME
     escalations/QUEUE.md   # 升级问题队列(Decide 消费)
-    facts/                 # (兼容)fact 文件,只追加;并入家族经验注入
+    facts/                 # 本题接力检查点；不能替代退场报告
     data/                  # 大块输出,退场报告里引用文件名
 ```
 
@@ -54,9 +54,9 @@ state 取值:`pending → running → solved | partial | blocked | exhausted`。
 ---
 challenge: a-04
 attempt: 2
-outcome: stalled        # solved | stalled | budget_stop
+outcome: stalled
 flags_gained: 0
-foothold: "admin 会话 cookie 仍存活"   # 无则空串
+foothold: "admin 会话 cookie 仍存活"
 next_milestone: "用 admin 会话读 /admin/config 拿 flag"
 ---
 ## 试过的面(下一段不要重复)
@@ -77,7 +77,7 @@ next_milestone: "用 admin 会话读 /admin/config 拿 flag"
 ```markdown
 ---
 id: fact_007
-step: attempt_a-04_2        # 薄调度模式下用 attempt 标识
+step: attempt_a-04_2
 challenge: a-04
 title: 一句话可判读的结论(含关键值)
 ---
@@ -85,5 +85,15 @@ content:只写新增客观事实;禁"此路不通/已穷尽/勿再试"类绝对�
 ```
 
 规则不变:编号全局单调递增、一个 id 一个文件、只追加。
-同家族(题号前缀)已解题的退场报告与 fact 会被派发器注入到新段 prompt,
+本题 Fact 与最新退场报告优先注入。显式家族或可区分的旧版编号家族可共享经验；全题集共用前缀不表示家族。
 注入总量硬顶(超限以文件指针引用)。
+
+
+## 平台计分与停止确认
+
+- 每轮先读一份平台快照，兼容 `unique_code` / `flag_count` / `correct_flag_count` / `is_completed`。
+- 报告的 `solved` 只表达 Execute 的结论。1/6 枚 Flag 仍是 partial；全部完成以平台为准。
+- Fact、报告中的 `flags_gained` 不能累加到平台计数。重复收割不能重复加分。
+- 空 foothold 使用 `""`。未完成报告必须给出下一里程碑；完成报告可为空。
+- 无报告或无效报告触发 STOP.tsv。Decide 确认 Execute 已停止后，才能标记 infra_dead 并放槽。
+- 平台读取失败时不启动或释放实例。释放失败继续保留占槽记录，下一轮先对账。

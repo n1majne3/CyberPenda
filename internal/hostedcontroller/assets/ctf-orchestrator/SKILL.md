@@ -99,8 +99,9 @@ hint 仅由 Decide 在处理升级问题时决定是否请求(`pentest-tsecbench
 
 ```bash
 cd "$WS"
-timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'
+timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || [ -s graph/outbox/STOP.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'
 tmux has-session -t dispatcher 2>/dev/null || tmux new-session -d -s dispatcher "python3 '$WS/scripts/dispatch.py' loop --ws '$WS' --interval 20"
+cat graph/outbox/STOP.tsv 2>/dev/null       # 有 → 先确认 Execute 已结束，再标记 infra_dead
 cat graph/outbox/READY.tsv 2>/dev/null      # 有 → 逐条派发
 cat graph/escalations/QUEUE.md 2>/dev/null  # 有 → 逐条决策
 test -f graph/outbox/ENDGAME && echo ENDGAME
@@ -120,7 +121,10 @@ date +%s > graph/leader.lock
    Agent(execute, 后台),prompt 只需一句指引:"本次派发的完整指令在文件 {prompt 路径}。
    第一步用 read 读取该文件,之后逐字遵守其全部内容(文件即全部指令)"。
    **禁止把 prompt 全文粘进 Agent 参数**(21917 实测全文回显是上下文主因)。
-   take 已完成标记;若 Agent 派发失败,开工标记检查(150 秒)兜底记 infra_dead 并重派。
+   take 已完成标记。开工标记检查(150 秒)失败或超时后，STOP.tsv 会列出待停止派发。
+   先用 Runtime 工具确认对应 Execute 已结束或停止它，再执行
+   `python3 scripts/dispatch.py mark <did> infra_dead --ws "$WS"`。
+   未确认停止前不得标记；dispatcher 会保留槽位，防止旧 Execute 在释放后继续提交。
 2. **升级决策**:对 QUEUE.md 每个 open 条目,读该题 `graph/attempts/<code>/*.md`
    与 `python3 scripts/dispatch.py` 输出的 ledger 摘要,判断 continue / abandon:
    `python3 scripts/dispatch.py decide <eid> --decision continue|abandon --ws "$WS"`。
@@ -136,17 +140,17 @@ date +%s > graph/leader.lock
 
 | 事项 | 归属 |
 | --- | --- |
-| 选题、配额补位、重试上限、开工标记/超时看门狗、闲置槽回收(非 running 题的活实例立即放槽)、首段 8 分钟探针预算、围城续作棒(立足点题预算下限 60 分钟+续作指令)、零进展预算加深、终盘 60 分钟停新题探针、平台周期对账、收尾前 5 分钟停派 | dispatcher 脚本 |
+| 选题、配额补位、重试上限、开工标记/超时看门狗、闲置槽回收(非 running 题且 Execute 已结束的实例放槽)、首段 8 分钟探针预算、围城续作棒(立足点题预算下限 60 分钟+续作指令)、零进展预算加深、终盘 60 分钟停新题探针、平台周期对账、收尾前 5 分钟停派 | dispatcher 脚本 |
 | 派发动作本身(Agent 工具调用、mark dispatched) | 你 |
 | `uncertain` 升级(追投或收割、连环 infra 死亡、平台异常、hint 请求) | 你 |
 | 攻击目标、写退场报告、提交 flag | Execute agent |
 
 调度规则(dispatcher 内建):难度预算 easy 15 / medium 25 / hard 35 / 多 flag 链题 60
 分钟;同题重启上限 3 次;infra 死亡(无开工标记/无退场报告)不占重试上限,
-连环 ≥4 次升级给你;每 5 个完成通知或每 30 分钟做一次平台 `list` 对账。
+连环 ≥4 次升级给你;每轮 harvest 先用一份平台 `list` 快照对账，再收割报告和补位。
 结束判据:平台 invalid_state 或 deadline(收尾保护:deadline 前 5 分钟停止新派发)。
 
-**start 资格与补位**(dispatcher 每次 start 前先 `list`,queue 与 ledger 都可能过期):
+**start 资格与补位**(dispatcher 每轮先 `list`,queue 与 ledger 都可能过期):
 
 - `correct_flag_count == total_flag_count` 的题**禁止再 start**。
 - 本场已有一次**零进展 pass**(无新 flag 且无新事实)的 `unique_code`
@@ -154,8 +158,8 @@ date +%s > graph/leader.lock
 - 补位顺序(高 → 低):**从未开过** > 未完成且**还剩 flag** > 零进展题
   (仅当前两者皆空)。**配额不满必须补**,但**禁止用零进展题凑满**——
   空着优于把同一失败 pass 再填进配额。
-- 家族 = unique_code 前缀(第一个 `-` 之前);dispatcher 的家族经验注入、
-  blocked 复活判定都按它分组。
+- 优先使用题目显式 `family`。只有题集存在多个编号前缀时，才兼容旧版前缀家族；
+  全题集共用的前缀（如 tch3）不表示技术家族，不触发跨题经验注入。
 
 ## 放槽(配额操作,不是收官)
 
@@ -170,7 +174,7 @@ date +%s > graph/leader.lock
 - **每题第一棒是探针棒**(预算 8 分钟):找到立足点或 flag 才转深挖,
   空探针沉底等复活。不要跳过探针直接深挖。
 - **围城续作棒**:带立足点的续作棒预算下限 60 分钟,prompt 含续作指令
-  (禁止重验已排除面/已完成步骤,从上一棒里程碑直接续作)。
+  (确认当前实例与立足点后续作；实例重启会清除活会话假设)。
   **零进展棒自动加深预算**(+15 分钟/棒,上限 90)——难度误标自愈。
   **终盘 60 分钟**只续作有足迹的题,不再开新题探针。
 
@@ -187,7 +191,8 @@ date +%s > graph/leader.lock
   (必填字段与校验规则见 graph-protocol.md;prompt 尾部的**退场协议**原文由
   dispatch.py 模板生成;校验失败按 infra_dead 记账,结论不采信、不占重试上限)。
 - `graph/facts/` 仍可追加(只追加、编号单调、禁绝对化结论),dispatcher 会把它
-  并入家族经验注入;但调度不再依赖你读图。
+  优先作为本题接力记录注入；已确认家族的跨题记录另行注入。
+  Fact 是中途检查点，不能替代退场报告，也不能覆盖平台计分。
 - 大段输出落 `graph/data/`,退场报告只引用文件名。
 - 平台状态与 Challenge Pass Clock 投影由 Client 刷新,不成为 FGS 真相。
 

@@ -1,6 +1,6 @@
-# Hosted 薄调度迭代记录(p1–p9)
+# Hosted 薄调度迭代记录(p1–p18)
 
-Status: 持续维护的演进日志。每版 = 一次 bundle 发布 + 至少一次 TSecBench 实测。
+Status: 持续维护的演进日志。构建、上传和实测分别记录；未实测版本不推断得分。
 数据细节见本地 `/.tsecbench-analysis/RUN-ANALYSIS.md`(不入库)。
 设计稿: [hosted-dispatch-time-injection.md](specs/hosted-dispatch-time-injection.md)、
 [provider-resilience.md](specs/provider-resilience.md)。
@@ -28,6 +28,26 @@ CyberPenda 历史最高 **21,800(94.95%,deepseek-flash,run 22289,即本系列 p6
 
 | p14 | 复活弹无上限 + 包面收紧 | SilenceReviveMax=0(冷却 300s 仍节流;配额风暴期排队弹药为已接受代价);pi-web-access 仅 hosted 投影裁剪(本地/Sandbox 保留 —— 5204319 修正 59454c4 的全局误删);锁卫生裁定无需改动(dispatch.py 零锁原语) | 25771(step-5×v1) | **14,150 后 11:45-11:48 六活跃会话流中断全灭**(worker 侧 incomplete SSE response 实证;编排器止于 tentative 空工具调用),dispatcher 空转 8min 被 churn-cap 压停,冻结 2h45m 至 timeout。看门狗是否发弹外部不可观测(日志已焚,机制判定悬置);25405/25408/25719 见 GLM 段 |
 | p15 | 看门狗与排水解耦 | 看门狗独立 goroutine(原子状态);drain 内层循环 64 轮上限;loopback client 30s 超时(此前 http.DefaultClient 零超时);6b76da6 修 Wait 错误返回路径死锁(defer <-watchdogDone 挂死,失败测试钉死) | 26080(step-5×v1) | **17,850/53 flag —— step-5 v1 新纪录(超 p13 的 17,650)**,6h 满程零冻结: 37/37 拍调用严格递增(125→4379),模型工作至最后一帧。p15 判定: 无回归通过;复活路径未遇实战(无冻结可救)。运行日志全程落盘 35MB(monitor.py 新纪律,断线重连零丢失) |
+
+## p16–p18 补记
+
+- **p16**（`302fd13d`）：移植软顶跳过、partial 排序、配额错误分类和实例对账；增加 90 分钟攻坚棒。
+- **p17**（`20bf32d0`）：增加持续无进展后的进程内 Runtime 恢复。它继承此前全部调度规则。
+- **p17 / run 35075 / V3**：[平台结果](https://tsecbench.zc.tencent.com/agent/35075) 为 12,100 点、35.8 综合分、45/100 Flag、7/50 题全解。用户导出的 112 条事件有 33 次启动、18 道不同题；前 3 小时只启动 5 道不同题。V3 不开放 AgentTrace，这些事件不能证明每个代码缺陷在该次运行中的具体触发次数。
+
+**p18：接力与平台计分修复。** 基于 dispatcher CLI、公开文件协议和模拟 Hosted Challenge Client 输出验证：
+
+1. Fact 是中途检查点，不能替代派发要求的退场报告。Pi 与 Claude Code 使用同一份 Execute 纪律。
+2. 续作优先注入本题 Fact 和最新报告，附来源指针；不再只注入其他题的记录或先截取最旧报告。
+3. 无报告的旧题记为 blocked，不伪装成 pending 新题。持续取得新 Flag 的链题不会被三次重试或四棒软顶提前封存。
+4. `foothold: ""`、null、false 按空值处理。新实例清除旧活会话假设，派发包含全部当前入口地址。
+5. 每轮使用一份平台快照，识别 `unique_code`、`flag_count`、`correct_flag_count`、`is_completed`。1/6 枚 Flag 不算整题 solved；报告不累加平台分数，重复收割不重复加分。
+6. 全题集共用的 `tch3` 前缀不表示技术家族。显式 `family` 优先，旧版多前缀题集保留兼容分组。
+7. READY.tsv 现在由 ledger 实际投影并在 take 后清空。超时或无效报告产生 STOP.tsv；Decide 确认旧 Execute 已停止后才放槽。释放失败保留占槽记录；平台读取失败暂停平台写操作。
+
+验证入口：`go test ./scripts -run TestDispatchCLIRegressions` 覆盖两份 dispatch.py；`dispatch.py selftest` 覆盖既有预算与排序行为；Execute 投影测试覆盖报告协议。发布使用 GitHub Actions 的 Hosted Image 构建、完整后端检查、镜像 smoke 和真实 Pi 模拟平台验收。
+
+本版按用户要求只构建和上传，**不启动评测**；没有 p18 分数或提升结论。
 
 ## 平台侧事故记录(非我们缺陷)
 

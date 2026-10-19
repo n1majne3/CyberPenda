@@ -210,7 +210,9 @@ func TestTSecBenchSkillPinsGenericSlotReleasePolicy(t *testing.T) {
 		"close 只用于",
 		"放槽不是收官",
 		"Challenge Pass Clock",
-		"unique_code 前缀",
+		"全题集共用的前缀",
+		"STOP.tsv",
+		"未确认停止前不得标记",
 		"等待上界",
 		"禁止一次等待全部",
 	} {
