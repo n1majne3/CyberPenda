@@ -14,10 +14,12 @@ Decide **不手写 prompt**。prompt 由 `dispatch.py assemble` 生成到
 
 ```
 固定头(授权书 + 题面:目标/题目/题号/flag 数)     ← 该题内逐字节稳定
+【实例归属】{dispatch ID / 实例代次，Fact 与报告必须携带}
 【本段目标】{里程碑:来自上一段 next_milestone}
 【已排除的面】{本题报告最新在前，保留来源指针}
 【本题 Fact】{本题检查点最新在前，附文件路径}
 【家族经验】{同家族已解题经验,总量硬顶,超限指针化}
+【平台 hint】{已保存的提示和来源路径}
 工作方式(recon → submit-flag 流程 + /opt/knowledge 检索技巧)  ← 全局固定
 【退场协议】(attempts/<code>/<k>.md 必填字段 + 预算)          ← 全局固定
 ```
@@ -31,7 +33,9 @@ Decide **不手写 prompt**。prompt 由 `dispatch.py assemble` 生成到
 1. `python3 scripts/dispatch.py take --ws "$WS"`，原子取出并标记 ready 派发。
 2. 使用返回的 did/code/prompt 路径记录 Execute 身份，后台异步派发。
 3. prompt 只给文件路径和“第一步读取文件，再遵守完整指令”。禁止粘贴全文。
-4. STOP.tsv 出现时，先确认或停止对应 Execute，再 `mark <did> infra_dead`。
+4. Agent 返回原生 ID 后执行 `bind <did> <agent-id>`。每次 Runtime 完成回调后执行
+   `finish <did> --agent-id <agent-id> --status completed|failed|stopped`，再由 harvest 收割。
+   STOP.tsv 出现时，先停止并确认原生 Execute 终态。报告存在本身不能触发放槽。
 
 ## 模板变量说明(供人工核对 assemble 输出)
 
@@ -48,11 +52,11 @@ Decide **不手写 prompt**。prompt 由 `dispatch.py assemble` 生成到
 
 1. 结束前把退场报告写到 `graph/attempts/<code>/<k>.md`,front-matter
    challenge / attempt / outcome(solved|stalled|budget_stop) / flags_gained /
-   foothold / next_milestone 缺一不可;
+   foothold / next_milestone 缺一不可；Hosted 还需 dispatch / instance，值由 prompt 给出;
 2. 大输出落 `graph/data/<code>-<k>-*.{txt,json}`,报告只引用文件名;
 3. 没有结果就如实写"已试X、观察到Y、未达成Z",禁绝对化结论;
 4. 拿到 flag 立即 submit-flag,返回 JSON 原文粘进报告;
-5. Fact 不能替代退场报告；只连接本题目标;写完报告立即结束,最终回复只需一句收束指针。
+5. 进行中只写 Fact，最终报告只在结束前写一次。Fact 不能替代退场报告；只连接本题目标;写完报告立即结束,最终回复只需一句收束指针。
 
 报告缺字段或 solved 无提交 JSON → 派发器校验失败 → 按 infra_dead 记账,
 该段结论不被采信(等于白干)。

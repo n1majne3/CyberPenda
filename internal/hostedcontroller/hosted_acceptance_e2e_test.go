@@ -52,6 +52,7 @@ func TestHostedAcceptanceConfigurationCompletesTheRuntimeManagedChallengeLoop(t 
 	want := []string{
 		"GET /openapi/v1/challenges",
 		"POST /openapi/v1/challenges/start?unique_code=multi",
+		"GET /openapi/v1/challenges",
 		"GET /openapi/v1/challenges/hint?unique_code=multi",
 		"POST /openapi/v1/challenges/submit flag-one",
 		"POST /openapi/v1/challenges/submit flag-two",
@@ -415,6 +416,7 @@ type acceptedPlatform struct {
 	scenario     acceptedPlatformScenario
 	mu           sync.Mutex
 	requests     []string
+	active       bool
 	correct      int
 	modelHandler http.Handler
 }
@@ -464,8 +466,13 @@ func (platform *acceptedPlatform) serveHTTP(response http.ResponseWriter, reques
 	case "GET /openapi/v1/challenges":
 		platform.requests = append(platform.requests, entry)
 		completed := platform.correct >= 2
-		_, _ = fmt.Fprintf(response, `[{"unique_code":"multi","is_completed":%t,"container_status":"stopped","flag_count":2,"correct_flag_count":%d}]`, completed, platform.correct)
+		status := "stopped"
+		if platform.active {
+			status = "available"
+		}
+		_, _ = fmt.Fprintf(response, `[{"unique_code":"multi","is_completed":%t,"container_status":%q,"container_addr":["10.0.0.2:31337"],"flag_count":2,"correct_flag_count":%d}]`, completed, status, platform.correct)
 	case "POST /openapi/v1/challenges/start":
+		platform.active = true
 		platform.requests = append(platform.requests, entry)
 		_, _ = io.WriteString(response, `{"container_addr":["10.0.0.2:31337"]}`)
 	case "GET /openapi/v1/challenges/hint":
@@ -480,6 +487,7 @@ func (platform *acceptedPlatform) serveHTTP(response http.ResponseWriter, reques
 		platform.requests = append(platform.requests, entry+" "+input.Flag)
 		_, _ = fmt.Fprintf(response, `{"correct":true,"correct_flag_count":%d,"total_flag_count":2}`, platform.correct)
 	case "POST /openapi/v1/challenges/close":
+		platform.active = false
 		platform.requests = append(platform.requests, entry)
 		_, _ = io.WriteString(response, `{"closed":true}`)
 	default:

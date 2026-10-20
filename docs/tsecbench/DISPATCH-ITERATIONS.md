@@ -1,4 +1,4 @@
-# Hosted 薄调度迭代记录(p1–p18)
+# Hosted 薄调度迭代记录(p1–p19)
 
 Status: 持续维护的演进日志。构建、上传和实测分别记录；未实测版本不推断得分。
 数据细节见本地 `/.tsecbench-analysis/RUN-ANALYSIS.md`(不入库)。
@@ -47,7 +47,41 @@ CyberPenda 历史最高 **21,800(94.95%,deepseek-flash,run 22289,即本系列 p6
 
 验证入口：`go test ./scripts -run TestDispatchCLIRegressions` 覆盖两份 dispatch.py；`dispatch.py selftest` 覆盖既有预算与排序行为；Execute 投影测试覆盖报告协议。发布使用 GitHub Actions 的 Hosted Image 构建、完整后端检查、镜像 smoke 和真实 Pi 模拟平台验收。
 
-本版按用户要求只构建和上传，**不启动评测**；没有 p18 分数或提升结论。
+p18 交付时按用户要求只构建和上传，没有启动评测。之后用户提供 [run 37292](https://tsecbench.zc.tencent.com/agent/37292)：
+题集为 **bctf-2026**，16,260 点、73.21 综合分、31/39 Flag、29/37 题全解。
+这不是 p17 的 V3，分数不能直接比较。82 次启动覆盖 37 道题，7 道题从重试中获益。
+
+## p19：退出确认、实例归属与 hint 接力
+
+p18 的 CloudDB d012 在 18:04:30 写下“进行中”的合法退场报告；18:04:55 实例被关，
+Execute 却运行到 18:10:06。原 IP 随后分给其他题，旧 Execute 把 SENTINEL 的响应写进 CloudDB 历史。
+另一棒 d062 在没有实例时仍被手动 assemble，并把 `foothold: none` 当作有效立足点。
+22:48 的 start 超时后平台实际已成功启动，说明失败响应不能代表实例不存在。
+Fact 在 d065/d071 的读取证据表明接力通道确实工作；缺口在退出和实例归属。
+
+本版改动：
+
+1. Hosted 派发新增 `bind` 与 `finish`。主控绑定原生 Execute ID，并在 Runtime 终态后确认退出。
+   报告存在不再触发收割；finish 封存报告，迟到写入不能覆盖接力结论。STOP.tsv 保留槽位直到确认退出。
+2. 手动 assemble 同样要求当前可用、未完成的实例，并拒绝同题并发 Execute。
+   每棒记录全部地址和本地实例代次；平台停止、消失或地址改变时要求停止旧 Execute。
+3. 报告与 Fact 带 dispatch / instance；无来源、实例失效或未封存的记录不自动注入。
+   本轮刚封存的报告也能在同一轮补位时注入。`none` 和中文空值不再触发围城预算。
+4. start 先记录不确定状态，再请求平台；超时后 list 对账，不自动重试写操作。
+   已启动的实例继续派发，pending 实例继续占槽；120 秒后仍明确 stopped 时交主控决策。
+5. 上一棒无新增 Flag 的续作，或当前棒 10 分钟无 Flag 进展，生成一次 hint 审查。
+   主控比较扣分与收益后选择 hint / continue / abandon。原始 hint 保存并注入后续棒，活动 Execute 由主控发信通知。
+   未知请求结果不自动重购；Client 在 hint 前验证当前实例可用且题目未完成。
+6. CLI 与 loop 使用同一文件锁；升级队列由 ledger 投影，关闭后不再永久唤醒主控。
+   abandon 等待退出且保留封存决定；同一次 infra 死亡不会在看门狗和收割时重复计数。
+7. Client 保留成功 HTTP 响应中的 `code: duplicate`，防止重复 Flag 被误读成未解出；平台计数仍是唯一计分依据。
+
+限制：finish 依赖主控对 Runtime 终态的真实观察，不是 Runtime 自动签发的证明。
+平台没有实例 ID 时，本地代次不能识别两次快照之间完全相同地址的复用；Execute 必须报告目标内容改变。
+本版不会构造未经平台确认的链题依赖图，也没有新的跑分结论。按用户授权构建并上传，**不启动评测**。
+
+验证：CLI → 模拟平台回归覆盖早写报告、迟到写入、无实例派发、实例复用、延迟启动、hint 决策与放弃后退出；
+Client → HTTP 测试覆盖 hint 资格与 duplicate 字段；两份脚本须保持一致，并运行既有 selftest、后端检查和镜像验收。
 
 ## 平台侧事故记录(非我们缺陷)
 

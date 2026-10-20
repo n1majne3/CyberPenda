@@ -37,6 +37,7 @@ func TestHostedAcceptanceConfigurationRunsTheRealPiRuntimeWithTheProjectedSkill(
 	want := []string{
 		"GET /openapi/v1/challenges",
 		"POST /openapi/v1/challenges/start?unique_code=multi",
+		"GET /openapi/v1/challenges",
 		"GET /openapi/v1/challenges/hint?unique_code=multi",
 		"POST /openapi/v1/challenges/submit flag-one",
 		"POST /openapi/v1/challenges/submit flag-two",

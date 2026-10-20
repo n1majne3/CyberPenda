@@ -47,7 +47,7 @@ prompt 由 `scripts/dispatch.py` 组装;你**禁止手写派发 prompt**,
 
 ```bash
 cd $WS && python3 scripts/dispatch.py harvest --ws $WS --dry >/dev/null 2>&1
-cat graph/outbox/STOP.tsv 2>/dev/null       # 有 → 先确认 Execute 已结束，再标记 infra_dead
+cat graph/outbox/STOP.tsv 2>/dev/null       # 有 → 先确认 Execute 已结束，再 finish
 cat graph/outbox/READY.tsv 2>/dev/null      # 有 → 逐条派发
 cat graph/escalations/QUEUE.md 2>/dev/null  # 有 → 逐条决策
 test -f graph/outbox/ENDGAME && echo ENDGAME
@@ -58,13 +58,25 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
    Agent(execute, 后台),prompt 只需一句指引:"本次派发的完整指令在文件 {prompt 路径}。
    第一步用 read 读取该文件,之后逐字遵守其全部内容(文件即全部指令)"。
    **禁止把 prompt 全文粘进 Agent 参数**;take 已完成标记,漏派的由开工标记检查(150 秒)兜底。
-   STOP.tsv 出现时，先用 Runtime 工具确认对应 Execute 已结束或停止它，
-   再 `python3 scripts/dispatch.py mark <did> infra_dead --ws "$WS"`。
-   未确认停止前不得标记；dispatcher 保留槽位以防旧 Execute 在关题后继续提交。
+   Agent 返回原生 Execute ID 后，立即执行
+   `python3 scripts/dispatch.py bind <did> <agent-id> --ws "$WS"`。
+   **每次完成回调都要处理**：确认 Runtime 已结束，再执行
+   `python3 scripts/dispatch.py finish <did> --agent-id <agent-id> --status completed --ws "$WS"`。
+   失败或主动停止用 `--status failed|stopped`。STOP.tsv 出现时先停止对应 Execute，
+   等 Runtime 确认终态后再 finish。**未确认停止前不得标记**；报告文件存在不等于 Execute 已退出。
+   只有明确没有启动任何 Execute、没有原生 ID 且没有开工标记的派发失败，才用
+   `finish <did> --status not_started`。请求超时但可能已启动时，先用 Runtime 工具查清原生 ID。
+   `ACTIVE.tsv` 保存 did/code/agent-id/state。每次 240 秒超时巡检也检查这些原生 Execute 的终态，
+   补记漏收的回调。Hosted 禁止用 `mark infra_dead` 绕过退出确认。
 2. **升级决策**:对 QUEUE.md 每个 open 条目,读该题的
-   `graph/attempts/<code>/*.md` 与 ledger 摘要,做出 continue / abandon 判断:
-   `python3 scripts/dispatch.py decide <eid> --decision continue|abandon --ws $WS`。
+   ledger 引用的 `graph/attempts/<did>.sealed.md` 与 ledger 摘要,做出 continue / abandon / hint 判断:
+   `python3 scripts/dispatch.py decide <eid> --decision continue|abandon|hint --ws $WS`。
    判断依据:剩余时限、该题已得 flag、foothold 是否存活、追投预期分值。
+   hint 审查只做决策，不自动购买。上一棒无新增 Flag 的续作，或当前棒 10 分钟无 Flag 进展，
+   会生成一次审查。选择 hint 时加 `--reason "扣分与预期收益的判断"`，由 dispatcher 串行请求。
+   返回值保存于 `graph/hints/<code>.json`；用 Runtime 发信工具通知当前 Execute 读取该文件。
+   后续派发自动携带该记录。请求失败或超时也记账，禁止自动重购；先核对平台结果。
+   已处理/已过期的队列项会自动移除，不要手改 QUEUE.md。
 3. 两者皆空且无 ENDGAME → 回到阻塞等待:
    `timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || [ -s graph/outbox/STOP.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'`
    (超时返回即兜底巡检:确认 dispatcher 存活。)禁止无事件的定时 sleep 轮询,
@@ -99,7 +111,7 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
 ## 错误处理
 
 - dispatcher 死亡(tmux 会话消失):重拉 `dispatch.py loop`;ledger 是唯一事实源,重启无损。
-- 平台 409/invalid_state、503、网关超时:dispatcher 已内建重试与跳过;
+- 平台 409/invalid_state、503、网关超时:先 list 对账，不能自动重试写操作;
   连环失败会以升级问题到达你这里。
 - agent infra 死亡(无退场报告):看门狗按 grace 期判定,不占重试预算;
   同题连环 ≥4 次会升级给你决策(封存或换资源)。
@@ -108,5 +120,5 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
 
 - `references/graph-protocol.md` — ledger/attempts/outbox/escalations 与退场报告 schema(开局必读)
 - `references/execute-prompt.md` — 派发模板说明(模板本体由 dispatch.py 持有)
-- `scripts/dispatch.py` — 薄调度器(init/assemble/validate/mark/harvest/loop/decide/selftest)
+- `scripts/dispatch.py` — 薄调度器(init/assemble/validate/take/bind/finish/mark/harvest/loop/decide/selftest)
 - `scripts/platform-api.sh` — 平台适配层示例

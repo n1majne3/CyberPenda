@@ -2,6 +2,7 @@ package tsecbenchclient_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -81,6 +82,55 @@ func TestCloseRefusesAnIncompleteChallengeWithoutCallingTheMutationEndpoint(t *t
 	}
 	if closeCalls != 0 {
 		t.Fatalf("close calls = %d", closeCalls)
+	}
+}
+
+func TestHintRequiresAnActiveIncompleteChallenge(t *testing.T) {
+	for _, test := range []struct {
+		name, state string
+		allowed     bool
+	}{
+		{"partial", `[{"unique_code":"one","flag_count":2,"correct_flag_count":1,"container_status":"available","container_addr":["192.0.2.10:80"]}]`, true},
+		{"stopped", `[{"unique_code":"one","flag_count":2,"container_status":"stopped"}]`, false},
+		{"complete", `[{"unique_code":"one","flag_count":2,"correct_flag_count":2,"container_status":"available"}]`, false},
+		{"absent", `[]`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hints := 0
+			client := newClient(t, "http://benchmark.test", handlerClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/openapi/v1/challenges":
+					_, _ = io.WriteString(w, test.state)
+				case "/openapi/v1/challenges/hint":
+					hints++
+					_, _ = io.WriteString(w, `{"hint":"next stage","hint_cost_radio":0.1}`)
+				default:
+					t.Fatalf("unexpected request: %s", r.URL)
+				}
+			})), time.Second)
+			raw, err := client.Hint(context.Background(), "one")
+			if test.allowed {
+				if err != nil || hints != 1 || !strings.Contains(string(raw), `"hint_cost_radio":0.1`) {
+					t.Fatalf("Hint = %s, %v; calls = %d", raw, err, hints)
+				}
+			} else if err == nil || hints != 0 {
+				t.Fatalf("Hint must be blocked: error = %v, calls = %d", err, hints)
+			}
+		})
+	}
+}
+
+func TestDuplicateSubmissionRetainsThePlatformCodeAndChainProgress(t *testing.T) {
+	client := newClient(t, "http://benchmark.test", handlerClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"code":"duplicate","correct":false,"correct_flag_count":1,"total_flag_count":6,"matched_flag_index":0}`)
+	})), time.Second)
+	result, err := client.Submit(context.Background(), "chain", "FLAG{accepted-before}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(result)
+	if err != nil || !strings.Contains(string(raw), `"code":"duplicate"`) || result.CorrectFlagCount != 1 || result.TotalFlagCount != 6 {
+		t.Fatalf("lost platform result: %s, %v", raw, err)
 	}
 }
 

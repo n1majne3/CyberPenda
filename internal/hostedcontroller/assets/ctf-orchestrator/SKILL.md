@@ -58,7 +58,7 @@ pentest-tsecbench-client abandon "$code" "$reason"   # 未完成题放槽
 ```
 
 `$WS/platform.sh` 是三行适配层(开局序列创建),接口固定
-`list|start|close|abandon`。禁止用 `curl` 直连平台 API,禁止自行构造鉴权头。
+`list|start|close|abandon|hint`。禁止用 `curl` 直连平台 API,禁止自行构造鉴权头。
 
 Execute agent 只做一件事:按 prompt 提交候选 flag 并把返回 JSON 原文写进退场报告:
 
@@ -67,8 +67,9 @@ printf '%s' "$flag" | pentest-tsecbench-client submit "$code"
 ```
 
 Execute 禁止调用 `list/start/hint/close/abandon`,禁止查看或复制 credential。
-hint 仅由 Decide 在处理升级问题时决定是否请求(`pentest-tsecbench-client hint "$code"`,
-只针对正在占槽的那一题的当前 pass,禁止一次对多题)。
+hint 仅由 Decide 通过 `dispatch.py decide <eid> --decision hint --reason "理由"` 决策。
+底层命令是 `pentest-tsecbench-client hint "$code"`，只允许正在占槽的那一题，且实例可用、题目未完成。
+禁止绕过 dispatcher 直接购买，以免丢失 hint 和可能扣分的请求记录。
 
 ## 开局序列(Phase 0,必须最先执行)
 
@@ -101,7 +102,7 @@ hint 仅由 Decide 在处理升级问题时决定是否请求(`pentest-tsecbench
 cd "$WS"
 timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || [ -s graph/outbox/STOP.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'
 tmux has-session -t dispatcher 2>/dev/null || tmux new-session -d -s dispatcher "python3 '$WS/scripts/dispatch.py' loop --ws '$WS' --interval 20"
-cat graph/outbox/STOP.tsv 2>/dev/null       # 有 → 先确认 Execute 已结束，再标记 infra_dead
+cat graph/outbox/STOP.tsv 2>/dev/null       # 有 → 先确认 Execute 已结束，再 finish
 cat graph/outbox/READY.tsv 2>/dev/null      # 有 → 逐条派发
 cat graph/escalations/QUEUE.md 2>/dev/null  # 有 → 逐条决策
 test -f graph/outbox/ENDGAME && echo ENDGAME
@@ -121,20 +122,32 @@ date +%s > graph/leader.lock
    Agent(execute, 后台),prompt 只需一句指引:"本次派发的完整指令在文件 {prompt 路径}。
    第一步用 read 读取该文件,之后逐字遵守其全部内容(文件即全部指令)"。
    **禁止把 prompt 全文粘进 Agent 参数**(21917 实测全文回显是上下文主因)。
-   take 已完成标记。开工标记检查(150 秒)失败或超时后，STOP.tsv 会列出待停止派发。
-   先用 Runtime 工具确认对应 Execute 已结束或停止它，再执行
-   `python3 scripts/dispatch.py mark <did> infra_dead --ws "$WS"`。
-   未确认停止前不得标记；dispatcher 会保留槽位，防止旧 Execute 在释放后继续提交。
-2. **升级决策**:对 QUEUE.md 每个 open 条目,读该题 `graph/attempts/<code>/*.md`
-   与 `python3 scripts/dispatch.py` 输出的 ledger 摘要,判断 continue / abandon:
-   `python3 scripts/dispatch.py decide <eid> --decision continue|abandon --ws "$WS"`。
+   take 后 150 秒内未出现开工标记会进入 STOP.tsv。
+   Agent 返回原生 Execute ID 后，立即执行
+   `python3 scripts/dispatch.py bind <did> <agent-id> --ws "$WS"`。
+   **每次完成回调都要处理**：确认 Runtime 已结束，再执行
+   `python3 scripts/dispatch.py finish <did> --agent-id <agent-id> --status completed --ws "$WS"`。
+   失败或主动停止用 `--status failed|stopped`。STOP.tsv 出现时先停止对应 Execute，
+   等 Runtime 确认终态后再 finish。**未确认停止前不得标记**；报告文件存在不等于 Execute 已退出。
+   只有明确没有启动任何 Execute、没有原生 ID 且没有开工标记的派发失败，才用
+   `finish <did> --status not_started`。请求超时但可能已启动时，先用 Runtime 工具查清原生 ID。
+   `ACTIVE.tsv` 保存 did/code/agent-id/state。每次 240 秒超时巡检也检查这些原生 Execute 的终态，
+   补记漏收的回调。Hosted 禁止用 `mark infra_dead` 绕过退出确认。
+2. **升级决策**:对 QUEUE.md 每个 open 条目,读该题 ledger 引用的 `graph/attempts/<did>.sealed.md`
+   与 `python3 scripts/dispatch.py` 输出的 ledger 摘要,判断 continue / abandon / hint:
+   `python3 scripts/dispatch.py decide <eid> --decision continue|abandon|hint --ws "$WS"`。
    判断依据:平台 Pass Clock 剩余(`elapsed_min`/`budget_min`/`over_budget`/`attempt_n`)、
    该题已得 flag、foothold 是否存活、追投预期分值。
+   hint 审查只做决策，不自动购买。上一棒无新增 Flag 的续作，或当前棒 10 分钟无 Flag 进展，
+   会生成一次审查。选择 hint 时加 `--reason "扣分与预期收益的判断"`，由 dispatcher 串行请求。
+   返回值保存于 `graph/hints/<code>.json`；用 Runtime 发信工具通知当前 Execute 读取该文件。
+   后续派发自动携带该记录。请求失败或超时也记账，禁止自动重购；先核对平台结果。
+   已处理/已过期的队列项会自动移除，不要手改 QUEUE.md。
 3. 两者皆空且无 ENDGAME → 回到阻塞等待(重跑上面的 timeout bash)。
    **禁止无事件的定时 sleep 轮询,也禁止任何 sleep 后跟查文件的组合**(等待只有阻塞式一条路),禁止在等待间隙做任何攻击性操作或
    通读 fact/退场报告全文。
 4. `graph/outbox/ENDGAME` 出现 → 终盘清点(ledger 统计)写入 `$WS/state.md`
-   并报告,同时停掉 dispatcher tmux 会话。
+   并报告；先确认全部活动 Execute 已退出并 finish，完成最后一次 harvest，再停 dispatcher。
 
 ## 你与调度器的分工
 
@@ -209,5 +222,5 @@ date +%s > graph/leader.lock
 
 - `references/graph-protocol.md` — ledger/attempts/outbox/escalations 与退场报告 schema(开局必读)
 - `references/execute-prompt.md` — 派发模板说明(模板本体由 dispatch.py 持有,派发前读)
-- `scripts/dispatch.py` — 薄调度器(init/assemble/validate/mark/harvest/loop/decide/selftest)
+- `scripts/dispatch.py` — 薄调度器(init/assemble/validate/take/bind/finish/mark/harvest/loop/decide/selftest)
 - `scripts/platform-api.sh` — 通用平台适配层示例(Hosted 用第 3 步的内联适配层)

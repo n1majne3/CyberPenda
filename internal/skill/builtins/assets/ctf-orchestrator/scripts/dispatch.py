@@ -17,6 +17,8 @@
 """
 
 import argparse
+import fcntl
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -25,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 DIFFICULTY_BUDGET_MIN = {"easy": 15, "medium": 25, "hard": 35, "chain": 60}
@@ -74,7 +77,8 @@ WORK_STYLE = """开工动作:先创建开工标记 {started_marker}(touch 一个
 EXIT_PROTOCOL = """【退场协议——本段结束前必须完成,否则结论不被采信】
 1. 无论解出与否,把退场报告写到 {attempts_path},front-matter 必填:
    challenge / attempt / outcome / flags_gained / foothold / next_milestone
-   outcome 只能取 solved / stalled / budget_stop 之一。
+   outcome 只能取 solved / stalled / budget_stop 之一。Hosted 还必须写 dispatch / instance，值见实例归属段。
+   最终报告只在结束前写一次，进行中记录写 Fact，不能提前写入退场报告。
 2. 正文两节:「试过的面(下一段不要重复)」与「证据指针」。大输出写
    graph/data/{code}-{attempt}-*.txt 或 .json,报告里只引用文件名。
 3. 没有结果就如实写"已试X、观察到Y、未达成Z";禁止"此路不通/已穷尽/勿再试"类绝对结论。
@@ -107,15 +111,22 @@ class WS:
         self.outbox = self.root / "graph" / "outbox"
         self.escalations = self.root / "graph" / "escalations"
         self.facts = self.root / "graph" / "facts"
+        self.hints = self.root / "graph" / "hints"
         self.deadline_path = self.root / "deadline"
         self.platform = self.root / "platform.sh"
-        for d in (self.attempts, self.outbox, self.escalations, self.facts):
+        for d in (self.attempts, self.outbox, self.escalations, self.facts, self.hints):
             d.mkdir(parents=True, exist_ok=True)
 
     def ledger(self):
         if not self.ledger_path.exists():
             return {"challenges": {}, "dispatches": {}, "seq": 0}
         return json.loads(self.ledger_path.read_text(encoding="utf-8"))
+
+    @contextmanager
+    def lock(self):
+        with (self.root / "graph" / "dispatch.lock").open("a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
 
     def save_ledger(self, data):
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +140,14 @@ class WS:
             pending = target.with_suffix(".tmp")
             pending.write_text("".join(lines), encoding="utf-8")
             os.replace(pending, target)
+        queue = ["- %s [%s] %s\n" % (eid, e["challenge"], e["question"])
+                 for eid, e in data.get("escalations", {}).items()
+                 if isinstance(e, dict) and e.get("state") == "open"]
+        (self.escalations / "QUEUE.md").write_text("".join(queue), encoding="utf-8")
+        active = ["%s\t%s\t%s\t%s\n" % (did, d["code"], d.get("agent_id", "unbound"), d["state"])
+                  for did, d in sorted(data["dispatches"].items())
+                  if d["state"] in ("dispatched", "stop_required")]
+        (self.outbox / "ACTIVE.tsv").write_text("".join(active), encoding="utf-8")
 
     def deadline(self):
         try:
@@ -224,13 +243,15 @@ def parse_front_matter(text):
                 if not value.endswith("'") or len(value) < 2:
                     return None, text
                 value = value[1:-1].replace("''", "'")
+            if k.strip() == "foothold" and value.lower() in ("none", "null", "false", "~", "无", "无立足点"):
+                value = ""
             meta[k.strip()] = value
     return meta, text[m.end():]
 
 
-def validate_report(ws, code, k, quiet=True):
+def validate_report(ws, code, k, quiet=True, path=None):
     """返回 (ok, reason, meta)。校验失败按 infra_dead 处理,不采信其结论。"""
-    p = ws.attempt_path(code, k)
+    p = path or ws.attempt_path(code, k)
     if not p.exists():
         return False, "report_missing", None
     meta, body = parse_front_matter(p.read_text(encoding="utf-8"))
@@ -274,9 +295,27 @@ def read_report_sections(path):
     return meta or {}, body
 
 
-def collect_family_knowledge(ws, code):
+def history_report(ws, led, code, k):
+    if not ws.platform.exists():
+        return ws.attempt_path(code, k)
+    d = next((d for d in led["dispatches"].values() if d["code"] == code and d["attempt"] == k), {})
+    if d.get("state") == "done" and not d.get("invalidated") and d.get("sealed_report"):
+        return ws.root / d["sealed_report"]
+    return None
+
+
+def fact_has_origin(ws, led, meta):
+    if not ws.platform.exists():
+        return True
+    d = led["dispatches"].get(meta.get("dispatch"), {})
+    return bool(d and d.get("code") == meta.get("challenge") and not d.get("invalidated")
+                and d.get("state") in ("dispatched", "done")
+                and meta.get("instance") == (d.get("instance") or {}).get("generation"))
+
+
+def collect_family_knowledge(ws, code, led=None):
     """家族经验 = 已解同家族题的退场报告蒸馏 + graph/facts 里的同家族 fact。"""
-    led = ws.ledger()
+    led = ws.ledger() if led is None else led
     pieces = []
     for other, rec in sorted(led["challenges"].items()):
         if other == code or family_of(other, led) != family_of(code, led):
@@ -284,16 +323,16 @@ def collect_family_knowledge(ws, code):
         if rec.get("flags_correct", 0) <= 0:
             continue
         k = rec.get("attempt", 0)
-        p = ws.attempt_path(other, k)
-        if p.exists():
+        p = history_report(ws, led, other, k)
+        if p and p.exists():
             meta, body = read_report_sections(p)
-            pieces.append((other, "graph/attempts/%s/%d.md" % (other, k), body))
+            pieces.append((other, str(p.relative_to(ws.root)), body))
     if ws.facts.exists():
         fact_files = sorted(ws.facts.glob("*.md"))
         for p in fact_files:
             meta, _ = read_report_sections(p)
             fc = meta.get("challenge") or ""
-            if fc in led["challenges"] and fc != code and family_of(fc, led) == family_of(code, led):
+            if fact_has_origin(ws, led, meta) and fc in led["challenges"] and fc != code and family_of(fc, led) == family_of(code, led):
                 rel = "graph/facts/%s" % p.name
                 if all(rel != piece[1] for piece in pieces):
                     pieces.append((fc, rel, p.read_text(encoding="utf-8")))
@@ -306,13 +345,13 @@ def collect_family_knowledge(ws, code):
     return "\n".join(out)[:INJECT_CAP_CHARS]
 
 
-def collect_excluded(ws, code):
-    led = ws.ledger()
+def collect_excluded(ws, code, led=None):
+    led = ws.ledger() if led is None else led
     rec = led["challenges"].get(code, {})
     lines = []
     for k in range(rec.get("attempt", 0), 0, -1):
-        p = ws.attempt_path(code, k)
-        if not p.exists():
+        p = history_report(ws, led, code, k)
+        if not p or not p.exists():
             continue
         meta, body = read_report_sections(p)
         if meta.get("outcome") == "infra_dead":
@@ -320,8 +359,8 @@ def collect_excluded(ws, code):
         m = re.search(r"#+\s*试过的面.*?\n(.*?)(?=\n#|\Z)", body, re.S)
         chunk = (m.group(1) if m else body).strip()
         if chunk:
-            lines.append("第 %d 段(outcome=%s,详见 graph/attempts/%s/%d.md):\n%s"
-                         % (k, meta.get("outcome"), code, k, chunk))
+            lines.append("第 %d 段(outcome=%s,历史实例，详见 %s):\n%s"
+                         % (k, meta.get("outcome"), p.relative_to(ws.root), chunk))
     text = "\n".join(lines).strip()
     if not text:
         return "(首段,无历史。)"
@@ -329,12 +368,13 @@ def collect_excluded(ws, code):
                                         if len(text) > EXCLUDED_CAP_CHARS else "")
 
 
-def collect_own_facts(ws, code):
+def collect_own_facts(ws, code, led=None):
     """本题 Fact 是接力线索；分数和完成状态仍以平台为准。"""
     pieces = []
+    led = ws.ledger() if led is None else led
     for p in sorted(ws.facts.glob("*.md"), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True):
         meta, body = read_report_sections(p)
-        if meta.get("challenge") == code:
+        if meta.get("challenge") == code and fact_has_origin(ws, led, meta):
             pieces.append("%s — %s\n%s" % (p.relative_to(ws.root), meta.get("title", ""), body[:800]))
     text = "\n\n".join(pieces)
     return text[:6000] + ("\n(更多本题记录见 graph/facts/)" if len(text) > 6000 else "") if text else "(本题尚无 Fact。)"
@@ -366,19 +406,23 @@ def build_prompt(ws, led, code, budget_min=None, siege=False, assault=False):
                      "禁止重验已有证据确认的已完成步骤；证据变化时更新 Fact。目标:%s" % milestone)
     if assault:
         milestone = ("【攻坚棒】此题多棒未破且无立足点,本棒单棒深打(%d 分钟):"
-                     "先读完全部历史退场报告,选定一个最可能的假设一路打穿,"
+                     "先读完 prompt 引用的已封存历史退场报告,选定一个最可能的假设一路打穿,"
                      "按里程碑记录中途进展;禁止退化为浅表重扫。目标:%s"
                      % (budget_min, milestone))
     parts = [
         FIXED_HEADER.format(addr=(rec.get("instance") or {}).get("addr") or rec.get("addr") or "(见平台 list 输出)",
                             name=rec["name"], code=code,
                             flags_total=rec["flags_total"]),
+        "【实例归属】dispatch: d%03d；instance: %s。Fact 和退场报告 front-matter 必须写入这两个字段。"
+        "历史 IP 相同不能证明仍是同一题；历史会话和路径必须在本实例重新确认。目标内容明显改变时停止请求并通知 Decide。"
+        % (led["seq"], (rec.get("instance") or {}).get("generation", "offline")),
         "【本段目标】%s" % milestone,
         "【已确认进度】%d/%d 枚 Flag。已完成阶段不重复提交，继续未完成阶段。" % (
             rec.get("flags_correct", 0), rec["flags_total"]),
-        "【已排除的面】(来自此前各段退场报告,不要重复)\n%s" % collect_excluded(ws, code),
-        "【本题 Fact】先读这些记录及其引用文件；记录可能过时，按最新证据续作。\n%s" % collect_own_facts(ws, code),
-        "【家族经验】\n%s" % collect_family_knowledge(ws, code),
+        "【已排除的面】(来自此前各段退场报告,不要重复)\n%s" % collect_excluded(ws, code, led),
+        "【本题 Fact】先读这些记录及其引用文件；记录可能过时，按最新证据续作。\n%s" % collect_own_facts(ws, code, led),
+        "【家族经验】\n%s" % collect_family_knowledge(ws, code, led),
+        "【平台 hint】%s" % hint_context(ws, rec),
         WORK_STYLE.format(started_marker=started_rel, code=code),
         EXIT_PROTOCOL.format(attempts_path=attempts_rel, code=code,
                              attempt=k, budget_min=budget_min),
@@ -391,11 +435,29 @@ def assemble(ws, led, code, reason="manual"):
     rec = led["challenges"].get(code)
     if not rec:
         die("ledger 里没有 %s" % code)
+    if ws.platform.exists():
+        if any(d["code"] == code and d["state"] in ("ready", "dispatched", "stop_required")
+               for d in led["dispatches"].values()):
+            die("本题仍有活动派发，先确认 Execute 已退出")
+        if reason == "manual":
+            item = (platform_snapshot(ws) or {}).get(code)
+            if not item or not available(item) or completed(item):
+                die("平台未确认本题有可用且未完成的实例；先对账并启动实例")
+            addresses = valid_addresses(item.get("container_addr"))
+            if not rec.get("instance") or not rec["instance"].get("generation") or rec["instance"].get("addr") != addresses:
+                rec["instance"] = new_instance(addresses)
+                rec["foothold"] = ""
+            rec.pop("start_pending", None)
+            rec["platform_completed"] = False
+            rec["flags_correct"] = int(item.get("correct_flag_count") or 0)
+            rec["flags_total"] = int(item.get("flag_count") or item.get("total_flag_count") or rec["flags_total"])
+        if not valid_addresses((rec.get("instance") or {}).get("addr")) or rec.get("platform_completed"):
+            die("没有可用实例地址，不能组装派发")
     if (rec["attempt"] >= SESSION_CHURN_SOFT_CAP and reason == "fill"
             and not rec.get("last_flags_gained")):
         rec["state"] = "blocked"
         escalate(ws, code, "会话数已达软顶 %d 次仍 %s;追投还是放弃?"
-                 % (SESSION_CHURN_SOFT_CAP, rec["state"]))
+                 % (SESSION_CHURN_SOFT_CAP, rec["state"]), led=led)
         print("CHURN-CAP %s blocked, escalated" % code)
         return None
     led["seq"] += 1
@@ -431,6 +493,8 @@ def assemble(ws, led, code, reason="manual"):
         "reason": reason, "prompt": str(p.relative_to(ws.root)).replace("\\", "/"),
         "probe": probe, "siege": siege, "assault": assault, "family_facts": fam_facts,
         "flags_at_start": rec.get("flags_correct", 0),
+        "last_progress_at": now(), "flags_observed": rec.get("flags_correct", 0),
+        "instance": dict(rec.get("instance") or {}),
     }
     print("READY %s %s attempt=%d reason=%s prompt=%s" % (did, code, k, reason, p.name))
     return did
@@ -448,6 +512,26 @@ def _cli_assemble(args):
 
 def challenge_code(c):
     return c.get("unique_code") or c.get("challenge_code") or c.get("code") or c.get("id")
+
+
+def valid_addresses(value):
+    value = [value] if isinstance(value, str) else value
+    if not isinstance(value, list) or not value or any(not isinstance(a, str) or not a.strip() for a in value):
+        return []
+    return sorted(set(a.strip() for a in value))
+
+
+def available(item):
+    return item.get("container_status") in ("running", "available") and bool(valid_addresses(item.get("container_addr")))
+
+
+def completed(item):
+    total = int(item.get("flag_count") or item.get("total_flag_count") or 0)
+    return item.get("is_completed") is True or (total > 0 and int(item.get("correct_flag_count") or 0) >= total)
+
+
+def new_instance(addresses):
+    return {"addr": valid_addresses(addresses), "since": now(), "generation": uuid.uuid4().hex}
 
 
 def platform_snapshot(ws):
@@ -543,6 +627,9 @@ def pick_next(led, exclude_fresh=False, eligible_codes=None):
 def release_instance(ws, led, code, solved=None):
     """solved 题用 close;未完成题放槽用 abandon(不得 close 未完成题)。"""
     rec = led["challenges"][code]
+    if any(d["code"] == code and d["state"] in ("ready", "dispatched", "stop_required")
+           for d in led["dispatches"].values()):
+        return False
     if rec.get("instance") and ws.platform.exists():
         if solved is None:
             solved = rec.get("platform_completed") or rec.get("flags_correct", 0) >= rec.get("flags_total", 1)
@@ -559,26 +646,28 @@ def release_instance(ws, led, code, solved=None):
 def start_instance(ws, led, code):
     if not ws.platform.exists():
         return True, ""
-    r = ws.platform_call("start", code)
-    if r.returncode != 0:
-        return False, (r.stderr or r.stdout)[:200]
     rec = led["challenges"][code]
     rec["foothold"] = ""
     rec["addr"] = ""
-    rec["instance"] = {"addr": [], "since": now()}
+    rec["instance"] = new_instance([])
+    rec["start_pending"] = now()
+    # 先持久化不确定状态。进程在平台返回前中断也不能重复 start。
+    ws.save_ledger(led)
+    r = ws.platform_call("start", code)
     try:
         item = json.loads(r.stdout)
     except ValueError:
         item = {}
-    addr = item.get("container_addr") if isinstance(item, dict) else None
+    addr = valid_addresses(item.get("container_addr")) if isinstance(item, dict) and r.returncode == 0 else []
     if not addr:
         snapshot = platform_snapshot(ws)
-        addr = (snapshot or {}).get(code, {}).get("container_addr")
-    if isinstance(addr, str):
-        addr = [addr]
-    if not isinstance(addr, list) or not addr or any(not isinstance(a, str) or not a.strip() for a in addr):
-        return False, "start 返回无有效目标地址；保留实例待下轮对账"
+        current = (snapshot or {}).get(code, {})
+        if available(current) and not completed(current):
+            addr = valid_addresses(current.get("container_addr"))
+    if not addr:
+        return False, "start 结果待对账；保留槽位，禁止自动重复启动"
     rec["instance"]["addr"] = addr
+    rec.pop("start_pending", None)
     return True, ""
 
 
@@ -600,8 +689,7 @@ def account_report(ws, led, code, k, meta):
     rec["last_flags_gained"] = gained
     rec["foothold"] = meta.get("foothold") or ""
     rec["milestone"] = meta.get("next_milestone") or None
-    spent = max(0, int((now() - led["dispatches"].get(
-        _last_dispatch(led, code), {}).get("created", now())) / 60) - 0)
+    spent = max(0, int((now() - dispatch.get("created", now())) / 60))
     rec["spent_min"] += spent
     if rec.get("platform_completed") or rec["flags_correct"] >= rec["flags_total"]:
         rec["state"] = "solved"
@@ -621,6 +709,8 @@ def account_report(ws, led, code, k, meta):
     # 标 easy 实为深题,每棒 15 分钟刚进状态就到点)。
     if gained == 0 and not (meta.get("foothold") or rec.get("foothold")):
         rec["budget_min"] = min(rec["budget_min"] + ZERO_PROGRESS_STEP, BUDGET_CEILING)
+    if rec.get("abandoned") and rec["state"] != "solved":
+        rec["state"] = "exhausted"
     if rec["state"] == "solved":
         _mark_family_grew(led, code)
 
@@ -655,12 +745,38 @@ def _quota_error(err):
     return any(k in e for k in ("409", "active_run", "quota", "配额"))
 
 
+def account_infra(ws, led, d):
+    rec = led["challenges"][d["code"]]
+    rec["state"] = ("solved" if rec.get("platform_completed") or rec["flags_correct"] >= rec["flags_total"]
+                    else "partial" if rec["flags_correct"] else "blocked")
+    if not d.get("infra_counted"):
+        rec["infra_deaths"] += 1
+        d["infra_counted"] = True
+        if rec["infra_deaths"] >= INFRA_DEATH_CAP:
+            escalate(ws, d["code"], "infra_deaths=%d 连环死亡,封存或换资源?" % rec["infra_deaths"], led=led)
+    if (rec.get("abandoned") or rec["infra_deaths"] >= INFRA_DEATH_CAP) and rec["state"] != "solved":
+        rec["state"] = "exhausted"
+
+
 def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
     led = ws.ledger()
     actions = []
     # 先用同一份平台快照校准，再处理报告，避免重复加分和错误放槽。
     snapshot = platform_snapshot(ws)
     if snapshot is not None:
+        for did, d in led["dispatches"].items():
+            if d["state"] not in ("ready", "dispatched", "stop_required"):
+                continue
+            bound = d.get("instance") or {}
+            if not bound.get("generation"):
+                continue
+            item = snapshot.get(d["code"], {})
+            if not available(item) or valid_addresses(item.get("container_addr")) != bound.get("addr"):
+                d["invalidated"] = "平台实例已停止、消失或地址改变"
+                d["state"] = "cancelled" if d["state"] == "ready" else "stop_required"
+                led["challenges"][d["code"]]["state"] = "blocked"
+                led["challenges"][d["code"]]["foothold"] = ""
+                actions.append("instance-changed %s %s" % (did, d["code"]))
         for code, rec in led["challenges"].items():
             item = snapshot.get(code)
             if item is None:
@@ -682,17 +798,23 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
         if d["state"] not in ("dispatched", "stop_required"):
             continue
         code, k = d["code"], d["attempt"]
-        ok, reason, meta = validate_report(ws, code, k)
+        if ws.platform.exists() and (not d.get("terminal_at") or snapshot is None):
+            continue  # 报告是数据，不是 Execute 已退出的证明。
+        sealed = ws.root / d["sealed_report"] if d.get("sealed_report") else None
+        ok, reason, meta = validate_report(ws, code, k, path=sealed)
+        if d.get("invalidated"):
+            ok, reason = False, "instance_changed"
+        elif ok and ws.platform.exists() and (d.get("instance") or {}).get("generation"):
+            if meta.get("dispatch") != did or meta.get("instance") != d["instance"]["generation"]:
+                ok, reason = False, "report_origin_mismatch"
         if ok:
             account_report(ws, led, code, k, meta)
             d["state"] = "done"
             actions.append("harvest %s %s attempt=%d outcome=%s" % (did, code, k, meta["outcome"]))
-        elif reason != "report_missing" and d["state"] != "stop_required":
+        elif d.get("terminal_at") or (reason != "report_missing" and d["state"] != "stop_required"):
             rec = led["challenges"][code]
-            rec["state"] = ("solved" if rec.get("platform_completed") or rec["flags_correct"] >= rec["flags_total"]
-                            else "partial" if rec["flags_correct"] else "blocked")
-            rec["infra_deaths"] += 1
-            d["state"] = "stop_required" if ws.platform.exists() else "invalid"
+            account_infra(ws, led, d)
+            d["state"] = "invalid" if d.get("terminal_at") or not ws.platform.exists() else "stop_required"
             actions.append("invalid-report %s %s reason=%s (按 infra_dead 记账)" % (did, code, reason))
     # 2) 看门狗两级:先查开工标记(投递失败的早期信号),再查 hard_stop
     for did, d in list(led["dispatches"].items()):
@@ -702,14 +824,8 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
         if (now() > d["created"] + SPAWN_ACK_SEC
                 and not ws.attempt_path(code, k).with_suffix(".started").exists()):
             rec = led["challenges"][code]
-            rec["infra_deaths"] += 1
-            rec["state"] = ("solved" if rec.get("platform_completed") or rec["flags_correct"] >= rec["flags_total"]
-                            else "partial" if rec["flags_correct"] else "blocked")
+            account_infra(ws, led, d)
             d["state"] = "stop_required" if ws.platform.exists() else "infra_dead"
-            if rec["infra_deaths"] >= INFRA_DEATH_CAP:
-                escalate(ws, code, "infra_deaths=%d 连环死亡,封存或换资源?"
-                         % rec["infra_deaths"])
-                rec["state"] = "exhausted"
             actions.append("spawn-ack-miss %s %s infra_deaths=%d" % (did, code, rec["infra_deaths"]))
     for did, d in list(led["dispatches"].items()):
         if d["state"] != "dispatched":
@@ -717,14 +833,8 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
         if now() > d["hard_stop"] + WATCHDOG_GRACE_SEC:
             code = d["code"]
             rec = led["challenges"][code]
-            rec["infra_deaths"] += 1
-            rec["state"] = ("solved" if rec.get("platform_completed") or rec["flags_correct"] >= rec["flags_total"]
-                            else "partial" if rec["flags_correct"] else "blocked")
+            account_infra(ws, led, d)
             d["state"] = "stop_required" if ws.platform.exists() else "infra_dead"
-            if rec["infra_deaths"] >= INFRA_DEATH_CAP:
-                escalate(ws, code, "infra_deaths=%d 连环死亡,封存或换资源?"
-                         % rec["infra_deaths"])
-                rec["state"] = "exhausted"
             actions.append("watchdog %s %s infra_deaths=%d" % (did, code, rec["infra_deaths"]))
     # 活动 Execute 尚无退场报告时，不因平台分数提前销毁实例。
     active_codes = {d["code"] for d in led["dispatches"].values()
@@ -734,6 +844,23 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
             if code in active_codes:
                 continue
             item = (snapshot or {}).get(code)
+            if rec.get("start_pending"):
+                if item and available(item) and not completed(item):
+                    if dry:
+                        continue
+                    rec["instance"]["addr"] = valid_addresses(item.get("container_addr"))
+                    rec.pop("start_pending")
+                    if not dry and not in_endgame(ws):
+                        assemble(ws, led, code, reason="fill")
+                        continue
+                elif item and item.get("container_status") == "stopped" and now() - rec["start_pending"] >= 120:
+                    rec.pop("start_pending")
+                    rec["instance"] = None
+                    rec["state"] = "exhausted"
+                    escalate(ws, code, "start 结果未确认且平台已 stopped；请决定是否重试", led=led)
+                    continue
+                else:
+                    continue
             if snapshot is not None and item is None:
                 continue
             if item is not None:
@@ -763,7 +890,9 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
             if not ok:
                 # p16:f1-05 教训——配额类失败(如 409 槽位冲突)不是题的基建
                 # 死亡,不得累计 infra_deaths 把题毒成 exhausted。
-                if _quota_error(err):
+                if led["challenges"][code].get("start_pending"):
+                    actions.append("start-pending %s %s" % (code, err))
+                elif _quota_error(err):
                     actions.append("start-quota %s %s" % (code, (err or "").strip()[:80]))
                 else:
                     led["challenges"][code]["infra_deaths"] += 1
@@ -780,6 +909,7 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
             if d["state"] == "ready":
                 d["state"] = "cancelled"
                 actions.append("endgame-cancel %s" % did)
+    review_hints(ws, led, snapshot)
     ws.save_ledger(led)
     if in_endgame(ws):
         (ws.outbox / "ENDGAME").write_text("1\n", encoding="utf-8")
@@ -815,7 +945,8 @@ def cmd_loop(args):
     hb_state = {}
     while True:
         try:
-            harvest(ws, quota=args.quota)
+            with ws.lock():
+                harvest(ws, quota=args.quota)
             check_heartbeat(ws, hb_state)
         except Exception as exc:  # noqa: BLE001 - 调度循环不允许退出
             print("loop error: %s" % exc)
@@ -848,6 +979,10 @@ def cmd_mark(args):
         die("没有派发 %s" % args.id)
     if args.state not in ("dispatched", "infra_dead"):
         die("state 只能是 dispatched / infra_dead")
+    if ws.platform.exists() and args.state == "infra_dead":
+        die("Hosted 派发必须用 finish 记录 Runtime 终态，不能用 mark 跳过退出确认")
+    if ws.platform.exists() and args.state == "dispatched" and d["state"] == "stop_required":
+        die("不能恢复待停止的 Execute；先确认 Runtime 终态")
     if d["state"] in ("done", "cancelled", "infra_dead", "invalid"):
         print("mark %s 已结束，忽略迟到标记" % args.id)
         return
@@ -858,6 +993,50 @@ def cmd_mark(args):
                             else "partial" if rec["flags_correct"] else "blocked")
     ws.save_ledger(led)
     print("mark %s %s" % (args.id, args.state))
+
+
+def cmd_bind(args):
+    ws = WS(args.ws)
+    led = ws.ledger()
+    d = led["dispatches"].get(args.id)
+    if not d or d["state"] not in ("dispatched", "stop_required") or d.get("terminal_at"):
+        die("只能绑定尚未结束的已投递派发")
+    if not args.agent_id.strip() or d.get("agent_id", args.agent_id) != args.agent_id:
+        die("Execute ID 为空或与已有绑定不符")
+    if any(x.get("agent_id") == args.agent_id and x is not d for x in led["dispatches"].values()):
+        die("该 Execute ID 已绑定其他派发")
+    d["agent_id"] = args.agent_id
+    ws.save_ledger(led)
+    print("bound %s %s" % (args.id, args.agent_id))
+
+
+def cmd_finish(args):
+    """Decide 观察 Runtime 终态后确认。文件存在本身不构成终态证据。"""
+    ws = WS(args.ws)
+    led = ws.ledger()
+    d = led["dispatches"].get(args.id)
+    if not d:
+        die("没有派发 %s" % args.id)
+    if args.status == "not_started":
+        if d.get("agent_id") or ws.attempt_path(d["code"], d["attempt"]).with_suffix(".started").exists():
+            die("Execute 已有绑定或开工标记，必须确认其 Runtime 终态")
+    elif not args.agent_id or d.get("agent_id") != args.agent_id:
+        die("Execute ID 与派发绑定不符")
+    if d.get("terminal_at"):
+        print("finish %s 已确认，保留原始报告" % args.id)
+        return
+    if d["state"] not in ("dispatched", "stop_required"):
+        die("派发未投递或已经结束")
+    d.update(terminal_at=now(), terminal_status=args.status)
+    source = ws.attempt_path(d["code"], d["attempt"])
+    sealed = ws.attempts / (args.id + ".sealed.md")
+    # 空快照固定“退出时无报告”，禁止后来补写污染已结束派发。
+    if not sealed.exists():
+        with sealed.open("x", encoding="utf-8") as handle:
+            handle.write(source.read_text(encoding="utf-8") if source.exists() and args.status != "not_started" else "")
+    d["sealed_report"] = str(sealed.relative_to(ws.root))
+    ws.save_ledger(led)
+    print("finish %s %s" % (args.id, args.status))
 
 
 FILE_REF_WRAPPER = """本次派发的完整指令在文件 {prompt_path}。
@@ -876,18 +1055,73 @@ def ready_lines(ws):
     return out
 
 
-def escalate(ws, code, question):
-    led = ws.ledger()
+def hint_context(ws, rec):
+    hint = rec.get("hint", {})
+    if hint.get("state") == "received":
+        path = ws.root / hint["path"]
+        return "已请求并保存于 %s；按当前未完成阶段使用。\n%s" % (hint["path"], path.read_text(encoding="utf-8")[:4000])
+    if hint:
+        return "请求结果不确定；禁止自动重复请求，交由 Decide 核对平台。"
+    return "尚未请求。遇到停滞时向 Decide 报告卡点，不能自行购买 hint。"
+
+
+def review_hints(ws, led, snapshot):
+    if snapshot is None:
+        return
+    for did, d in led["dispatches"].items():
+        rec = led["challenges"][d["code"]]
+        if d["state"] not in ("ready", "dispatched") or d.get("terminal_at") or completed(snapshot.get(d["code"], {})):
+            continue
+        if rec["flags_correct"] > d.get("flags_observed", d["flags_at_start"]):
+            d.update(flags_observed=rec["flags_correct"], last_progress_at=now())
+        retry = d["attempt"] > 1 and rec.get("last_flags_gained") == 0
+        stale = now() - d.get("last_progress_at", d["created"]) >= 600
+        if not d.get("hint_reviewed") and not rec.get("hint") and (retry or stale):
+            eid = escalate(ws, d["code"], "hint 审查：本题停滞，比较提示扣分与剩余 Flag 收益，再决定 hint / continue / abandon", led=led)
+            led["escalations"][eid]["dispatch"] = did
+            d["hint_reviewed"] = True
+    for e in led.get("escalations", {}).values():
+        if isinstance(e, dict) and e.get("state") == "open" and e.get("dispatch"):
+            d = led["dispatches"][e["dispatch"]]
+            if d["state"] not in ("ready", "dispatched") or d.get("terminal_at") or completed(snapshot.get(d["code"], {})):
+                e["state"] = "expired"
+
+
+def request_hint(ws, led, code, reason):
+    rec = led["challenges"][code]
+    if not reason.strip():
+        die("请求 hint 必须给出扣分与收益的决策理由 --reason")
+    if rec.get("hint"):
+        print(hint_context(ws, rec))
+        return
+    item = (platform_snapshot(ws) or {}).get(code, {})
+    active = next((d for d in led["dispatches"].values()
+                   if d["code"] == code and d["state"] in ("ready", "dispatched") and not d.get("terminal_at")), None)
+    if not active or not available(item) or completed(item) or valid_addresses(item.get("container_addr")) != active.get("instance", {}).get("addr"):
+        die("hint 只允许用于当前可用、未完成且有活动派发的实例")
+    path = ws.hints / (code + ".json")
+    rec["hint"] = dict(state="unknown", requested_at=now(), reason=reason,
+                       path=str(path.relative_to(ws.root)), instance=active.get("instance"))
+    ws.save_ledger(led)  # 先记录可能计费；超时或中断后不能重复购买。
+    result = ws.platform_call("hint", code)
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(result.stdout if result.returncode == 0 else json.dumps({"error": result.stderr or result.stdout}, ensure_ascii=False))
+    if result.returncode == 0:
+        rec["hint"]["state"] = "received"
+    print("hint %s %s %s；Decide 将此路径发给当前 Execute" % (code, rec["hint"]["state"], path.relative_to(ws.root)))
+
+
+def escalate(ws, code, question, led=None):
+    own_ledger = led is None
+    led = ws.ledger() if own_ledger else led
     led.setdefault("escalations", {})
     led["escalations"].setdefault("next_id", 1)
     eid = "e%03d" % led["escalations"]["next_id"]
     led["escalations"]["next_id"] += 1
     led["escalations"][eid] = {"challenge": code, "question": question,
                                "state": "open", "created": now()}
-    ws.save_ledger(led)
-    p = ws.escalations / "QUEUE.md"
-    with p.open("a", encoding="utf-8") as f:
-        f.write("- %s [%s] %s\n" % (eid, code, question))
+    if own_ledger:
+        ws.save_ledger(led)
     return eid
 
 
@@ -897,16 +1131,29 @@ def cmd_decide(args):
     e = led.get("escalations", {}).get(args.id)
     if not e:
         die("没有升级 %s" % args.id)
+    if e["state"] != "open":
+        print("decide %s 已处理或已过期，忽略重复决策" % args.id)
+        return
+    code = e["challenge"]
+    if args.decision == "hint":
+        request_hint(ws, led, code, args.reason)
     e["state"] = "decided"
     e["decision"] = args.decision
+    e["reason"] = args.reason
     e["decided_at"] = now()
     code = e["challenge"]
     rec = led["challenges"].get(code)
     if rec and args.decision == "continue":
-        rec["state"] = "partial"
+        rec.pop("abandoned", None)
+        if not any(d["code"] == code and d["state"] in ("ready", "dispatched", "stop_required") for d in led["dispatches"].values()):
+            rec["state"] = "partial"
         rec["restarts"] = max(0, rec.get("restarts", 0) - 1)
     elif rec and args.decision == "abandon":
         rec["state"] = "exhausted"
+        rec["abandoned"] = True
+        for d in led["dispatches"].values():
+            if d["code"] == code and d["state"] in ("ready", "dispatched"):
+                d["state"] = "cancelled" if d["state"] == "ready" else "stop_required"
         release_instance(ws, led, code)
     ws.save_ledger(led)
     print("decide %s %s" % (args.id, args.decision))
@@ -1034,6 +1281,7 @@ def selftest():
             assert not dd.get("probe"), "第二棒起不再是探针"
             assert dd.get("siege") is True, "立足点续作必须标记 siege"
             # 闲置槽回收:非 running 题挂活实例 → harvest 即放槽
+            dd["state"] = "cancelled"  # 闲置场景不应保留待投递 Execute。
             led3["challenges"]["a-01"]["instance"] = {"addr": "1.2.3.4:80", "since": now()}
             led3["challenges"]["a-01"]["state"] = "partial"
             ws3.save_ledger(led3)
@@ -1159,6 +1407,17 @@ def main():
     p.add_argument("id")
     p.add_argument("state")
     p.set_defaults(func=cmd_mark)
+    p = sub.add_parser("bind")
+    p.add_argument("--ws", required=True)
+    p.add_argument("id")
+    p.add_argument("agent_id")
+    p.set_defaults(func=cmd_bind)
+    p = sub.add_parser("finish")
+    p.add_argument("--ws", required=True)
+    p.add_argument("id")
+    p.add_argument("--agent-id")
+    p.add_argument("--status", required=True, choices=["completed", "failed", "stopped", "not_started"])
+    p.set_defaults(func=cmd_finish)
     p = sub.add_parser("harvest")
     p.add_argument("--ws", required=True)
     p.add_argument("--quota", type=int, default=DEFAULT_QUOTA)
@@ -1173,11 +1432,16 @@ def main():
     p.add_argument("--ws", required=True)
     p.add_argument("id")
     p.add_argument("--decision", required=True,
-                   choices=["continue", "abandon"])
+                   choices=["continue", "abandon", "hint"])
+    p.add_argument("--reason", default="")
     p.set_defaults(func=cmd_decide)
     sub.add_parser("selftest").set_defaults(func=lambda a: selftest())
     args = ap.parse_args()
-    args.func(args)
+    if args.cmd in ("loop", "selftest"):
+        args.func(args)
+    else:
+        with WS(args.ws).lock():
+            args.func(args)
 
 
 if __name__ == "__main__":

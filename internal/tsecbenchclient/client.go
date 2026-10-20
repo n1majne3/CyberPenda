@@ -22,6 +22,7 @@ var (
 	ErrInvalidRequest  = errors.New("TSecBench client request is invalid")
 	ErrChallengeAbsent = errors.New("Benchmark Challenge is absent from current platform state")
 	ErrCloseNotAllowed = errors.New("Benchmark Challenge close is not allowed without completion or explicit abandonment")
+	ErrHintNotAllowed  = errors.New("Benchmark Challenge hint requires an active incomplete instance")
 )
 
 type Config struct {
@@ -70,6 +71,7 @@ type ListResult struct {
 }
 
 type SubmitResult struct {
+	Code             string `json:"code,omitempty"`
 	Correct          bool   `json:"correct"`
 	Message          string `json:"message,omitempty"`
 	Awarded          any    `json:"awarded,omitempty"`
@@ -144,6 +146,24 @@ func (client *Client) Hint(ctx context.Context, uniqueCode string) (json.RawMess
 	code := strings.TrimSpace(uniqueCode)
 	if code == "" {
 		return nil, ErrInvalidRequest
+	}
+	state, err := client.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("verify Benchmark Challenge before hint: %w", err)
+	}
+	found := false
+	for _, challenge := range state.Challenges {
+		if challenge.UniqueCode != code {
+			continue
+		}
+		found = true
+		completed := challenge.IsCompleted || (challenge.FlagCount > 0 && challenge.CorrectFlagCount >= challenge.FlagCount)
+		if completed || (challenge.ContainerStatus != "running" && challenge.ContainerStatus != "available") || len(challenge.ContainerAddr) == 0 {
+			return nil, ErrHintNotAllowed
+		}
+	}
+	if !found {
+		return nil, ErrChallengeAbsent
 	}
 	endpoint, err := queryEndpoint(client.apiBase+"/hint", code)
 	if err != nil {

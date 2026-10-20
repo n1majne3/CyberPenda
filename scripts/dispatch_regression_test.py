@@ -51,8 +51,25 @@ if args[0] in state.get("fail", []):
 if args[0] == "list":
     print(json.dumps({"challenges": state["challenges"]}))
 elif args[0] == "start":
+    if "after_start" in state:
+        state["challenges"] = state["after_start"]
+        (root / "platform-state.json").write_text(json.dumps(state))
+    if state.get("start_timeout"):
+        sys.stderr.write("context deadline exceeded")
+        sys.exit(1)
+    for item in state["challenges"]:
+        if item["unique_code"] == args[1] and state.get("start", {}).get("container_addr"):
+            item.update(container_status="available", container_addr=state["start"]["container_addr"])
+    (root / "platform-state.json").write_text(json.dumps(state))
     print(json.dumps(state.get("start", {})))
+elif args[0] == "hint":
+    print(json.dumps({"hint": "Inspect the second-stage export", "hint_cost_radio": 0.1}))
 else:
+    if args[0] in ("close", "abandon"):
+        for item in state["challenges"]:
+            if item["unique_code"] == args[1]:
+                item.update(container_status="stopped", container_addr=[])
+        (root / "platform-state.json").write_text(json.dumps(state))
     print("{}")
 ''')
         (self.ws / "platform.sh").write_text(
@@ -67,10 +84,151 @@ else:
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
 
+    def rejected(self, *args):
+        result = subprocess.run([sys.executable, str(SCRIPT), *args, "--ws", str(self.ws)],
+                                text=True, capture_output=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stderr
+
+    def test_interim_report_cannot_release_a_live_execute(self):
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.report("tch3-06", 1, foothold="none", body="进行中")
+        self.cli("harvest", "--dry")
+        self.assertEqual(self.ledger()["dispatches"]["d001"]["state"], "dispatched")
+        self.assertEqual(self.calls(), [["list"]])
+        self.cli("bind", "d001", "native-12")
+        self.rejected("finish", "d001", "--agent-id", "wrong-id", "--status", "completed")
+        self.rejected("mark", "d001", "infra_dead")
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "completed")
+        self.report("tch3-06", 1, foothold="错误的迟到写入", body="SENTINEL WAF")
+        self.cli("harvest", "--dry")
+        self.assertEqual(self.ledger()["dispatches"]["d001"]["state"], "done")
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["foothold"], "")
+        self.assertIn(["abandon", "tch3-06", "slot-release"], self.calls())
+
+    def test_manual_dispatch_requires_a_current_instance_and_exclusive_execute(self):
+        self.platform()
+        self.rejected("assemble", "tch3-06")
+
+        self.assertEqual(self.ledger()["dispatches"], {})
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.rejected("assemble", "tch3-06")
+        self.challenges[0].update(correct_flag_count=6, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.rejected("assemble", "tch3-06")
+
+    def test_start_timeout_reconciles_server_success_without_release_or_retry(self):
+        self.platform()
+        after = json.loads(json.dumps(self.challenges))
+        after[0].update(container_status="available", container_addr=["192.0.2.11:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges, "after_start": after,
+                                                "start_timeout": True})
+        self.cli("harvest", "--quota", "1")
+        self.assertIn("tch3-06", self.cli("take"))
+        self.cli("harvest", "--quota", "1")
+        self.assertEqual([c for c in self.calls() if c[0] != "list"], [["start", "tch3-06"]])
+
+    def test_pending_start_survives_later_reconciliation_without_counting_infra_death(self):
+        self.platform()
+        after = json.loads(json.dumps(self.challenges))
+        after[0]["container_status"] = "pending"
+        self.write_json("platform-state.json", {"challenges": self.challenges, "after_start": after, "start_timeout": True})
+        self.cli("harvest", "--quota", "1")
+        self.cli("harvest", "--quota", "1")
+        self.assertEqual(self.cli("take"), "")
+        after[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": after})
+        self.cli("harvest", "--quota", "1")
+        self.assertIn("tch3-06", self.cli("take"))
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["infra_deaths"], 0)
+        self.assertEqual([c for c in self.calls() if c[0] != "list"], [["start", "tch3-06"]])
+
+    def test_instance_change_stops_execute_and_excludes_its_report_and_facts(self):
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        self.report("tch3-06", 1, body="WRONG_TARGET_REPORT")
+        instance = self.ledger()["dispatches"]["d001"]["instance"]["generation"]
+        (self.ws / "graph/facts/fact_001.md").write_text(
+            f"---\nchallenge: tch3-06\ndispatch: d001\ninstance: {instance}\n---\nWRONG_TARGET_FACT\n")
+        self.challenges[0]["container_status"] = "stopped"
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("harvest", "--dry")
+        self.assertIn("d001", (self.ws / "graph/outbox/STOP.tsv").read_text())
+        self.assertNotIn("abandon", str(self.calls()))
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "stopped")
+        self.cli("harvest", "--dry")
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.20:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        prompt = (self.ws / self.ledger()["dispatches"]["d002"]["prompt"]).read_text()
+        self.assertNotIn("WRONG_TARGET", prompt)
+        self.assertIn("192.0.2.20:80", prompt)
+
+    def test_stagnation_requests_a_hint_decision_and_hands_over_the_saved_response(self):
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        ledger = self.ledger()
+        ledger["dispatches"]["d001"].update(created=1, last_progress_at=1, hard_stop=9999999999)
+        self.save(ledger)
+        (self.ws / "graph/attempts/tch3-06/1.started").touch()
+        self.cli("harvest", "--dry")
+        self.assertIn("hint", (self.ws / "graph/escalations/QUEUE.md").read_text())
+        self.assertEqual([c for c in self.calls() if c[0] == "hint"], [])
+        self.cli("decide", "e001", "--decision", "hint", "--reason", "卡在第二阶段，预期收益高于扣分")
+        self.assertEqual((self.ws / "graph/escalations/QUEUE.md").read_text(), "")
+        self.cli("decide", "e001", "--decision", "hint", "--reason", "重放同一决策")
+        self.assertEqual([c for c in self.calls() if c[0] == "hint"], [["hint", "tch3-06"]])
+        self.report("tch3-06", 1)
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "completed")
+        self.cli("harvest", "--dry")
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        prompt = (self.ws / self.ledger()["dispatches"]["d002"]["prompt"]).read_text()
+        self.assertIn("Inspect the second-stage export", prompt)
+        self.assertIn("graph/hints/", prompt)
+
+    def test_abandon_waits_for_runtime_and_remains_exhausted_without_a_report(self):
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        ledger = self.ledger()
+        ledger["dispatches"]["d001"].update(last_progress_at=1, hard_stop=9999999999)
+        self.save(ledger)
+        self.cli("harvest", "--dry")
+        self.cli("decide", "e001", "--decision", "abandon", "--reason", "收益不足")
+        self.assertNotIn("abandon", str(self.calls()))
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "stopped")
+        self.cli("harvest", "--dry")
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["state"], "exhausted")
+        self.assertIn(["abandon", "tch3-06", "slot-release"], self.calls())
+
     def report(self, code, attempt, *, outcome="stalled", gained=0, foothold='""', milestone="继续未完成阶段", body=""):
         path = self.ws / f"graph/attempts/{code}/{attempt}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"---\nchallenge: {code}\nattempt: {attempt}\noutcome: {outcome}\n"
+        origin = ""
+        for did, d in self.ledger()["dispatches"].items():
+            if d["code"] == code and d["attempt"] == attempt and d.get("instance", {}).get("generation"):
+                origin = f"dispatch: {did}\ninstance: {d['instance']['generation']}\n"
+        path.write_text(f"---\nchallenge: {code}\nattempt: {attempt}\noutcome: {outcome}\n{origin}"
                         f"flags_gained: {gained}\nfoothold: {foothold}\nnext_milestone: {milestone}\n"
                         f"---\n## 试过的面\n{body}\n", encoding="utf-8")
 
@@ -119,12 +277,16 @@ else:
         self.challenges[0]["correct_flag_count"] = 1
         self.write_json("platform-state.json", {"challenges": self.challenges})
         self.report("tch3-06", 1, outcome="solved", gained=1, milestone='""', body='{"correct": true}')
+        self.cli("bind", "d001", "native-1")
+        self.cli("finish", "d001", "--agent-id", "native-1", "--status", "completed")
         self.cli("harvest", "--dry")
         self.cli("harvest", "--dry")
         rec = self.ledger()["challenges"]["tch3-06"]
         self.assertEqual(rec["flags_correct"], 1)
         self.assertEqual(rec["state"], "partial")
         self.assertEqual(self.calls(), [["list"], ["list"]])
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
         self.cli("assemble", "tch3-06")
         prompt = (self.ws / self.ledger()["dispatches"]["d002"]["prompt"]).read_text()
         self.assertIn("1/6", prompt)
@@ -184,9 +346,11 @@ else:
         self.cli("harvest", "--quota", "1")
         self.assertEqual(self.calls(), [["list"]])
         self.assertIn("d001", (self.ws / "graph/outbox/STOP.tsv").read_text())
-        self.cli("mark", "d001", "infra_dead")
+        self.cli("bind", "d001", "native-1")
+        self.cli("finish", "d001", "--agent-id", "native-1", "--status", "stopped")
         self.cli("harvest", "--dry")
         self.assertIn(["abandon", "tch3-06", "slot-release"], self.calls())
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["infra_deaths"], 1)
 
     def test_completed_platform_challenge_is_not_started_and_ready_events_are_consumed(self):
         self.platform()
@@ -210,8 +374,10 @@ else:
         self.cli("harvest", "--quota", "1")
         for count in range(1, 6):
             self.cli("take")
+            self.cli("bind", f"d{count:03}", f"native-{count}")
             self.report("tch3-06", count, outcome="budget_stop", gained=1)
-            self.challenges[0]["correct_flag_count"] = count
+            self.cli("finish", f"d{count:03}", "--agent-id", f"native-{count}", "--status", "completed")
+            self.challenges[0].update(correct_flag_count=count, container_status="available", container_addr=["192.0.2.10:80"])
             self.write_json("platform-state.json", {"challenges": self.challenges, "start": {
                 "container_addr": ["192.0.2.10:80"]}})
             self.cli("harvest", "--quota", "1")
