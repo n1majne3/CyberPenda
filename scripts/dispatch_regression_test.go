@@ -30,3 +30,17 @@ func TestDispatchCLIRegressions(t *testing.T) {
 		})
 	}
 }
+
+func TestHostedPiControlProtocol(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Hosted Pi uses a Unix socket")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatal("Hosted Pi control tests require Node.js")
+	}
+	cmd := exec.Command(node, "--test", "hosted_pi_control_test.mjs")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Hosted Pi control failed: %v\n%s", err, output)
+	}
+}

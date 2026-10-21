@@ -70,7 +70,7 @@ jobs:
             -v "${GITHUB_WORKSPACE}/dist/tsecbench-hosted-acceptance:/acceptance:ro" \
             -w /src \
             "${TSECBENCH_HOSTED_IMAGE}" \
-            -test.run '^TestHostedAcceptanceConfigurationRunsTheRealPiRuntimeWithTheProjectedSkill$' \
+            -test.run '^(TestHostedAcceptanceConfigurationRunsTheRealPiRuntimeWithTheProjectedSkill|TestHostedRealPiStopsExecuteBeforeFinish)$' \
             -test.timeout 90s \
             -test.v
       - id: bundle

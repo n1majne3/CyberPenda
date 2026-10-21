@@ -100,7 +100,7 @@ hint 仅由 Decide 通过 `dispatch.py decide <eid> --decision hint --reason "�
 
 ```bash
 cd "$WS"
-timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || [ -s graph/outbox/STOP.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'
+python3 scripts/dispatch.py wait --ws "$WS" --timeout 240
 tmux has-session -t dispatcher 2>/dev/null || tmux new-session -d -s dispatcher "python3 '$WS/scripts/dispatch.py' loop --ws '$WS' --interval 20"
 cat graph/outbox/STOP.tsv 2>/dev/null       # 有 → 先确认 Execute 已结束，再 finish
 cat graph/outbox/READY.tsv 2>/dev/null      # 有 → 逐条派发
@@ -109,13 +109,11 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
 date +%s > graph/leader.lock
 ```
 
-唯一等待原语是上面的阻塞式 bash——有活立即返回,没活挂住;一条工具调用挂 4 分钟,
-远便宜于定时醒来重读全部历史(21119 实测轮询式烧掉 4 亿 token)。
-超时返回(4 分钟无事件)即兜底巡检:确认 dispatcher 存活、写心跳,再回到阻塞等待。
-子代理完成通知会主动唤醒你——醒来先处理通知,再查 READY 与升级队列。
-**事件 + 心跳双驱动**:`graph/leader.lock` 就是你的心跳,每次因任何原因醒来
-(事件/回调/超时臂)都重写它;dispatcher 发现心跳陈旧超 10 分钟会记 CRITICAL
-日志。不要为心跳单独加周期性唤醒——阻塞等待的 240 秒超时臂已天然兜底。
+Hosted Pi 的等待命令在工具内部同时检查调度事件与全部已绑定 Execute 的真实终态。
+任意 Execute 结束即返回其 did、agent_id、status、settled；没有事件最多等待 240 秒。
+返回后先确认终态并 finish，再处理 READY、STOP 和升级队列。每轮更新 leader.lock。
+Pi 的 Execute 派发强制后台运行；`get_subagent_result` 只用于非阻塞读取结果，等待统一用 `dispatch.py wait`。
+Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Execute 纪律放入已登记的 tmux。
 
 1. **派发**:先 `python3 scripts/dispatch.py take --ws "$WS"`(原子取出全部 ready
    并标记 dispatched,输出 did/code/prompt 路径),再对每行以**文件引用**派发——
@@ -127,8 +125,11 @@ date +%s > graph/leader.lock
    `python3 scripts/dispatch.py bind <did> <agent-id> --ws "$WS"`。
    **每次完成回调都要处理**：确认 Runtime 已结束，再执行
    `python3 scripts/dispatch.py finish <did> --agent-id <agent-id> --status completed --ws "$WS"`。
-   失败或主动停止用 `--status failed|stopped`。STOP.tsv 出现时先停止对应 Execute，
-   等 Runtime 确认终态后再 finish。**未确认停止前不得标记**；报告文件存在不等于 Execute 已退出。
+   Runtime error 对应 `--status failed`，stopped/aborted 对应 `--status stopped`。
+   Pi 的 STOP.tsv 出现时运行 `python3 scripts/dispatch.py stop <did> --ws "$WS"`，
+   然后用 wait 等待 `settled: true`，再 finish。stop 返回只表示已发取消请求。
+   Pi 的 finish 会查询绑定的 Runtime，运行中、未退出或 Runtime 已更换都拒绝放槽。
+   其他 Runtime 用其原生停止工具，确认退出后再 finish。**未确认停止前不得标记**；报告文件存在不等于 Execute 已退出。
    只有明确没有启动任何 Execute、没有原生 ID 且没有开工标记的派发失败，才用
    `finish <did> --status not_started`。请求超时但可能已启动时，先用 Runtime 工具查清原生 ID。
    `ACTIVE.tsv` 保存 did/code/agent-id/state。每次 240 秒超时巡检也检查这些原生 Execute 的终态，
@@ -143,7 +144,7 @@ date +%s > graph/leader.lock
    返回值保存于 `graph/hints/<code>.json`；用 Runtime 发信工具通知当前 Execute 读取该文件。
    后续派发自动携带该记录。请求失败或超时也记账，禁止自动重购；先核对平台结果。
    已处理/已过期的队列项会自动移除，不要手改 QUEUE.md。
-3. 两者皆空且无 ENDGAME → 回到阻塞等待(重跑上面的 timeout bash)。
+3. 两者皆空且无 ENDGAME → 回到等待命令。
    **禁止无事件的定时 sleep 轮询,也禁止任何 sleep 后跟查文件的组合**(等待只有阻塞式一条路),禁止在等待间隙做任何攻击性操作或
    通读 fact/退场报告全文。
 4. `graph/outbox/ENDGAME` 出现 → 终盘清点(ledger 统计)写入 `$WS/state.md`
@@ -222,5 +223,5 @@ date +%s > graph/leader.lock
 
 - `references/graph-protocol.md` — ledger/attempts/outbox/escalations 与退场报告 schema(开局必读)
 - `references/execute-prompt.md` — 派发模板说明(模板本体由 dispatch.py 持有,派发前读)
-- `scripts/dispatch.py` — 薄调度器(init/assemble/validate/take/bind/finish/mark/harvest/loop/decide/selftest)
+- `scripts/dispatch.py` — 薄调度器(init/assemble/validate/take/bind/finish/stop/wait/mark/harvest/loop/decide/selftest)
 - `scripts/platform-api.sh` — 通用平台适配层示例(Hosted 用第 3 步的内联适配层)

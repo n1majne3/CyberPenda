@@ -292,6 +292,9 @@ type realPiControlledModel struct {
 	skillRead   bool
 	finished    bool
 	lastRequest []byte
+	control     bool
+	controlOK   bool
+	parentCalls int
 }
 
 func newRealPiControlledModel(t *testing.T) *realPiControlledModel {
@@ -320,6 +323,10 @@ func (model *realPiControlledModel) serveHTTP(response http.ResponseWriter, requ
 	model.mu.Unlock()
 
 	response.Header().Set("Content-Type", "text/event-stream")
+	if model.control {
+		model.serveControl(response, body)
+		return
+	}
 	switch call {
 	case 1:
 		writeRealPiToolCall(response, "accepted-read", "read", map[string]any{

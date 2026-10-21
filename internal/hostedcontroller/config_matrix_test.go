@@ -173,7 +173,11 @@ func TestHostedStartProjectsEachRuntimeThroughNormalProviderAndCredentialInputs(
 			if test.runtime != "codex" && hasMultiAgent {
 				t.Fatalf("Hosted Profile received Codex multi-agent config: %#v", fields)
 			}
-			if !maps.Equal(fields["env"].(map[string]any), map[string]any{"BENCHMARK_BASE_URL": env["BENCHMARK_BASE_URL"]}) {
+			wantEnv := map[string]any{"BENCHMARK_BASE_URL": env["BENCHMARK_BASE_URL"]}
+			if test.runtime == "pi" {
+				wantEnv["CYBERPENDA_HOSTED_PI"] = "1"
+			}
+			if !maps.Equal(fields["env"].(map[string]any), wantEnv) {
 				t.Fatalf("Runtime Profile env = %#v", fields["env"])
 			}
 			customArgs, found := fields["custom_args"]

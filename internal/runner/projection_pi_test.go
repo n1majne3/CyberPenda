@@ -228,7 +228,9 @@ func TestPiDefaultPackagesDropWebAccessOnlyInHostedMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare layout: %v", err)
 	}
-	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderPi, Fields: runtimeprofile.Fields{Model: "DeepSeek-V4-Pro"}}
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderPi, Fields: runtimeprofile.Fields{
+		Model: "DeepSeek-V4-Pro", Env: map[string]string{"CYBERPENDA_HOSTED_PI": "1"},
+	}}
 
 	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
 		Owner: owner.NewTaskContract("task-pi-hosted", "project-1", layout.Workdir),
@@ -247,6 +249,9 @@ func TestPiDefaultPackagesDropWebAccessOnlyInHostedMode(t *testing.T) {
 	}
 	if len(settings.Packages) != 1 || settings.Packages[0] != "npm:@tintinweb/pi-subagents" {
 		t.Fatalf("hosted packages = %#v, want only the subagents default", settings.Packages)
+	}
+	if _, err := os.Stat(filepath.Join(layout.ProviderHome, "agent", "extensions", "hosted-control.ts")); err != nil {
+		t.Fatalf("Hosted Pi requires its Runtime control extension: %v", err)
 	}
 }
 

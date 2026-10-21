@@ -356,8 +356,14 @@ def collect_excluded(ws, code, led=None):
         meta, body = read_report_sections(p)
         if meta.get("outcome") == "infra_dead":
             continue
-        m = re.search(r"#+\s*试过的面.*?\n(.*?)(?=\n#|\Z)", body, re.S)
-        chunk = (m.group(1) if m else body).strip()
+        m = re.search(r"^(#{1,6})[ \t]+试过的面[^\n]*\n", body, re.M)
+        chunk = body
+        if m:
+            chunk = body[m.end():]
+            end = re.search(r"^#{1,%d}[ \t]+" % len(m.group(1)), chunk, re.M)
+            if end:
+                chunk = chunk[:end.start()]
+        chunk = chunk.strip() or "(本节为空，继续前必须读取这份历史报告。)"
         if chunk:
             lines.append("第 %d 段(outcome=%s,历史实例，详见 %s):\n%s"
                          % (k, meta.get("outcome"), p.relative_to(ws.root), chunk))
@@ -995,6 +1001,31 @@ def cmd_mark(args):
     print("mark %s %s" % (args.id, args.state))
 
 
+def runtime_request(action, agent_id):
+    """读取 Pi 进程提供的状态，不能用模型参数或报告文件证明退出。"""
+    import http.client
+    import socket
+    from urllib.parse import urlencode
+    path = os.environ.get("CYBERPENDA_PI_CONTROL_SOCKET")
+    if not path:
+        die("Pi Runtime 控制接口不可用；保留实例，不能确认退出")
+    conn = http.client.HTTPConnection("localhost", timeout=5)
+    try:
+        conn.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        conn.sock.settimeout(5)
+        conn.sock.connect(path)
+        conn.request("POST" if action == "stop" else "GET", "/" + action + "?" + urlencode({"id": agent_id}))
+        response = conn.getresponse()
+        data = json.loads(response.read(65536))
+        if response.status != 200 or data.get("agent_id") != agent_id or not data.get("runtime_id"):
+            die("Pi Runtime 未确认该 Execute: %s" % data)
+        return data
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        die("Pi Runtime 查询失败，保留实例: %s" % exc)
+    finally:
+        conn.close()
+
+
 def cmd_bind(args):
     ws = WS(args.ws)
     led = ws.ledger()
@@ -1005,6 +1036,11 @@ def cmd_bind(args):
         die("Execute ID 为空或与已有绑定不符")
     if any(x.get("agent_id") == args.agent_id and x is not d for x in led["dispatches"].values()):
         die("该 Execute ID 已绑定其他派发")
+    if os.environ.get("CYBERPENDA_HOSTED_PI") == "1":
+        state = runtime_request("status", args.agent_id)
+        if d.get("runtime_id", state["runtime_id"]) != state["runtime_id"]:
+            die("Execute 所属 Runtime 已改变")
+        d["runtime_id"] = state["runtime_id"]
     d["agent_id"] = args.agent_id
     ws.save_ledger(led)
     print("bound %s %s" % (args.id, args.agent_id))
@@ -1027,6 +1063,14 @@ def cmd_finish(args):
         return
     if d["state"] not in ("dispatched", "stop_required"):
         die("派发未投递或已经结束")
+    if os.environ.get("CYBERPENDA_HOSTED_PI") == "1" and args.status != "not_started":
+        state = runtime_request("status", args.agent_id)
+        terminal = {"completed": "completed", "steered": "completed", "error": "failed",
+                    "stopped": "stopped", "aborted": "stopped"}.get(state.get("status"))
+        if state["runtime_id"] != d.get("runtime_id") or not state.get("settled") or terminal is None:
+            die("Runtime 尚未确认 Execute 已退出；保留实例")
+        if args.status != terminal:
+            die("Runtime 终态是 %s，与请求不符" % terminal)
     d.update(terminal_at=now(), terminal_status=args.status)
     source = ws.attempt_path(d["code"], d["attempt"])
     sealed = ws.attempts / (args.id + ".sealed.md")
@@ -1037,6 +1081,58 @@ def cmd_finish(args):
     d["sealed_report"] = str(sealed.relative_to(ws.root))
     ws.save_ledger(led)
     print("finish %s %s" % (args.id, args.status))
+
+
+def cmd_stop(args):
+    ws = WS(args.ws)
+    d = ws.ledger()["dispatches"].get(args.id, {})
+    if not d.get("agent_id") or not d.get("runtime_id"):
+        die("派发没有可信的 Pi Runtime 绑定")
+    state = runtime_request("status", d["agent_id"])
+    if state["runtime_id"] != d["runtime_id"]:
+        die("Execute 所属 Runtime 已改变")
+    result = runtime_request("stop", d["agent_id"])
+    led = ws.ledger()
+    led["dispatches"][args.id]["runtime_stop_requested"] = True
+    ws.save_ledger(led)
+    print(json.dumps(result, ensure_ascii=False))
+
+
+def cmd_wait(args):
+    """在工具内部等待任意完成或调度事件；等待期间不持有 ledger 锁。"""
+    ws = WS(args.ws)
+    until = time.monotonic() + min(max(args.timeout, 0), 240)
+    print("waiting", flush=True)
+    while True:
+        with ws.lock():
+            led = ws.ledger()
+        for name in ("READY.tsv", "STOP.tsv", "ENDGAME"):
+            if name == "STOP.tsv" and os.environ.get("CYBERPENDA_HOSTED_PI") == "1" and not any(
+                    d["state"] == "stop_required" and not d.get("runtime_stop_requested")
+                    for d in led["dispatches"].values()):
+                continue
+            path = ws.outbox / name
+            if path.exists() and (name == "ENDGAME" or path.stat().st_size):
+                print(name)
+                return
+        if any(isinstance(e, dict) and e.get("state") == "open" for e in led.get("escalations", {}).values()):
+            print("ESCALATION")
+            return
+        if os.environ.get("CYBERPENDA_HOSTED_PI") == "1":
+            for did, d in led["dispatches"].items():
+                if not d.get("agent_id") or d.get("terminal_at") or d["state"] not in ("dispatched", "stop_required"):
+                    continue
+                state = runtime_request("status", d["agent_id"])
+                if state["runtime_id"] != d.get("runtime_id"):
+                    die("%s 所属 Runtime 已改变，保留实例" % did)
+                if state.get("settled"):
+                    print(json.dumps(dict(dispatch=did, **state), ensure_ascii=False))
+                    return
+        remaining = until - time.monotonic()
+        if remaining <= 0:
+            print("TIMEOUT")
+            return
+        time.sleep(min(1, remaining))
 
 
 FILE_REF_WRAPPER = """本次派发的完整指令在文件 {prompt_path}。
@@ -1418,6 +1514,14 @@ def main():
     p.add_argument("--agent-id")
     p.add_argument("--status", required=True, choices=["completed", "failed", "stopped", "not_started"])
     p.set_defaults(func=cmd_finish)
+    p = sub.add_parser("stop")
+    p.add_argument("--ws", required=True)
+    p.add_argument("id")
+    p.set_defaults(func=cmd_stop)
+    p = sub.add_parser("wait")
+    p.add_argument("--ws", required=True)
+    p.add_argument("--timeout", type=float, default=240)
+    p.set_defaults(func=cmd_wait)
     p = sub.add_parser("harvest")
     p.add_argument("--ws", required=True)
     p.add_argument("--quota", type=int, default=DEFAULT_QUOTA)
@@ -1437,7 +1541,7 @@ def main():
     p.set_defaults(func=cmd_decide)
     sub.add_parser("selftest").set_defaults(func=lambda a: selftest())
     args = ap.parse_args()
-    if args.cmd in ("loop", "selftest"):
+    if args.cmd in ("loop", "selftest", "wait"):
         args.func(args)
     else:
         with WS(args.ws).lock():

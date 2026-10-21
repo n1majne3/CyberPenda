@@ -36,6 +36,9 @@ var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|pass
 //go:embed assets/execute_agent.md
 var piExecuteAgentMarkdown []byte
 
+//go:embed assets/hosted-control.ts
+var piHostedControlExtension []byte
+
 // GlobalModelProviderSnapshot is an immutable List() result captured before any
 // Store transaction that projects runtime config. Projection filters this list
 // for Pi launch-ready providers and never re-queries ModelProviders.Service.
@@ -1773,6 +1776,11 @@ const (
 // state — pi/set_thinking_level and --provider/--model apply only to the main
 // session.
 func projectPiSettings(agentDir string, profile runtimeprofile.Profile, req ProjectionRequest) ([]string, error) {
+	if profile.Fields.Env["CYBERPENDA_HOSTED_PI"] == "1" {
+		if err := writeOwnerOnlyFile(filepath.Join(agentDir, "extensions", "hosted-control.ts"), piHostedControlExtension); err != nil {
+			return nil, fmt.Errorf("write Hosted Pi control extension: %w", err)
+		}
+	}
 	packages := append([]string(nil), piProjectedDefaultPackages()...)
 	seen := make(map[string]bool, len(packages))
 	for _, pkg := range packages {

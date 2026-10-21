@@ -98,13 +98,16 @@ content:只写新增客观事实;禁"此路不通/已穷尽/勿再试"类绝对�
 - 所有 Hosted 派发均需 bind 原生 Execute ID，并在 Runtime 终态后 finish；未确认时保留槽位。报告文件不能代替终态。
 - 平台读取失败时不启动或释放实例。释放失败继续保留占槽记录，下一轮先对账。
 
-## P19 实例与退出协议
+## 实例与退出协议
 
 - 所有 dispatcher 命令与 loop 的每轮 harvest 使用同一个 `graph/dispatch.lock` 文件锁。
 - `bind <did> <agent-id>` 记录原生 Execute 身份；`finish <did> --agent-id <agent-id> --status completed|failed|stopped`
   由 Decide 在观察到 Runtime 终态后调用。这个确认依赖主控的真实观察，不是 Runtime 自动签发的证明。
 - `finish --status not_started` 只用于确定未启动的派发失败；有绑定或开工标记时拒绝。
 - finish 封存 `graph/attempts/<did>.sealed.md`。harvest 只收割该快照；迟到写入不会改变接力内容。
+- Hosted Pi 的 bind 同时记录 Runtime 进程身份。finish 必须从该进程的控制接口确认原生执行已结束，模型传入的 status 只用于核对。
+- Pi 的 stop 发出原生取消请求；取消已接受不等于工具已经退出。wait 返回 settled 后才能 finish。接口不可用或进程已更换时保留实例。
+- wait 同时检查调度事件和全部已绑定 Execute 的完成状态。它最多等待 240 秒，等待期间不占 ledger 锁。
 - Hosted 报告与 Fact 必须带 `dispatch: dNNN` 和 `instance: <prompt 中的实例代次>`。
   未绑定的 Fact、实例失效派发的 Fact、未封存或无效的报告不自动注入。
 - 实例代次是本地标识。平台停止、题目消失或地址集合改变时，旧派发失效并请求停止。

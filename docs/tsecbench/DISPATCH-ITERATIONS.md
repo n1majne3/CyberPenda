@@ -1,4 +1,4 @@
-# Hosted 薄调度迭代记录(p1–p19)
+# Hosted 薄调度迭代记录(p1–p20)
 
 Status: 持续维护的演进日志。构建、上传和实测分别记录；未实测版本不推断得分。
 数据细节见本地 `/.tsecbench-analysis/RUN-ANALYSIS.md`(不入库)。
@@ -82,6 +82,30 @@ Fact 在 d065/d071 的读取证据表明接力通道确实工作；缺口在退�
 
 验证：CLI → 模拟平台回归覆盖早写报告、迟到写入、无实例派发、实例复用、延迟启动、hint 决策与放弃后退出；
 Client → HTTP 测试覆盖 hint 资格与 duplicate 字段；两份脚本须保持一致，并运行既有 selftest、后端检查和镜像验收。
+
+## p20：Runtime 退出校验、完成唤醒与历史提取
+
+p19 / [run 37970](https://tsecbench.zc.tencent.com/agent/37970) 为 bctf-2026、15,680 点、31/39 Flag、29/37 题。
+对比 p18，同样完成数量，调用从 5,177 降至 3,409，失败提交从 20 降至 3；
+但首次覆盖全部 37 题从 28m13s 延长至 73m38s。13 次 hint 合计扣 280 点。
+完整主会话与 d045 记录证明：两次单 Execute 等待分别占用 31m49s 和 24m45s；
+d045 仍在 running 时主控调用 finish，提前放槽。其工具批次悬挂 3h24m12s，包含无 timeout 的全盘 grep；
+仅凭批次日志不能确定每条命令的耗时。前两棒报告的嵌套标题还使历史摘要提取为空。
+
+本版改动：
+
+1. Hosted Pi 投影独立控制扩展，bind 记录 Runtime 身份，finish 查询原生 AgentRecord 并等待执行 Promise 结束。
+   stopped 只表示取消请求已接受时仍拒绝 finish；接口不可用、进程改变、终态不符都保留实例。
+2. `dispatch.py stop` 使用 Pi 公共取消 RPC；`wait` 在工具内部同时检查全部 Execute 和调度事件，
+   任意完成可返回，最多等 240 秒，等待时不占 ledger 锁。Pi 的 Execute 派发强制后台运行，get_subagent_result 强制非阻塞。
+3. Hosted Pi 的每次 bash 调用默认和最大 timeout 均为 300 秒，保留更短的显式 timeout。
+   该限制同时作用于主会话和 Execute，后台 tmux 仍由 Execute 登记与管理。
+4. 历史提取保留「试过的面」内更深层标题，到同级或更高标题才结束；空节保留报告路径，避免误报首段无历史。
+
+验证入口：CLI → 模拟平台与 Runtime socket；Pi 扩展协议；真实 Pi → 模拟模型 → 原生 Execute →
+拒绝提前 finish → 取消 shell → 等待退出 → finish。GitHub Actions 的镜像验收同时执行真实取消用例。
+终态强校验限 Hosted Pi；其他 Runtime 保留原生工具观察终态流程。没有调整 hint 策略，也没有 P20 跑分结论。
+交付要求仍为构建并上传，**不启动评测**。
 
 ## 平台侧事故记录(非我们缺陷)
 

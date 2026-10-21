@@ -223,6 +223,9 @@ func evaluationFromConfig(config Config) HostedEvaluationBootstrap {
 	evaluation.Runtime.ModelAPIKey = config.ModelAPIKey
 	evaluation.Runtime.ReasoningEffort = config.ReasoningEffort
 	evaluation.Runtime.Env = map[string]string{"BENCHMARK_BASE_URL": config.BenchmarkBaseURL}
+	if config.Runtime == RuntimePi {
+		evaluation.Runtime.Env["CYBERPENDA_HOSTED_PI"] = "1"
+	}
 	if config.Runtime == RuntimeClaudeCode {
 		if config.AutoCompactThreshold > 0 {
 			evaluation.Runtime.Env[ClaudeAutoCompactPctOverride] = strconv.Itoa(config.AutoCompactThreshold)
@@ -319,10 +322,10 @@ func Run(ctx context.Context, dataRoot string, env map[string]string, stdout, di
 		<-serveDone
 	}()
 	app := NewHTTPApp(HTTPAppConfig{
-		BaseURL:                  "http://" + listener.Addr().String(),
-		RuntimeBinary:            strings.TrimSpace(env["CYBERPENDA_RUNTIME_BINARY"]),
-		Diagnostics:              diagnostics,
-		SilenceReviveSec:         hostedSilenceReviveSec(env),
+		BaseURL:          "http://" + listener.Addr().String(),
+		RuntimeBinary:    strings.TrimSpace(env["CYBERPENDA_RUNTIME_BINARY"]),
+		Diagnostics:      diagnostics,
+		SilenceReviveSec: hostedSilenceReviveSec(env),
 		// No revive cap: the host idempotently accepts each 202 and the wait
 		// loop's 300s cooldown bounds the rate; the run wall-clock is the only
 		// budget. (60-shot cap was p13's bound for the 6h window.)

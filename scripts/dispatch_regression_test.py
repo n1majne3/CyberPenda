@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 import shlex
 import subprocess
+import socketserver
+import threading
 import sys
 import tempfile
 import unittest
@@ -18,6 +20,7 @@ class DispatchRegression(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="dispatch-regression-")
         self.addCleanup(self.temp.cleanup)
         self.ws = Path(self.temp.name)
+        self.env = os.environ.copy()
         self.challenges = [
             dict(unique_code="tch3-06", description="Chain", difficulty="medium", total_score=1400,
                  flag_count=6, correct_flag_count=0, is_completed=False, container_status="stopped"),
@@ -80,15 +83,81 @@ else:
 
     def cli(self, *args):
         result = subprocess.run([sys.executable, str(SCRIPT), *args, "--ws", str(self.ws)],
-                                text=True, capture_output=True, timeout=15)
+                                text=True, capture_output=True, timeout=15, env=self.env)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
 
     def rejected(self, *args):
         result = subprocess.run([sys.executable, str(SCRIPT), *args, "--ws", str(self.ws)],
-                                text=True, capture_output=True, timeout=15)
+                                text=True, capture_output=True, timeout=15, env=self.env)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stderr
+
+    def runtime(self):
+        from http.server import BaseHTTPRequestHandler
+        from urllib.parse import parse_qs, urlsplit
+        self.runtime_state = dict(agent_id="native-12", status="running", settled=False, runtime_id="runtime-1")
+        self.runtime_states = {"native-12": self.runtime_state}
+        states = self.runtime_states
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                state = states[parse_qs(urlsplit(self.path).query)["id"][0]]
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps(state).encode())
+            def log_message(self, *args):
+                pass
+        # Use a short socket path: macOS limits Unix socket paths to 104 bytes.
+        self.runtime_temp = tempfile.TemporaryDirectory(prefix="cp-", dir="/tmp")
+        self.addCleanup(self.runtime_temp.cleanup)
+        socket_path = str(Path(self.runtime_temp.name) / "runtime.sock")
+        server = socketserver.UnixStreamServer(socket_path, Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(thread.join)
+        self.addCleanup(server.shutdown)
+        self.env.update(CYBERPENDA_HOSTED_PI="1", CYBERPENDA_PI_CONTROL_SOCKET=socket_path)
+
+    def test_finish_requires_the_bound_runtime_to_settle(self):
+        self.runtime()
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        self.rejected("finish", "d001", "--agent-id", "native-12", "--status", "failed")
+        self.runtime_state.update(status="stopped")
+        self.rejected("finish", "d001", "--agent-id", "native-12", "--status", "stopped")
+        self.assertFalse(self.ledger()["dispatches"]["d001"].get("terminal_at"))
+        self.runtime_state.update(settled=True, runtime_id="another-runtime")
+        self.rejected("finish", "d001", "--agent-id", "native-12", "--status", "stopped")
+        self.runtime_state.update(runtime_id="runtime-1")
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "stopped")
+        self.assertEqual(self.ledger()["dispatches"]["d001"]["terminal_status"], "stopped")
+
+    def test_wait_returns_for_any_settled_execute_without_a_report(self):
+        self.runtime()
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        self.runtime_states["native-13"] = dict(agent_id="native-13", status="completed", settled=True, runtime_id="runtime-1")
+        self.cli("assemble", "tch3-11")
+        self.cli("take")
+        self.cli("bind", "d002", "native-13")
+        output = self.cli("wait", "--timeout", "1")
+        self.assertIn("d002", output)
+        self.assertIn("completed", output)
+        self.assertFalse(self.ledger()["dispatches"]["d001"].get("terminal_at"))
+
+    def test_wait_does_not_hold_the_dispatcher_lock(self):
+        waiting = subprocess.Popen([sys.executable, str(SCRIPT), "wait", "--timeout", "10", "--ws", str(self.ws)],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=self.env)
+        self.addCleanup(lambda: waiting.poll() is None and waiting.kill())
+        # The public wait command reports readiness before blocking.
+        self.assertEqual(waiting.stdout.readline().strip(), "waiting")
+        self.cli("assemble", "tch3-06")
+        out, err = waiting.communicate(timeout=3)
+        self.assertEqual(waiting.returncode, 0, err)
+        self.assertIn("READY", out)
 
     def test_interim_report_cannot_release_a_live_execute(self):
         self.cli("assemble", "tch3-06")
@@ -231,6 +300,16 @@ else:
         path.write_text(f"---\nchallenge: {code}\nattempt: {attempt}\noutcome: {outcome}\n{origin}"
                         f"flags_gained: {gained}\nfoothold: {foothold}\nnext_milestone: {milestone}\n"
                         f"---\n## 试过的面\n{body}\n", encoding="utf-8")
+
+    def test_relay_keeps_nested_excluded_sections(self):
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.report("tch3-06", 1, body="### 实例归属\n已确认实例。\n### 排除项\n不要重复扫描登录页。\n## 后续计划\nNEXT_SECTION")
+        self.cli("harvest", "--dry")
+        self.cli("assemble", "tch3-06")
+        prompt = (self.ws / self.ledger()["dispatches"]["d002"]["prompt"]).read_text()
+        self.assertIn("不要重复扫描登录页。", prompt)
+        self.assertNotIn("NEXT_SECTION", prompt)
 
     def test_missing_report_does_not_make_a_retry_outrank_a_fresh_challenge(self):
         self.cli("assemble", "tch3-06")
