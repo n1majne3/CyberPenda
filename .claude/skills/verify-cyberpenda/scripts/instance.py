@@ -102,7 +102,7 @@ def doctor(root):
     return {"status": "ready", "version": run["version"], "ui": run["ui"], "api": run["api"], "evidence": run["evidence"], "project_count": len(projects.get("projects") or [])}
 
 
-def launch(root):
+def launch(root, sandbox_image=""):
     if os.name != "nt":
         raise RuntimeError("This helper requires Windows")
     root.mkdir(parents=True, exist_ok=False)
@@ -139,12 +139,16 @@ def launch(root):
         while ui_port == api_port:
             ui_port = free_port()
         api, ui = f"http://127.0.0.1:{api_port}", f"http://127.0.0.1:{ui_port}"
-        daemon = start([str(binary), "-addr", f"127.0.0.1:{api_port}", "-db", str(scratch / "pentest.db"),
-                        "-runtime-root", str(scratch / "runtime"), "-artifact-root", str(scratch / "artifacts")], "daemon", scratch)
+        daemon_command = [str(binary), "-addr", f"127.0.0.1:{api_port}", "-db", str(scratch / "pentest.db"),
+                          "-runtime-root", str(scratch / "runtime"), "-artifact-root", str(scratch / "artifacts")]
+        if sandbox_image:
+            daemon_command += ["-sandbox-image", sandbox_image]
+        daemon = start(daemon_command, "daemon", scratch)
         vite = start(["node", str(Path(__file__).with_name("vite.mjs")), str(REPO), str(scratch), str(ui_port), str(api_port)], "vite", REPO / "web")
         write_json(root / "run.json", {"version": version, "ui": ui, "api": api, "evidence": str(evidence),
                                      "api_port": api_port, "ui_port": ui_port, "daemon_pid": daemon.pid, "vite_pid": vite.pid,
-                                     "repo": str(REPO), "session": version, "runtime_launch": "not exercised"})
+                                     "repo": str(REPO), "session": version, "runtime_launch": "not exercised",
+                                     "sandbox_image": sandbox_image or "daemon default"})
         client, jar = http_client(root, load=False)
         deadline = time.monotonic() + 90
         while True:
@@ -203,10 +207,12 @@ def main():
     parser.add_argument("command", choices=["launch", "doctor", "stop"])
     parser.add_argument("run", type=Path, help="Absolute, new run directory for launch")
     parser.add_argument("--wait", type=int, default=0, help="Doctor readiness wait in seconds")
+    parser.add_argument("--sandbox-image", default=os.getenv("VERIFY_SANDBOX_IMAGE", ""),
+                        help="Sandbox image override for a real Runtime journey")
     args = parser.parse_args()
     root = args.run.resolve()
     if args.command == "launch":
-        launch(root)
+        launch(root, args.sandbox_image.strip())
     elif args.command == "stop":
         stop(root)
     else:

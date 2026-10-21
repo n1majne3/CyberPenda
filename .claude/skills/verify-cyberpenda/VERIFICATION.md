@@ -28,3 +28,11 @@ A second Windows run on 2026-10-21 launched real Sandbox Runtimes against an app
 - Claude Code `interrupt_then_replace` settled and replied in three iterations, with a working probe and surviving Runtime identity.
 - Pi `in_turn_steer` settled `applied` once and `action_required` (`target_turn_changed`) three times, although the model answered each Steer. The recorded cause is a turn-identity defect in the Sandbox provider bridge, not a model or timing failure.
 - One model service, one Sandbox image revision, Disabled Blackboard Mode, and globally disabled Skills. FGS, enabled Skills, and other Runtimes are unverified.
+
+## Pi native Steer after the bridge fix
+
+`runs/verify-steer-20261021-04/evidence/` re-ran the same protocol against a derived image whose only change was the fixed `pentest-provider-bridge`.
+
+- Three busy `in_turn_steer` requests settled `applied`, each with its own marker reply and a working probe.
+- No `action_required` alert appeared, the Continuation and container stayed the same, and the transcript survived reload.
+- The bridge is compiled into the Sandbox image, so this fix reaches a Runtime only through an image rebuild. The derived image was local and is not published.
