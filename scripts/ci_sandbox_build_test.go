@@ -181,7 +181,10 @@ func TestSandboxDockerfileInstallsPipOnlyToolsViaPip(t *testing.T) {
 	if !strings.Contains(dockerfile, "cmake") || !strings.Contains(dockerfile, "pkg-config") {
 		t.Fatal("sandbox Dockerfile must install cmake and pkg-config before pip-installing pwntools/unicorn")
 	}
-	pipLine := "pip3 install --no-cache-dir pwntools frida-tools --break-system-packages"
+	// Kali rolling installs python3-websockets from apt, and frida-tools pins
+	// websockets<14.0.0; --ignore-installed keeps pip from trying to uninstall
+	// the apt-owned copy, which has no RECORD file.
+	pipLine := "pip3 install --no-cache-dir --ignore-installed pwntools frida-tools --break-system-packages"
 	if !strings.Contains(dockerfile, pipLine) {
 		t.Fatalf("sandbox Dockerfile should install pip-only tools together: %s", pipLine)
 	}
