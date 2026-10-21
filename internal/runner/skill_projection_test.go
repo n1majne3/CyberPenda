@@ -47,12 +47,10 @@ func TestProjectRuntimeConfigProjectsEnabledSkills(t *testing.T) {
 	if _, err := os.Stat(projectedDoc); err != nil {
 		t.Fatalf("expected skill doc projected to %s: %v", projectedDoc, err)
 	}
-	if target, err := os.Readlink(filepath.Join(layout.Workdir, ".agents", "skills")); err != nil || target != layout.SkillsRoot {
-		t.Fatalf("workdir skills link = %q, err = %v", target, err)
-	}
-	if target, err := os.Readlink(filepath.Join(layout.ProviderHome, "skills")); err != nil || target != layout.SkillsRoot {
-		t.Fatalf("provider skills link = %q, err = %v", target, err)
-	}
+	workdirSkills := filepath.Join(layout.Workdir, ".agents", "skills")
+	requireSkillsDiscovery(t, workdirSkills, layout.SkillsRoot)
+	requireSkillsDiscovery(t, filepath.Join(layout.ProviderHome, "skills"), layout.SkillsRoot)
+	requireSkillContent(t, workdirSkills, "recon-helper", "# Recon")
 	previews, ok := projection.Config["skills"].([]map[string]any)
 	if !ok || len(previews) != 1 || previews[0]["id"] != "recon-helper" {
 		t.Fatalf("expected skills preview, got %#v", projection.Config["skills"])
@@ -88,9 +86,9 @@ func TestProjectRuntimeConfigProjectsEnabledSkillsForClaudeCode(t *testing.T) {
 		t.Fatalf("project runtime config: %v", err)
 	}
 
-	if target, err := os.Readlink(filepath.Join(layout.Workdir, ".claude", "skills")); err != nil || target != layout.SkillsRoot {
-		t.Fatalf("claude workdir skills link = %q, err = %v", target, err)
-	}
+	workdirSkills := filepath.Join(layout.Workdir, ".claude", "skills")
+	requireSkillsDiscovery(t, workdirSkills, layout.SkillsRoot)
+	requireSkillContent(t, workdirSkills, "recon-helper", "# Recon")
 	if _, err := os.Lstat(filepath.Join(layout.Workdir, ".agents", "skills")); !os.IsNotExist(err) {
 		t.Fatalf("expected no .agents/skills link for claude code, err=%v", err)
 	}
