@@ -1,0 +1,110 @@
+package daemon
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+	"testing"
+
+	"pentest/internal/owner"
+	"pentest/internal/steering"
+)
+
+// The overlay installs this test in internal/daemon without changing that package.
+// Only the Runtime boundary is fake. Dispatch, recovery, and SQLite are real.
+func TestFormalAcceptedSteeringCrashDoesNotReplay(t *testing.T) {
+	for _, cut := range []string{"before_fence", "after_fence", "after_send", "after_applied"} {
+		for _, crashRequest := range []int{1, 2} {
+			t.Run(fmt.Sprintf("%s/request_%d", cut, crashRequest), func(t *testing.T) {
+				root := t.TempDir()
+				server, created, _ := newFinishTaskFixtureAt(t, root, nil)
+				ctx := context.Background()
+				for i := 1; i <= 2; i++ {
+					_, err := server.steering.Accept(ctx, owner.KindTask, created.ID, steering.AcceptRequest{
+						RequestID: fmt.Sprintf("request-%d", i), Message: "Inspect the authorized target.", Mode: owner.SteeringModeSendTurn,
+					}, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				deliveries := map[string]int{}
+				crashed := false
+				crash := &struct{ name string }{cut}
+				adapter := &steeringAdapter{kind: owner.KindTask, id: created.ID}
+				adapter.resolveContinuation = func(context.Context) (string, bool, error) {
+					pending, err := server.steering.OldestPending(owner.KindTask, created.ID)
+					if err != nil || pending == nil {
+						t.Fatalf("read pending request: record=%#v err=%v", pending, err)
+					}
+					if !crashed && cut == "before_fence" && pending.QueueOrder == crashRequest {
+						panic(crash)
+					}
+					return "", false, nil
+				}
+				adapter.execute = func(_ context.Context, record *owner.SteeringRecord, _ string, _ bool) steeringExecution {
+					if !crashed && cut == "after_fence" && record.QueueOrder == crashRequest {
+						panic(crash)
+					}
+					deliveries[record.RequestID]++
+					if !crashed && cut == "after_send" && record.QueueOrder == crashRequest {
+						panic(crash)
+					}
+					return steeringExecution{state: owner.SteeringApplied}
+				}
+				adapter.projectApplied = func(record owner.SteeringRecord, _ string, _ map[string]any) {
+					if !crashed && cut == "after_applied" && record.QueueOrder == crashRequest {
+						panic(crash)
+					}
+				}
+				func() {
+					defer func() {
+						if recovered := recover(); recovered != crash {
+							t.Fatalf("expected crash cut %s, got %v", cut, recovered)
+						}
+						crashed = true
+					}()
+					server.dispatchAcceptedSteering(ctx, adapter)
+				}()
+
+				// No Runtime or control goroutine was started. Close only releases services
+				// and SQLite; it does not settle this synthetic owner's Steering queue.
+				if err := server.Close(); err != nil {
+					t.Fatal(err)
+				}
+				var err error
+				server, err = NewServer(Config{
+					DBPath: filepath.Join(root, "pentest.db"), RuntimeRoot: filepath.Join(root, "runs"), DisableBuiltinSkills: true,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = server.Close() })
+				server.dispatchAcceptedSteering(ctx, adapter)
+				for i := 1; i <= 2; i++ {
+					id := fmt.Sprintf("request-%d", i)
+					if deliveries[id] > 1 {
+						t.Fatalf("NO_REPLAY: %s delivered %d times across %s", id, deliveries[id], cut)
+					}
+					record, err := server.steering.ByRequestID(owner.KindTask, created.ID, id)
+					if err != nil {
+						t.Fatal(err)
+					}
+					wantState, wantCount := owner.SteeringApplied, 1
+					if i == crashRequest && (cut == "after_fence" || cut == "after_send") {
+						wantState = owner.SteeringActionRequired
+						if cut == "after_fence" {
+							wantCount = 0
+						}
+					}
+					if record.State != wantState || deliveries[id] != wantCount {
+						t.Fatalf("%s: state=%s deliveries=%d; want %s and %d", id, record.State, deliveries[id], wantState, wantCount)
+					}
+					if wantState == owner.SteeringActionRequired && record.ErrorCode != owner.SteeringReasonDeliveryAmbiguous {
+						t.Fatalf("%s: recovery reason=%s, want delivery_ambiguous", id, record.ErrorCode)
+					}
+				}
+			})
+		}
+	}
+}
