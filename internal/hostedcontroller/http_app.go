@@ -33,11 +33,13 @@ var hostedChallengeDispatchScript string
 // HTTPApp uses only the normal daemon HTTP surface for hosted bootstrap and
 // observation. It does not add TSecBench routes to the daemon.
 type HTTPApp struct {
-	baseURL       string
-	client        *http.Client
-	runtimeBinary string
-	pollPeriod    time.Duration
-	diagnostics   io.Writer
+	baseURL            string
+	client             *http.Client
+	runtimeBinary      string
+	pollPeriod         time.Duration
+	diagnostics        io.Writer
+	completionPlatform CompletionPlatform
+	runtimeRoot        string
 
 	silenceReviveSec         int
 	silenceReviveMax         int
@@ -92,6 +94,10 @@ type HTTPAppConfig struct {
 	RuntimeBinary string
 	PollPeriod    time.Duration
 	Diagnostics   io.Writer
+	// CompletionPlatform and RuntimeRoot enable conservative post-completion
+	// silence. A missing observer keeps the recovery behavior unchanged.
+	CompletionPlatform CompletionPlatform
+	RuntimeRoot        string
 	// SilenceReviveSec enables the hosted silence watchdog when > 0: a
 	// running Task whose Transcript cursor stops advancing for this many
 	// seconds gets one revive steering per cooldown window to wake a parked
@@ -159,9 +165,10 @@ func NewHTTPApp(config HTTPAppConfig) *HTTPApp {
 		permissionAutoRespond = "off"
 	}
 	return &HTTPApp{baseURL: strings.TrimRight(config.BaseURL, "/"), client: client, runtimeBinary: config.RuntimeBinary, pollPeriod: period, diagnostics: diagnostics,
+		completionPlatform: config.CompletionPlatform, runtimeRoot: config.RuntimeRoot,
 		silenceReviveSec: reviveSec, silenceReviveMax: reviveMax, silenceReviveCooldownSec: reviveCooldown,
 		permissionAutoRespond: permissionAutoRespond, answeredPermissions: map[string]bool{},
-		runtimeRecoverAfter:   config.RuntimeRecoverAfterRevives}
+		runtimeRecoverAfter: config.RuntimeRecoverAfterRevives}
 }
 
 func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootstrap) (HostedEvaluationReference, error) {
@@ -384,6 +391,7 @@ func (app *HTTPApp) runSilenceWatchdog(ctx context.Context, run HostedEvaluation
 	}
 	ticker := time.NewTicker(time.Duration(app.silenceReviveCooldownSec) * time.Second)
 	defer ticker.Stop()
+	completionLogged := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -406,6 +414,15 @@ func (app *HTTPApp) runSilenceWatchdog(ctx context.Context, run HostedEvaluation
 		if revives > 0 && time.Since(lastRevive) <= time.Duration(app.silenceReviveCooldownSec)*time.Second {
 			continue
 		}
+		if app.completionSettled(ctx, run) {
+			if !completionLogged {
+				app.logOperational("all challenges complete; cleanup settled; suppress silence recovery")
+				completionLogged = true
+			}
+			app.failedReviveStreak.Store(0)
+			continue
+		}
+		completionLogged = false
 		// p17 escalation: count revives that changed nothing. A streak at the
 		// threshold means the pi session is wedged beyond steering (run
 		// 26425: quota restored an hour earlier, all steer deliveries timed

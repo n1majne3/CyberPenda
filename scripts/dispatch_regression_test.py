@@ -91,7 +91,7 @@ else:
         result = subprocess.run([sys.executable, str(SCRIPT), *args, "--ws", str(self.ws)],
                                 text=True, capture_output=True, timeout=15, env=self.env)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-        return result.stderr
+        return result.stdout + result.stderr
 
     def runtime(self):
         from http.server import BaseHTTPRequestHandler
@@ -133,6 +133,7 @@ else:
         self.runtime_state.update(runtime_id="runtime-1")
         self.cli("finish", "d001", "--agent-id", "native-12", "--status", "stopped")
         self.assertEqual(self.ledger()["dispatches"]["d001"]["terminal_status"], "stopped")
+        self.assertTrue(self.ledger()["dispatches"]["d001"]["runtime_settled"])
 
     def test_wait_returns_for_any_settled_execute_without_a_report(self):
         self.runtime()
@@ -310,6 +311,97 @@ else:
         prompt = (self.ws / self.ledger()["dispatches"]["d002"]["prompt"]).read_text()
         self.assertIn("不要重复扫描登录页。", prompt)
         self.assertNotIn("NEXT_SECTION", prompt)
+
+    def test_bad_report_keeps_independent_facts_sealed_at_execute_exit(self):
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        instance = self.ledger()["dispatches"]["d001"]["instance"]["generation"]
+        fact = self.ws / "graph/facts/checkpoint.md"
+        origin = f"---\nchallenge: tch3-06\ndispatch: d001\ninstance: {instance}\n---\n"
+        fact.write_text(origin + "VERIFIED_CHECKPOINT\n")
+        (self.ws / "graph/facts/wrong.md").write_text(origin.replace(instance, "other-instance") + "WRONG_FACT")
+        self.report("tch3-06", 1, foothold='"contains "unescaped" quotes"', body="INVALID_REPORT")
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "completed")
+        fact.write_text(origin + "LATE_REPLACEMENT\n")
+        (self.ws / "graph/facts/late.md").write_text(origin + "LATE_NEW_FACT\n")
+        output = self.cli("harvest", "--dry")
+        self.assertIn("front_matter_invalid:foothold", output)
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.20:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        prompt = (self.ws / self.ledger()["dispatches"]["d002"]["prompt"]).read_text()
+        self.assertIn("VERIFIED_CHECKPOINT", prompt)
+        for rejected in ("WRONG_FACT", "LATE_REPLACEMENT", "LATE_NEW_FACT", "INVALID_REPORT"):
+            self.assertNotIn(rejected, prompt)
+
+    def test_report_command_escapes_text_and_rejects_writes_after_exit(self):
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        body = self.ws / "notes.md"
+        body.write_text('## 试过的面\n### SQL\n参数含 "引号": 已验证\n## 证据指针\ntrace.json\n')
+        args = ("report", "d001", "--outcome", "stalled", "--foothold", '账号: "test"\n路径 C:\\tmp',
+                "--next-milestone", "继续: 第二阶段", "--body-file", str(body))
+        self.cli(*args)
+        self.cli("validate", "tch3-06", "1")
+        original = (self.ws / "graph/attempts/tch3-06/1.md").read_text()
+        self.rejected(*args)
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "completed")
+        self.rejected(*args)
+        self.assertEqual((self.ws / "graph/attempts/tch3-06/1.md").read_text(), original)
+        self.cli("harvest", "--dry")
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["foothold"], '账号: "test"\n路径 C:\\tmp')
+
+    def test_interrupted_execute_without_report_retains_its_checkpoint(self):
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        instance = self.ledger()["dispatches"]["d001"]["instance"]["generation"]
+        (self.ws / "graph/facts/checkpoint.md").write_text(
+            f"---\nchallenge: tch3-06\ndispatch: d001\ninstance: {instance}\n---\nINTERRUPTED_CHECKPOINT\n")
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "stopped")
+        self.cli("harvest", "--dry")
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.20:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        prompt = (self.ws / self.ledger()["dispatches"]["d002"]["prompt"]).read_text()
+        self.assertIn("INTERRUPTED_CHECKPOINT", prompt)
+
+    def test_report_validation_distinguishes_absent_header_from_bad_scalar(self):
+        self.cli("assemble", "tch3-06")
+        path = self.ws / "graph/attempts/tch3-06/1.md"
+        path.write_text("No front matter\n")
+        self.assertIn("front_matter_missing", self.rejected("validate", "tch3-06", "1"))
+        self.report("tch3-06", 1, foothold='"broken "quote"')
+        self.assertIn("front_matter_invalid:foothold", self.rejected("validate", "tch3-06", "1"))
+
+    def test_summary_separates_flag_completion_from_challenges_and_unknown_net_score(self):
+        self.platform()
+        self.challenges[0].update(correct_flag_count=6, is_completed=True)
+        self.challenges[1].update(correct_flag_count=1, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        summary = json.loads(self.cli("summary"))
+        self.assertEqual(summary["flags_correct"], 7)
+        self.assertEqual(summary["flags_total"], 7)
+        self.assertEqual(summary["challenges_completed"], 2)
+        self.assertEqual(summary["challenges_total"], 2)
+        self.assertEqual(summary["nominal_total_score"], 2200)
+        self.assertIsNone(summary["earned_score"])
+        self.assertIsNone(summary["hint_deduction"])
+        self.assertIsNone(summary["platform_composite_score"])
+        self.assertEqual(json.loads(self.cli("summary")), summary)
+        self.write_json("platform-state.json", {"challenges": self.challenges, "fail": ["list"]})
+        self.rejected("summary")
 
     def test_missing_report_does_not_make_a_retry_outrank_a_fresh_challenge(self):
         self.cli("assemble", "tch3-06")

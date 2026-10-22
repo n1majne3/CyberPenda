@@ -50,7 +50,7 @@ Decide **不手写 prompt**。prompt 由 `dispatch.py assemble` 生成到
 
 ## 退场协议要点(模板尾部原文,Execute 必须遵守)
 
-1. 结束前把退场报告写到 `graph/attempts/<code>/<k>.md`,front-matter
+1. 结束前先写 Markdown 正文，再按派发 prompt 中的 `dispatch.py report` 命令生成并校验退场报告。该命令自动填来源和转义字符串。退场报告写到 `graph/attempts/<code>/<k>.md`,front-matter
    challenge / attempt / outcome(solved|stalled|budget_stop) / flags_gained /
    foothold / next_milestone 缺一不可；Hosted 还需 dispatch / instance，值由 prompt 给出;
 2. 大输出落 `graph/data/<code>-<k>-*.{txt,json}`,报告只引用文件名;
@@ -59,4 +59,4 @@ Decide **不手写 prompt**。prompt 由 `dispatch.py assemble` 生成到
 5. 进行中只写 Fact，最终报告只在结束前写一次。Fact 不能替代退场报告；只连接本题目标;写完报告立即结束,最终回复只需一句收束指针。
 
 报告缺字段或 solved 无提交 JSON → 派发器校验失败 → 按 infra_dead 记账,
-该段结论不被采信(等于白干)。
+该段报告结论不被采信。合法且在退出时封存的 Fact 仍可用于接力。

@@ -147,8 +147,12 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
 3. 两者皆空且无 ENDGAME → 回到等待命令。
    **禁止无事件的定时 sleep 轮询,也禁止任何 sleep 后跟查文件的组合**(等待只有阻塞式一条路),禁止在等待间隙做任何攻击性操作或
    通读 fact/退场报告全文。
-4. `graph/outbox/ENDGAME` 出现 → 终盘清点(ledger 统计)写入 `$WS/state.md`
-   并报告；先确认全部活动 Execute 已退出并 finish，完成最后一次 harvest，再停 dispatcher。
+4. `graph/outbox/ENDGAME` 出现，或最新平台快照已确认全题完成 → 收尾。
+   先确认全部活动 Execute 已退出并 finish，完成最后一次 harvest，确认实例已释放，再停 dispatcher。
+   运行 `python3 scripts/dispatch.py summary --ws "$WS"`，把结果写入 `$WS/state.md` 并报告。
+   Flag 完成数和整题完成数分别报告。`nominal_total_score` 是题目原始总分；
+   `earned_score`、`hint_deduction`、`platform_composite_score` 为 null 时明确写“未知，待平台正式结果”。
+   全解不等于满分；链题中途购买 hint 时，不能把此前已得分一起按比例扣除。
 
 ## 你与调度器的分工
 
@@ -162,7 +166,7 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
 调度规则(dispatcher 内建):难度预算 easy 15 / medium 25 / hard 35 / 多 flag 链题 60
 分钟;同题重启上限 3 次;infra 死亡(无开工标记/无退场报告)不占重试上限,
 连环 ≥4 次升级给你;每轮 harvest 先用一份平台 `list` 快照对账，再收割报告和补位。
-结束判据:平台 invalid_state 或 deadline(收尾保护:deadline 前 5 分钟停止新派发)。
+结束判据:平台全题完成、invalid_state 或 deadline(收尾保护:deadline 前 5 分钟停止新派发)。结束前仍须完成退出确认和放槽。
 
 **start 资格与补位**(dispatcher 每轮先 `list`,queue 与 ledger 都可能过期):
 
@@ -197,7 +201,7 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
 派发后立即回阻塞等待;**禁止一次等待全部**子线程——收割由 dispatcher 的
 看门狗负责,单段 Execute 的**等待上界** = 其预算到点加看门狗宽限。
 你只被事件(READY/升级/完成通知/超时巡检)唤醒,不做定时轮询。
-`graph/outbox/ENDGAME` 出现前不得宣告结束;平台 invalid_state 才是结束信号。
+缺少最新平台全题完成、invalid_state 或 ENDGAME 证据时不得宣告结束；队列为空、报告 solved 或旧 ledger 不能证明本场结束。
 
 ## 图协议红线
 
@@ -206,7 +210,8 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
   dispatch.py 模板生成;校验失败按 infra_dead 记账,结论不采信、不占重试上限)。
 - `graph/facts/` 仍可追加(只追加、编号单调、禁绝对化结论),dispatcher 会把它
   优先作为本题接力记录注入；已确认家族的跨题记录另行注入。
-  Fact 是中途检查点，不能替代退场报告，也不能覆盖平台计分。
+  Fact 是中途检查点，不能替代退场报告，也不能覆盖平台计分。finish 封存合法 Fact；
+  报告格式失败不影响独立合法 Fact 的接力资格。后续只读封存副本，迟到改写不生效。
 - 大段输出落 `graph/data/`,退场报告只引用文件名。
 - 平台状态与 Challenge Pass Clock 投影由 Client 刷新,不成为 FGS 真相。
 
@@ -223,5 +228,5 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
 
 - `references/graph-protocol.md` — ledger/attempts/outbox/escalations 与退场报告 schema(开局必读)
 - `references/execute-prompt.md` — 派发模板说明(模板本体由 dispatch.py 持有,派发前读)
-- `scripts/dispatch.py` — 薄调度器(init/assemble/validate/take/bind/finish/stop/wait/mark/harvest/loop/decide/selftest)
+- `scripts/dispatch.py` — 薄调度器(init/assemble/report/validate/summary/take/bind/finish/stop/wait/mark/harvest/loop/decide/selftest)
 - `scripts/platform-api.sh` — 通用平台适配层示例(Hosted 用第 3 步的内联适配层)

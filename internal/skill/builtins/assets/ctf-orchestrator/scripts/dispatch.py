@@ -9,6 +9,8 @@
   init        从 challenges.json 初始化 ledger
   assemble    为一题组装下一段 execute prompt(含退场校验)写入 outbox
   validate    校验一份退场报告
+  report      从参数和正文文件生成、校验退场报告，自动填入派发来源
+  summary     读取平台快照，区分 Flag、整题完成数、原始总分与未知实得分
   mark        标记一条 outbox 派发的状态(dispatched / infra_dead)
   harvest     扫描退场报告与看门狗,记账并按规则补位组装
   loop        周期执行 harvest + 平台对账(需 platform.sh)
@@ -22,6 +24,7 @@ from contextlib import contextmanager
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -79,6 +82,9 @@ EXIT_PROTOCOL = """【退场协议——本段结束前必须完成,否则结论
    challenge / attempt / outcome / flags_gained / foothold / next_milestone
    outcome 只能取 solved / stalled / budget_stop 之一。Hosted 还必须写 dispatch / instance，值见实例归属段。
    最终报告只在结束前写一次，进行中记录写 Fact，不能提前写入退场报告。
+   先把 Markdown 正文写到 graph/data/{code}-{attempt}-report-body.md，再用以下命令生成报告；替换 outcome、立足点和下一步参数：
+   python3 {report_script} report {dispatch} --ws {workspace} --outcome stalled --foothold '' --next-milestone '下一步' --body-file {report_body}
+   命令自动填来源并转义文本；返回 ok 后结束。若手写报告，结束前必须运行 python3 {report_script} validate {code} {attempt} --ws {workspace}，按具体错误修正。
 2. 正文两节:「试过的面(下一段不要重复)」与「证据指针」。大输出写
    graph/data/{code}-{attempt}-*.txt 或 .json,报告里只引用文件名。
 3. 没有结果就如实写"已试X、观察到Y、未达成Z";禁止"此路不通/已穷尽/勿再试"类绝对结论。
@@ -236,12 +242,12 @@ def parse_front_matter(text):
                 try:
                     value = json.loads(value)
                 except ValueError:
-                    return None, text
+                    raise ValueError("front_matter_invalid:" + k.strip()) from None
                 if not isinstance(value, str):
-                    return None, text
+                    raise ValueError("front_matter_invalid:" + k.strip())
             elif value.startswith("'"):
                 if not value.endswith("'") or len(value) < 2:
-                    return None, text
+                    raise ValueError("front_matter_invalid:" + k.strip())
                 value = value[1:-1].replace("''", "'")
             if k.strip() == "foothold" and value.lower() in ("none", "null", "false", "~", "无", "无立足点"):
                 value = ""
@@ -254,7 +260,14 @@ def validate_report(ws, code, k, quiet=True, path=None):
     p = path or ws.attempt_path(code, k)
     if not p.exists():
         return False, "report_missing", None
-    meta, body = parse_front_matter(p.read_text(encoding="utf-8"))
+    return validate_report_text(p.read_text(encoding="utf-8"), code, k)
+
+
+def validate_report_text(text, code, k):
+    try:
+        meta, body = parse_front_matter(text)
+    except ValueError as exc:
+        return False, str(exc), None
     if meta is None:
         return False, "front_matter_missing", None
     for key in ("challenge", "attempt", "outcome"):
@@ -278,6 +291,36 @@ def validate_report(ws, code, k, quiet=True, path=None):
     return True, "ok", meta
 
 
+def cmd_report(args):
+    ws = WS(args.ws)
+    led = ws.ledger()
+    d = led["dispatches"].get(args.id, {})
+    if d.get("state") not in ("dispatched", "stop_required") or d.get("terminal_at") or d.get("invalidated"):
+        die("report 只接受尚未结束且实例归属有效的派发")
+    if args.flags_gained < 0:
+        die("flags_gained 不能为负数")
+    meta = dict(challenge=d["code"], attempt=str(d["attempt"]), dispatch=args.id,
+                instance=(d.get("instance") or {}).get("generation", "offline"),
+                outcome=args.outcome, flags_gained=str(args.flags_gained),
+                foothold=args.foothold, next_milestone=args.next_milestone)
+    try:
+        body = Path(args.body_file).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        die("读取报告正文失败: %s" % exc)
+    text = "---\n" + "".join("%s: %s\n" % (k, json.dumps(v, ensure_ascii=False)) for k, v in meta.items()) + "---\n" + body
+    ok, reason, _ = validate_report_text(text, d["code"], d["attempt"])
+    if not ok:
+        die(reason)
+    target = ws.attempt_path(d["code"], d["attempt"])
+    # exclusive creation keeps an existing report and its exit snapshot intact.
+    try:
+        with target.open("x", encoding="utf-8") as handle:
+            handle.write(text)
+    except FileExistsError:
+        die("报告已存在；先用 validate 检查，不能覆盖已写入的报告")
+    print("report %s ok: %s" % (args.id, target.relative_to(ws.root)))
+
+
 # ---------------------------------------------------------------- injection pack
 
 
@@ -291,7 +334,11 @@ def family_of(code, led):
 
 
 def read_report_sections(path):
-    meta, body = parse_front_matter(path.read_text(encoding="utf-8"))
+    text = path.read_text(encoding="utf-8")
+    try:
+        meta, body = parse_front_matter(text)
+    except ValueError:
+        return {}, text
     return meta or {}, body
 
 
@@ -309,8 +356,23 @@ def fact_has_origin(ws, led, meta):
         return True
     d = led["dispatches"].get(meta.get("dispatch"), {})
     return bool(d and d.get("code") == meta.get("challenge") and not d.get("invalidated")
-                and d.get("state") in ("dispatched", "done")
+                and d.get("state") in ("dispatched", "stop_required", "done", "invalid")
                 and meta.get("instance") == (d.get("instance") or {}).get("generation"))
+
+
+def fact_sources(ws, led):
+    """活动棒读当前 Fact；结束棒只读退出时封存的 Fact，与报告有效性无关。"""
+    for p in ws.facts.glob("*.md"):
+        meta, _ = read_report_sections(p)
+        d = led["dispatches"].get(meta.get("dispatch"), {})
+        if not ws.platform.exists() or not d.get("terminal_at"):
+            yield p
+    if ws.platform.exists():
+        for d in led["dispatches"].values():
+            for rel in d.get("sealed_facts", []):
+                p = ws.root / rel
+                if p.is_file():
+                    yield p
 
 
 def collect_family_knowledge(ws, code, led=None):
@@ -328,12 +390,12 @@ def collect_family_knowledge(ws, code, led=None):
             meta, body = read_report_sections(p)
             pieces.append((other, str(p.relative_to(ws.root)), body))
     if ws.facts.exists():
-        fact_files = sorted(ws.facts.glob("*.md"))
+        fact_files = sorted(fact_sources(ws, led))
         for p in fact_files:
             meta, _ = read_report_sections(p)
             fc = meta.get("challenge") or ""
             if fact_has_origin(ws, led, meta) and fc in led["challenges"] and fc != code and family_of(fc, led) == family_of(code, led):
-                rel = "graph/facts/%s" % p.name
+                rel = str(p.relative_to(ws.root))
                 if all(rel != piece[1] for piece in pieces):
                     pieces.append((fc, rel, p.read_text(encoding="utf-8")))
     out = []
@@ -378,7 +440,7 @@ def collect_own_facts(ws, code, led=None):
     """本题 Fact 是接力线索；分数和完成状态仍以平台为准。"""
     pieces = []
     led = ws.ledger() if led is None else led
-    for p in sorted(ws.facts.glob("*.md"), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True):
+    for p in sorted(fact_sources(ws, led), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True):
         meta, body = read_report_sections(p)
         if meta.get("challenge") == code and fact_has_origin(ws, led, meta):
             pieces.append("%s — %s\n%s" % (p.relative_to(ws.root), meta.get("title", ""), body[:800]))
@@ -431,7 +493,10 @@ def build_prompt(ws, led, code, budget_min=None, siege=False, assault=False):
         "【平台 hint】%s" % hint_context(ws, rec),
         WORK_STYLE.format(started_marker=started_rel, code=code),
         EXIT_PROTOCOL.format(attempts_path=attempts_rel, code=code,
-                             attempt=k, budget_min=budget_min),
+                             attempt=k, budget_min=budget_min, dispatch="d%03d" % led["seq"],
+                             report_script=shlex.quote(str(Path(__file__).resolve())),
+                             workspace=shlex.quote(str(ws.root)),
+                             report_body=shlex.quote(str(ws.root / "graph/data" / ("%s-%d-report-body.md" % (code, k))))),
     ]
     return k, attempts_rel, "\n\n".join(parts)
 
@@ -1071,6 +1136,7 @@ def cmd_finish(args):
             die("Runtime 尚未确认 Execute 已退出；保留实例")
         if args.status != terminal:
             die("Runtime 终态是 %s，与请求不符" % terminal)
+        d["runtime_settled"] = True
     d.update(terminal_at=now(), terminal_status=args.status)
     source = ws.attempt_path(d["code"], d["attempt"])
     sealed = ws.attempts / (args.id + ".sealed.md")
@@ -1079,6 +1145,18 @@ def cmd_finish(args):
         with sealed.open("x", encoding="utf-8") as handle:
             handle.write(source.read_text(encoding="utf-8") if source.exists() and args.status != "not_started" else "")
     d["sealed_report"] = str(sealed.relative_to(ws.root))
+    d["sealed_facts"] = []
+    if args.status != "not_started" and not d.get("invalidated"):
+        for source in sorted(ws.facts.glob("*.md")):
+            meta, _ = read_report_sections(source)
+            if meta.get("dispatch") != args.id or not fact_has_origin(ws, led, meta):
+                continue
+            target = ws.facts / "sealed" / args.id / source.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if not target.exists():
+                with target.open("x", encoding="utf-8") as handle:
+                    handle.write(source.read_text(encoding="utf-8"))
+            d["sealed_facts"].append(str(target.relative_to(ws.root)))
     ws.save_ledger(led)
     print("finish %s %s" % (args.id, args.status))
 
@@ -1096,6 +1174,21 @@ def cmd_stop(args):
     led["dispatches"][args.id]["runtime_stop_requested"] = True
     ws.save_ledger(led)
     print(json.dumps(result, ensure_ascii=False))
+
+
+def cmd_summary(args):
+    ws = WS(args.ws)
+    snapshot = platform_snapshot(ws)
+    if not snapshot:
+        die("当前平台快照不可用或为空；不能从旧 ledger 宣告完成")
+    items = list(snapshot.values())
+    summary = dict(challenges_total=len(items), challenges_completed=sum(completed(c) for c in items),
+                   flags_total=sum(int(c.get("flag_count") or c.get("total_flag_count") or 0) for c in items),
+                   flags_correct=sum(int(c.get("correct_flag_count") or 0) for c in items),
+                   nominal_total_score=sum(c.get("total_score") or c.get("challenge_score") or 0 for c in items),
+                   earned_score=None, hint_deduction=None, platform_composite_score=None,
+                   score_note="list 的 total_score 是题目原始总分。实得分、hint 扣分和综合分以平台正式结果为准；全解不等于满分。")
+    print(json.dumps(summary, ensure_ascii=False))
 
 
 def cmd_wait(args):
@@ -1495,6 +1588,18 @@ def main():
     p.add_argument("code")
     p.add_argument("attempt", type=int)
     p.set_defaults(func=cmd_validate)
+    p = sub.add_parser("report")
+    p.add_argument("--ws", required=True)
+    p.add_argument("id")
+    p.add_argument("--outcome", required=True, choices=OUTCOMES)
+    p.add_argument("--flags-gained", type=int, default=0)
+    p.add_argument("--foothold", default="")
+    p.add_argument("--next-milestone", default="")
+    p.add_argument("--body-file", required=True)
+    p.set_defaults(func=cmd_report)
+    p = sub.add_parser("summary")
+    p.add_argument("--ws", required=True)
+    p.set_defaults(func=cmd_summary)
     p = sub.add_parser("take")
     p.add_argument("--ws", required=True)
     p.set_defaults(func=cmd_take)

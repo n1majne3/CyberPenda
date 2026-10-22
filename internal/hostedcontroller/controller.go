@@ -22,6 +22,7 @@ import (
 	"pentest/internal/modeskill"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
+	"pentest/internal/tsecbenchclient"
 )
 
 const (
@@ -294,7 +295,8 @@ func hostedMaskSecrets(config Config) []string {
 
 // Run starts one loopback daemon and one non-restartable hosted evaluation.
 func Run(ctx context.Context, dataRoot string, env map[string]string, stdout, diagnostics io.Writer) error {
-	if _, err := ConfigFromEnv(env); err != nil {
+	config, err := ConfigFromEnv(env)
+	if err != nil {
 		_, _ = fmt.Fprintln(diagnostics, ErrInvalidConfig.Error())
 		return ErrInvalidConfig
 	}
@@ -321,11 +323,19 @@ func Run(ctx context.Context, dataRoot string, env map[string]string, stdout, di
 		_ = httpServer.Close()
 		<-serveDone
 	}()
+	platformClient, err := tsecbenchclient.New(tsecbenchclient.Config{
+		BaseURL: config.BenchmarkBaseURL, Token: config.BenchmarkToken, Timeout: 20 * time.Second,
+	})
+	if err != nil {
+		return err
+	}
 	app := NewHTTPApp(HTTPAppConfig{
-		BaseURL:          "http://" + listener.Addr().String(),
-		RuntimeBinary:    strings.TrimSpace(env["CYBERPENDA_RUNTIME_BINARY"]),
-		Diagnostics:      diagnostics,
-		SilenceReviveSec: hostedSilenceReviveSec(env),
+		CompletionPlatform: platformClient,
+		RuntimeRoot:        filepath.Join(dataRoot, "runs"),
+		BaseURL:            "http://" + listener.Addr().String(),
+		RuntimeBinary:      strings.TrimSpace(env["CYBERPENDA_RUNTIME_BINARY"]),
+		Diagnostics:        diagnostics,
+		SilenceReviveSec:   hostedSilenceReviveSec(env),
 		// No revive cap: the host idempotently accepts each 202 and the wait
 		// loop's 300s cooldown bounds the rate; the run wall-clock is the only
 		// budget. (60-shot cap was p13's bound for the 6h window.)

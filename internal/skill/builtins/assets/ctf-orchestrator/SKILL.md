@@ -84,9 +84,11 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
 (事件/回调/超时臂)都重写它;dispatcher 发现心跳陈旧超 10 分钟会记 CRITICAL
 日志。不要为心跳单独加周期性唤醒——阻塞等待的超时臂已天然兜底。
    禁止在等待间隙做任何攻击性操作或读 fact 全文。
-4. `graph/outbox/ENDGAME` 出现 → 停止派发,做终盘清点:
-   `python3 -c "import json;l=json.load(open('$WS/graph/ledger.json'))['challenges'];print(sum(1 for r in l.values() if r['state']=='solved'),'solved /',len(l))"`,
-   写 `$WS/state.md` 并向用户报告。
+4. `graph/outbox/ENDGAME` 出现，或最新平台快照确认全题完成 → 收尾。
+   确认全部活动 Execute 已退出并 finish，完成最后一次 harvest，确认实例已释放，再停 dispatcher。
+   运行 `python3 scripts/dispatch.py summary --ws "$WS"`，写 `$WS/state.md` 并报告。
+   Flag 完成数、整题完成数分别报告。`nominal_total_score` 是题目原始总分；
+   实得分、hint 扣分和综合分为 null 时写“未知，待平台正式结果”。全解不等于满分。
 
 ## 你与调度器的分工
 
@@ -104,6 +106,7 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
   派发器对上一段报告校验失败时按 infra_dead 处理:不采信其结论、不占重算上限。
 - `graph/facts/` 仍可追加(fact 协议红线不变:只追加、编号单调、禁绝对化结论),
   派发器先注入本题 Fact 和最新报告。Fact 不能替代退场报告，也不能覆盖平台计分。
+  finish 封存合法 Fact；报告格式失败不影响独立合法 Fact 的资格。结束棒只读封存副本，迟到改写不生效。
   显式 family 优先；全题集共用的编号前缀不表示技术家族。
 - 多 flag 链题按里程碑续投:每段退场报告的 `next_milestone` 就是下一段目标,
   不存在固定时钟切割。
@@ -120,5 +123,5 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
 
 - `references/graph-protocol.md` — ledger/attempts/outbox/escalations 与退场报告 schema(开局必读)
 - `references/execute-prompt.md` — 派发模板说明(模板本体由 dispatch.py 持有)
-- `scripts/dispatch.py` — 薄调度器(init/assemble/validate/take/bind/finish/mark/harvest/loop/decide/selftest)
+- `scripts/dispatch.py` — 薄调度器(init/assemble/report/validate/summary/take/bind/finish/stop/wait/mark/harvest/loop/decide/selftest)
 - `scripts/platform-api.sh` — 平台适配层示例

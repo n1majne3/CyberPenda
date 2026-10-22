@@ -72,6 +72,12 @@ next_milestone: "用 admin 会话读 /admin/config 拿 flag"
 - 校验失败 → 该段按 **infra_dead** 记账:结论不采信、已排除面不注入、
   不占重试上限。
 
+优先使用 `dispatch.py report <did> --ws "$WS" --outcome stalled --foothold '' --next-milestone '下一步' --body-file <正文文件>`。
+命令从 ledger 填充 challenge / attempt / dispatch / instance，并按 JSON 字符串规则转义所有标量。
+先写 Markdown 正文，再生成一次最终报告。已有报告或已退出派发不能被该命令覆盖。
+手写报告须在结束前运行 validate；`front_matter_missing` 表示缺少分隔符，
+`front_matter_invalid:<字段>` 表示该字段无法解析。修复错误后重新校验，直到返回 ok。
+
 ## fact 文件(兼容层)
 
 ```markdown
@@ -94,6 +100,8 @@ content:只写新增客观事实;禁"此路不通/已穷尽/勿再试"类绝对�
 - 每轮先读一份平台快照，兼容 `unique_code` / `flag_count` / `correct_flag_count` / `is_completed`。
 - 报告的 `solved` 只表达 Execute 的结论。1/6 枚 Flag 仍是 partial；全部完成以平台为准。
 - Fact、报告中的 `flags_gained` 不能累加到平台计数。重复收割不能重复加分。
+- summary 使用当前平台快照，分别给出 Flag 数、整题数和原始总分。list 未提供实得分，
+  所以实得分、hint 实际扣分和综合分均为 null，等待平台正式结果。不能用全解题的 total_score 推导满分。
 - 空 foothold 使用 `""`。未完成报告必须给出下一里程碑；完成报告可为空。
 - 所有 Hosted 派发均需 bind 原生 Execute ID，并在 Runtime 终态后 finish；未确认时保留槽位。报告文件不能代替终态。
 - 平台读取失败时不启动或释放实例。释放失败继续保留占槽记录，下一轮先对账。
@@ -104,7 +112,9 @@ content:只写新增客观事实;禁"此路不通/已穷尽/勿再试"类绝对�
 - `bind <did> <agent-id>` 记录原生 Execute 身份；`finish <did> --agent-id <agent-id> --status completed|failed|stopped`
   由 Decide 在观察到 Runtime 终态后调用。这个确认依赖主控的真实观察，不是 Runtime 自动签发的证明。
 - `finish --status not_started` 只用于确定未启动的派发失败；有绑定或开工标记时拒绝。
-- finish 封存 `graph/attempts/<did>.sealed.md`。harvest 只收割该快照；迟到写入不会改变接力内容。
+- finish 封存 `graph/attempts/<did>.sealed.md` 和 `graph/facts/sealed/<did>/` 下的合法 Fact。
+  harvest 只收割报告快照；结束棒的 Fact 只读封存副本。迟到新增或改写不会改变接力内容。
+  报告格式失败或缺失不代表 Fact 来源失效；每个 Fact 独立核对 challenge / dispatch / instance，实例失效仍拒绝。
 - Hosted Pi 的 bind 同时记录 Runtime 进程身份。finish 必须从该进程的控制接口确认原生执行已结束，模型传入的 status 只用于核对。
 - Pi 的 stop 发出原生取消请求；取消已接受不等于工具已经退出。wait 返回 settled 后才能 finish。接口不可用或进程已更换时保留实例。
 - wait 同时检查调度事件和全部已绑定 Execute 的完成状态。它最多等待 240 秒，等待期间不占 ledger 锁。
