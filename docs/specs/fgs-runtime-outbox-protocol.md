@@ -5,7 +5,7 @@ Sessions select FGS; historical records remain unconverted. See section 11 for
 implementation scope. Proposed details below are not a promise of CLI support.
 
 Decision: [ADR 0035](../adr/0035-use-fgs-as-the-blackboard-working-model.md).
-Domain terms: [CONTEXT.md](../../CONTEXT.md).
+Domain terms: [GLOSSARY.md](../../GLOSSARY.md).
 
 Current feature boundary: [supported and retired behavior](../product/current-boundary.md).
 Normal Project Task Policy enforcement and legacy Intent settlement are retired;

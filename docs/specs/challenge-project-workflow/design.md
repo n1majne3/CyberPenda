@@ -5,7 +5,7 @@
 > removed. Attempts, Operation metadata, Evidence, and origins remain readable.
 > Pending operations are not replayed and do not block Task Finish. Check
 > unfinished work on the original Platform. The independent Hosted Challenge
-> Client remains active. See the current boundary in [CONTEXT.md](../../../CONTEXT.md).
+> Client remains active. See the current boundary in [GLOSSARY.md](../../../GLOSSARY.md).
 
 ## Design summary
 

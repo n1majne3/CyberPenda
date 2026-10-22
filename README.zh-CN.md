@@ -294,7 +294,7 @@ Task Policy 限制仅作为历史元数据保留，不再
 Platform 上检查未完成工作。这些记录不阻塞 Task Finish，且 Finish 不确认 Platform
 完成。Hosted 评测继续使用独立的 Hosted Challenge Client。
 
-领域术语定义见 [CONTEXT.md](CONTEXT.md)。
+领域术语定义见 [GLOSSARY.md](GLOSSARY.md)。
 
 ## Make 目标
 
@@ -381,7 +381,7 @@ scripts/               发布构建与实况冒烟
 ## 文档
 
 - [文档索引](docs/README.md) — 当前工作流与历史参考
-- [领域词汇表](CONTEXT.md) — 共享产品用语
+- [领域词汇表](GLOSSARY.md) — 共享产品用语
 - [FGS Runtime 协议](docs/specs/fgs-runtime-outbox-protocol.md) — 上报原则、Outbox 与 Receipt
 - [ADR](docs/adr/) — 架构决策（skills 默认开启、model providers 与 profiles）
 

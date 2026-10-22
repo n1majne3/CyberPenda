@@ -66,7 +66,7 @@ baked wordlists stay available for brute force and discovery.
 
 ## Consequences
 
-The Hosted Tool Baseline definition in CONTEXT.md now includes curated
+The Hosted Tool Baseline definition in GLOSSARY.md now includes curated
 offline reference data, and the Sandbox image carries the same reference
 data through the shared installer. The delivery bundle grows by the size of
 the baked references; the 3 GB archive limit still applies and is enforced

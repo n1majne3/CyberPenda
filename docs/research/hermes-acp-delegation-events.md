@@ -7,7 +7,7 @@ components described below have been removed.
 Date: 2026-08-29
 
 Issue: n1majne3/CyberPenda#247 (parent: #237, Timeline projection of delegated
-/child agents — CONTEXT.md **Subagent Activity**).
+/child agents — GLOSSARY.md **Subagent Activity**).
 
 Verdict: **no child-agent wire shape exists on the ACP connection Hermes
 serves.** Neither the ACP specification (stable v1 schema nor the unstable

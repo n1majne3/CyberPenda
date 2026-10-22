@@ -31,7 +31,7 @@ Historical operator-defined limits from the retired **Challenge Workflow**, reta
 _Avoid_: prompt advice, Skill rule, hidden timeout
 
 **Task Policy Snapshot**:
-The immutable Task-local copy of legacy Task Policy retained for historical inspection. Existing snapshots are not rewritten when Challenge Workflow retires.
+The immutable Task-local copy of a legacy **Task Policy**, retained for historical inspection. Existing snapshots are not rewritten.
 _Avoid_: current project defaults, mutable runtime limit, prompt text
 
 **Project Dashboard**:
@@ -200,10 +200,6 @@ _Avoid_: account, credential bundle, secret store, automatic profile, runtime pr
 Advanced **Runtime Profile** command arguments for provider-native options that have no structured CyberPenda field.
 _Avoid_: Model Provider override, model override, reasoning-effort override, structured-field duplicate
 
-**Launch-Resolved Runtime Profile**:
-A legacy global **Runtime Profile** that an older **Launch Configuration Resolution** path created from **Launch Selection**. New launches never create, reuse, or implicitly promote one.
-_Avoid_: runtime profile preset, runtime configuration snapshot, current launch output
-
 ### Models
 
 **Model Provider**:
@@ -259,12 +255,8 @@ Non-authoritative reference limits for known models, subordinate to operator **M
 _Avoid_: Model Catalog, Runtime Plugin table, family heuristic
 
 **Model Catalog Limit Override**:
-Optional per-identifier window and max-output numbers stored on a **Model Catalog**. They beat the **Model Capability Cache** and survive catalog name refresh and cache refresh. The local HUB **Model Provider** carries overrides for `deepseek-flash` / `deepseek-v4-flash` / `deepseek-v4-flash-0731` / `deepseek-v4-flash-vision-exp` (`context_window=1000000, max_output_tokens=131072`) because Pi models.json otherwise leaves the window unset and long sessions die by output-budget collapse.
+Optional per-identifier context-window and max-output numbers stored on a **Model Catalog**. They override the **Model Capability Cache** and survive catalog name and cache refreshes.
 _Avoid_: Runtime Profile field, inferred model family limit
-
-**HUB Flash Alias Equivalence**:
-On the local HUB **Model Provider**, `deepseek-flash`, `deepseek-v4-flash`, and the retired `deepseek-v4.1-flash-expires-on-0910` name the same underlying DeepSeek-V4-Flash model. Treat benchmark score differences between hosted and local runs of these aliases as scheduling/stack differences, never as a model-quality difference.
-_Avoid_: distinct hosted model, separate flash variant
 
 **Model Capability Cache Refresh**:
 An explicit operator update of the model-limit reference data in the **Model Capability Cache**.
@@ -409,7 +401,7 @@ The task-local directory containing enabled **Skills** for one **Task**, exposed
 _Avoid_: global skills directory, host runtime home, package install location
 
 **Execute Agent Type**:
-CyberPenda 为 Pi 与 Claude Code **Runtime** 经 **Config Projection** 投影的自定义子代理类型(`execute`),两个 Runtime 使用同一份 CyberPenda 定义(分别写入 Pi agent 目录与 workdir `.claude/agents/`),内置 ctf-orchestrator Execute 进程的身份与收束纪律,使派发不必使用通用 general-purpose 克隆。不绑定任何 Challenge Platform。
+The custom subagent type (`execute`) that CyberPenda projects for the Pi and Claude Code **Runtimes** through **Config Projection**. Both Runtimes use one CyberPenda definition that carries the identity and completion discipline of a ctf-orchestrator execute process, so dispatch does not need a generic general-purpose clone; it is not bound to any **Challenge Platform**.
 _Avoid_: hosted-only agent, per-runtime duplicate definitions, general-purpose specialization, per-dispatch discipline text
 
 **Runtime-Specific Extension**:
@@ -471,7 +463,7 @@ _Avoid_: host runtime mutation, global plugin install, profile edit side effect
 ### Configuration and execution
 
 **Operator Token**:
-The daemon credential for operator access. At startup, the daemon uses an explicitly configured token or generates a random token when none is configured. A non-loopback listener always requires that token for API and MCP access; automatic browser session bootstrap remains limited to the local loopback listener.
+The daemon credential for operator access. The daemon uses an explicitly configured token or generates a random one, and a non-loopback listener always requires it for API and MCP access.
 _Avoid_: Model API Key, Runtime bearer grant, fixed default password
 
 **Launch Profile Selector**:
@@ -547,19 +539,19 @@ An isolated runtime environment used to separate task filesystem state, dependen
 _Avoid_: jail, proxy, enforcement boundary
 
 **Browser Profile**:
-浏览器使用的会话数据与配置,包括 Cookie、本地存储和登录状态,与 **Runtime Profile** 独立。
+The browser session data and configuration, including cookies, local storage, and sign-in state. It is independent of a **Runtime Profile**.
 _Avoid_: Runtime Profile, Model Provider, Runtime conversation
 
 **Sandbox Browser**:
-在 **Sandbox** 内运行的独立浏览器,使用临时会话,不配置持久 **Browser Profile**,不继承宿主机浏览器状态。
+The independent browser that runs inside a **Sandbox** with a temporary session. It has no persistent **Browser Profile** and does not inherit host browser state.
 _Avoid_: Host Browser, shared host profile, persistent browser profile
 
 **Host Browser**:
-使用宿主机真实 **Browser Profile** 和用户现有会话的浏览器。其执行位置与 **Runtime** 所选 **Runner** 独立。
+The browser that uses the host's real **Browser Profile** and the operator's existing sessions. Its execution location is independent of the **Runner** selected for the **Runtime**.
 _Avoid_: Host Runner, copied cookies, mounted browser profile
 
 **Host Browser Enablement**:
-操作员在启动 **Task** 或 **Non-Project Session** 时对该 **Runtime Owner** 使用 **Host Browser** 及其宿主机 MCP 能力的显式选择,包括服务进程中的代码执行能力,与 **Host Runner Activation** 独立。默认关闭,由 **Runtime Configuration Snapshot** 保存,后续 **Runtime Continuation** 保留该选择。
+The operator's explicit choice to let one **Runtime Owner** use the **Host Browser** and the host MCP capabilities, including code execution in the service process, when a **Task** or **Non-Project Session** starts. It is off by default, recorded in the **Runtime Configuration Snapshot**, and kept for later **Runtime Continuations**; it is independent of **Host Runner Activation**.
 _Avoid_: automatic browser selection, Host Runner Activation, sandbox-only capability
 
 **Credential Reference**:
@@ -591,7 +583,7 @@ A project override that explicitly prevents a **Credential Reference** from usin
 _Avoid_: missing binding, broken secret
 
 **Config Projection**:
-The Runtime Owner-local preparation of runtime configuration from a **Runtime Configuration Snapshot**, **Model Provider**, and **Credential References**. Projected runtime settings files contain only projection-owned values — launch-resolved provider, model, and **Requested Reasoning Effort** are pinned explicitly so Runtime-spawned subagent sessions inherit the launch selection; host runtime settings are never merged.
+The Runtime Owner-local preparation of runtime configuration from a **Runtime Configuration Snapshot**, **Model Provider**, and **Credential References** into the settings files that one **Runtime** reads. It writes only projection-owned values and pins the launch-resolved provider, model, and **Requested Reasoning Effort** explicitly.
 _Avoid_: host config edit, host settings copy, config sync
 
 **Preflight**:
@@ -651,10 +643,6 @@ _Avoid_: mandatory FGS Skill invocation, system-role message, enforced scheduler
 **Working Graph Intent**:
 A retained request from the retired legacy Working Graph publication and settlement protocol, distinct from a current FGS update.
 _Avoid_: direct database command, provider tool result, lifecycle instruction
-
-**Working Graph Receipt**:
-A retained delivery-state record for a legacy **Working Graph Intent**, distinct from current FGS delivery.
-_Avoid_: model acknowledgement, transient stdout, Blackboard record
 
 **Agent-Managed Trace**:
 Optional Runtime-maintained work notes in Disabled **Blackboard Mode**, outside CyberPenda Blackboard knowledge.
@@ -733,7 +721,7 @@ A **Host Runner** execution inside the **TSecBench Hosted Image** container, wit
 _Avoid_: Sandbox Runner, physical host access, Docker-in-Docker, privileged container
 
 **Hosted Tool Baseline**:
-The bounded set of general-purpose tools and curated offline reference data included in the **TSecBench Hosted Image** for Runtime challenge work. The reference data lives read-only under `/opt/knowledge` (HackTricks methodology, payload and technique references, and a wordlist subset under `web`/`passwords`/`usernames`), pinned by upstream commit SHA at build time and searched with `pentest-knowledge-lookup`; the full seclists package and full-size dictionaries stay excluded for delivery size. The **Sandbox** image carries the same reference data through the shared installer `docker/knowledge-baseline/install.sh`.
+The bounded set of general-purpose tools and curated offline reference data included in the **TSecBench Hosted Image** for Runtime challenge work. The **Sandbox** image carries the same reference data.
 _Avoid_: full Sandbox image, runtime package installation, per-challenge image
 
 **Hosted Model Configuration**:
@@ -749,19 +737,19 @@ The optional absolute token window used for conversation compaction by the hoste
 _Avoid_: Claude-native page variable, compact percent, required compact setting
 
 **Hosted Max Output Tokens**:
-Hosted 请求的可选最大输出 token 数。至少支持 Claude Code 和 Pi；写入 **Model Catalog Limit Override**，再通过 **Model Runtime Projection** 传入 Runtime。
+The optional maximum output tokens for one hosted request. It is recorded as a **Model Catalog Limit Override** and passed to the Runtime by **Model Runtime Projection**.
 _Avoid_: context window size, Claude-native page variable, required output cap
 
 **Hosted Context Window**:
-Hosted 模型的可选总 token 容量。至少支持 Claude Code 和 Pi；写入 **Model Catalog Limit Override**，与 **Hosted Auto Compact Window** 独立。
-_Avoid_: 自动压缩窗口、输入 token 上限、服务端容量扩展
+The optional total token capacity for a hosted model. It is recorded as a **Model Catalog Limit Override** and is independent of the **Hosted Auto Compact Window**.
+_Avoid_: auto compact window, input token limit, server-side capacity expansion
 
 **Hosted Task Goal Appendix**:
 Optional operator-supplied text appended to the required hosted **Task Goal**. It does not replace the required Skill completion sentence and does not change Hosted Controller behavior.
 _Avoid_: replacement Task Goal, Skill rewrite, vendor prompt file
 
 **Hosted Pi Additional Model**:
-An optional Pi-only numbered slot (1-3) that projects one extra model id, with optional protocol, base URL, and API key overrides, into the same Hosted Pi model registry as the parent `CYBERPENDA_MODEL`. An unset override inherits the parent Hosted Model Configuration. A present-but-empty value, an override without its model id, or any slot on a non-Pi Runtime fails configuration validation. One model id repeated identically across slots is projected once; slots that disagree on protocol, base URL, or API key fail bootstrap. The parent session model stays `CYBERPENDA_MODEL`.
+An optional Pi-only numbered slot, from 1 to 3, that adds one model id to the hosted Pi model registry of the parent model. An unset override inherits the **Hosted Model Configuration**; invalid, conflicting, or non-Pi slot values fail configuration validation, and the parent session model stays unchanged.
 _Avoid_: second parent model, subagent model switch, automatic model selection, per-model reasoning effort
 
 **Hosted Acceptance Configuration**:

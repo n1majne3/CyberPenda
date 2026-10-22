@@ -12,7 +12,7 @@
 - **Supersedes:** the seven Blackboard v1 specifications marked historical
 - **Decisions:** ADRs 0003–0014
 
-This is the single normative contract for Blackboard v2. `CONTEXT.md` owns domain vocabulary, the ADRs explain why the design was chosen, and `blackboard-v2-tdd-plan.md` owns implementation order. Transport schemas, storage code, UI code, and tests must conform to this document rather than restating a different Blackboard model.
+This is the single normative contract for Blackboard v2. `GLOSSARY.md` owns domain vocabulary, the ADRs explain why the design was chosen, and `blackboard-v2-tdd-plan.md` owns implementation order. Transport schemas, storage code, UI code, and tests must conform to this document rather than restating a different Blackboard model.
 
 ## 1. Purpose and boundary
 

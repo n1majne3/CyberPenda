@@ -11,7 +11,7 @@ This ticket records what CyberPenda already owns in the Blackboard and Task orch
 
 | Source | Role |
 |--------|------|
-| `CONTEXT.md` | Domain language and relationships for Project, Scope, Task, Blackboard, Project Fact, Fact Relation, Finding, Evidence Artifact, Harness Steering, Attack Chain |
+| `GLOSSARY.md` | Domain language and relationships for Project, Scope, Task, Blackboard, Project Fact, Fact Relation, Finding, Evidence Artifact, Harness Steering, Attack Chain |
 | `docs/product/prd.md` | Product boundary, goals, non-goals, functional requirements |
 | `docs/product/mvp.md` | MVP scope, current build status, deferred capabilities |
 | `docs/product/implementation-plan.md` | Implemented slices, transport notes, remaining work |
@@ -54,13 +54,13 @@ The relevant MVP non-goals for this map are **full typed attack graph**, **exter
 
 ## Domain anchors
 
-CyberPenda's **Blackboard** is project-local memory for durable facts, relationships, findings, and evidence. A **Project Fact** is a stable, project-scoped assertion reusable by later tasks without carrying raw proof content. A **Fact Index** is a compact current-truth view exposing key, category, summary, confidence, and scope status without full bodies. Sources: `CONTEXT.md:447-480`.
+CyberPenda's **Blackboard** is project-local memory for durable facts, relationships, findings, and evidence. A **Project Fact** is a stable, project-scoped assertion reusable by later tasks without carrying raw proof content. A **Fact Index** is a compact current-truth view exposing key, category, summary, confidence, and scope status without full bodies. Sources: `GLOSSARY.md`.
 
-A **Fact Relation** connects two Project Facts and does not directly connect Findings. The current glossary deliberately avoids calling it an attack graph edge. An **Attack Chain** is a narrative path that connects Project Facts and Findings; it is not a separate graph source of truth, and stable Attack Chain summaries are stored as Project Facts. Sources: `CONTEXT.md:491-497`, `CONTEXT.md:831-836`, `CONTEXT.md:923-924`.
+A **Fact Relation** connects two Project Facts and does not directly connect Findings. The current glossary deliberately avoids calling it an attack graph edge. An **Attack Chain** is a narrative path that connects Project Facts and Findings; it is not a separate graph source of truth, and stable Attack Chain summaries are stored as Project Facts. Sources: `GLOSSARY.md`.
 
-A **Task** starts from one **Task Goal** plus **Run Controls**, resolves to one runtime profile, chooses one runner, has one runtime harness, and runs under exactly one immutable **Scope Snapshot**. A Task may contain internal steps, but those steps are not separate Tasks. Harness Steering is represented as Task Events and affects Runtime Continuations, not Task identity and not an already-running internal reasoning step. Sources: `CONTEXT.md:752-797`.
+A **Task** starts from one **Task Goal** plus **Run Controls**, resolves to one runtime profile, chooses one runner, has one runtime harness, and runs under exactly one immutable **Scope Snapshot**. A Task may contain internal steps, but those steps are not separate Tasks. Harness Steering is represented as Task Events and affects Runtime Continuations, not Task identity and not an already-running internal reasoning step. Sources: `GLOSSARY.md`.
 
-Runtimes use **Project Interfaces** to read/write Project state. The CLI fallback has the same project semantics as other Project Interfaces, and direct storage changes outside Project Interfaces require Reconciliation before they affect Current Truth or Reports. Sources: `CONTEXT.md:798-801`.
+Runtimes use **Project Interfaces** to read/write Project state. The CLI fallback has the same project semantics as other Project Interfaces, and direct storage changes outside Project Interfaces require Reconciliation before they affect Current Truth or Reports. Sources: `GLOSSARY.md`.
 
 ---
 
@@ -101,9 +101,9 @@ Source: `internal/store/store.go:165-274`.
 
 `project.Scope` is structured as domains, IPs, CIDRs, URLs, ports, exclusions, testing limits, and notes. A Project stores Scope and Project Defaults. Project Defaults choose a default runtime profile, runner, and task policy, but do not copy global runtime profiles. Sources: `internal/project/project.go:20-62`.
 
-Task creation captures the current Project Scope into the Task's immutable Scope Snapshot. The snapshot is historical authorization and does not change if the current Project Scope changes later. Sources: `internal/task/task.go:51-54`, `internal/task/task.go:207-260`, `CONTEXT.md:792-793`.
+Task creation captures the current Project Scope into the Task's immutable Scope Snapshot. The snapshot is historical authorization and does not change if the current Project Scope changes later. Sources: `internal/task/task.go:51-54`, `internal/task/task.go:207-260`, `GLOSSARY.md`.
 
-Scope expansion exists as domain language and runtime instruction text, but the current source does not expose a built-in MCP tool named `request_scope_expansion`. `internal/runner/mcp.go` instructs runtimes to use trusted MCP `request_scope_expansion`, and `docs/product/implementation-plan.md` says MVP tools include it, while `internal/mcpserver/server.go` currently registers only fact/search/deprecate/relation/finding/evidence/report/task-summary tools. Sources: `CONTEXT.md:862`, `internal/runner/mcp.go:174-177`, `docs/product/implementation-plan.md:375-379`, `internal/mcpserver/server.go:34-247`.
+Scope expansion exists as domain language and runtime instruction text, but the current source does not expose a built-in MCP tool named `request_scope_expansion`. `internal/runner/mcp.go` instructs runtimes to use trusted MCP `request_scope_expansion`, and `docs/product/implementation-plan.md` says MVP tools include it, while `internal/mcpserver/server.go` currently registers only fact/search/deprecate/relation/finding/evidence/report/task-summary tools. Sources: `GLOSSARY.md`, `internal/runner/mcp.go:174-177`, `docs/product/implementation-plan.md:375-379`, `internal/mcpserver/server.go:34-247`.
 
 ---
 
@@ -155,9 +155,9 @@ Managed evidence paths are derived under `artifacts/<evidence_key>/<source basen
 
 `task.RunControls` currently carries host activation, sandbox network mode, notes, and an extras map. The runner is stored separately because it gates execution boundary visibility. Sources: `internal/task/task.go:20-49`.
 
-Task Events are structured, compact timeline entries with per-task sequence numbers. Event kinds are `runtime_output`, `status`, `steering`, `conversation`, and `lifecycle`. Raw output is supposed to stay in logs or evidence artifacts rather than being stored as complete event dumps. Sources: `internal/task/task.go:56-79`, `internal/task/task.go:339-421`, `CONTEXT.md:779`, `CONTEXT.md:861`.
+Task Events are structured, compact timeline entries with per-task sequence numbers. Event kinds are `runtime_output`, `status`, `steering`, `conversation`, and `lifecycle`. Raw output is supposed to stay in logs or evidence artifacts rather than being stored as complete event dumps. Sources: `internal/task/task.go:56-79`, `internal/task/task.go:339-421`, `GLOSSARY.md`.
 
-Runtime configuration versions are task-specific and versioned. A runtime-profile switch inside a task creates a new task runtime configuration version, not a new task. Sources: `internal/task/task.go:81-91`, `internal/task/task.go:423-468`, `CONTEXT.md:768-769`.
+Runtime configuration versions are task-specific and versioned. A runtime-profile switch inside a task creates a new task runtime configuration version, not a new task. Sources: `internal/task/task.go:81-91`, `internal/task/task.go:423-468`, `GLOSSARY.md`.
 
 Runtime Continuations are first-class task records. Each continuation has a per-task number, runtime profile id, runtime provider, runner, lifecycle status, optional container id, optional native session id/path, and timestamps. Sources: `internal/task/task.go:93-109`, `internal/task/task.go:470-557`, `internal/task/task.go:559-629`.
 
@@ -167,7 +167,7 @@ Task Summary updates are automatically accepted and versioned. The task continua
 
 ## Runtime Harness and launch surface
 
-The Runtime Harness launches, resumes, steers, and stops a runtime for one task, but does not execute pentest tools itself. Adapters are provider-specific and emit normalized events. Sources: `internal/runtime/runtime.go:1-30`, `CONTEXT.md:794-797`.
+The Runtime Harness launches, resumes, steers, and stops a runtime for one task, but does not execute pentest tools itself. Adapters are provider-specific and emit normalized events. Sources: `internal/runtime/runtime.go:1-30`, `GLOSSARY.md`.
 
 A task launch applies project defaults, runs preflight, validates host/sandbox activation, creates the task, builds a launch plan, records the initial runtime config, and launches the runtime in the background. Sources: `internal/daemon/task_handlers.go:47-139`.
 
@@ -233,7 +233,7 @@ Task context files are written under `.pentest/` in the task workdir with projec
 
 Reports are generated deliverables, not source of truth. The report generator reads findings, compact Fact Index entries, evidence artifacts, and task scope/runner context from stored state; it does not read raw runtime output. Sources: `internal/report/report.go:1-16`, `internal/report/report.go:55-122`.
 
-The Markdown report separates confirmed and unconfirmed findings, renders fact summaries from the Fact Index, and renders evidence references. It does not currently render Fact Relations as a graph or Attack Chain structure beyond whatever stable Attack Chain summary facts exist in the Fact Index. Sources: `internal/report/report.go:184-333`, `CONTEXT.md:835-836`, `CONTEXT.md:866-869`.
+The Markdown report separates confirmed and unconfirmed findings, renders fact summaries from the Fact Index, and renders evidence references. It does not currently render Fact Relations as a graph or Attack Chain structure beyond whatever stable Attack Chain summary facts exist in the Fact Index. Sources: `internal/report/report.go:184-333`, `GLOSSARY.md`.
 
 ---
 
@@ -261,8 +261,8 @@ No current first-class equivalent was found for Cairn's Intent hyperedge, open f
 
 ## Facts likely to matter for the next gap-analysis ticket
 
-- CyberPenda's Fact Relation is fact-to-fact only; it does not directly connect Findings and is explicitly not an attack graph source of truth. Sources: `CONTEXT.md:831-836`, `CONTEXT.md:906`.
-- Stable Attack Chain material is stored as Project Facts and presented narratively, not as a typed graph. Sources: `CONTEXT.md:923-924`, `docs/product/prd.md:160`.
+- CyberPenda's Fact Relation is fact-to-fact only; it does not directly connect Findings and is explicitly not an attack graph source of truth. Sources: `GLOSSARY.md`.
+- Stable Attack Chain material is stored as Project Facts and presented narratively, not as a typed graph. Sources: `GLOSSARY.md`, `docs/product/prd.md:160`.
 - Task orchestration already owns continuation, steering, resume, runtime config versioning, and task summary mechanics. Sources: `internal/task/task.go:81-154`, `internal/daemon/task_handlers.go:755-1206`, `internal/daemon/task_handlers.go:1386-1544`.
 - Handoff/resume already treats `progress:*` facts specially by injecting their full bodies. Source: `internal/daemon/task_handlers.go:915-932`.
 - The built-in trusted MCP tool list is blackboard/report/task-summary centric; it has no current Intent/frontier/claim/heartbeat/scope-expansion tool in source. Source: `internal/mcpserver/server.go:34-247`.

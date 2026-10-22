@@ -1,15 +1,15 @@
-@CONTEXT.md
+@GLOSSARY.md
 
-Always read CONTEXT.md, unconditionally.
-Use TDD(but some changes make be not nessary to be tested) and ASD-STE100 Simplified Technical English(or Chines if user talks in Chinese) to write code, tests, and documentation. Always use the ubiquitous language in CONTEXT.md files. Always update CONTEXT.md when the user explicitly resolves a domain ambiguity.
+Always read GLOSSARY.md, unconditionally.
+Use TDD(but some changes make be not nessary to be tested) and ASD-STE100 Simplified Technical English(or Chines if user talks in Chinese) to write code, tests, and documentation. Always use the ubiquitous language in GLOSSARY.md files. Always update GLOSSARY.md when the user explicitly resolves a domain ambiguity.
 for builfing the sandbox images: perfer to use github action
 
 ## Workspace file safety
 
 Treat every existing workspace file and directory as user-owned, including untracked content. Get the user's explicit authorization before deleting, overwriting, restoring, or cleaning it. A path name or `git status` state is not proof that content is a test artifact. To identify generated content, use a before-and-after workspace snapshot or a documented generator contract. If an accidental destructive change occurs, stop other work, disclose the exact action, and prioritize recovery.
 
-Update `CONTEXT.md` when the user explicitly resolves a domain ambiguity.
-Always talk in ASD-STE100 Simplified Technical English(or Chines if user talks in Chinese). Always read CONTEXT.md files, and use their ubiquitous language.
+Update `GLOSSARY.md` when the user explicitly resolves a domain ambiguity.
+Always talk in ASD-STE100 Simplified Technical English(or Chines if user talks in Chinese). Always read GLOSSARY.md, and use its ubiquitous language.
 ## Agent skills
 
 ### Issue tracker
@@ -22,7 +22,7 @@ Five canonical roles mapped to their default label strings (all five now exist i
 
 ### Domain docs
 
-Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
 ### Asynchronous tests
 

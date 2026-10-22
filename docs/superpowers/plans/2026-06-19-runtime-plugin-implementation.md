@@ -420,4 +420,4 @@ Expected: only runtime plugin implementation files and rebuilt assets are dirty 
 
 - Spec coverage: registry, manifests, built-ins, compatibility, API, UI, projection, launch, transcript, external manifests, security, and verification are covered.
 - Placeholder scan: no TBD or fill-in-later steps are present.
-- Type consistency: plugin, manifest, registry, primitive, and parser names match the design spec and CONTEXT.md vocabulary.
+- Type consistency: plugin, manifest, registry, primitive, and parser names match the design spec and GLOSSARY.md vocabulary.

@@ -24,7 +24,7 @@ Diagram sources: `system-context.dsl` (L1) and `system-model.dsl` (L2 container 
 | ext.modelProvider | Model Provider | external-system | high | internal/modelprovider/modelprovider.go:1, README.md:167-190 |
 | ext.containerEngine | Container Engine | external-system | high | docs/adr/0025-container-engine-support-matrix.md, docs/platform-engines.md, docker-compose.yaml |
 | ext.challengePlatform | Challenge Platform (TSecBench) | external-system | high | README.md:138-160, internal/challengeadapter/adapter.go:15 |
-| ext.targetSystems | Authorized Target Systems | external-system | high | README.md:7 (authorization notice), CONTEXT.md (Scope) |
+| ext.targetSystems | Authorized Target Systems | external-system | high | README.md:7 (authorization notice), GLOSSARY.md (Scope) |
 | ext.ghcr | GHCR Image Registry | external-system | medium | README.md:122-124 (image names); pull flow itself is standard registry behavior, not repo code |
 | ext.vercelDemo | Vercel Demo Deployment | external-system | high | web/vercel.json, web/package.json (`build:demo`), web/src/demo/, README.md:9 |
 | component.httpApi | HTTP API | component | high | internal/daemon/server.go:939-975+, internal/daemon/blackboard_v2_http.go:43-63, internal/daemon/fgs.go:20-23 |
@@ -48,7 +48,7 @@ Diagram sources: `system-context.dsl` (L1) and `system-model.dsl` (L2 container 
 | bridges | runtime | frames / JSON-RPC, JSONL | high | cmd/pentest-provider-bridge/main.go:142,402 |
 | runtime | pentestctl | invokes / CLI | high | README.md:342-366 |
 | pentestctl | pentestd | calls / HTTP Continuation Interface | high | README.md:344-363, internal/projectinterface/grant.go:1-4 |
-| runtime | modelProvider | calls / HTTPS | high | CONTEXT.md (Model Runtime Projection: no proxy), README.md:167-190 |
+| runtime | modelProvider | calls / HTTPS | high | GLOSSARY.md (Model Runtime Projection: no proxy), README.md:167-190 |
 | runtime | targetSystems | tests / tool-specific | high | README.md:5,44-45 (tools in sandbox, not proxied) |
 | challengePlatform | hostedController | config + transcript / stdout | high | README.md:163-164 (BENCHMARK_BASE_URL, BENCHMARK_TOKEN) |
 | hostedController | hostedDaemon | boots / in-process | high | internal/hostedcontroller/controller.go:340 |
@@ -67,7 +67,7 @@ Diagram sources: `system-context.dsl` (L1) and `system-model.dsl` (L2 container 
 | internal/workinggraph | Legacy Intent publication/compilation/settlement retired; keeps protected filesystem layout for FGS | internal/workinggraph/working_graph.go:1-2 |
 | internal/blackboardmigration | Offline v1 decoder, one-way migration; only consumer is pentestctl | internal/blackboardmigration/service.go:1 |
 | Daemon MCP endpoint | Retired: POST /mcp returns 404; go-sdk still in go.mod but no Go file imports it | internal/daemon/mcp_test.go:27-35, internal/daemon/server.go:1904 |
-| Task Policy | Retained as historical metadata, not enforced | CONTEXT.md (Task Policy), README.md:290 |
+| Task Policy | Retained as historical metadata, not enforced | GLOSSARY.md (Task Policy), README.md:290 |
 
 ## Assumptions and unknowns
 

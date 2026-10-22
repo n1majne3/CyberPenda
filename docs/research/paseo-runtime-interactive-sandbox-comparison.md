@@ -151,7 +151,7 @@ Task/Project scoped before it can write to a live runtime.
 - `internal/transcript/transcript.go:49-180` already projects goals,
   continuation separators, steering directives, conversation messages, and
   normalized runtime output into one transcript.
-- `CONTEXT.md:817-842` explicitly defines Task Conversation, Harness Steering,
+- `GLOSSARY.md` explicitly defines Task Conversation, Harness Steering,
   Runtime Continuation, and the invariant that steering affects a continuation
   boundary rather than an already-running internal reasoning step.
 

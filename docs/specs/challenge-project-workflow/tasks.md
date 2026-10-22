@@ -5,7 +5,7 @@
 > removed. Attempts, Operation metadata, Evidence, and origins remain readable.
 > Pending operations are not replayed and do not block Task Finish. Check
 > unfinished work on the original Platform. The independent Hosted Challenge
-> Client remains active. See the current boundary in [CONTEXT.md](../../../CONTEXT.md).
+> Client remains active. See the current boundary in [GLOSSARY.md](../../../GLOSSARY.md).
 
 - [x] 1. Make Project kind explicit
   - Add failing daemon and React tests.
@@ -51,7 +51,7 @@
   - _Requirements: R7_
 
 - [x] 8. Update domain documentation and verify
-  - Update `CONTEXT.md` with the resolved Project-kind and Challenge Workflow language.
+  - Update `GLOSSARY.md` with the resolved Project-kind and Challenge Workflow language.
   - Run focused and complete Go and Web tests.
   - Run lint, type check, production build, embedded UI regeneration, and focused interface tests.
   - _Requirements: R1-R8_

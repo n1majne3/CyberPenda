@@ -2,7 +2,7 @@
 
 Status update (2026-09-08): Hermes Runtime execution and image installation are
 retired. The Hermes parts below describe the earlier decision. Retained
-Profiles and Transcripts remain readable; see [current boundary](../../CONTEXT.md).
+Profiles and Transcripts remain readable; see [current boundary](../../GLOSSARY.md).
 
 
 Hermes chat has no Codex/Claude-style JSONL stream. Multi-turn without a live process is `hermes --resume` against `state.db`. The Harness therefore drives a Task-scoped persistent `hermes acp` process on Sandbox and Host, not one-shot `hermes chat -q` and not `hermes serve`. ACP supplies send, stream, and cancel. Conclude Runtime Turn and Launch Selection use that same ACP process. Host Preflight checks that the Hermes ACP extra is present; Sandbox uses the image install.

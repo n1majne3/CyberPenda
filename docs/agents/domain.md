@@ -4,11 +4,11 @@ How the engineering skills should consume this repo's domain documentation when 
 
 ## Layout: single-context
 
-This repo is **single-context**: one `CONTEXT.md` and one `docs/adr/` at the repo root. There is no `CONTEXT-MAP.md` and no per-context (`src/<context>/docs/adr/`) directories.
+This repo is **single-context**: one `GLOSSARY.md` and one `docs/adr/` at the repo root. There is no `GLOSSARY-MAP.md` and no per-context (`src/<context>/docs/adr/`) directories.
 
 ```
 /
-├── CONTEXT.md
+├── GLOSSARY.md
 ├── docs/adr/
 │   ├── 0001-...
 │   └── 0002-...
@@ -17,10 +17,10 @@ This repo is **single-context**: one `CONTEXT.md` and one `docs/adr/` at the rep
 
 ## Before exploring, read these
 
-- **`CONTEXT.md`** at the repo root — the project's glossary and domain language.
+- **`GLOSSARY.md`** at the repo root — the project's glossary and domain language.
 - **`docs/adr/`** — read ADRs that touch the area you're about to work in.
 
-Keep `CONTEXT.md` glossary-only: a short definition and avoided synonyms for each
+Keep `GLOSSARY.md` glossary-only: a short definition and avoided synonyms for each
 domain term, without implementation details, operating rules, or decision logs.
 For behavior changes, read the relevant section of
 [`docs/product/current-boundary.md`](../product/current-boundary.md) and follow its
@@ -33,7 +33,7 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 
 ## Use the glossary's vocabulary
 
-When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `CONTEXT.md`. Don't drift to synonyms the glossary explicitly avoids.
+When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in `GLOSSARY.md`. Don't drift to synonyms the glossary explicitly avoids.
 
 If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
 

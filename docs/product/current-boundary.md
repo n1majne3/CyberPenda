@@ -2,7 +2,7 @@
 
 Status: current behavior on the project-subtraction branch, 2026-09-08.
 
-Use [CONTEXT.md](../../CONTEXT.md) for domain terms. This document records current
+Use [GLOSSARY.md](../../GLOSSARY.md) for domain terms. This document records current
 product constraints and routes detailed work to the relevant specification.
 It supersedes older descriptions of the retired features listed below.
 

@@ -5,7 +5,7 @@ description: Launches an isolated CyberPenda Web UI and real daemon, drives user
 
 # Verify CyberPenda
 
-Read `CONTEXT.md` and [the feature index](features/README.md). See [the recorded baseline](VERIFICATION.md) for proved coverage and limits. The primary surface is the React Web UI with the Go daemon. CLI Fallback, MCP, and Hosted evaluation need separate journeys. This recipe targets Windows 11 with Git Bash; other operating systems are unverified.
+Read `GLOSSARY.md` and [the feature index](features/README.md). See [the recorded baseline](VERIFICATION.md) for proved coverage and limits. The primary surface is the React Web UI with the Go daemon. CLI Fallback, MCP, and Hosted evaluation need separate journeys. This recipe targets Windows 11 with Git Bash; other operating systems are unverified.
 
 ## Launch
 

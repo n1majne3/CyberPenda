@@ -18,7 +18,7 @@ This ticket resolves a gap analysis only. It does **not** make final adopt, adap
 | [Research: CyberPenda Blackboard and Task surfaces today](./cyberpenda-blackboard-and-task-surfaces-today.md) | Current CyberPenda surfaces: Blackboard, Project Facts, Fact Relations, Findings, Evidence, Task lifecycle, steering, trusted interfaces |
 | [Local-First Pentest Agent PRD](../product/prd.md) | Product boundary and non-goals, including no full typed attack graph in the first release |
 | [MVP Scope](../product/mvp.md) | MVP scope, current implementation status, deferred capabilities |
-| [Pentest Agent Context](../../CONTEXT.md) | Domain language for Project, Scope, Task, Blackboard, Project Fact, Finding, Evidence, Harness Steering, Attack Chain |
+| [Pentest Agent Context](../../GLOSSARY.md) | Domain language for Project, Scope, Task, Blackboard, Project Fact, Finding, Evidence, Harness Steering, Attack Chain |
 
 ## One-line answer
 

@@ -249,7 +249,7 @@ The Worker box is **stateless**: prompt in, JSON out. Everything structural (cla
 
 ## Candidate analogies to CyberPenda (NOT decisions)
 
-> The ticket asks for analogies only. Each row is a *candidate* mapping for [#50](https://github.com/n1majne3/CyberPenda/issues/50) gap analysis and the [#51](https://github.com/n1majne3/CyberPenda/issues/51)–[#53](https://github.com/n1majne3/CyberPenda/issues/53) grilling tickets to accept, reshape, or reject. CyberPenda terms per `CONTEXT.md`.
+> The ticket asks for analogies only. Each row is a *candidate* mapping for [#50](https://github.com/n1majne3/CyberPenda/issues/50) gap analysis and the [#51](https://github.com/n1majne3/CyberPenda/issues/51)–[#53](https://github.com/n1majne3/CyberPenda/issues/53) grilling tickets to accept, reshape, or reject. CyberPenda terms per `GLOSSARY.md`.
 
 | Cairn concept | Candidate CyberPenda analogy | Why it's only a candidate |
 |---------------|-------------------------------|---------------------------|

@@ -295,7 +295,7 @@ pending operations are not replayed. Check unfinished work on the original
 Platform. These records do not block Task Finish, which does not confirm Platform
 completion. Hosted evaluation keeps the separate Hosted Challenge Client.
 
-Domain terms are defined in [CONTEXT.md](CONTEXT.md).
+Domain terms are defined in [GLOSSARY.md](GLOSSARY.md).
 
 ## Make targets
 
@@ -383,7 +383,7 @@ scripts/               Release builds and live smokes
 ## Documentation
 
 - [Documentation index](docs/README.md) — current workflow and historical references
-- [Domain glossary](CONTEXT.md) — shared product language
+- [Domain glossary](GLOSSARY.md) — shared product language
 - [FGS Runtime protocol](docs/specs/fgs-runtime-outbox-protocol.md) — reporting principles, Outbox, and Receipts
 - [ADRs](docs/adr/) — architecture decisions (skills default-on, model providers vs profiles)
 

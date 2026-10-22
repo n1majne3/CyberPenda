@@ -5,7 +5,7 @@ Status: historical reference, not current instructions or a second glossary.
 This is the exact pre-compression CONTEXT.md, including accumulated decisions,
 implementation notes, and superseded statements. Some entries describe current
 behavior; others describe retired behavior. Do not apply it as a whole.
-Use the [current glossary](../../CONTEXT.md) for terms and the
+Use the [current glossary](../../GLOSSARY.md) for terms and the
 [current product boundary](../product/current-boundary.md) for supported behavior.
 For a specific older constraint, compare the relevant ADR, current specification,
 and code before use. Read this snapshot only when tracing a prior decision.

@@ -8,7 +8,7 @@ Evidence files remain stored without conversion to FGS nodes.
 ## Current product
 
 - [Quick start and workflow](../README.md): build, configure, launch, and inspect results.
-- [Domain glossary](../CONTEXT.md): canonical terms and definitions only.
+- [Domain glossary](../GLOSSARY.md): canonical terms and definitions only.
 - [Current product boundary](./product/current-boundary.md): supported behavior, retired features, and links to detailed constraints.
 - [FGS Runtime protocol](./specs/fgs-runtime-outbox-protocol.md): confirmed principles, protocol design, and implementation status.
 - [FGS decision](./adr/0035-use-fgs-as-the-blackboard-working-model.md): model replacement and historical-data boundary.

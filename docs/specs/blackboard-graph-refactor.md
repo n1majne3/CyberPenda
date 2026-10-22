@@ -378,7 +378,7 @@ The refactor is ready for Release B only when:
 
 ## 11. ADR and domain-language decision
 
-No new domain glossary term is introduced by this assembly. `CanonicalMainGraphV1`, store epoch, contract version names, conformance corpus, execution-map names, and slice identifiers are implementation or protocol names, not domain concepts. The existing `CONTEXT.md` vocabulary remains authoritative.
+No new domain glossary term is introduced by this assembly. `CanonicalMainGraphV1`, store epoch, contract version names, conformance corpus, execution-map names, and slice identifiers are implementation or protocol names, not domain concepts. The existing `GLOSSARY.md` vocabulary remains authoritative.
 
 No new ADR is required. The hard-to-reverse choices and their rejected alternatives are already recorded in the owning versioned contracts:
 

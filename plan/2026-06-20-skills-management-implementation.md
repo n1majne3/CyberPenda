@@ -6,7 +6,7 @@
 
 **Architecture:** Add an internal skill domain service backed by SQLite metadata and daemon-managed file bundles. Keep Skills as the global, runtime-agnostic subtype of Runtime Extensions; keep runtime-specific plugins/packages on the existing runtime-specific extension path. Projection resolves enabled Skills from the Skill library and profile opt-outs, materializes them into a task-local skills root, then exposes that root through provider-specific skill discovery paths.
 
-**Decision sources:** Follow CONTEXT.md and docs/adr/0001-global-default-on-skills.md.
+**Decision sources:** Follow GLOSSARY.md and docs/adr/0001-global-default-on-skills.md.
 
 **Tech Stack:** Go services and HTTP handlers, SQLite metadata, filesystem bundle storage, existing runner projection and preflight services, React + TypeScript UI, existing Vite build and Go test setup.
 

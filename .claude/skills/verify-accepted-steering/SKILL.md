@@ -10,7 +10,7 @@ description: Checks that Accepted Steering is not replayed after a daemon crash.
 
 ## Run the check
 
-1. Read `CONTEXT.md`, `docs/adr/0023-require-accepted-steering-to-settle-durably.md`, and `docs/agents/async-tests.md`.
+1. Read `GLOSSARY.md`, `docs/adr/0023-require-accepted-steering-to-settle-durably.md`, and `docs/agents/async-tests.md`.
 2. Compare the covered code with the sync commit below. Include local changes. Review each changed function against the model actions before interpreting a pass:
 
    ```bash

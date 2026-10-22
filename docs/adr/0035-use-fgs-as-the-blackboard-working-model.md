@@ -5,7 +5,7 @@
 Proposed — September 6, 2026.
 
 The user has confirmed the model replacement, product purpose, and seven FGS
-Protocol Principles and AGENTS.md / CLAUDE.md instruction delivery in `CONTEXT.md`.
+Protocol Principles and AGENTS.md / CLAUDE.md instruction delivery in `GLOSSARY.md`.
 Detailed protocol choices
 below remain proposals, not implemented behavior or an approved data migration.
 
