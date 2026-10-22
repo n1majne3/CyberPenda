@@ -26,8 +26,6 @@ For behavior changes, read the relevant section of
 [`docs/product/current-boundary.md`](../product/current-boundary.md) and follow its
 links for that area. Use [`docs/README.md`](../README.md) to find other specifications
 and the Hosted guide. Read detailed documents on demand, not as a default bundle.
-The pre-compression snapshot under `docs/history/` is for prior-decision tracing;
-it is not current instructions or a second glossary.
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
 
