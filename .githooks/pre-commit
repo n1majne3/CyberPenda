@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Reject staged text files above 5,000 tokens so reviews and model context
+# stay tractable. Reads staged index blobs only, never worktree bytes, so a
+# staged file is checked even when its worktree copy is edited or deleted.
+set -euo pipefail
+
+limit_bytes=20000
+
+die() {
+  printf 'pre-commit: %s\n' "$*" >&2
+  exit 1
+}
+
+ignored() {
+  case "$1" in
+    internal/modelprovider/snapshot.json) return 0 ;;
+  esac
+  case "/$1/" in
+    */vendor/*|*/node_modules/*|*/dist/*|*/build/*) return 0 ;;
+  esac
+  case "${1##*/}" in
+    package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|bun.lock|bun.lockb|go.sum|Cargo.lock|poetry.lock|uv.lock|Pipfile.lock|composer.lock|Gemfile.lock|*.min.js|*.min.css|*.map|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.pdf|*.woff|*.woff2|*.ttf|*.eot|*.mp4|*.webm|*.mp3|*.zip|*.gz|*.tgz|*.jar|*.wasm) return 0 ;;
+  esac
+  return 1
+}
+
+# Git runs hooks from the repository root, but a manual run from a
+# subdirectory must resolve the same way.
+cd "$(git rev-parse --show-toplevel)" || die 'cannot locate the repository root'
+
+list_file=$(mktemp) || die 'mktemp failed'
+blob_file=$(mktemp) || die 'mktemp failed'
+trap 'rm -f "$list_file" "$blob_file"' EXIT
+
+# The listing goes to a file, not a process substitution, so a git failure is
+# seen here instead of being swallowed as an empty stream.
+# --no-renames keeps every record a strict mode/blob/status + path pair and
+# turns a staged rename into an add of the new path, which is still checked.
+git diff --cached --raw --no-abbrev --no-renames --diff-filter=ACMRT -z >"$list_file" ||
+  die 'git diff --cached failed'
+
+violations=0
+while IFS= read -r -d '' meta; do
+  IFS= read -r -d '' path || die "truncated diff record: $meta"
+  set -- $meta
+  [ "$#" -eq 5 ] || die "malformed diff record: $meta"
+  new_mode=$2
+  new_sha=$4
+  case "$new_sha" in
+    *[!0]*) ;;
+    *) die "staged entry has no blob: $path" ;;
+  esac
+  ignored "$path" && continue
+  case "$new_mode" in
+    100644|100755) ;;
+    *) continue ;; # symbolic links, gitlinks, and other modes are skipped
+  esac
+  bytes=$(git cat-file -s "$new_sha") || die "git cat-file -s failed: $path"
+  case "$bytes" in
+    ''|*[!0-9]*) die "git cat-file -s returned a non-number for: $path" ;;
+  esac
+  if [ "$bytes" -le "$limit_bytes" ]; then continue; fi
+  # The blob goes to a file before any read. Piping git cat-file into a
+  # bounded reader kills git with a broken pipe under pipefail, which is not
+  # separable from a real git failure.
+  git cat-file blob "$new_sha" >"$blob_file" || die "git cat-file blob failed: $path"
+  grep_status=0
+  LC_ALL=C grep -Iq . "$blob_file" || grep_status=$?
+  case "$grep_status" in
+    0) ;;
+    1) continue ;; # grep -I reports no match for binary content
+    *) die "binary check failed for: $path" ;;
+  esac
+  # grep keeps reading until the pipe closes, so head never dies early.
+  if head -5 "$blob_file" | LC_ALL=C grep -Ei 'code generated.*do not edit|@generated|auto-generated|this file was generated' >/dev/null; then
+    continue
+  fi
+  printf '%s: staged file exceeds the 5,000-token limit (%s bytes, ~%s tokens at 4 bytes per token)\n' \
+    "$path" "$bytes" "$((bytes / 4))" >&2
+  violations=$((violations + 1))
+done <"$list_file"
+
+[ "$violations" -gt 0 ] || exit 0
+
+cat >&2 <<'EOF'
+Split each file listed above:
+- Group by responsibility and name files after the concept, never part1/part2.
+- Keep the public API. Go code moves within the same package. TypeScript code moves into named modules and imports back.
+- Split tests by behavior into separate _test.go or .test.tsx files.
+- Split documents by heading and leave a short overview with links.
+- Every new file must stay under 5,000 tokens; moving the overflow into another oversized file does not pass.
+- Run gofmt and the affected tests after the move.
+- Generated files are skipped. If a generated file is not skipped, add a generated header or extend the ignore list in this hook.
+EOF
+exit 1
