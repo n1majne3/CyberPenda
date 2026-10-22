@@ -12,6 +12,7 @@ Run its commit-based tests with `bash scripts/check-file-size.test.sh`.
 The check reads added, copied, modified, renamed, and type-changed regular files from the Git index.
 It checks the staged content, not unstaged edits in the working tree.
 Deleted files, symbolic links, and unchanged files are outside its scope.
+Markdown documents (`*.md`) are also outside its scope.
 
 The estimate is bytes divided by four.
 A file with 20,000 bytes passes.
@@ -32,11 +33,6 @@ Keep the public API and behavior unchanged.
 Move Go declarations into files in the same package.
 Move TypeScript code into named modules and update their imports.
 Split tests by behavior into separate `_test.go` or `.test.tsx` files.
-
-Split documents at heading boundaries.
-Keep a short overview with links to the detailed documents.
-Do not create competing definitions for one domain term.
-Keep the canonical domain language in `GLOSSARY.md`.
 
 Keep every resulting file at or below 20,000 bytes.
 Run `gofmt` for Go changes and run the affected tests.

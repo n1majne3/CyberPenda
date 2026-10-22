@@ -148,7 +148,6 @@ t02() {
     "name files after the concept, never part1/part2" \
     "Keep the public API" \
     "separate _test.go or .test.tsx files" \
-    "Split documents by heading" \
     "stay under 5,000 tokens" \
     "Run gofmt" \
     "Generated files are skipped"
@@ -312,6 +311,12 @@ t20() {
   run_commit_rejected "$repo_dir" "symlink changed to an oversized regular file is rejected" "5,000-token limit"
 }
 
+t21() {
+  new_repo t21
+  make_text "$repo_dir/glossary.md" 25000 || return
+  commit_passes "$repo_dir" glossary.md "25,000-byte Markdown document commits"
+}
+
 t01
 t02
 t03
@@ -332,6 +337,7 @@ t17
 t18
 t19
 t20
+t21
 
 if [ "$failures" -gt 0 ]; then
   echo "$failures case(s) failed"

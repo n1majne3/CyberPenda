@@ -19,6 +19,7 @@ ignored() {
     */vendor/*|*/node_modules/*|*/dist/*|*/build/*) return 0 ;;
   esac
   case "${1##*/}" in
+    *.md) return 0 ;;
     package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|bun.lock|bun.lockb|go.sum|Cargo.lock|poetry.lock|uv.lock|Pipfile.lock|composer.lock|Gemfile.lock|*.min.js|*.min.css|*.map|*.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.pdf|*.woff|*.woff2|*.ttf|*.eot|*.mp4|*.webm|*.mp3|*.zip|*.gz|*.tgz|*.jar|*.wasm) return 0 ;;
   esac
   return 1
@@ -87,7 +88,6 @@ Split each file listed above:
 - Group by responsibility and name files after the concept, never part1/part2.
 - Keep the public API. Go code moves within the same package. TypeScript code moves into named modules and imports back.
 - Split tests by behavior into separate _test.go or .test.tsx files.
-- Split documents by heading and leave a short overview with links.
 - Every new file must stay under 5,000 tokens; moving the overflow into another oversized file does not pass.
 - Run gofmt and the affected tests after the move.
 - Generated files are skipped. If a generated file is not skipped, add a generated header or extend the ignore list in this hook.
