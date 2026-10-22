@@ -44,7 +44,6 @@ func (s *Service) verifyJournaledEvidenceTemp(tempPath, digest string, size int6
 }
 
 func (s *Service) evidencePublicationRecoveryExists(ctx context.Context, projectID, continuationID, key string, row evidenceRequestRow) (bool, bool, error) {
-	row.migration27Temp = filepath.ToSlash(row.migration27Temp)
 	row.previousTemp = filepath.ToSlash(row.previousTemp)
 	root, err := os.OpenRoot(s.evidenceConfig.ArtifactRoot)
 	if err != nil {
@@ -61,15 +60,6 @@ func (s *Service) evidencePublicationRecoveryExists(ctx context.Context, project
 		deterministicExists = true
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, false, fmt.Errorf("inspect journaled Evidence temp: %w", err)
-	}
-	if migration27Temp, err := migration27EvidenceTempPath(row.internalPath, continuationID, key, row.requestHash); err == nil && row.migration27Temp == migration27Temp && filesystemSafeEvidencePath(migration27Temp) {
-		valid, err := s.verifyJournaledEvidenceTemp(migration27Temp, row.sha256, row.size)
-		if err != nil {
-			return false, false, err
-		}
-		if valid {
-			return true, true, nil
-		}
 	}
 	if row.previousTemp != "" && row.previousTemp != row.tempPath {
 		claimed, err := s.evidenceManagedPathClaimed(ctx, projectID, row.previousTemp)
@@ -226,9 +216,6 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 		if _, err := s.sweepLegacyEvidenceTemps(ctx, projectID, *row, destinationRoot, nil); err != nil {
 			return err
 		}
-		if _, err := s.recoverMigration27EvidenceTemp(managedRoot, continuationID, key, *row, nil); err != nil {
-			return err
-		}
 		if _, err := s.recoverPreviousEvidenceTemp(ctx, projectID, *row, destinationRoot, nil); err != nil {
 			return err
 		}
@@ -251,16 +238,6 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 	if err != nil {
 		return fmt.Errorf("verify locked Evidence temp: %w", err)
 	}
-	migration27Adopted, err := s.recoverMigration27EvidenceTemp(managedRoot, continuationID, key, *row, func() (*os.File, error) {
-		if tempReady {
-			return nil, nil
-		}
-		return publisher.writer()
-	})
-	if err != nil {
-		return err
-	}
-	tempReady = tempReady || migration27Adopted
 	previousAdopted, err := s.recoverPreviousEvidenceTemp(ctx, projectID, *row, destinationRoot, func() (*os.File, error) {
 		if tempReady {
 			return nil, nil

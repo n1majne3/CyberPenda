@@ -157,19 +157,18 @@ type evidenceSource struct {
 }
 
 type evidenceRequestRow struct {
-	requestHash     string
-	sourceIdentity  string
-	sha256          string
-	size            int64
-	internalPath    string
-	tempPath        string
-	previousTemp    string
-	migration27Temp string
-	publisherToken  string
-	publisherID     string
-	payloadOwned    bool
-	status          string
-	resultJSON      string
+	requestHash    string
+	sourceIdentity string
+	sha256         string
+	size           int64
+	internalPath   string
+	tempPath       string
+	previousTemp   string
+	publisherToken string
+	publisherID    string
+	payloadOwned   bool
+	status         string
+	resultJSON     string
 }
 
 type retainedEvidenceMetadata struct {

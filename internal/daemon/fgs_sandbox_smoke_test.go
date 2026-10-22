@@ -61,13 +61,6 @@ func TestSandboxFGSOutboxLive(t *testing.T) {
 	if p.BlackboardProtocol != "fgs" {
 		t.Fatal("new Project must use FGS")
 	}
-	// Reproduce upgrading an existing Project before starting a new Task.
-	if _, err = server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, p.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = server.db.Exec(`DELETE FROM schema_migrations WHERE version=77`); err != nil {
-		t.Fatal(err)
-	}
 	if err = server.Close(); err != nil {
 		t.Fatal(err)
 	}

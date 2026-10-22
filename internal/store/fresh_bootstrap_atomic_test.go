@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -24,32 +23,31 @@ func TestFreshBootstrapFailureRollsBackAndPublicOpenRetries(t *testing.T) {
 		t.Fatalf("ping fresh bootstrap fixture: %v", err)
 	}
 
-	definitions := migrations()
-	injected := errors.New("injected failure after migrations 1 and 2")
-	definitions[2].up = func(*sql.Tx) error { return injected }
-	if err := bootstrapFresh(db, definitions); !errors.Is(err, injected) {
+	if err := createBaselineSchema(db, []string{
+		`CREATE TABLE probe_ok (id INTEGER PRIMARY KEY)`,
+		`CREATE TABLE broken (`,
+	}); err == nil {
 		_ = db.Close()
-		t.Fatalf("fresh bootstrap error = %v, want injected migration failure", err)
+		t.Fatal("fresh bootstrap accepted an invalid statement sequence")
 	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close failed fresh bootstrap: %v", err)
 	}
 
-	inspection, err := openReadOnlyInspection(path)
+	inspection, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatalf("inspect failed fresh bootstrap: %v", err)
 	}
 	var schemaObjects int
-	if err := inspection.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE lower(name) NOT GLOB 'sqlite_*'`).Scan(&schemaObjects); err != nil {
+	if err := inspection.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE lower(name) NOT GLOB 'sqlite_*'`).Scan(&schemaObjects); err != nil {
 		_ = inspection.Close()
 		t.Fatalf("count schema objects after failed fresh bootstrap: %v", err)
 	}
-	if schemaObjects != 0 {
-		_ = inspection.Close()
-		t.Fatalf("failed fresh bootstrap left %d user schema objects, want none", schemaObjects)
-	}
 	if err := inspection.Close(); err != nil {
 		t.Fatalf("close failed-bootstrap inspection: %v", err)
+	}
+	if schemaObjects != 0 {
+		t.Fatalf("failed fresh bootstrap left %d user schema objects, want none", schemaObjects)
 	}
 
 	opened, err := Open(path)
@@ -65,18 +63,15 @@ func TestFreshBootstrapFailureRollsBackAndPublicOpenRetries(t *testing.T) {
 		_ = opened.Close()
 		t.Fatalf("retried bootstrap epoch = %q, want blackboard_v2", epoch)
 	}
-	if err := ValidateMigrationHistory(t.Context(), opened.DB); err != nil {
+	var version int
+	var name string
+	if err := opened.QueryRow(`SELECT version, name FROM schema_migrations`).Scan(&version, &name); err != nil {
 		_ = opened.Close()
-		t.Fatalf("validate retried migration history: %v", err)
+		t.Fatalf("read retried baseline marker: %v", err)
 	}
-	var applied int
-	if err := opened.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil {
+	if version != baselineSchemaVersion || name != baselineSchemaName {
 		_ = opened.Close()
-		t.Fatalf("count retried migrations: %v", err)
-	}
-	if applied != len(migrations()) {
-		_ = opened.Close()
-		t.Fatalf("retried migration count = %d, want %d", applied, len(migrations()))
+		t.Fatalf("retried baseline marker = %d %q, want %d %q", version, name, baselineSchemaVersion, baselineSchemaName)
 	}
 	if err := opened.Close(); err != nil {
 		t.Fatalf("close retried Store: %v", err)

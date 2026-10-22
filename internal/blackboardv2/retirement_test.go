@@ -31,11 +31,6 @@ func TestBlackboardV2RuntimeHasNoGraphV1Ledger(t *testing.T) {
 		}
 	}
 
-	allowedProductionPaths := map[string]bool{
-		// Historical migrations must retain exact SQL/checksums, and this seam
-		// classifies v1 files without activating them.
-		"internal/store/store.go": true,
-	}
 	forbidden := []string{
 		"GraphService", "blackboard_graph_", "graph_v1", "legacy_v1",
 		"CanonicalStoreGraphV1", "CanonicalStoreLegacyV1", "CanonicalStoreGraphV1Finalized",
@@ -51,12 +46,12 @@ func TestBlackboardV2RuntimeHasNoGraphV1Ledger(t *testing.T) {
 		}
 		relativePath = filepath.ToSlash(relativePath)
 		if entry.IsDir() {
-			if relativePath == "internal/blackboardmigration" || relativePath == "internal/testsupport" {
+			if relativePath == "internal/testsupport" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") || allowedProductionPaths[relativePath] {
+		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
 		body, err := os.ReadFile(path)
@@ -67,9 +62,6 @@ func TestBlackboardV2RuntimeHasNoGraphV1Ledger(t *testing.T) {
 			if strings.Contains(string(body), term) {
 				t.Errorf("production path %s references retired %q", relativePath, term)
 			}
-		}
-		if strings.Contains(string(body), `"pentest/internal/blackboardmigration"`) && relativePath != "internal/pentestctl/pentestctl.go" {
-			t.Errorf("production path %s imports the offline-only v1 decoder", relativePath)
 		}
 		return nil
 	})
@@ -132,13 +124,6 @@ func TestBlackboardV2HasNoCurrentGraphV1ReadOrAuditProjection(t *testing.T) {
 	}
 	if strings.Contains(string(server), "CanonicalStoreGraphV1") {
 		t.Fatal("daemon still recognizes a graph-v1 epoch")
-	}
-	migration, err := os.ReadFile(filepath.Join(root, "internal/blackboardmigration/service.go"))
-	if err != nil {
-		t.Fatalf("read migration service: %v", err)
-	}
-	if strings.Contains(string(migration), ".RunHealth(") {
-		t.Fatal("offline migration verification still runs retired graph audit health")
 	}
 }
 

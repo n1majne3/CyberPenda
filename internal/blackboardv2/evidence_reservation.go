@@ -59,7 +59,7 @@ func (s *Service) reserveEvidenceRequest(ctx context.Context, projectID, continu
 	rows, _ := result.RowsAffected()
 	var row evidenceRequestRow
 	var payloadOwned int
-	if err := tx.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,previous_temp_internal_path,migration27_temp_internal_path,publisher_token,publisher_temp_identity,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &row.previousTemp, &row.migration27Temp, &row.publisherToken, &row.publisherID, &payloadOwned, &row.status, &row.resultJSON); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,previous_temp_internal_path,publisher_token,publisher_temp_identity,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &row.previousTemp, &row.publisherToken, &row.publisherID, &payloadOwned, &row.status, &row.resultJSON); err != nil {
 		return evidenceRequestRow{}, false, fmt.Errorf("read reserved Evidence request: %w", err)
 	}
 	row.payloadOwned = payloadOwned == 1
@@ -92,7 +92,7 @@ func (s *Service) reserveEvidenceRequest(ctx context.Context, projectID, continu
 func (s *Service) readEvidenceRequest(ctx context.Context, projectID, continuationID, key string) (evidenceRequestRow, bool, error) {
 	var row evidenceRequestRow
 	var payloadOwned int
-	err := s.db.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,previous_temp_internal_path,migration27_temp_internal_path,publisher_token,publisher_temp_identity,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &row.previousTemp, &row.migration27Temp, &row.publisherToken, &row.publisherID, &payloadOwned, &row.status, &row.resultJSON)
+	err := s.db.QueryRowContext(ctx, `SELECT request_hash,source_identity,source_sha256,source_size_bytes,managed_internal_path,temp_internal_path,previous_temp_internal_path,publisher_token,publisher_temp_identity,payload_owned,status,result_json FROM blackboard_v2_evidence_requests WHERE project_id=? AND continuation_id=? AND idempotency_key=?`, projectID, continuationID, key).Scan(&row.requestHash, &row.sourceIdentity, &row.sha256, &row.size, &row.internalPath, &row.tempPath, &row.previousTemp, &row.publisherToken, &row.publisherID, &payloadOwned, &row.status, &row.resultJSON)
 	if errors.Is(err, sql.ErrNoRows) {
 		return evidenceRequestRow{}, false, nil
 	}

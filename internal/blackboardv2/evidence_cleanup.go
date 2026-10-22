@@ -86,9 +86,6 @@ func (s *Service) cleanupDefinitiveEvidenceFailure(ctx context.Context, projectI
 	if _, err := s.sweepLegacyEvidenceTemps(ctx, projectID, row, guard.finalDirectory, nil); err != nil {
 		return
 	}
-	if _, err := s.recoverMigration27EvidenceTemp(guard.root, continuationID, key, row, nil); err != nil {
-		return
-	}
 	if _, err := s.recoverPreviousEvidenceTemp(ctx, projectID, row, guard.finalDirectory, nil); err != nil {
 		return
 	}

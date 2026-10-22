@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -215,31 +214,6 @@ func TestConcurrentEvidenceReservationAtomicallyRejectsConflictingSemantics(t *t
 	if _, err := services[loser].RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, requests[loser]); !isSemanticCode(err, "idempotency_conflict") {
 		t.Fatalf("loser replay error = %#v, want idempotency_conflict", err)
 	}
-}
-
-type evidenceReservationBarrier struct {
-	want    int
-	mu      sync.Mutex
-	arrived int
-	release chan struct{}
-}
-
-func newEvidenceReservationBarrier(want int) *evidenceReservationBarrier {
-	return &evidenceReservationBarrier{want: want, release: make(chan struct{})}
-}
-
-func (barrier *evidenceReservationBarrier) FailAfter(point blackboardv2.EvidenceFailurePoint) error {
-	if point != blackboardv2.EvidenceFailureBeforeReservation {
-		return nil
-	}
-	barrier.mu.Lock()
-	barrier.arrived++
-	if barrier.arrived == barrier.want {
-		close(barrier.release)
-	}
-	barrier.mu.Unlock()
-	<-barrier.release
-	return nil
 }
 
 func TestRetainEvidenceConfinesSourcesAndRejectsSymlinkAndReplacementRaces(t *testing.T) {

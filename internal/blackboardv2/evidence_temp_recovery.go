@@ -2,27 +2,12 @@ package blackboardv2
 
 import (
 	"context"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 )
-
-func migration27EvidenceTempPath(internalPath, continuationID, key, requestHash string) (string, error) {
-	if len(requestHash) != 64 || continuationID == "" || key == "" {
-		return "", fmt.Errorf("invalid Evidence request hash")
-	}
-	internalPath = filepath.ToSlash(internalPath)
-	const marker = "/retained/"
-	index := strings.Index(internalPath, marker)
-	if index <= 0 {
-		return "", fmt.Errorf("planned Evidence path lacks its retained namespace")
-	}
-	return internalEvidencePath(internalPath[:index], ".evidence-staging", hex.EncodeToString([]byte(continuationID)), hex.EncodeToString([]byte(key)), requestHash), nil
-}
 
 func (s *Service) sweepLegacyEvidenceTemps(ctx context.Context, projectID string, row evidenceRequestRow, root *os.Root, destination func() (*os.File, error)) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -84,76 +69,6 @@ func (s *Service) recoverPreviousEvidenceTemp(ctx context.Context, projectID str
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit previous Evidence temp recovery: %w", err)
-	}
-	return adopted, nil
-}
-
-func (s *Service) recoverMigration27EvidenceTemp(root *os.Root, continuationID, key string, row evidenceRequestRow, destination func() (*os.File, error)) (bool, error) {
-	row.migration27Temp = filepath.ToSlash(row.migration27Temp)
-	expected, err := migration27EvidenceTempPath(row.internalPath, continuationID, key, row.requestHash)
-	if err != nil || row.migration27Temp == "" || row.migration27Temp == row.tempPath || row.migration27Temp != expected || !filesystemSafeEvidencePath(row.migration27Temp) {
-		return false, nil
-	}
-	directory, err := openExistingSecureDirectory(root, filepath.Dir(row.migration27Temp))
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	if err != nil {
-		return false, semanticError("evidence_integrity_failed", "migration 27 Evidence temp path is symlinked or unsafe", "source_path", nil)
-	}
-	defer directory.Close()
-	name := filepath.Base(row.migration27Temp)
-	if _, err := directory.Lstat(name); errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	} else if err != nil {
-		return false, fmt.Errorf("inspect migration 27 Evidence temp: %w", err)
-	}
-	candidate, err := openLockedEvidenceFile(directory, name, "migration 27 Evidence temp")
-	if err != nil {
-		return false, err
-	}
-	defer unlockAndCloseEvidencePublisher(candidate)
-	valid, err := verifyOpenEvidenceFile(candidate, row.sha256, row.size)
-	if err != nil {
-		return false, fmt.Errorf("verify migration 27 Evidence temp: %w", err)
-	}
-	adopted := false
-	if valid && destination != nil {
-		target, err := destination()
-		if err != nil {
-			return false, err
-		}
-		if target != nil {
-			if err := target.Truncate(0); err == nil {
-				_, err = target.Seek(0, io.SeekStart)
-			}
-			if err == nil {
-				_, err = candidate.Seek(0, io.SeekStart)
-			}
-			if err == nil {
-				_, err = io.Copy(target, candidate)
-			}
-			if err == nil {
-				err = target.Sync()
-			}
-			if err == nil {
-				var ready bool
-				ready, err = verifyOpenEvidenceFile(target, row.sha256, row.size)
-				if err == nil && !ready {
-					err = errors.New("adopted migration 27 Evidence temp failed integrity verification")
-				}
-			}
-			if err != nil {
-				return false, fmt.Errorf("adopt migration 27 Evidence temp: %w", err)
-			}
-			adopted = true
-		}
-	}
-	if err := directory.Remove(name); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("remove migration 27 Evidence temp: %w", err)
-	}
-	if err := syncEvidenceDirectory(directory); err != nil {
-		return false, err
 	}
 	return adopted, nil
 }

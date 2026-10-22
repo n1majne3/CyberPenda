@@ -49,9 +49,6 @@ func TestBlackboardV2ReplacementRetiresEveryIndependentProductionV1Path(t *testi
 			strings.HasSuffix(relative, ".test.tsx") || strings.HasPrefix(relative, "internal/testsupport/") {
 			return nil
 		}
-		if strings.HasPrefix(relative, "internal/blackboardmigration/") || relative == "internal/store/store.go" {
-			return nil
-		}
 		if filepath.Ext(relative) != ".go" && filepath.Ext(relative) != ".ts" &&
 			filepath.Ext(relative) != ".tsx" && filepath.Ext(relative) != ".md" {
 			return nil

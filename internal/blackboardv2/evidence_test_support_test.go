@@ -110,6 +110,31 @@ func (barrier *evidenceMidCopyBarrier) FailAfter(point blackboardv2.EvidenceFail
 	return nil
 }
 
+type evidenceReservationBarrier struct {
+	want    int
+	mu      sync.Mutex
+	arrived int
+	release chan struct{}
+}
+
+func newEvidenceReservationBarrier(want int) *evidenceReservationBarrier {
+	return &evidenceReservationBarrier{want: want, release: make(chan struct{})}
+}
+
+func (barrier *evidenceReservationBarrier) FailAfter(point blackboardv2.EvidenceFailurePoint) error {
+	if point != blackboardv2.EvidenceFailureBeforeReservation {
+		return nil
+	}
+	barrier.mu.Lock()
+	barrier.arrived++
+	if barrier.arrived == barrier.want {
+		close(barrier.release)
+	}
+	barrier.mu.Unlock()
+	<-barrier.release
+	return nil
+}
+
 type evidenceTransferredOwnerBarrier struct {
 	reached   chan struct{}
 	release   chan struct{}

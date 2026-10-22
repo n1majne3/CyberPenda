@@ -217,3 +217,50 @@ func TestEvidenceDerivedFromIsVersionedAcyclicAndProjectIsolated(t *testing.T) {
 		t.Fatalf("foreign Evidence lineage error = %#v, want not_found", err)
 	}
 }
+
+func TestExactRetainReplayRecoversAfterSemanticCommitAndProducingAttemptTerminal(t *testing.T) {
+	fixture := newEvidenceV2Fixture(t, "Terminal Evidence Replay")
+	injector := &failEvidenceV2Once{point: blackboardv2.EvidenceFailureAfterGraphCommit}
+	fixture.service = blackboardv2.NewServiceWithEvidence(fixture.db, blackboardv2.EvidenceConfig{
+		RuntimeRoot: fixture.runtimeRoot, ArtifactRoot: fixture.runtimeRoot, Failures: injector,
+	})
+	fixture.writeSource(t, "terminal-replay.txt", "terminal replay proof\n")
+	request := blackboardv2.RetainEvidenceRequest{
+		IdempotencyKey: "terminal-replay", Key: "evidence:terminal-replay", Attempt: "attempt:evidence",
+		SourcePath: "terminal-replay.txt", ArtifactType: "text", Summary: "Proof committed before a lost response",
+	}
+	if _, err := fixture.service.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request); err == nil {
+		t.Fatal("injected post-semantic-commit failure unexpectedly succeeded")
+	}
+	detail, err := fixture.service.ReadCurrent(context.Background(), fixture.projectID, request.Key)
+	if err != nil || detail.Type != "evidence" || detail.Version != 1 {
+		t.Fatalf("semantic commit did not retain Evidence: %#v, err = %v", detail, err)
+	}
+	if _, err := fixture.service.ApplyForContinuation(context.Background(), fixture.projectID, fixture.continuationID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "finish-producing-attempt",
+		Changes: []blackboardv2.Change{{Op: "transition", Key: "attempt:evidence", Version: 1, Status: "succeeded", Summary: "The retained proof established the outcome"}},
+	}); err != nil {
+		t.Fatalf("terminalize producing Attempt: %v", err)
+	}
+	if err := os.Remove(filepath.Join(fixture.workdir, "terminal-replay.txt")); err != nil {
+		t.Fatalf("remove source before exact replay: %v", err)
+	}
+
+	recovered, err := fixture.service.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request)
+	if err != nil {
+		t.Fatalf("recover exact Retain Evidence after terminal Attempt: %v", err)
+	}
+	replay, err := fixture.service.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, request)
+	if err != nil {
+		t.Fatalf("replay completed Retain Evidence: %v", err)
+	}
+	if !reflect.DeepEqual(recovered, replay) {
+		t.Fatalf("recovered replay drifted:\nrecovered %#v\nreplay %#v", recovered, replay)
+	}
+	if _, err := fixture.service.RetainEvidenceForContinuation(context.Background(), fixture.projectID, fixture.continuationID, blackboardv2.RetainEvidenceRequest{
+		IdempotencyKey: "new-after-terminal", Key: "evidence:new-after-terminal", Attempt: "attempt:evidence",
+		SourcePath: "terminal-replay.txt", ArtifactType: "text", Summary: "New retain must not pass a terminal Attempt",
+	}); err == nil {
+		t.Fatal("new post-terminal Retain Evidence unexpectedly succeeded")
+	}
+}

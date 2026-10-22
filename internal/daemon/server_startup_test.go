@@ -1,9 +1,9 @@
 package daemon_test
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -155,66 +155,40 @@ func TestNewServerStopsGhostSandboxContainersOnRestart(t *testing.T) {
 	}
 }
 
-func TestDaemonStartupRefusesV1WithStableOfflineMigrationGuidance(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "graph-v1.db")
-	db, err := store.Open(dbPath)
+func TestDaemonStartupRefusesUnsupportedSchemaWithStableGuidance(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "legacy.db")
+	legacy, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		t.Fatalf("bootstrap disposable store: %v", err)
+		t.Fatalf("open unsupported schema fixture: %v", err)
 	}
-	if _, err := db.Exec(`
-		UPDATE blackboard_store_state
-		SET canonical_store='graph_v1', cutover_state='graph',
-		    migration_contract_version='legacy_blackboard_to_graph_v1', graph_schema_version=1
-		WHERE id=1;
-		DELETE FROM schema_migrations WHERE version=20;
-	`); err != nil {
-		t.Fatalf("construct graph_v1 source fixture: %v", err)
+	if _, err := legacy.Exec(`CREATE TABLE projects (id TEXT PRIMARY KEY)`); err != nil {
+		_ = legacy.Close()
+		t.Fatalf("create unsupported schema fixture: %v", err)
 	}
-	if err := db.Close(); err != nil {
-		t.Fatalf("close graph_v1 source fixture: %v", err)
-	}
-
-	beforeSource, err := store.OpenMigrationSource(dbPath)
-	if err != nil {
-		t.Fatalf("open graph_v1 through offline source seam: %v", err)
-	}
-	beforeChecksums := migrationChecksumSet(t, beforeSource.DB)
-	if err := beforeSource.Close(); err != nil {
-		t.Fatalf("close graph_v1 source: %v", err)
-	}
-	beforeBytes, err := os.ReadFile(dbPath)
-	if err != nil {
-		t.Fatalf("read graph_v1 source bytes: %v", err)
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close unsupported schema fixture: %v", err)
 	}
 
 	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, ListenAddr: "127.0.0.1:0", DisableBuiltinSkills: true})
 	if server != nil {
 		_ = server.Close()
-		t.Fatal("v1 startup returned an active daemon server")
+		t.Fatal("unsupported schema startup returned an active daemon server")
 	}
-	want := "blackboard v1 store epoch \"graph_v1\" cannot be opened for daemon/runtime use; stop the daemon and run 'blackboard v2 inspect', 'blackboard v2 migrate', then 'blackboard v2 verify'"
-	if err == nil || err.Error() != want {
-		t.Fatalf("v1 daemon startup error = %v, want %q", err, want)
-	}
-	afterBytes, err := os.ReadFile(dbPath)
-	if err != nil {
-		t.Fatalf("reread graph_v1 source bytes: %v", err)
-	}
-	if !bytes.Equal(afterBytes, beforeBytes) {
-		t.Fatal("refused daemon startup changed graph_v1 source bytes")
+	if !errors.Is(err, store.ErrUnsupportedStoreSchema) {
+		t.Fatalf("unsupported schema startup error = %v, want ErrUnsupportedStoreSchema", err)
 	}
 
-	afterSource, err := store.OpenMigrationSource(dbPath)
+	after, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		t.Fatalf("reopen refused graph_v1 source: %v", err)
+		t.Fatalf("reopen refused source: %v", err)
 	}
-	defer afterSource.Close()
-	if afterSource.CanonicalStore() != store.CanonicalStoreGraphV1 {
-		t.Fatalf("refused source epoch = %q, want graph_v1", afterSource.CanonicalStore())
+	defer after.Close()
+	var tables int
+	if err := after.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='projects'`).Scan(&tables); err != nil {
+		t.Fatalf("inspect refused source: %v", err)
 	}
-	afterChecksums := migrationChecksumSet(t, afterSource.DB)
-	if strings.Join(afterChecksums, "\n") != strings.Join(beforeChecksums, "\n") {
-		t.Fatalf("refused daemon startup changed migration checksums: before=%v after=%v", beforeChecksums, afterChecksums)
+	if tables != 1 {
+		t.Fatalf("refused daemon startup changed the source schema, projects table count = %d", tables)
 	}
 }
 
@@ -233,73 +207,25 @@ func TestDaemonStartupRefusesUnknownEpochWithoutActiveServer(t *testing.T) {
 		t.Fatalf("close unknown-epoch fixture: %v", err)
 	}
 
-	beforeDB, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open unknown-epoch fixture for verification: %v", err)
-	}
-	beforeChecksums := migrationChecksumSet(t, beforeDB)
-	if err := beforeDB.Close(); err != nil {
-		t.Fatalf("close unknown-epoch verification DB: %v", err)
-	}
-	beforeBytes, err := os.ReadFile(dbPath)
-	if err != nil {
-		t.Fatalf("read unknown-epoch source bytes: %v", err)
-	}
-
 	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, ListenAddr: "127.0.0.1:0", DisableBuiltinSkills: true})
 	if server != nil {
 		_ = server.Close()
 		t.Fatal("unknown epoch startup returned an active daemon server")
 	}
-	want := "unknown canonical store epoch \"future_v3\" cannot be opened for daemon/runtime use; restore a supported database or use an explicit offline migration workflow"
-	if err == nil || err.Error() != want {
-		t.Fatalf("unknown epoch daemon startup error = %v, want %q", err, want)
+	if !errors.Is(err, store.ErrUnsupportedStoreSchema) {
+		t.Fatalf("unknown epoch startup error = %v, want ErrUnsupportedStoreSchema", err)
 	}
 
-	afterBytes, err := os.ReadFile(dbPath)
-	if err != nil {
-		t.Fatalf("reread unknown-epoch source bytes: %v", err)
-	}
-	if !bytes.Equal(afterBytes, beforeBytes) {
-		t.Fatal("refused daemon startup changed unknown-epoch source bytes")
-	}
-	afterDB, err := sql.Open("sqlite", dbPath)
+	after, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("reopen refused unknown-epoch source: %v", err)
 	}
-	defer afterDB.Close()
+	defer after.Close()
 	var afterEpoch string
-	if err := afterDB.QueryRow(`SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&afterEpoch); err != nil {
+	if err := after.QueryRow(`SELECT canonical_store FROM blackboard_store_state WHERE id=1`).Scan(&afterEpoch); err != nil {
 		t.Fatalf("read refused unknown epoch: %v", err)
 	}
 	if afterEpoch != unknownEpoch {
 		t.Fatalf("refused source epoch = %q, want %q", afterEpoch, unknownEpoch)
 	}
-	afterChecksums := migrationChecksumSet(t, afterDB)
-	if strings.Join(afterChecksums, "\n") != strings.Join(beforeChecksums, "\n") {
-		t.Fatalf("refused daemon startup changed migration checksums: before=%v after=%v", beforeChecksums, afterChecksums)
-	}
-}
-
-func migrationChecksumSet(t *testing.T, db interface {
-	Query(string, ...any) (*sql.Rows, error)
-}) []string {
-	t.Helper()
-	rows, err := db.Query(`SELECT printf('%d|%s|%s',version,name,checksum) FROM schema_migrations ORDER BY version`)
-	if err != nil {
-		t.Fatalf("read migration checksum set: %v", err)
-	}
-	defer rows.Close()
-	var checksums []string
-	for rows.Next() {
-		var checksum string
-		if err := rows.Scan(&checksum); err != nil {
-			t.Fatalf("scan migration checksum: %v", err)
-		}
-		checksums = append(checksums, checksum)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate migration checksums: %v", err)
-	}
-	return checksums
 }
