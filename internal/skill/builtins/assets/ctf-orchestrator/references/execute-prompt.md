@@ -16,6 +16,8 @@ Decide **不手写 prompt**。prompt 由 `dispatch.py assemble` 生成到
 固定头(授权书 + 题面:目标/题目/题号/flag 数)     ← 该题内逐字节稳定
 【实例归属】{dispatch ID / 实例代次，Fact 与报告必须携带}
 【本段目标】{里程碑:来自上一段 next_milestone}
+【已确认进度】{平台已接受 Flag 数/总数}
+【全局时限】{绝对结束时间与本段最晚收束时间；未配置时明确未知}
 【已排除的面】{本题报告最新在前，保留来源指针}
 【本题 Fact】{本题检查点最新在前，附文件路径}
 【家族经验】{同家族已解题经验,总量硬顶,超限指针化}
@@ -46,7 +48,7 @@ Decide **不手写 prompt**。prompt 由 `dispatch.py assemble` 生成到
 | 里程碑 | 上一段退场报告 `next_milestone`;无里程碑时按平台已得 Flag 数继续未完成阶段 |
 | 已排除的面 | 该题历史退场报告的「试过的面」节，最新在前 |
 | 家族经验 | 同家族已解题的末段退场报告 + graph/facts 同家族条目 |
-| 预算 | ledger 按难度映射(easy 15 / medium 25 / hard 35 / 链题 60 分钟) |
+| 预算 | ledger 按难度和进展计算，再裁切到全局时限前 5 分钟 |
 
 ## 退场协议要点(模板尾部原文,Execute 必须遵守)
 
@@ -55,7 +57,7 @@ Decide **不手写 prompt**。prompt 由 `dispatch.py assemble` 生成到
    foothold / next_milestone 缺一不可；Hosted 还需 dispatch / instance，值由 prompt 给出;
 2. 大输出落 `graph/data/<code>-<k>-*.{txt,json}`,报告只引用文件名;
 3. 没有结果就如实写"已试X、观察到Y、未达成Z",禁绝对化结论;
-4. 拿到 flag 立即 submit-flag,返回 JSON 原文粘进报告;
+4. 拿到未完成阶段的 flag 立即 submit-flag，返回 JSON 原文粘进报告。先检查 `code: duplicate`，它表示此前已接受，本次无新增得分；记录已知阶段索引并继续下一阶段;
 5. 进行中只写 Fact，最终报告只在结束前写一次。Fact 不能替代退场报告；只连接本题目标;写完报告立即结束,最终回复只需一句收束指针。
 
 报告缺字段或 solved 无提交 JSON → 派发器校验失败 → 按 infra_dead 记账,

@@ -1,4 +1,4 @@
-# Hosted 薄调度迭代记录(p1–p20)
+# Hosted 薄调度迭代记录(p1–p22)
 
 Status: 持续维护的演进日志。构建、上传和实测分别记录；未实测版本不推断得分。
 数据细节见本地 `/.tsecbench-analysis/RUN-ANALYSIS.md`(不入库)。
@@ -141,6 +141,51 @@ v1 全题完成并收尾后仍收到两次看门狗恢复消息；主控还将�
 限制：终局抑制依赖本版 Pi finish 写入的退出确认；其他 Runtime 或旧账本缺少该证据时保守保留看门狗。
 退出确认说明原生 Execute Promise 已结束，不证明所有远端或后台副作用都已停止。
 summary 不代替平台正式评分。尚无 p21 跑分结论。
+
+## p21 双题集复盘与 p22
+
+p21 / [BCTF 39069](https://tsecbench.zc.tencent.com/agent/39069)：17,820/22,210 点，
+34/39 Flag、32/37 题；p20 为 18,724 点、35/39 Flag、33/37 题。
+p21 / [TSecBench v1 38883](https://tsecbench.zc.tencent.com/agent/38883)：20,725/23,000 点，
+68/74 Flag、58/63 题；p20 为 22,555 点、74/74 Flag、63/63 题。
+首次覆盖分别从 41m01s、52m27s 提前到 32m09s、46m39s，深挖完成数下降。
+只做同题集前后比较；两场页面未提供逐 run 镜像摘要及完整模型配置。
+包清单中的 Pi 从 p20 的 1.3.0 变为 p21 的 1.4.0，也不是纯代码控制实验。
+
+复盘核对两场全部 473 条事件、两份主控和六份关键子会话；其余 162 个会话条目未逐条导出审计。
+Fact 在两题集样本中确实封存、注入和读取。v1 链题的旧 Execute 正常结束后，
+harvest 仍释放实例，下一次 start 清空活 foothold，导致接力重建环境。
+实际 HTTP 409 duplicate 至少出现 3 次，旧 Client 只返回 error 字符串。
+BCTF exhausted 后主控停止 dispatcher，全部槽位空闲 27m15s；
+watchdog 恢复后继续完成 3 题、增加 1,395 分。两场末棒都仍收到 90 分钟预算，却没有全局结束时间。
+这些证据支持流程修复，但不能把全部失分归因于程序，也不能证明修复能回收全部分数。
+
+**p22：同实例接力、显式续投、409 duplicate 与可信时限。**
+
+1. 正常完成且退出已确认、报告有效、当前地址及实例代次一致，并有 foothold 或新增 Flag 时，
+   dispatcher 可直接在同实例发下一棒。仍使用正常选题顺序和配额，新题优先；
+   实例改变、失败退出、零配额或无接力资格时沿用放槽流程。
+2. 重试或会话软顶产生一次续投审查。`resume <code> --reason` 与 retry 审查的
+   `decide --decision continue --reason` 只排队一棒，实际派发才消费许可，
+   不重置历史 attempt/restarts、不直接 start、不绕过配额和退出检查。
+   平台完成或进入收尾时旧审查过期；同秒产生的新棒按单调 attempt 识别。
+3. Client 仅将合法 JSON、HTTP 409、`code: duplicate` 组合转为结构化结果，
+   明确 `http_status: 409`、无新增得分，并保留平台实际提供的阶段与计数。
+   其他 409、畸形响应、503 仍失败，不自动重试。Execute 先检查 duplicate，再判断 correct。
+4. 新增可选 `CYBERPENDA_EVALUATION_DEADLINE`，接受带时区的 RFC3339 绝对结束时间，
+   投影到 Task Goal 和 Runtime。每棒预算裁切到结束前 5 分钟，本地 deadline 只能缩短它。
+   未配置时明确未知，不猜 6 小时。攻坚说明区分“当前实例未确认立足点”和“历史已经突破”。
+
+验证：dispatcher CLI 的 37 项回归覆盖同实例接力、退出未完成、新题公平性、零配额、
+软顶续投、已完成题、平台读取失败、续投审查过期和全局预算裁切；两份脚本同步且 selftest 通过。
+Client → HTTP 和 Hosted config → bootstrap 覆盖响应分类、无盲重试、时区与未知时限。
+交付还须通过 GitHub Actions 的完整后端检查、镜像 smoke 和真实 Pi 取消/退出验收。
+构建及上传结果以该包 `delivery-receipt.json` 为准。按用户授权上传，**不启动评测**。
+
+限制：该版没有自动取得平台未公开的结束时间；只在显式配置时裁切。
+保留实例不保证其中的连接或 foothold 永远有效，Execute 仍需核对。
+duplicate 结构化和派发纪律不能强制模型绝不重交。尚无 p22 得分结论；
+后续仍需跨题集和同题集重复对照，不能用两场证明没有过拟合。
 
 ## 平台侧事故记录(非我们缺陷)
 

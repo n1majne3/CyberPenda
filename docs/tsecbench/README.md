@@ -15,6 +15,11 @@ Set the required values from `tsecbench.env.example` on the TSecBench page.
 `CYBERPENDA_RUNTIME` defaults to `codex`. Optional `CYBERPENDA_REASONING_EFFORT`
 is `low`, `medium`, `high`, `xhigh`, or `max`; an omitted value uses `high`.
 Optional `CYBERPENDA_TASK_GOAL_APPENDIX` is appended to the required Task Goal.
+`CYBERPENDA_EVALUATION_DEADLINE` 是可选的绝对结束时间，格式为带时区的 RFC3339。
+仅在已知本场准确结束时间时填写；未知时留空。它投影为 Runtime 的
+`CYBERPENDA_EVALUATION_DEADLINE_UNIX`，dispatcher 裁切每棒预算并预留 5 分钟收尾。
+工作目录内的 `deadline` 文件只能缩短该时限。系统不会从题集推算 6 小时，
+也不会在主控恢复时重新开始计时。这个值不是平台强制停止的替代品。
 Optional `CYBERPENDA_AUTO_COMPACT_THRESHOLD` is an integer from 1 to 100.
 Optional `CYBERPENDA_AUTO_COMPACT_WINDOW` is an integer from 1 to 1048576.
 Optional `CYBERPENDA_MAX_OUTPUT_TOKENS` is an integer from 1 to 1048576.

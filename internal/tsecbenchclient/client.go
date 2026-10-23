@@ -72,6 +72,7 @@ type ListResult struct {
 
 type SubmitResult struct {
 	Code             string `json:"code,omitempty"`
+	HTTPStatus       int    `json:"http_status,omitempty"`
 	Correct          bool   `json:"correct"`
 	Message          string `json:"message,omitempty"`
 	Awarded          any    `json:"awarded,omitempty"`
@@ -184,6 +185,16 @@ func (client *Client) Submit(ctx context.Context, uniqueCode, candidate string) 
 	}{UniqueCode: code, Flag: candidate}
 	raw, err := client.call(ctx, http.MethodPost, client.apiBase+"/submit", body)
 	if err != nil {
+		var response *platformHTTPError
+		if errors.As(err, &response) && response.status == http.StatusConflict &&
+			json.Unmarshal([]byte(response.body), &result) == nil && result.Code == "duplicate" {
+			// A previously accepted stage earns no new credit. Keep platform
+			// progress when present; never infer counters from the message.
+			result.HTTPStatus = response.status
+			result.Correct = false
+			result.Awarded = 0
+			return result, nil
+		}
 		return result, err
 	}
 	if err := json.Unmarshal(raw, &result); err != nil {
@@ -284,12 +295,21 @@ func (client *Client) call(ctx context.Context, method, endpoint string, body an
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		message := strings.TrimSpace(redact(string(raw), client.token))
-		return nil, fmt.Errorf("TSecBench returned HTTP %d: %s", response.StatusCode, message)
+		return nil, &platformHTTPError{status: response.StatusCode, body: message}
 	}
 	if !json.Valid(raw) {
 		return nil, errors.New("TSecBench returned malformed JSON")
 	}
 	return json.RawMessage(raw), nil
+}
+
+type platformHTTPError struct {
+	status int
+	body   string
+}
+
+func (err *platformHTTPError) Error() string {
+	return fmt.Sprintf("TSecBench returned HTTP %d: %s", err.status, err.body)
 }
 
 func redact(value, secret string) string {

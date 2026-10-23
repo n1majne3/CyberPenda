@@ -126,6 +126,18 @@ content:只写新增客观事实;禁"此路不通/已穷尽/勿再试"类绝对�
 - start 超时先 list 对账，不自动重试 start。待确认请求保留槽位；可用后继续派发；
   120 秒后仍明确 stopped 的请求交主控决策。手动 assemble 同样要求当前可用且未完成的实例。
 
+## 同实例接力与续投审查
+
+- 上一棒正常完成且已确认退出、报告有效、实例代次与地址仍一致，有立足点或新增 Flag 时，
+  harvest 按配额与正常选题排序决定是否保留实例接力。新题优先；无资格时释放闲置实例。
+- 到重试或会话软顶的未完成题生成 `kind: retry` 审查，每个最新派发只生成一次。
+  `decide <eid> --decision continue --reason "理由"` 或 `resume <code> --reason "理由"` 排队一棒。
+  `resume_request` 保存理由和时间，实际 assemble 才消费，并将理由写入派发的 `resume_reason`。
+  历史 attempt/restarts 保持单调记录，主控不手改计数。平台完成、题目消失或进入收尾时审查过期。
+- resume 先核对平台与旧 Execute 的退出状态，只排队，不直接 start；后续仍受配额和全局时限约束。
+- `CYBERPENDA_EVALUATION_DEADLINE_UNIX` 与工作目录 `deadline` 同时存在时取较早者。
+  每棒预算裁切到结束前 5 分钟，prompt 显示绝对时限；未配置时明确未知。
+
 ## hint 接力
 
 - 上一棒无新增 Flag 的续作，或本棒 10 分钟无 Flag 进展，产生一次 hint 审查。

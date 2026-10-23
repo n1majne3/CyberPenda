@@ -75,9 +75,11 @@ hint 仅由 Decide 通过 `dispatch.py decide <eid> --decision hint --reason "�
 
 1. 预检:`pentest-tsecbench-client list`。失败即报告原始的已脱敏结构化响应,
    保持 Runtime 存活。
-2. 时钟锚定:**仅当任务说明明确给出总时限**时,`date +%s` 计算
-   deadline(当前 + 时限 - 15min 安全余量)写入 `$WS/deadline`。
-   未给时限时禁止自设 deadline。
+2. 时钟锚定:有 `CYBERPENDA_EVALUATION_DEADLINE_UNIX` 时直接使用该绝对时限，
+   dispatcher 自动裁切每棒预算并预留 5 分钟收尾。已有 `$WS/deadline` 只能缩短它。
+   没有该环境变量时，仅按任务明确给出的绝对结束时间写 `$WS/deadline`；
+   若只有明确总时长，使用本场已知开始时间计算，接管时沿用原时限。
+   未给时限时保持未知，不从题集名称或上一场推算。
 3. 写平台适配层:
    ```sh
    printf '%s\n' '#!/bin/sh' 'exec pentest-tsecbench-client "$@"' > "$WS/platform.sh"
@@ -144,6 +146,11 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
    返回值保存于 `graph/hints/<code>.json`；用 Runtime 发信工具通知当前 Execute 读取该文件。
    后续派发自动携带该记录。请求失败或超时也记账，禁止自动重购；先核对平台结果。
    已处理/已过期的队列项会自动移除，不要手改 QUEUE.md。
+   **续投审查**表示已到重试或会话软顶。读封存报告后选择
+   `decide <eid> --decision continue --reason "新证据与预期收益" --ws "$WS"`，
+   或 abandon。也可用 `resume <code> --reason "理由" --ws "$WS"` 排队一棒。
+   续投保留全部历史计数，只有下次实际派发才消费许可；配额仍由 dispatcher 控制。
+   保持 dispatcher 运行，通过 resume 续投，不手动 start 或改账本绕过护栏。
 3. 两者皆空且无 ENDGAME → 回到等待命令。
    **禁止无事件的定时 sleep 轮询,也禁止任何 sleep 后跟查文件的组合**(等待只有阻塞式一条路),禁止在等待间隙做任何攻击性操作或
    通读 fact/退场报告全文。
@@ -158,7 +165,7 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
 
 | 事项 | 归属 |
 | --- | --- |
-| 选题、配额补位、重试上限、开工标记/超时看门狗、闲置槽回收(非 running 题且 Execute 已结束的实例放槽)、首段 8 分钟探针预算、围城续作棒(立足点题预算下限 60 分钟+续作指令)、零进展预算加深、终盘 60 分钟停新题探针、平台周期对账、收尾前 5 分钟停派 | dispatcher 脚本 |
+| 选题、配额补位、重试上限、开工标记/超时看门狗、同实例接力与闲置槽回收、首段 8 分钟探针预算、围城续作棒(立足点题预算下限 60 分钟+续作指令)、零进展预算加深、终盘 60 分钟停新题探针、平台周期对账、收尾前 5 分钟停派 | dispatcher 脚本 |
 | 派发动作本身(Agent 工具调用、mark dispatched) | 你 |
 | `uncertain` 升级(追投或收割、连环 infra 死亡、平台异常、hint 请求) | 你 |
 | 攻击目标、写退场报告、提交 flag | Execute agent |
@@ -187,7 +194,7 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
 
 - **未完成的题禁止 close。close 只用于**平台 `list` 已证明 complete 的题;
   放槽一律 `abandon "$code" "$reason"`(dispatcher 的 release 已内建该规则,
-  harvest 的闲置槽回收会把非 running 题的活实例自动放槽),
+  harvest 先检查同实例接力资格，其余闲置实例自动放槽),
   abandon 与下一次 start 不串在同一命令里,2 分钟内补位。
 - **每题第一棒是探针棒**(预算 8 分钟):找到立足点或 flag 才转深挖,
   空探针沉底等复活。不要跳过探针直接深挖。
@@ -195,6 +202,10 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
   (确认当前实例与立足点后续作；实例重启会清除活会话假设)。
   **零进展棒自动加深预算**(+15 分钟/棒,上限 90)——难度误标自愈。
   **终盘 60 分钟**只续作有足迹的题,不再开新题探针。
+- **同实例接力**:上一 Execute 正常完成且退出已确认、报告有效、当前地址与实例代次一致，
+  并且有立足点或新增 Flag 时，dispatcher 在配额和正常选题排序允许的情况下直接发下一棒，
+  保留实例与 foothold。新题仍优先；失败退出、实例改变或无续作资格时放槽。
+  所有预算均受全局时限裁切，未知时限不等于还有完整一棒时间。
 
 ## 回合纪律(硬性)
 
@@ -221,12 +232,14 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
 - A command failure affects only that command. Do not exit the Runtime.
   Do not automatically retry a mutation. First refresh with `pentest-tsecbench-client list`,
   then decide whether to retry or move to another challenge.
-- 平台 409/invalid_state 区分任务结束/配额满;503 先 list 对账;404/重复跳过。
+- submit 返回 `code: duplicate`（含 `http_status: 409`）表示此前已接受的阶段，
+  本次无新增得分。记录平台回执及已知索引，继续未完成阶段；实例重启后的新 flag 值不代表新阶段。
+  其他 409/invalid_state 区分任务结束/配额满；503 先 list 对账。
 - 连环 infra 死亡到达上限会以升级问题到达你这里;封存该题或换资源由你决定。
 
 ## 文件清单
 
 - `references/graph-protocol.md` — ledger/attempts/outbox/escalations 与退场报告 schema(开局必读)
 - `references/execute-prompt.md` — 派发模板说明(模板本体由 dispatch.py 持有,派发前读)
-- `scripts/dispatch.py` — 薄调度器(init/assemble/report/validate/summary/take/bind/finish/stop/wait/mark/harvest/loop/decide/selftest)
+- `scripts/dispatch.py` — 薄调度器(init/assemble/resume/report/validate/summary/take/bind/finish/stop/wait/mark/harvest/loop/decide/selftest)
 - `scripts/platform-api.sh` — 通用平台适配层示例(Hosted 用第 3 步的内联适配层)

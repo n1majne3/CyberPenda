@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import socketserver
 import threading
+import time
 import sys
 import tempfile
 import unittest
@@ -555,6 +556,190 @@ else:
             rec = self.ledger()["challenges"]["tch3-06"]
             self.assertEqual(rec["state"], "running", f"新获得第 {count} 枚 Flag 后被错误封存")
             self.assertEqual(rec["attempt"], count + 1)
+
+    def test_settled_chain_continues_on_the_same_verified_instance(self):
+        self.runtime()
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.challenges[1].update(correct_flag_count=1, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        instance = self.ledger()["dispatches"]["d001"]["instance"]
+        self.report("tch3-06", 1, gained=1, foothold="已验证的当前实例会话")
+        self.challenges[0]["correct_flag_count"] = 1
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("harvest", "--quota", "1")
+        self.assertEqual(self.cli("take"), "")
+        self.runtime_state.update(status="completed", settled=True)
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "completed")
+        self.cli("harvest", "--quota", "1")
+        self.assertIn("tch3-06", self.cli("take"))
+        dispatch = self.ledger()["dispatches"]["d002"]
+        self.assertEqual(dispatch["instance"], instance)
+        self.assertTrue(dispatch["siege"])
+        prompt = (self.ws / dispatch["prompt"]).read_text()
+        self.assertIn("1/6", prompt)
+        self.assertIn("围城续作", prompt)
+        self.assertEqual([call for call in self.calls() if call[0] != "list"], [])
+
+    def test_relay_yields_to_a_fresh_challenge(self):
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        self.report("tch3-06", 1, foothold="当前实例会话")
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "completed")
+        self.write_json("platform-state.json", {"challenges": self.challenges,
+                                                "start": {"container_addr": ["192.0.2.11:80"]}})
+        self.cli("harvest", "--quota", "1")
+        ready = self.cli("take")
+        self.assertIn("tch3-11", ready)
+        self.assertNotIn("tch3-06", ready)
+        self.assertEqual([c for c in self.calls() if c[0] != "list"],
+                         [["abandon", "tch3-06", "slot-release"], ["start", "tch3-11"]])
+
+    def test_exhausted_work_has_an_explicit_one_pass_resume_without_resetting_history(self):
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.challenges[1].update(correct_flag_count=1, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        self.report("tch3-06", 1, outcome="budget_stop", body="已验证的排除条件")
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "completed")
+        ledger = self.ledger()
+        ledger["challenges"]["tch3-06"].update(restarts=2)
+        self.save(ledger)
+        self.cli("harvest", "--quota", "1")
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["state"], "exhausted")
+        queue = (self.ws / "graph/escalations/QUEUE.md").read_text()
+        self.assertIn("resume", queue)
+        self.cli("harvest", "--quota", "1")
+        self.assertEqual((self.ws / "graph/escalations/QUEUE.md").read_text(), queue)
+        self.cli("resume", "tch3-06", "--reason", "新证据支持继续验证")
+        self.cli("resume", "tch3-06", "--reason", "同一请求重放")
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["restarts"], 3)
+        self.assertEqual([c for c in self.calls() if c[0] == "start"], [])
+        self.write_json("platform-state.json", {"challenges": [
+            {**self.challenges[0], "container_status": "stopped", "container_addr": []},
+            self.challenges[1]], "start": {"container_addr": ["192.0.2.20:80"]}})
+        self.cli("harvest", "--quota", "1")
+        self.assertIn("tch3-06", self.cli("take"))
+        dispatch = self.ledger()["dispatches"]["d002"]
+        self.assertEqual(dispatch["attempt"], 2)
+        self.assertEqual(dispatch["resume_reason"], "新证据支持继续验证")
+        self.assertIn("已验证的排除条件", (self.ws / dispatch["prompt"]).read_text())
+        self.cli("bind", "d002", "native-13")
+        self.report("tch3-06", 2, outcome="budget_stop")
+        self.cli("finish", "d002", "--agent-id", "native-13", "--status", "completed")
+        ledger = self.ledger()
+        ledger["dispatches"]["d002"]["created"] = ledger["dispatches"]["d001"]["created"]
+        self.save(ledger)
+        self.cli("harvest", "--quota", "1")
+        self.assertEqual(self.cli("take"), "")
+        self.assertIn("resume", (self.ws / "graph/escalations/QUEUE.md").read_text())
+        self.assertEqual(len([c for c in self.calls() if c[0] == "start"]), 1)
+        retry = next(eid for eid, review in self.ledger()["escalations"].items()
+                     if isinstance(review, dict) and review.get("kind") == "retry" and review["state"] == "open")
+        self.rejected("decide", retry, "--decision", "continue")
+        self.cli("decide", retry, "--decision", "continue", "--reason", "核对新证据后继续")
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["resume_request"]["reason"], "核对新证据后继续")
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["restarts"], 4)
+
+    def test_retry_review_expires_after_platform_completion(self):
+        self.platform()
+        ledger = self.ledger()
+        ledger["challenges"]["tch3-06"].update(state="exhausted", attempt=4, restarts=3)
+        ledger["dispatches"]["d001"] = dict(code="tch3-06", attempt=4, state="done", created=1)
+        self.save(ledger)
+        self.cli("harvest", "--quota", "0")
+        queue = (self.ws / "graph/escalations/QUEUE.md").read_text()
+        self.assertIn("resume", queue)
+        self.write_json("platform-state.json", {"challenges": self.challenges, "fail": ["list"]})
+        self.cli("harvest", "--quota", "0")
+        self.assertEqual((self.ws / "graph/escalations/QUEUE.md").read_text(), queue)
+        self.challenges[0].update(correct_flag_count=6, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("harvest", "--quota", "0")
+        self.assertNotIn("resume", (self.ws / "graph/escalations/QUEUE.md").read_text())
+        self.assertEqual([c for c in self.calls() if c[0] != "list"], [])
+
+    def test_resume_rejects_unverified_work_and_does_not_overbook_slots(self):
+        self.platform()
+        self.rejected("resume", "missing", "--reason", "检查")
+        self.rejected("resume", "tch3-06", "--reason", " ")
+        self.write_json("platform-state.json", {"challenges": self.challenges, "fail": ["list"]})
+        self.rejected("resume", "tch3-06", "--reason", "检查")
+        self.challenges[0].update(correct_flag_count=6, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.rejected("resume", "tch3-06", "--reason", "检查")
+        self.challenges[0].update(correct_flag_count=0, is_completed=False, container_status="pending")
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.rejected("resume", "tch3-06", "--reason", "检查")
+        self.challenges[0].update(container_status="stopped")
+        self.challenges[1].update(container_status="available", container_addr=["192.0.2.11:80"])
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-11")
+        self.cli("take")
+        self.cli("resume", "tch3-06", "--reason", "等待槽位")
+        self.cli("harvest", "--quota", "1")
+        self.assertEqual(self.cli("take"), "")
+        self.rejected("resume", "tch3-11", "--reason", "旧 Execute 未退出")
+        self.assertEqual([c for c in self.calls() if c[0] != "list"], [])
+        (self.ws / "deadline").write_text("1")
+        self.rejected("resume", "tch3-06", "--reason", "时限已到")
+
+    def test_partial_work_at_the_session_cap_does_not_start_before_resume(self):
+        self.platform()
+        ledger = self.ledger()
+        ledger["challenges"]["tch3-06"].update(state="partial", attempt=4, flags_correct=2,
+                                              restarts=1, last_flags_gained=0)
+        self.save(ledger)
+        self.challenges[0]["correct_flag_count"] = 2
+        self.challenges[1].update(correct_flag_count=1, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges,
+                                                "start": {"container_addr": ["192.0.2.10:80"]}})
+        self.cli("harvest", "--quota", "1")
+        self.assertEqual([c for c in self.calls() if c[0] != "list"], [])
+        self.cli("resume", "tch3-06", "--reason", "继续未完成阶段")
+        self.cli("harvest", "--quota", "1")
+        self.assertIn("tch3-06", self.cli("take"))
+        self.assertEqual(self.ledger()["dispatches"]["d001"]["attempt"], 5)
+
+    def test_global_deadline_caps_a_pass_and_cannot_be_extended_by_a_local_file(self):
+        deadline = int(time.time()) + 12 * 60
+        self.env["CYBERPENDA_EVALUATION_DEADLINE_UNIX"] = str(deadline)
+        (self.ws / "deadline").write_text(str(deadline + 7200))
+        self.cli("assemble", "tch3-06")
+        dispatch = self.ledger()["dispatches"]["d001"]
+        self.assertLessEqual(dispatch["hard_stop"], deadline - 300)
+        self.assertGreater(dispatch["hard_stop"] - dispatch["created"], 360)
+        prompt = (self.ws / dispatch["prompt"]).read_text()
+        self.assertIn("【全局时限】", prompt)
+        self.assertIn(str(deadline), prompt)
+        self.env["CYBERPENDA_EVALUATION_DEADLINE_UNIX"] = "1"
+        self.rejected("assemble", "tch3-11")
+        self.cli("harvest", "--dry")
+        self.assertEqual(self.cli("take"), "")
+
+    def test_zero_quota_releases_a_settled_instance_without_relaying(self):
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.challenges[1].update(correct_flag_count=1, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-12")
+        self.report("tch3-06", 1, foothold="当前实例会话")
+        self.cli("finish", "d001", "--agent-id", "native-12", "--status", "completed")
+        self.cli("harvest", "--quota", "0")
+        self.assertEqual(self.cli("take"), "")
+        self.assertIn(["abandon", "tch3-06", "slot-release"], self.calls())
 
     def test_absent_challenge_is_not_started_from_a_stale_ledger(self):
         self.platform()

@@ -27,9 +27,9 @@ prompt 由 `scripts/dispatch.py` 组装;你**禁止手写派发 prompt**,
 ## 开局序列(Phase 0,必须最先执行)
 
 1. 预检:按任务说明做环境连通性检查,失败即中断并报告原始响应。
-2. 时钟锚定:**仅当用户/任务说明明确给出总时限**时,`date +%s` 计算
-   deadline(当前 + 时限 - 15min 安全余量)写入 `$WS/deadline`。
-   未给时限时禁止自设 deadline。
+2. 时钟锚定:仅按用户/任务明确给出的绝对结束时间写 `$WS/deadline`。
+   若只有明确总时长，使用本场已知开始时间计算，接管时沿用原时限。
+   dispatcher 自动裁切每棒预算并预留 5 分钟收尾。未给时限时保持未知。
 3. 平台适配:有 API 则参照 `scripts/platform-api.sh` 封装成
    `$WS/platform.sh list|start|close|hint|submit`。
 4. `platform.sh list > $WS/challenges.json`(无平台时按任务说明人工准备)。
@@ -77,6 +77,11 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
    返回值保存于 `graph/hints/<code>.json`；用 Runtime 发信工具通知当前 Execute 读取该文件。
    后续派发自动携带该记录。请求失败或超时也记账，禁止自动重购；先核对平台结果。
    已处理/已过期的队列项会自动移除，不要手改 QUEUE.md。
+   到重试或会话软顶会产生**续投审查**。读封存报告后，使用
+   `decide <eid> --decision continue --reason "新证据与预期收益" --ws "$WS"`，
+   或选择 abandon。也可用 `resume <code> --reason "理由" --ws "$WS"` 排队一棒。
+   续投保留历史计数，实际派发才消费许可，配额仍由 dispatcher 控制。
+   保持 dispatcher 运行，通过 resume 续投，不手动 start 或改账本绕过护栏。
 3. 两者皆空且无 ENDGAME → 回到阻塞等待:
    `timeout 240 bash -c 'until [ -s graph/outbox/READY.tsv ] || [ -s graph/outbox/STOP.tsv ] || grep -q "^- e" graph/escalations/QUEUE.md 2>/dev/null; do sleep 5; done'`
    (超时返回即兜底巡检:确认 dispatcher 存活。)禁止无事件的定时 sleep 轮询,
@@ -94,7 +99,7 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
 
 | 事项 | 归属 |
 | --- | --- |
-| 选题、配额、补位、重试上限、看门狗、闲置槽回收(非 running 题且 Execute 已结束的实例放槽)、首段 8 分钟探针预算、围城续作棒(立足点题预算下限 60 分钟+续作指令)、零进展预算加深、终盘 60 分钟停新题探针、平台对账、收尾停派 | dispatcher(脚本,规则见 spec §6) |
+| 选题、配额、补位、重试上限、看门狗、同实例接力与闲置槽回收、首段 8 分钟探针预算、围城续作棒(立足点题预算下限 60 分钟+续作指令)、零进展预算加深、终盘 60 分钟停新题探针、平台对账、收尾停派 | dispatcher(脚本,规则见 spec §6) |
 | 派发动作本身(Agent 工具调用) | 你(逐字转发 outbox prompt) |
 | `uncertain` 升级(追投 or 收割、连环 infra 死亡、平台异常) | 你(唯一需要判断的地方) |
 | 攻击目标、写 fact、提交 flag | Execute agent(在直连会话内) |
@@ -110,6 +115,9 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
   显式 family 优先；全题集共用的编号前缀不表示技术家族。
 - 多 flag 链题按里程碑续投:每段退场报告的 `next_milestone` 就是下一段目标,
   不存在固定时钟切割。
+- 同实例接力要求正常完成且退出已确认、报告有效、实例代次和地址一致，并有立足点或新增 Flag。
+  dispatcher 按原有选题排序和配额决定是否直接派下一棒；新题仍优先。
+  失败退出、实例改变或无续作资格时放槽。预算受全局时限裁切，未知时限不等于还有完整一棒时间。
 
 ## 错误处理
 
@@ -123,5 +131,5 @@ test -f graph/outbox/ENDGAME && echo ENDGAME
 
 - `references/graph-protocol.md` — ledger/attempts/outbox/escalations 与退场报告 schema(开局必读)
 - `references/execute-prompt.md` — 派发模板说明(模板本体由 dispatch.py 持有)
-- `scripts/dispatch.py` — 薄调度器(init/assemble/report/validate/summary/take/bind/finish/stop/wait/mark/harvest/loop/decide/selftest)
+- `scripts/dispatch.py` — 薄调度器(init/assemble/resume/report/validate/summary/take/bind/finish/stop/wait/mark/harvest/loop/decide/selftest)
 - `scripts/platform-api.sh` — 平台适配层示例

@@ -134,6 +134,43 @@ func TestDuplicateSubmissionRetainsThePlatformCodeAndChainProgress(t *testing.T)
 	}
 }
 
+func TestSubmitRecognizesOnlyAnExplicitHTTPConflictDuplicate(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		status    int
+		body      string
+		duplicate bool
+	}{
+		{"accepted stage", 409, `{"code":"duplicate","message":"flag_index=0 already correctly submitted","detail":{}}`, true},
+		{"structured stage", 409, `{"code":"duplicate","matched_flag_index":0,"correct_flag_count":2,"total_flag_count":6}`, true},
+		{"other conflict", 409, `{"code":"invalid_state","message":"run ended"}`, false},
+		{"malformed conflict", 409, `{"code":"duplicate"`, false},
+		{"server error", 503, `{"code":"duplicate"}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			client := newClient(t, "http://benchmark.test", handlerClient(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.body)
+			})), time.Second)
+			result, err := client.Submit(context.Background(), "chain", "FLAG{already-accepted}")
+			if test.duplicate {
+				raw, marshalErr := json.Marshal(result)
+				if err != nil || marshalErr != nil || result.Code != "duplicate" ||
+					result.Correct || !strings.Contains(string(raw), `"http_status":409`) {
+					t.Fatalf("duplicate must remain a structured no-new-credit result: %s, %v", raw, err)
+				}
+			} else if err == nil {
+				t.Fatalf("non-duplicate failure was accepted: %#v", result)
+			}
+			if calls != 1 {
+				t.Fatalf("submission must not retry or mutate another endpoint: %d calls", calls)
+			}
+		})
+	}
+}
+
 func TestCloseAllowsCompletionOrExplicitReasonedAbandonment(t *testing.T) {
 	tests := []struct {
 		name      string

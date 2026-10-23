@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -134,6 +135,34 @@ func TestHostedConfigurationAcceptsOptionalReasoningEffortAndTaskGoalAppendix(t 
 	wantGoal := hostedcontroller.HostedTaskGoal + "\n\nPrefer easy Benchmark Challenges first."
 	if evaluation.Task.Goal != wantGoal {
 		t.Fatalf("Task Goal = %q, want required sentence plus appendix", evaluation.Task.Goal)
+	}
+}
+
+func TestHostedDeadlineIsExplicitAndProjectedWithoutGuessingADuration(t *testing.T) {
+	env := validHostedEnv()
+	config, err := hostedcontroller.ConfigFromEnv(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value := hostedcontroller.EvaluationForConfig(config).Runtime.Env["CYBERPENDA_EVALUATION_DEADLINE_UNIX"]; value != "" {
+		t.Fatalf("unknown deadline must remain absent: %q", value)
+	}
+	env["CYBERPENDA_EVALUATION_DEADLINE"] = "2026-10-24T20:00:00+08:00"
+	config, err = hostedcontroller.ConfigFromEnv(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluation := hostedcontroller.EvaluationForConfig(config)
+	want := fmt.Sprint(time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC).Unix())
+	if evaluation.Runtime.Env["CYBERPENDA_EVALUATION_DEADLINE_UNIX"] != want ||
+		!strings.Contains(evaluation.Task.Goal, "2026-10-24T12:00:00Z") {
+		t.Fatalf("deadline was not projected in UTC: env=%v goal=%s", evaluation.Runtime.Env, evaluation.Task.Goal)
+	}
+	for _, value := range []string{"six hours", "2026-10-24T20:00:00", "1969-01-01T00:00:00Z"} {
+		env["CYBERPENDA_EVALUATION_DEADLINE"] = value
+		if _, err := hostedcontroller.ConfigFromEnv(env); err == nil {
+			t.Fatalf("invalid deadline accepted: %q", value)
+		}
 	}
 }
 

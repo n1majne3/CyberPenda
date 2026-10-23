@@ -75,6 +75,7 @@ type Config struct {
 	ModelAPIKey          string
 	ReasoningEffort      string
 	TaskGoalAppendix     string
+	EvaluationDeadline   time.Time
 	AutoCompactThreshold int
 	AutoCompactWindow    int
 	MaxOutputTokens      int
@@ -161,6 +162,13 @@ func ConfigFromEnv(env map[string]string) (Config, error) {
 	if strings.ContainsRune(config.TaskGoalAppendix, 0) || len(config.TaskGoalAppendix) > MaxHostedTaskGoalAppendix {
 		return Config{}, ErrInvalidConfig
 	}
+	if value := strings.TrimSpace(env["CYBERPENDA_EVALUATION_DEADLINE"]); value != "" {
+		deadline, err := time.Parse(time.RFC3339, value)
+		if err != nil || deadline.Unix() <= 0 {
+			return Config{}, ErrInvalidConfig
+		}
+		config.EvaluationDeadline = deadline.UTC()
+	}
 	threshold, err := optionalHostedInt(env["CYBERPENDA_AUTO_COMPACT_THRESHOLD"], MinHostedAutoCompactThreshold, MaxHostedAutoCompactThreshold)
 	if err != nil {
 		return Config{}, ErrInvalidConfig
@@ -224,6 +232,12 @@ func evaluationFromConfig(config Config) HostedEvaluationBootstrap {
 	evaluation.Runtime.ModelAPIKey = config.ModelAPIKey
 	evaluation.Runtime.ReasoningEffort = config.ReasoningEffort
 	evaluation.Runtime.Env = map[string]string{"BENCHMARK_BASE_URL": config.BenchmarkBaseURL}
+	if !config.EvaluationDeadline.IsZero() {
+		evaluation.Runtime.Env["CYBERPENDA_EVALUATION_DEADLINE_UNIX"] = strconv.FormatInt(config.EvaluationDeadline.Unix(), 10)
+		evaluation.Task.Goal += "\n\nThe operator supplied an absolute evaluation deadline: " +
+			config.EvaluationDeadline.UTC().Format(time.RFC3339) +
+			". This deadline also permits ending the run. The dispatcher must reserve time to finish before it; never extend it or infer a new duration."
+	}
 	if config.Runtime == RuntimePi {
 		evaluation.Runtime.Env["CYBERPENDA_HOSTED_PI"] = "1"
 	}
