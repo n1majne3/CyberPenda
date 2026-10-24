@@ -146,16 +146,21 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
    返回值保存于 `graph/hints/<code>.json`；用 Runtime 发信工具通知当前 Execute 读取该文件。
    后续派发自动携带该记录。请求失败或超时也记账，禁止自动重购；先核对平台结果。
    已处理/已过期的队列项会自动移除，不要手改 QUEUE.md。
-   **续投审查**表示已到重试或会话软顶。读封存报告后选择
-   `decide <eid> --decision continue --reason "新证据与预期收益" --ws "$WS"`，
-   或 abandon。也可用 `resume <code> --reason "理由" --ws "$WS"` 排队一棒。
-   续投保留全部历史计数，只有下次实际派发才消费许可；配额仍由 dispatcher 控制。
-   保持 dispatcher 运行，通过 resume 续投，不手动 start 或改账本绕过护栏。
-3. 两者皆空且无 ENDGAME → 回到等待命令。
+   **续投或暂缓**：先读 `references/graph-protocol.md` 的“续投计划与暂缓”，核对原始证据。
+   写计划 JSON（最新派发、假设、最小测试、停止判据、证据文件），再运行
+   `decide <eid> --decision continue --reason "新依据" --plan-file graph/retry-plan.json --ws "$WS"`，
+   或 `resume <code> --reason "新依据" --plan-file graph/retry-plan.json --ws "$WS"`。
+   计划会进入下一棒 prompt。仅改续投理由不能重复执行没有进展的同一计划。
+   没有可区分的新测试时，使用 `defer <code> --reason "当前限制" --reconsider-when "可观察变化" --ws "$WS"`；
+   队列项也支持 `decide <eid> --decision defer` 加相同参数。先收割活动 Execute，再暂缓。
+   保持 dispatcher 运行与平台对账，新证据满足复审条件后才 resume。
+3. 两者皆空且无 ENDGAME → 读取 `dispatch.py summary --ws "$WS"`。
+   `deferred` 表示暂缓等待新证据，`review_required` 表示仍需审查；均回到等待命令并更新心跳。
+   时间流逝、watchdog 唤醒和“只剩一题”本身不构成新的续投依据。
    **禁止无事件的定时 sleep 轮询,也禁止任何 sleep 后跟查文件的组合**(等待只有阻塞式一条路),禁止在等待间隙做任何攻击性操作或
    通读 fact/退场报告全文。
 4. `graph/outbox/ENDGAME` 出现，或最新平台快照已确认全题完成 → 收尾。
-   先确认全部活动 Execute 已退出并 finish，完成最后一次 harvest，确认实例已释放，再停 dispatcher。
+   先确认全部活动 Execute 已退出并 finish，完成最后一次 harvest，确认实例已释放，并核对 summary 的 `may_finish=true`，再停 dispatcher。
    运行 `python3 scripts/dispatch.py summary --ws "$WS"`，把结果写入 `$WS/state.md` 并报告。
    Flag 完成数和整题完成数分别报告。`nominal_total_score` 是题目原始总分；
    `earned_score`、`hint_deduction`、`platform_composite_score` 为 null 时明确写“未知，待平台正式结果”。
@@ -239,7 +244,7 @@ Pi 的 bash 工具每次最多运行 300 秒；更长任务分段检查或按 Ex
 
 ## 文件清单
 
-- `references/graph-protocol.md` — ledger/attempts/outbox/escalations 与退场报告 schema(开局必读)
+- `references/graph-protocol.md` — ledger/attempts/outbox/escalations、续投计划/暂缓与报告 schema（开局及续投决策前读）
 - `references/execute-prompt.md` — 派发模板说明(模板本体由 dispatch.py 持有,派发前读)
-- `scripts/dispatch.py` — 薄调度器(init/assemble/resume/report/validate/summary/take/bind/finish/stop/wait/mark/harvest/loop/decide/selftest)
+- `scripts/dispatch.py` — 薄调度器(init/assemble/resume/defer/report/validate/summary/take/bind/finish/stop/wait/mark/harvest/loop/decide/selftest)
 - `scripts/platform-api.sh` — 通用平台适配层示例(Hosted 用第 3 步的内联适配层)

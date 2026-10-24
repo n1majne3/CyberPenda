@@ -124,12 +124,14 @@ type HTTPAppConfig struct {
 
 // reviveSteerMessage is delivered as task steering when the watchdog fires.
 // It must restart the Decide loop without corrupting dispatcher state. Run
-// 24370: a revived turn that only re-checks and returns to blocking wait
-// re-parks immediately, so the message forces one dispatch action.
+// Drain ready work before waiting, but preserve an explicit defer decision
+// until new evidence meets its review condition.
 const reviveSteerMessage = "(CyberPenda hosted watchdog) 长时间无运行事件:上一轮可能已异常终止。" +
 	"请按 ctf-orchestrator 的身份确认流程恢复 Decide 循环:读 leader.lock 与 dispatcher tmux 存活," +
-	"检查 READY/升级队列。若 READY 队列非空,立即派生对应 worker;若确无待派任务且全部在飞," +
-	"跑一轮 harvest 后再等一个 wait_event 周期;禁止未派出任何 worker 就直接回到阻塞等待。" +
+	"先完成一轮 harvest，再读 dispatch.py summary、READY/升级队列。READY 非空时先派发再等待；" +
+	"活动 Execute 先按退出协议收割。scheduling_state=deferred 时核对复审条件，" +
+	"有新证据或可区分的新测试时用 resume --plan-file 续投；否则保持 dispatcher 和 wait 循环，更新 leader.lock。" +
+	"may_finish=false 时本场未完成收尾，队列空或暂缓都不是结束证明。" +
 	"不要重启容器,不要重置 ledger。"
 
 func NewHTTPApp(config HTTPAppConfig) *HTTPApp {

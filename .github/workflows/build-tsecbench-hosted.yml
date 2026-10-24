@@ -39,6 +39,8 @@ jobs:
           go-version-file: go.mod
       - name: Require native Linux AMD64 runner
         run: test "$(uname -m)" = x86_64
+      - name: Run backend and dispatcher regressions before packaging
+        run: make test-backend
       - uses: docker/setup-buildx-action@v4
       - name: Build native Linux AMD64 Hosted Image
         uses: docker/build-push-action@v7

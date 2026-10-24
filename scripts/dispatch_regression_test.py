@@ -602,6 +602,155 @@ else:
         self.assertEqual([c for c in self.calls() if c[0] != "list"],
                          [["abandon", "tch3-06", "slot-release"], ["start", "tch3-11"]])
 
+    def test_history_labels_use_instance_generation_not_reused_addresses(self):
+        self.platform()
+        self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
+        self.challenges[1].update(correct_flag_count=1, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        self.cli("take")
+        self.cli("bind", "d001", "native-1")
+        self.report("tch3-06", 1, foothold="已验证的会话", body="同一服务返回 500；原因仍待验证。")
+        self.cli("finish", "d001", "--agent-id", "native-1", "--status", "completed")
+        self.cli("harvest", "--quota", "1")
+        prompt = (self.ws / self.ledger()["dispatches"]["d002"]["prompt"]).read_text()
+        self.assertIn("同实例检查点", prompt)
+        self.assertNotIn("历史实例", prompt)
+        self.assertNotIn("【已排除的面】", prompt)
+        self.assertIn("同一服务返回 500；原因仍待验证。", prompt)
+        self.cli("take")
+        self.cli("bind", "d002", "native-2")
+        self.report("tch3-06", 2)
+        self.cli("finish", "d002", "--agent-id", "native-2", "--status", "failed")
+        self.cli("harvest", "--dry")
+        # 平台复用同一地址，但释放后已经是新的实例代次。
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("assemble", "tch3-06")
+        prompt = (self.ws / self.ledger()["dispatches"]["d003"]["prompt"]).read_text()
+        self.assertIn("不同实例的历史观测", prompt)
+        self.assertNotIn("同实例检查点", prompt)
+
+    def plan(self, *, hypothesis="缺少请求前提造成静态响应", test="比较带与不带必要字段的响应",
+             stop_when="对照无差异时只记录本次条件下未观察到效果", evidence="原始对照响应"):
+        self.write_json("graph/data/retry-evidence.json", {"observation": evidence})
+        previous = sorted((d["attempt"], did) for did, d in self.ledger()["dispatches"].items()
+                          if d["code"] == "tch3-06")
+        self.write_json("graph/retry-plan.json", {
+            "after_dispatch": previous[-1][1] if previous else "",
+            "hypothesis": hypothesis, "test": test, "stop_when": stop_when,
+            "evidence": ["graph/data/retry-evidence.json"],
+        })
+        return str(self.ws / "graph/retry-plan.json")
+
+    def test_resume_requires_a_current_evidence_plan_and_delivers_it_to_execute(self):
+        self.platform()
+        ledger = self.ledger()
+        ledger["challenges"]["tch3-06"].update(state="exhausted", attempt=4, restarts=3)
+        ledger["dispatches"]["d001"] = dict(code="tch3-06", attempt=4, state="done", created=1)
+        ledger["seq"] = 1
+        self.save(ledger)
+        self.rejected("resume", "tch3-06", "--reason", "仅剩一题，再试一次")
+        plan = self.plan()
+        self.cli("resume", "tch3-06", "--reason", "重新验证旧排除项的前提", "--plan-file", plan)
+        self.challenges[1].update(correct_flag_count=1, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges,
+                                                "start": {"container_addr": ["192.0.2.10:80"]}})
+        self.cli("harvest", "--quota", "1")
+        self.cli("take")
+        prompt = (self.ws / self.ledger()["dispatches"]["d002"]["prompt"]).read_text()
+        for expected in ("重新验证旧排除项的前提", "缺少请求前提造成静态响应", "比较带与不带必要字段的响应",
+                         "对照无差异时只记录本次条件下未观察到效果", "graph/data/retry-evidence.json"):
+            self.assertIn(expected, prompt)
+        self.cli("bind", "d002", "native-2")
+        self.report("tch3-06", 5)
+        self.cli("finish", "d002", "--agent-id", "native-2", "--status", "completed")
+        self.cli("harvest", "--quota", "0")
+        self.rejected("resume", "tch3-06", "--reason", "沿用过期计划", "--plan-file", plan)
+        plan = self.plan()
+        self.rejected("resume", "tch3-06", "--reason", "换一个理由仍重复同一测试", "--plan-file", plan)
+        self.cli("resume", "tch3-06", "--reason", "新增对照证据", "--plan-file", self.plan(evidence="新增原始响应"))
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["restarts"], 4)
+
+    def test_deferred_work_waits_for_evidence_without_becoming_run_completion(self):
+        self.platform()
+        self.challenges[1].update(correct_flag_count=1, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("defer", "tch3-06", "--reason", "当前判据不足", "--reconsider-when", "收到新的可区分响应")
+        for _ in range(2):
+            self.cli("harvest", "--quota", "3")
+            self.assertEqual(self.cli("take"), "")
+            summary = json.loads(self.cli("summary"))
+            self.assertEqual(summary["scheduling_state"], "deferred")
+            self.assertFalse(summary["may_finish"])
+            self.assertEqual(summary["deferred"][0]["reconsider_when"], "收到新的可区分响应")
+        self.assertEqual([c for c in self.calls() if c[0] != "list"], [])
+        self.rejected("assemble", "tch3-06")
+        self.cli("resume", "tch3-06", "--reason", "新的证据已到", "--plan-file", self.plan())
+        self.assertEqual(json.loads(self.cli("summary"))["scheduling_state"], "runnable")
+        self.write_json("platform-state.json", {"challenges": self.challenges,
+                                                "start": {"container_addr": ["192.0.2.10:80"]}})
+        self.cli("harvest", "--quota", "1")
+        self.assertIn("tch3-06", self.cli("take"))
+        self.rejected("defer", "tch3-06", "--reason", "仍在工作", "--reconsider-when", "以后")
+        self.assertEqual(json.loads(self.cli("summary"))["scheduling_state"], "active")
+
+    def test_retry_review_can_defer_and_platform_completion_supersedes_it(self):
+        self.platform()
+        ledger = self.ledger()
+        ledger["challenges"]["tch3-06"].update(state="exhausted", attempt=4, restarts=3)
+        ledger["dispatches"]["d001"] = dict(code="tch3-06", attempt=4, state="done", created=1)
+        self.save(ledger)
+        self.cli("harvest", "--quota", "0")
+        review = next(eid for eid, e in self.ledger()["escalations"].items() if isinstance(e, dict))
+        self.rejected("decide", review, "--decision", "defer", "--reason", "没有新证据")
+        self.cli("decide", review, "--decision", "defer", "--reason", "没有新证据",
+                 "--reconsider-when", "服务状态或测量证据改变")
+        self.assertEqual((self.ws / "graph/escalations/QUEUE.md").read_text(), "")
+        self.write_json("platform-state.json", {"challenges": self.challenges, "fail": ["list"]})
+        self.cli("harvest", "--quota", "0")
+        self.rejected("summary")
+        self.assertEqual(self.ledger()["challenges"]["tch3-06"]["state"], "deferred")
+        for challenge in self.challenges:
+            challenge.update(correct_flag_count=challenge["flag_count"], is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges})
+        self.cli("harvest", "--quota", "0")
+        summary = json.loads(self.cli("summary"))
+        self.assertEqual(summary["scheduling_state"], "complete")
+        self.assertTrue(summary["may_finish"])
+        self.assertEqual(summary["deferred"], [])
+        self.rejected("defer", "tch3-06", "--reason", "旧状态", "--reconsider-when", "以后")
+
+    def test_resume_rejects_missing_or_outside_evidence_without_starting_work(self):
+        self.platform()
+        for evidence in [[], ["graph/missing.txt"], ["../outside.txt"], [7]]:
+            with self.subTest(evidence=evidence):
+                plan = self.plan()
+                data = json.loads(Path(plan).read_text())
+                data["evidence"] = evidence
+                Path(plan).write_text(json.dumps(data))
+                self.assertIn("续投计划无效", self.rejected("resume", "tch3-06", "--reason", "复核",
+                                                      "--plan-file", plan))
+        plan = self.plan()
+        data = json.loads(Path(plan).read_text())
+        data["stop_when"] = " "
+        Path(plan).write_text(json.dumps(data))
+        self.assertIn("stop_when", self.rejected("resume", "tch3-06", "--reason", "复核", "--plan-file", plan))
+        self.assertNotIn("resume_request", self.ledger()["challenges"]["tch3-06"])
+        self.assertEqual([c for c in self.calls() if c[0] != "list"], [])
+
+    def test_plan_can_be_retried_when_execute_never_started(self):
+        self.platform()
+        self.challenges[1].update(correct_flag_count=1, is_completed=True)
+        self.write_json("platform-state.json", {"challenges": self.challenges,
+                                                "start": {"container_addr": ["192.0.2.10:80"]}})
+        self.cli("resume", "tch3-06", "--reason", "验证前提", "--plan-file", self.plan())
+        self.cli("harvest", "--quota", "1")
+        self.cli("take")
+        self.cli("finish", "d001", "--status", "not_started")
+        self.cli("harvest", "--quota", "0")
+        self.cli("resume", "tch3-06", "--reason", "投递失败，没有执行过该测试", "--plan-file", self.plan())
+        self.assertIn("resume_request", self.ledger()["challenges"]["tch3-06"])
+
     def test_exhausted_work_has_an_explicit_one_pass_resume_without_resetting_history(self):
         self.platform()
         self.challenges[0].update(container_status="available", container_addr=["192.0.2.10:80"])
@@ -621,8 +770,8 @@ else:
         self.assertIn("resume", queue)
         self.cli("harvest", "--quota", "1")
         self.assertEqual((self.ws / "graph/escalations/QUEUE.md").read_text(), queue)
-        self.cli("resume", "tch3-06", "--reason", "新证据支持继续验证")
-        self.cli("resume", "tch3-06", "--reason", "同一请求重放")
+        self.cli("resume", "tch3-06", "--reason", "新证据支持继续验证", "--plan-file", self.plan())
+        self.cli("resume", "tch3-06", "--reason", "同一请求重放", "--plan-file", self.plan())
         self.assertEqual(self.ledger()["challenges"]["tch3-06"]["restarts"], 3)
         self.assertEqual([c for c in self.calls() if c[0] == "start"], [])
         self.write_json("platform-state.json", {"challenges": [
@@ -633,7 +782,10 @@ else:
         dispatch = self.ledger()["dispatches"]["d002"]
         self.assertEqual(dispatch["attempt"], 2)
         self.assertEqual(dispatch["resume_reason"], "新证据支持继续验证")
-        self.assertIn("已验证的排除条件", (self.ws / dispatch["prompt"]).read_text())
+        prompt = (self.ws / dispatch["prompt"]).read_text()
+        self.assertIn("已验证的排除条件", prompt)
+        self.assertIn("新证据支持继续验证", prompt)
+        self.assertNotIn("同一请求重放", prompt)
         self.cli("bind", "d002", "native-13")
         self.report("tch3-06", 2, outcome="budget_stop")
         self.cli("finish", "d002", "--agent-id", "native-13", "--status", "completed")
@@ -647,7 +799,8 @@ else:
         retry = next(eid for eid, review in self.ledger()["escalations"].items()
                      if isinstance(review, dict) and review.get("kind") == "retry" and review["state"] == "open")
         self.rejected("decide", retry, "--decision", "continue")
-        self.cli("decide", retry, "--decision", "continue", "--reason", "核对新证据后继续")
+        self.cli("decide", retry, "--decision", "continue", "--reason", "核对新证据后继续",
+                 "--plan-file", self.plan(evidence="已新增可区分的原始证据"))
         self.assertEqual(self.ledger()["challenges"]["tch3-06"]["resume_request"]["reason"], "核对新证据后继续")
         self.assertEqual(self.ledger()["challenges"]["tch3-06"]["restarts"], 4)
 
@@ -671,28 +824,29 @@ else:
 
     def test_resume_rejects_unverified_work_and_does_not_overbook_slots(self):
         self.platform()
-        self.rejected("resume", "missing", "--reason", "检查")
-        self.rejected("resume", "tch3-06", "--reason", " ")
+        plan = self.plan()
+        self.rejected("resume", "missing", "--reason", "检查", "--plan-file", plan)
+        self.rejected("resume", "tch3-06", "--reason", " ", "--plan-file", plan)
         self.write_json("platform-state.json", {"challenges": self.challenges, "fail": ["list"]})
-        self.rejected("resume", "tch3-06", "--reason", "检查")
+        self.rejected("resume", "tch3-06", "--reason", "检查", "--plan-file", plan)
         self.challenges[0].update(correct_flag_count=6, is_completed=True)
         self.write_json("platform-state.json", {"challenges": self.challenges})
-        self.rejected("resume", "tch3-06", "--reason", "检查")
+        self.rejected("resume", "tch3-06", "--reason", "检查", "--plan-file", plan)
         self.challenges[0].update(correct_flag_count=0, is_completed=False, container_status="pending")
         self.write_json("platform-state.json", {"challenges": self.challenges})
-        self.rejected("resume", "tch3-06", "--reason", "检查")
+        self.rejected("resume", "tch3-06", "--reason", "检查", "--plan-file", plan)
         self.challenges[0].update(container_status="stopped")
         self.challenges[1].update(container_status="available", container_addr=["192.0.2.11:80"])
         self.write_json("platform-state.json", {"challenges": self.challenges})
         self.cli("assemble", "tch3-11")
         self.cli("take")
-        self.cli("resume", "tch3-06", "--reason", "等待槽位")
+        self.cli("resume", "tch3-06", "--reason", "等待槽位", "--plan-file", plan)
         self.cli("harvest", "--quota", "1")
         self.assertEqual(self.cli("take"), "")
-        self.rejected("resume", "tch3-11", "--reason", "旧 Execute 未退出")
+        self.rejected("resume", "tch3-11", "--reason", "旧 Execute 未退出", "--plan-file", plan)
         self.assertEqual([c for c in self.calls() if c[0] != "list"], [])
         (self.ws / "deadline").write_text("1")
-        self.rejected("resume", "tch3-06", "--reason", "时限已到")
+        self.rejected("resume", "tch3-06", "--reason", "时限已到", "--plan-file", plan)
 
     def test_partial_work_at_the_session_cap_does_not_start_before_resume(self):
         self.platform()
@@ -706,7 +860,7 @@ else:
                                                 "start": {"container_addr": ["192.0.2.10:80"]}})
         self.cli("harvest", "--quota", "1")
         self.assertEqual([c for c in self.calls() if c[0] != "list"], [])
-        self.cli("resume", "tch3-06", "--reason", "继续未完成阶段")
+        self.cli("resume", "tch3-06", "--reason", "继续未完成阶段", "--plan-file", self.plan())
         self.cli("harvest", "--quota", "1")
         self.assertIn("tch3-06", self.cli("take"))
         self.assertEqual(self.ledger()["dispatches"]["d001"]["attempt"], 5)

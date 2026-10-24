@@ -11,6 +11,8 @@
   validate    校验一份退场报告
   report      从参数和正文文件生成、校验退场报告，自动填入派发来源
   summary     读取平台快照，区分 Flag、整题完成数、原始总分与未知实得分
+  resume      用证据计划排队一棒续投
+  defer       暂缓一题，记录重新审查条件；常驻调度继续运行
   mark        标记一条 outbox 派发的状态(dispatched / infra_dead)
   harvest     扫描退场报告与看门狗,记账并按规则补位组装
   loop        周期执行 harvest + 平台对账(需 platform.sh)
@@ -20,6 +22,7 @@
 
 import argparse
 import fcntl
+import hashlib
 from contextlib import contextmanager
 import json
 import os
@@ -77,6 +80,13 @@ WORK_STYLE = """开工动作:先创建开工标记 {started_marker}(touch 一个
 5. flag 大小写敏感(可能是 FLAG{{...}}),内部可能含特殊字符,提交时务必加引号。
 6. 全局技巧:离线知识库 /opt/knowledge(hacktricks 方法论、payloads、wordlists),动手前 `pentest-knowledge-lookup <关键词>` 检索,命中文件整篇读完再动手。"""
 
+EVIDENCE_PROTOCOL = """【负面结论的证据条件】准备排除假设或归因平台故障时：
+1. 先确认测试前提：目标与实例、身份、方法、必要字段、请求是否进入目标处理器。使用已知有效请求作正对照，并保留无效请求作负对照。
+2. 核对测量本身：本地复现必须返回预期标记、版本和响应形态；返回别的服务或静态页面时，记录“测量无效”，先修测量。无回显、无延迟、状态码相同不能单独证明未执行。
+3. Fact 分列“观测、前提、对照、判据、适用范围、证据文件”。缺少前提或对照时写“待验证”，限定为本次输入未观察到效果，保留替代解释。平台故障归因需独立证据。
+4. 历史结论与新证据冲突时，追加纠正 Fact，引用被修正的 Fact/报告及原始响应；旧记录保持不变。读取历史不等于接受历史判断。
+5. 重试先写可证伪的假设、最小测试和停止判据；条件未改变时复用结果。停止判据满足后写有限结论并收束，交给 Decide 复审。"""
+
 EXIT_PROTOCOL = """【退场协议——本段结束前必须完成,否则结论不被采信】
 1. 无论解出与否,把退场报告写到 {attempts_path},front-matter 必填:
    challenge / attempt / outcome / flags_gained / foothold / next_milestone
@@ -85,7 +95,7 @@ EXIT_PROTOCOL = """【退场协议——本段结束前必须完成,否则结论
    先把 Markdown 正文写到 graph/data/{code}-{attempt}-report-body.md，再用以下命令生成报告；替换 outcome、立足点和下一步参数：
    python3 {report_script} report {dispatch} --ws {workspace} --outcome stalled --foothold '' --next-milestone '下一步' --body-file {report_body}
    命令自动填来源并转义文本；返回 ok 后结束。若手写报告，结束前必须运行 python3 {report_script} validate {code} {attempt} --ws {workspace}，按具体错误修正。
-2. 正文两节:「试过的面(下一段不要重复)」与「证据指针」。大输出写
+2. 正文两节:「试过的面」与「证据指针」。阴性结果按负面结论的证据条件记录。大输出写
    graph/data/{code}-{attempt}-*.txt 或 .json,报告里只引用文件名。
 3. 没有结果就如实写"已试X、观察到Y、未达成Z";禁止"此路不通/已穷尽/勿再试"类绝对结论。
 4. 拿到 flag 立即提交,把返回 JSON 原文粘进退场报告。
@@ -438,13 +448,23 @@ def collect_excluded(ws, code, led=None):
                 chunk = chunk[:end.start()]
         chunk = chunk.strip() or "(本节为空，继续前必须读取这份历史报告。)"
         if chunk:
-            lines.append("第 %d 段(outcome=%s,历史实例，详见 %s):\n%s"
-                         % (k, meta.get("outcome"), p.relative_to(ws.root), chunk))
+            lines.append("第 %d 段(outcome=%s,%s，详见 %s):\n%s"
+                         % (k, meta.get("outcome"), instance_relation(rec, meta), p.relative_to(ws.root), chunk))
     text = "\n".join(lines).strip()
     if not text:
         return "(首段,无历史。)"
     return text[:EXCLUDED_CAP_CHARS] + ("\n(超出截断,详见 graph/attempts/%s/)" % code
                                         if len(text) > EXCLUDED_CAP_CHARS else "")
+
+
+def instance_relation(rec, meta):
+    generation = (rec.get("instance") or {}).get("generation")
+    previous = meta.get("instance")
+    if not generation or not previous or previous == "offline":
+        return "实例关系未知；先核对目标与会话"
+    if generation == previous:
+        return "同实例检查点；最小活性检查后复用"
+    return "不同实例的历史观测；重新确认会话和落地物"
 
 
 def collect_own_facts(ws, code, led=None):
@@ -454,7 +474,8 @@ def collect_own_facts(ws, code, led=None):
     for p in sorted(fact_sources(ws, led), key=lambda p: (p.stat().st_mtime_ns, p.name), reverse=True):
         meta, body = read_report_sections(p)
         if meta.get("challenge") == code and fact_has_origin(ws, led, meta):
-            pieces.append("%s — %s\n%s" % (p.relative_to(ws.root), meta.get("title", ""), body[:800]))
+            pieces.append("%s — %s（%s）\n%s" % (p.relative_to(ws.root), meta.get("title", ""),
+                          instance_relation(led["challenges"][code], meta), body[:800]))
     text = "\n\n".join(pieces)
     return text[:6000] + ("\n(更多本题记录见 graph/facts/)" if len(text) > 6000 else "") if text else "(本题尚无 Fact。)"
 
@@ -480,6 +501,14 @@ def build_prompt(ws, led, code, budget_min=None, siege=False, assault=False, har
     attempts_rel = "graph/attempts/%s/%d.md" % (code, k)
     started_rel = "graph/attempts/%s/%d.started" % (code, k)
     milestone = next_milestone(led, code)
+    if rec.get("resume_request"):
+        request = rec["resume_request"]
+        plan = request.get("plan", {})
+        milestone = ("【显式续投】%s\n待验证假设：%s\n本棒测试：%s\n停止判据：%s\n"
+                     "证据文件（先读取并核对摘要；变化时通知 Decide 重新审查）：%s\n"
+                     "历史里程碑（按本次计划复核）：%s" % (
+                         request["reason"], plan.get("hypothesis", "未提供"), plan.get("test", "未提供"),
+                         plan.get("stop_when", "未提供"), json.dumps(plan.get("evidence", []), ensure_ascii=False), milestone))
     if siege:
         milestone = ("【围城续作】先确认已有会话和立足点仍属于当前实例，再从里程碑续作;"
                      "禁止重验已有证据确认的已完成步骤；证据变化时更新 Fact。目标:%s" % milestone)
@@ -494,7 +523,8 @@ def build_prompt(ws, led, code, budget_min=None, siege=False, assault=False, har
                             name=rec["name"], code=code,
                             flags_total=rec["flags_total"]),
         "【实例归属】dispatch: d%03d；instance: %s。Fact 和退场报告 front-matter 必须写入这两个字段。"
-        "历史 IP 相同不能证明仍是同一题；历史会话和路径必须在本实例重新确认。目标内容明显改变时停止请求并通知 Decide。"
+        "按实例代次复用检查点；同代次只做最小活性检查，代次改变或未知时重新确认会话和路径。"
+        "相同 IP 不能证明实例相同。目标内容明显改变时停止请求并通知 Decide。"
         % (led["seq"], (rec.get("instance") or {}).get("generation", "offline")),
         "【本段目标】%s" % milestone,
         "【已确认进度】%d/%d 枚 Flag。已完成阶段不重复提交，继续未完成阶段。" % (
@@ -505,11 +535,12 @@ def build_prompt(ws, led, code, budget_min=None, siege=False, assault=False, har
             hard_stop, ENDGAME_MARGIN_SEC)
          if ws.deadline() is not None and hard_stop is not None
          else "【全局时限】未知；本段预算不是本场剩余时长。随进展写 Fact，收到停止通知立即收束。"),
-        "【已排除的面】(来自此前各段退场报告,不要重复)\n%s" % collect_excluded(ws, code, led),
+        "【历史观测与待复核结论】原报告不是排除证明。复用有效证据；前提或判据不成立时写纠正 Fact。\n%s" % collect_excluded(ws, code, led),
         "【本题 Fact】先读这些记录及其引用文件；记录可能过时，按最新证据续作。\n%s" % collect_own_facts(ws, code, led),
         "【家族经验】\n%s" % collect_family_knowledge(ws, code, led),
         "【平台 hint】%s" % hint_context(ws, rec),
         WORK_STYLE.format(started_marker=started_rel, code=code),
+        EVIDENCE_PROTOCOL,
         EXIT_PROTOCOL.format(attempts_path=attempts_rel, code=code,
                              attempt=k, budget_min=budget_min, dispatch="d%03d" % led["seq"],
                              report_script=shlex.quote(str(Path(__file__).resolve())),
@@ -524,6 +555,8 @@ def assemble(ws, led, code, reason="manual"):
     rec = led["challenges"].get(code)
     if not rec:
         die("ledger 里没有 %s" % code)
+    if rec.get("deferred"):
+        die("本题已暂缓；有新证据时通过 resume --plan-file 重新审查")
     if in_endgame(ws):
         die("已进入收尾窗口，不能组装新派发")
     if ws.platform.exists():
@@ -599,6 +632,7 @@ def assemble(ws, led, code, reason="manual"):
     resume = rec.pop("resume_request", None)
     if resume:
         led["dispatches"][did]["resume_reason"] = resume["reason"]
+        led["dispatches"][did]["resume_plan"] = resume.get("plan")
     print("READY %s %s attempt=%d reason=%s prompt=%s" % (did, code, k, reason, p.name))
     return did
 
@@ -703,7 +737,7 @@ def pick_next(led, exclude_fresh=False, eligible_codes=None, retained_code=None)
     for code, rec in led["challenges"].items():
         if eligible_codes is not None and code not in eligible_codes:
             continue
-        if rec["state"] in ("running", "solved", "exhausted"):
+        if rec["state"] in ("running", "solved", "exhausted") or rec.get("deferred"):
             continue
         if rec.get("instance") and code != retained_code:
             continue  # 释放失败的实例仍占槽，不能再次 start。
@@ -906,6 +940,7 @@ def harvest(ws, quota=DEFAULT_QUOTA, dry=False):
             rec["platform_completed"] = item.get("is_completed") is True
             if rec["platform_completed"] or rec["flags_correct"] >= rec["flags_total"]:
                 rec["state"] = "solved"
+                rec.pop("deferred", None)
                 _mark_family_grew(led, code)
                 for d in led["dispatches"].values():
                     if d["code"] == code and d["state"] == "ready":
@@ -1246,6 +1281,29 @@ def cmd_summary(args):
                    nominal_total_score=sum(c.get("total_score") or c.get("challenge_score") or 0 for c in items),
                    earned_score=None, hint_deduction=None, platform_composite_score=None,
                    score_note="list 的 total_score 是题目原始总分。实得分、hint 扣分和综合分以平台正式结果为准；全解不等于满分。")
+    led = ws.ledger()
+    remaining = [code for code, c in snapshot.items() if not completed(c)]
+    active = any(d["state"] in ("ready", "dispatched", "stop_required") for d in led["dispatches"].values())
+    pending = any(r.get("start_pending") for r in led["challenges"].values())
+    deferred = [dict(code=code, **led["challenges"][code]["deferred"])
+                for code in remaining if led["challenges"].get(code, {}).get("deferred")]
+    if in_endgame(ws):
+        state = "closing"
+    elif active or pending:
+        state = "active"
+    elif not remaining:
+        state = "complete"
+    elif len(deferred) == len(remaining):
+        state = "deferred"
+    elif pick_next(led, eligible_codes=snapshot, exclude_fresh=near_deadline(ws, ENDGAME_SIEGE_SEC)):
+        state = "runnable"
+    else:
+        state = "review_required"
+    summary.update(scheduling_state=state, deferred=deferred,
+                   may_finish=(not remaining or in_endgame(ws)) and not active and not pending
+                   and all(c.get("container_status") == "stopped" for c in items),
+                   deadline_unix=ws.deadline(),
+                   scheduling_note="deferred/review_required 不是全场结束。保持 dispatcher 与等待循环；新证据满足复审条件后再续投。")
     print(json.dumps(summary, ensure_ascii=False))
 
 
@@ -1367,7 +1425,7 @@ def review_retries(ws, led, snapshot):
         code = review["challenge"]
         item = snapshot.get(code)
         rec = led["challenges"][code]
-        if (not item or completed(item) or in_endgame(ws) or rec.get("abandoned")
+        if (not item or completed(item) or in_endgame(ws) or rec.get("abandoned") or rec.get("deferred")
                 or rec.get("resume_request") or review["after_dispatch"] != _last_dispatch(led, code)):
             review["state"] = "expired"
     if in_endgame(ws):
@@ -1377,20 +1435,66 @@ def review_retries(ws, led, snapshot):
         last = _last_dispatch(led, code)
         capped = (rec["state"] == "exhausted"
                   or (rec["attempt"] >= SESSION_CHURN_SOFT_CAP and not rec.get("last_flags_gained")))
-        if (not item or completed(item) or not last or not capped or rec.get("abandoned")
+        if (not item or completed(item) or not last or not capped or rec.get("abandoned") or rec.get("deferred")
                 or rec.get("resume_request") or rec.get("retry_review_dispatch") == last
                 or any(d["code"] == code and d["state"] in ("ready", "dispatched", "stop_required")
                        for d in led["dispatches"].values())):
             continue
         eid = escalate(ws, code,
                        "续投审查：本题未完成但已达重试/会话上限。读取封存报告后选择 "
-                       "continue（须 --reason）或 abandon；也可用 resume %s --reason 理由。"
-                       "队列空不是全场结束，禁止停 dispatcher。" % code, led=led)
+                       "continue（须 --reason 与 --plan-file）或 defer（须 --reason 与 --reconsider-when）。"
+                       "也可用 resume %s --reason 理由 --plan-file 计划文件。"
+                       "保持 dispatcher 运行；暂缓不等于全场结束。" % code, led=led)
         led["escalations"][eid].update(kind="retry", after_dispatch=last)
         rec["retry_review_dispatch"] = last
 
 
-def request_resume(ws, led, code, reason):
+def read_resume_plan(ws, led, code, path):
+    """检查交接条件和原始文件存在性，不把模型填写的计划当作已验证结论。"""
+    if not path:
+        die("续投需要 --plan-file，写明证据、假设、测试与停止判据")
+    try:
+        source = (ws.root / path).resolve()
+        source.relative_to(ws.root)
+        if source.stat().st_size > 65536:
+            raise ValueError("计划超过 64 KiB")
+        plan = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(plan, dict):
+            raise ValueError("计划必须为 JSON 对象")
+        if plan.get("after_dispatch") != (_last_dispatch(led, code) or ""):
+            raise ValueError("after_dispatch 已过期；先读最新封存报告")
+        fields = {}
+        for key in ("hypothesis", "test", "stop_when"):
+            value = plan.get(key)
+            if not isinstance(value, str) or not value.strip() or len(value) > 2000:
+                raise ValueError("%s 需要 1–2000 字符" % key)
+            fields[key] = value.strip()
+        paths = plan.get("evidence")
+        if not isinstance(paths, list) or not 1 <= len(paths) <= 5:
+            raise ValueError("evidence 需要 1–5 个工作目录内的文件")
+        evidence = []
+        for name in paths:
+            if not isinstance(name, str):
+                raise ValueError("evidence 路径必须是字符串")
+            target = (ws.root / name).resolve()
+            relative = target.relative_to(ws.root)
+            if not target.is_file() or not 0 < target.stat().st_size <= 8 * 1024 * 1024:
+                raise ValueError("证据必须是非空文件，且不超过 8 MiB")
+            evidence.append(dict(path=str(relative), sha256=hashlib.sha256(target.read_bytes()).hexdigest()))
+    except (OSError, UnicodeError, ValueError) as exc:
+        die("续投计划无效: %s" % exc)
+    fingerprint = hashlib.sha256(json.dumps(
+        dict(fields, evidence=sorted({e["sha256"] for e in evidence})),
+        ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    for d in led["dispatches"].values():
+        if (d["code"] == code and d.get("state") == "done" and d.get("terminal_status") == "completed"
+                and (d.get("resume_plan") or {}).get("fingerprint") == fingerprint
+                and d.get("flags_at_start") == led["challenges"][code]["flags_correct"]):
+            die("同一计划与证据已执行且未新增 Flag；补充证据或改用 defer 暂缓")
+    return dict(fields, after_dispatch=plan["after_dispatch"], evidence=evidence, fingerprint=fingerprint)
+
+
+def request_resume(ws, led, code, reason, plan_file=None):
     rec = led["challenges"].get(code)
     if not rec or not reason.strip():
         die("resume 需要有效题号和 --reason 续投理由")
@@ -1411,9 +1515,13 @@ def request_resume(ws, led, code, reason):
         rec["platform_completed"] = False
     elif rec["state"] == "solved" or rec["flags_correct"] >= rec["flags_total"]:
         die("本题已完成，拒绝续投")
+    if rec.get("resume_request"):
+        return  # 重放保留第一份计划和证据，不静默替换队列里的工作。
+    plan = read_resume_plan(ws, led, code, plan_file)
     # 一次许可只放行下一棒，不清除历史计数，也不在命令中启动实例。
-    rec.setdefault("resume_request", {"reason": reason.strip(), "requested_at": now()})
+    rec["resume_request"] = {"reason": reason.strip(), "requested_at": now(), "plan": plan}
     rec.pop("abandoned", None)
+    rec.pop("deferred", None)
     rec["state"] = "partial"
     for e in led.get("escalations", {}).values():
         if isinstance(e, dict) and e.get("challenge") == code and e.get("kind") == "retry" and e.get("state") == "open":
@@ -1423,9 +1531,39 @@ def request_resume(ws, led, code, reason):
 def cmd_resume(args):
     ws = WS(args.ws)
     led = ws.ledger()
-    request_resume(ws, led, args.code, args.reason)
+    request_resume(ws, led, args.code, args.reason, args.plan_file)
     ws.save_ledger(led)
     print("resume %s queued；dispatcher 按配额派发一棒，禁止手动 start 或重置账本" % args.code)
+
+
+def request_defer(ws, led, code, reason, reconsider_when):
+    rec = led["challenges"].get(code)
+    if not rec or not reason.strip() or not reconsider_when.strip():
+        die("defer 需要有效题号、--reason 与 --reconsider-when 复审条件")
+    if (rec.get("start_pending") or any(d["code"] == code and d["state"] in ("ready", "dispatched", "stop_required")
+                                       for d in led["dispatches"].values())):
+        die("先收割本题活动派发，再暂缓；defer 不是取消 Execute")
+    if ws.platform.exists():
+        item = (platform_snapshot(ws) or {}).get(code)
+        if not item or completed(item):
+            die("平台未确认本题仍未完成，拒绝暂缓")
+    elif rec["state"] == "solved":
+        die("本题已完成")
+    rec["deferred"] = dict(reason=reason.strip(), reconsider_when=reconsider_when.strip(),
+                           after_dispatch=_last_dispatch(led, code), created=now())
+    rec["state"] = "deferred"
+    rec.pop("resume_request", None)
+    for e in led.get("escalations", {}).values():
+        if isinstance(e, dict) and e.get("challenge") == code and e.get("state") == "open":
+            e.update(state="decided", decision="defer", reason=reason.strip(), decided_at=now())
+
+
+def cmd_defer(args):
+    ws = WS(args.ws)
+    led = ws.ledger()
+    request_defer(ws, led, args.code, args.reason, args.reconsider_when)
+    ws.save_ledger(led)
+    print("defer %s；保持 dispatcher 与等待循环，新证据满足复审条件后 resume" % args.code)
 
 
 def escalate(ws, code, question, led=None):
@@ -1452,10 +1590,15 @@ def cmd_decide(args):
         print("decide %s 已处理或已过期，忽略重复决策" % args.id)
         return
     code = e["challenge"]
+    if args.decision == "defer":
+        request_defer(ws, led, code, args.reason, args.reconsider_when)
+        ws.save_ledger(led)
+        print("decide %s defer；本场未结束，保持调度" % args.id)
+        return
     if args.decision == "hint":
         request_hint(ws, led, code, args.reason)
     if args.decision == "continue" and e.get("kind") == "retry":
-        request_resume(ws, led, code, args.reason)
+        request_resume(ws, led, code, args.reason, args.plan_file)
         ws.save_ledger(led)
         print("decide %s continue；已排队一棒续投" % args.id)
         return
@@ -1721,7 +1864,14 @@ def main():
     p.add_argument("--ws", required=True)
     p.add_argument("code")
     p.add_argument("--reason", required=True)
+    p.add_argument("--plan-file", required=True)
     p.set_defaults(func=cmd_resume)
+    p = sub.add_parser("defer")
+    p.add_argument("--ws", required=True)
+    p.add_argument("code")
+    p.add_argument("--reason", required=True)
+    p.add_argument("--reconsider-when", required=True)
+    p.set_defaults(func=cmd_defer)
     p = sub.add_parser("validate")
     p.add_argument("--ws", required=True)
     p.add_argument("code")
@@ -1780,8 +1930,10 @@ def main():
     p.add_argument("--ws", required=True)
     p.add_argument("id")
     p.add_argument("--decision", required=True,
-                   choices=["continue", "abandon", "hint"])
+                   choices=["continue", "abandon", "hint", "defer"])
     p.add_argument("--reason", default="")
+    p.add_argument("--plan-file")
+    p.add_argument("--reconsider-when", default="")
     p.set_defaults(func=cmd_decide)
     sub.add_parser("selftest").set_defaults(func=lambda a: selftest())
     args = ap.parse_args()

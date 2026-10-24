@@ -43,7 +43,7 @@ $WS/
 }
 ```
 
-state 取值:`pending → running → solved | partial | blocked | exhausted`。
+state 取值:`pending → running → solved | partial | blocked | exhausted | deferred`。
 默认预算:easy 15 / medium 25 / hard 35 / 多 flag 链题 60 分钟(累计容器时间)。
 重试护栏:非零进展的题第 3 次 stalled 后 exhausted;
 同题 infra 死亡 ≥4 次升级决策。
@@ -128,12 +128,55 @@ content:只写新增客观事实;禁"此路不通/已穷尽/勿再试"类绝对�
 - 上一棒正常完成且已确认退出、报告有效、实例代次与地址仍一致，有立足点或新增 Flag 时，
   harvest 按配额与正常选题排序决定是否保留实例接力。新题优先；无资格时释放闲置实例。
 - 到重试或会话软顶的未完成题生成 `kind: retry` 审查，每个最新派发只生成一次。
-  `decide <eid> --decision continue --reason "理由"` 或 `resume <code> --reason "理由"` 排队一棒。
-  `resume_request` 保存理由和时间，实际 assemble 才消费，并将理由写入派发的 `resume_reason`。
-  历史 attempt/restarts 保持单调记录，主控不手改计数。平台完成、题目消失或进入收尾时审查过期。
+  `decide <eid> --decision continue --reason "理由" --plan-file graph/retry-plan.json`
+  或 `resume <code> --reason "理由" --plan-file graph/retry-plan.json` 排队一棒。
+  `resume_request` 保存理由、计划和证据摘要；实际 assemble 才消费。下一棒 prompt 完整携带计划，
+  派发记录保留 `resume_reason` / `resume_plan`。排队中重复请求保留第一份计划。
+  历史 attempt/restarts 保持单调记录，主控不手改计数。平台完成、题目消失、暂缓或进入收尾时审查过期。
 - resume 先核对平台与旧 Execute 的退出状态，只排队，不直接 start；后续仍受配额和全局时限约束。
 - `CYBERPENDA_EVALUATION_DEADLINE_UNIX` 与工作目录 `deadline` 同时存在时取较早者。
   每棒预算裁切到结束前 5 分钟，prompt 显示绝对时限；未配置时明确未知。
+
+
+## 续投计划与暂缓
+
+续投先读最新封存报告及引用的原始证据，再写计划 JSON。`after_dispatch` 填该题最新派发 ID，
+没有历史派发时用空字符串；其他题的新派发不改变它。
+
+```json
+{
+  "after_dispatch": "d012",
+  "hypothesis": "历史阴性观测可能缺少请求前提",
+  "test": "先验证有效基线，再比较仅一个条件不同的请求",
+  "stop_when": "有效对照下仍无可区分信号时收束；测量无效时只修测量",
+  "evidence": ["graph/data/response-pair.json"]
+}
+```
+
+- evidence 是 1–5 个工作目录内的非空文件，单文件最多 8 MiB。假设、测试、停止判据各最多 2000 字符。
+- 命令核对最新派发、文件存在性和 SHA256；这是格式与来源检查，不证明假设正确或证据充分。
+- 同样的假设、测试、停止判据与证据内容已经正常完成且没有新增 Flag 时，拒绝再投。改理由或改文件名不能解锁；
+  投递失败、异常或取消退出仍可按原计划恢复；新观测或新的可证伪测试经 Decide 审查后可再投。避免把同一失败方向只换一种说法。
+- Execute 先读证据并核对摘要，若内容已变则通知 Decide 重新审查。
+- 没有新证据或可区分测试时，用 `defer <code> --reason "当前限制" --reconsider-when "可观察的变化"`。
+  审查队列也支持 `decide <eid> --decision defer` 加同样两参数。
+  defer 只接受没有活动/待派 Execute 和待确认 start 的题；它不取消 Execute。
+  闲置实例由 harvest 按正常放槽规则释放，保持 dispatcher 运行。
+- 暂缓状态持久保存在该题 `deferred` 中。重启调度器、普通 harvest、相同平台快照不会自动续投。
+  新证据满足复审条件后用 resume 排队；时间流逝本身不是新证据。
+- summary 的 `scheduling_state` 区分 active / runnable / review_required / deferred / complete / closing，
+  `deferred` 返回每题的理由及复审条件，`deadline_unix` 未知时为 null。
+  只有全题完成或进入时限收尾，且无活动/待派 Execute、无待确认 start、平台实例全部 stopped，`may_finish` 才为 true。
+  `deferred` 与空队列都不是全场完成。保持等待循环、心跳和平台对账；watchdog 恢复时也沿用此规则。
+
+## 负面 Fact 与实例检查点
+
+历史报告以“历史观测与待复核结论”注入，不能因进入历史区就获得确定性。
+报告与本题 Fact 按实例代次标注：同实例做最小活性检查后复用；不同实例重新确认会话与落地物；
+代次缺失则关系未知。相同 IP 不等于相同实例。
+准备排除假设、记录阴性结果或归因平台故障时，按派发 prompt 的“负面结论的证据条件”执行，
+分列观测、前提、正负对照、判据、适用范围和证据文件。测量返回错误服务时先修测量。
+纠正以新 Fact 引用旧记录和原始响应。模板只约束流程，不自动证明模型遵守或结论正确。
 
 ## hint 接力
 
