@@ -395,13 +395,11 @@ func (s *Service) CaptureTrustedSynchronization(ctx context.Context, projectID, 
 
 func (s *Service) loadSyncDeliveryReceipt(ctx context.Context, continuationID, fingerprint string) (status string, attachment SynchronizationAttachment, ok bool, err error) {
 	var raw string
-	var fromRevision, revision int
-	var workingBytes []byte
 	scanErr := s.db.QueryRowContext(ctx, `
-		SELECT status,from_revision,revision,attachment_json,working_snapshot_bytes
+		SELECT status,attachment_json
 		FROM blackboard_v2_sync_delivery_receipts
 		WHERE continuation_id=? AND request_fingerprint=?`, continuationID, fingerprint,
-	).Scan(&status, &fromRevision, &revision, &raw, &workingBytes)
+	).Scan(&status, &raw)
 	if errors.Is(scanErr, sql.ErrNoRows) {
 		return "", SynchronizationAttachment{}, false, nil
 	}
@@ -416,9 +414,6 @@ func (s *Service) loadSyncDeliveryReceipt(ctx context.Context, continuationID, f
 			return "", SynchronizationAttachment{}, false, fmt.Errorf("decode trusted sync delivery receipt: %w", err)
 		}
 	}
-	_ = fromRevision
-	_ = revision
-	_ = workingBytes
 	return status, attachment, true, nil
 }
 
