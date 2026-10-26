@@ -974,10 +974,16 @@ func (s *Service) HistoryEventSeqByRef(id string, ref string) (int, bool, error)
 	if _, err := s.Get(id); err != nil {
 		return 0, false, err
 	}
+	candidates := historyReferenceCandidates(ref)
+	args := make([]any, 0, len(candidates)+1)
+	args = append(args, id)
+	for _, candidate := range candidates {
+		args = append(args, candidate)
+	}
 	var seq int
 	err := s.db.QueryRow(
-		`SELECT seq FROM session_events WHERE session_id=? AND (id=? OR instr(?, id || '-')=1) ORDER BY seq ASC LIMIT 1`,
-		id, ref, ref,
+		`SELECT seq FROM session_events WHERE session_id=? AND id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(candidates)), ",")+`) ORDER BY seq ASC LIMIT 1`,
+		args...,
 	).Scan(&seq)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
@@ -986,6 +992,19 @@ func (s *Service) HistoryEventSeqByRef(id string, ref string) (int, bool, error)
 		return 0, false, fmt.Errorf("resolve Session Event reference: %w", err)
 	}
 	return seq, true, nil
+}
+
+// historyReferenceCandidates limits lookups to IDs embedded in the reference.
+// Keep every dash prefix: Event IDs can themselves contain dashes, and the
+// earliest matching Event owns the reference even if another ID matches exactly.
+func historyReferenceCandidates(ref string) []string {
+	candidates := []string{ref}
+	for index := range ref {
+		if ref[index] == '-' {
+			candidates = append(candidates, ref[:index])
+		}
+	}
+	return candidates
 }
 
 func (s *Service) readTranscriptContextBefore(sessionID string, seq int, window *EventWindow) error {
