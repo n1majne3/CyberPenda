@@ -1657,47 +1657,9 @@ func (s *Service) TerminalContinuations() ([]TaskContinuation, error) {
 	return continuations, nil
 }
 
-// ActivePinnedContinuations returns Snapshot-pinned Continuations whose committed
-// task-local files may need regeneration after a daemon crash.
-func (s *Service) ActivePinnedContinuations() ([]TaskContinuation, error) {
-	rows, err := s.db.Query(
-		`SELECT `+continuationSelectColumns+`
-		 FROM task_continuations
-		 WHERE status IN (?,?,?) AND runtime_config_version_id IS NOT NULL
-		 ORDER BY started_at,id`,
-		string(StatusPending), string(StatusRunning), string(StatusPaused),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query active pinned Continuations: %w", err)
-	}
-	defer rows.Close()
-	var continuations []TaskContinuation
-	for rows.Next() {
-		continuation, err := scanContinuation(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scan active pinned Continuation: %w", err)
-		}
-		continuations = append(continuations, continuation)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate active pinned Continuations: %w", err)
-	}
-	return continuations, nil
-}
-
 // MarkContinuationReconciliation stores the durable outcome only after the
 // owning semantic reconciliation has completed.
 func (s *Service) MarkContinuationReconciliation(ctx context.Context, continuationID string, status ReconciliationStatus, mutationID string, reconciledAt time.Time) (TaskContinuation, error) {
-	return s.markContinuationReconciliation(ctx, continuationID, status, mutationID, reconciledAt, nil)
-}
-
-// MarkContinuationReconciliationWithEvent atomically stores the durable marker
-// and its compact system Task Event.
-func (s *Service) MarkContinuationReconciliationWithEvent(ctx context.Context, continuationID string, status ReconciliationStatus, mutationID string, reconciledAt time.Time, payload EventPayload) (TaskContinuation, error) {
-	return s.markContinuationReconciliation(ctx, continuationID, status, mutationID, reconciledAt, payload)
-}
-
-func (s *Service) markContinuationReconciliation(ctx context.Context, continuationID string, status ReconciliationStatus, mutationID string, reconciledAt time.Time, payload EventPayload) (TaskContinuation, error) {
 	if status != ReconciliationCompleted && status != ReconciliationFailed {
 		return TaskContinuation{}, fmt.Errorf("invalid Continuation reconciliation status %q", status)
 	}
@@ -1707,49 +1669,6 @@ func (s *Service) markContinuationReconciliation(ctx context.Context, continuati
 		return TaskContinuation{}, fmt.Errorf("begin Continuation reconciliation marker: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if payload != nil {
-		var taskID, currentStatus, currentMutationID string
-		if err := tx.QueryRowContext(ctx, `
-			SELECT task_id,blackboard_reconciliation_status,blackboard_reconciliation_mutation_id
-			FROM task_continuations WHERE id=?`, continuationID).Scan(&taskID, &currentStatus, &currentMutationID); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return TaskContinuation{}, ErrNotFound
-			}
-			return TaskContinuation{}, fmt.Errorf("read reconciliation Event Task: %w", err)
-		}
-		payloadJSON, err := json.Marshal(payload)
-		if err != nil {
-			return TaskContinuation{}, fmt.Errorf("encode reconciliation Event: %w", err)
-		}
-		phase, _ := payload["phase"].(string)
-		if currentStatus == string(status) && currentMutationID == mutationID && phase != "" {
-			var storedPayloadJSON string
-			err := tx.QueryRowContext(ctx, `
-				SELECT payload_json FROM task_events
-				WHERE continuation_id=? AND kind=? AND json_extract(payload_json,'$.phase')=?
-				ORDER BY seq DESC,id DESC LIMIT 1`, continuationID, string(EventKindLifecycle), phase).Scan(&storedPayloadJSON)
-			if err == nil && storedPayloadJSON == string(payloadJSON) {
-				if err := tx.Commit(); err != nil {
-					return TaskContinuation{}, fmt.Errorf("commit repeated Continuation reconciliation: %w", err)
-				}
-				return s.Continuation(continuationID)
-			}
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return TaskContinuation{}, fmt.Errorf("read repeated reconciliation Event: %w", err)
-			}
-		}
-		var maxSeq sql.NullInt64
-		if err := tx.QueryRowContext(ctx, `SELECT MAX(seq) FROM task_events WHERE task_id=?`, taskID).Scan(&maxSeq); err != nil {
-			return TaskContinuation{}, fmt.Errorf("read reconciliation Event sequence: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO task_events (id,task_id,continuation_id,seq,kind,payload_json,created_at)
-			VALUES (?,?,?,?,?,?,?)`,
-			newID(), taskID, continuationID, int(maxSeq.Int64)+1, string(EventKindLifecycle), string(payloadJSON), stamp,
-		); err != nil {
-			return TaskContinuation{}, fmt.Errorf("store reconciliation Event: %w", err)
-		}
-	}
 	result, err := tx.ExecContext(ctx, `
 		UPDATE task_continuations
 		SET blackboard_reconciliation_status=?,blackboard_reconciliation_mutation_id=?,blackboard_reconciled_at=?,updated_at=?
@@ -1931,28 +1850,6 @@ func (s *Service) UpdateStatus(taskID string, status Status) (Task, error) {
 		return Task{}, fmt.Errorf("update status: %w", err)
 	}
 	return found, nil
-}
-
-// ReconcileInterruptedStatuses marks every task in an active state (running,
-// created, paused) as interrupted. It is intended to run at daemon startup:
-// those tasks belonged to a previous daemon instance whose in-memory harness
-// state is gone, so nothing is actually running them. It returns the tasks it
-// changed so the caller can log and emit lifecycle events.
-func (s *Service) ReconcileInterruptedStatuses() ([]Task, error) {
-	result, err := s.ReconcileInterruptedState()
-	if err != nil {
-		return result.Tasks, err
-	}
-	return result.Tasks, nil
-}
-
-// ReconcileInterruptedState marks every task and continuation in an active
-// state as interrupted. It is intended to run at daemon startup: those runtime
-// records belonged to a previous daemon instance whose in-memory harness state
-// is gone. It returns the records it changed so callers can log and clean up
-// runtime-owned resources such as sandbox containers.
-func (s *Service) ReconcileInterruptedState() (ReconcileInterruptedResult, error) {
-	return s.ReconcileInterruptedStateExcept(nil)
 }
 
 // ReconcileInterruptedStateExcept preserves Tasks whose Runtime ownership was

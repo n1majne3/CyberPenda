@@ -702,10 +702,10 @@ func TestContinuationRuntimeMetadataIsPersisted(t *testing.T) {
 	}
 }
 
-// TestReconcileInterruptedStatusesMarksActiveTasksInterrupted proves the daemon
+// TestReconcileInterruptedStateMarksActiveTasksInterrupted proves the daemon
 // startup reconcile: tasks left running/paused/pending by a previous daemon
 // instance become interrupted, while already-terminal tasks are untouched.
-func TestReconcileInterruptedStatusesMarksActiveTasksInterrupted(t *testing.T) {
+func TestReconcileInterruptedStateMarksActiveTasksInterrupted(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
@@ -751,12 +751,12 @@ func TestReconcileInterruptedStatusesMarksActiveTasksInterrupted(t *testing.T) {
 		t.Fatalf("set completed: %v", err)
 	}
 
-	changed, err := svc.ReconcileInterruptedStatuses()
+	result, err := svc.ReconcileInterruptedStateExcept(nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if len(changed) != 2 {
-		t.Fatalf("expected 2 interrupted tasks, got %d", len(changed))
+	if len(result.Tasks) != 2 {
+		t.Fatalf("expected 2 interrupted tasks, got %d", len(result.Tasks))
 	}
 
 	runningGot, _ := svc.Get(running.ID)
@@ -783,7 +783,7 @@ func TestReconcileInterruptedStatusesMarksActiveTasksInterrupted(t *testing.T) {
 	}
 }
 
-func TestReconcileInterruptedStatusesClearsStaleActiveContinuations(t *testing.T) {
+func TestReconcileInterruptedStateClearsStaleActiveContinuations(t *testing.T) {
 	db := newStore(t)
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
@@ -815,12 +815,12 @@ func TestReconcileInterruptedStatusesClearsStaleActiveContinuations(t *testing.T
 		t.Fatalf("set task interrupted: %v", err)
 	}
 
-	changed, err := svc.ReconcileInterruptedStatuses()
+	result, err := svc.ReconcileInterruptedStateExcept(nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	if len(changed) != 0 {
-		t.Fatalf("expected no task status changes, got %d", len(changed))
+	if len(result.Tasks) != 0 {
+		t.Fatalf("expected no task status changes, got %d", len(result.Tasks))
 	}
 	latest, err := svc.LatestContinuation(created.ID)
 	if err != nil {
@@ -862,7 +862,7 @@ func TestRestartInterruptionPersistsTerminalEventBeforeReconciliation(t *testing
 
 	reconciler := &restartOrderingReconciler{tasks: svc}
 	svc.SetContinuationReconciler(reconciler)
-	if _, err := svc.ReconcileInterruptedState(); err != nil {
+	if _, err := svc.ReconcileInterruptedStateExcept(nil); err != nil {
 		t.Fatalf("reconcile restart state: %v", err)
 	}
 	if reconciler.reason != "daemon_restart" {
@@ -906,7 +906,7 @@ func TestReconcileInterruptedStateIgnoresTerminalSandboxContainers(t *testing.T)
 		t.Fatalf("set task completed: %v", err)
 	}
 
-	reconciled, err := svc.ReconcileInterruptedState()
+	reconciled, err := svc.ReconcileInterruptedStateExcept(nil)
 	if err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
