@@ -322,9 +322,7 @@ func TestCrashRecoveryReusesExactPinWhileResumePinsFreshCurrentState(t *testing.
 	tasks := task.NewService(reopened, projects)
 	board := blackboardv2.NewService(reopened)
 	continuity := blackboardv2.NewContinuityService(reopened, board, tasks, fixture.runtimeRoot)
-	if err := continuity.RecoverActiveWorkingSnapshots(context.Background()); err != nil {
-		t.Fatalf("recover active Working Snapshots: %v", err)
-	}
+	recoverActiveWorkingSnapshots(t, continuity)
 	recovered, err := os.ReadFile(filepath.Join(fixture.runtimeRoot, fixture.task.ID, "workdir", ".pentest", "blackboard.json"))
 	if err != nil {
 		t.Fatalf("read recovered Working Snapshot: %v", err)
@@ -390,9 +388,7 @@ func TestRecoveryMaterializesPersistedWorkingSnapshotNotLaunchPin(t *testing.T) 
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove Working Snapshot before recovery: %v", err)
 	}
-	if err := fixture.continuity.RecoverActiveWorkingSnapshots(context.Background()); err != nil {
-		t.Fatalf("recover active Continuation: %v", err)
-	}
+	recoverActiveWorkingSnapshots(t, fixture.continuity)
 	recovered, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read recovered Snapshot: %v", err)
@@ -440,9 +436,7 @@ func TestRecoveryAfterSynchronizationRestoresExactWorkingSnapshotBytes(t *testin
 	if err := os.Remove(path); err != nil {
 		t.Fatalf("remove Working Snapshot before restart recovery: %v", err)
 	}
-	if err := fixture.continuity.RecoverActiveWorkingSnapshots(context.Background()); err != nil {
-		t.Fatalf("recover after synchronization: %v", err)
-	}
+	recoverActiveWorkingSnapshots(t, fixture.continuity)
 	recovered, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read recovered post-sync Working Snapshot: %v", err)
@@ -482,9 +476,7 @@ func TestRecoveryDoesNotProjectCorruptLaunchPinAndStillRestoresWorkingSnapshot(t
 	}
 	// Recovery projects Working Snapshot state, not Launch Pin bytes. Corrupt pin
 	// remains rejected by explicit pin reads while restart recovery stays available.
-	if err := fixture.continuity.RecoverActiveWorkingSnapshots(context.Background()); err != nil {
-		t.Fatalf("recover Working Snapshot with corrupt Launch Pin: %v", err)
-	}
+	recoverActiveWorkingSnapshots(t, fixture.continuity)
 	recovered, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read recovered Working Snapshot: %v", err)
@@ -539,6 +531,23 @@ func TestClosedContinuationReplayCannotOverwriteNewerContinuationWorkingSnapshot
 	}
 	if !bytes.Equal(after, c2Bytes) || !bytes.Equal(after, c2.Snapshot) {
 		t.Fatalf("closed C1 replay overwrote C2 Working Snapshot\nafter=%s\nC2=%s\nC1=%s", after, c2Bytes, c1.Snapshot)
+	}
+}
+
+// recoverActiveWorkingSnapshots mirrors the daemon restart path
+// (Server.recoverBlackboardV2ContinuationFiles): rematerialize every active
+// Continuation's persisted Working Snapshot via ActiveSnapshots +
+// MaterializeWorkingSnapshot.
+func recoverActiveWorkingSnapshots(t *testing.T, continuity *blackboardv2.ContinuityService) {
+	t.Helper()
+	active, err := continuity.ActiveSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("list active Snapshots: %v", err)
+	}
+	for _, snapshot := range active {
+		if err := continuity.MaterializeWorkingSnapshot(context.Background(), snapshot.ContinuationID); err != nil {
+			t.Fatalf("recover Continuation Working Snapshot: %v", err)
+		}
 	}
 }
 

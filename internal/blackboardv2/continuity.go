@@ -1024,22 +1024,6 @@ func (s *ContinuityService) MaterializeWorkingSnapshot(ctx context.Context, cont
 	return materializeWorkingSnapshot(s.runtimeRoot, taskID, state.Bytes)
 }
 
-// MaterializeLaunchPin verifies the immutable internal integrity before any
-// filesystem write and projects those exact bytes, never mutable working state.
-func (s *ContinuityService) MaterializeLaunchPin(ctx context.Context, continuationID string) error {
-	s.board.snapshotMu.Lock()
-	defer s.board.snapshotMu.Unlock()
-	var taskID string
-	if err := s.db.QueryRowContext(ctx, `SELECT task_id FROM task_continuations WHERE id=?`, continuationID).Scan(&taskID); err != nil {
-		return err
-	}
-	pin, err := s.ReadLaunchPin(ctx, continuationID)
-	if err != nil {
-		return err
-	}
-	return materializeWorkingSnapshot(s.runtimeRoot, taskID, pin.Bytes)
-}
-
 func (s *ContinuityService) ActiveSnapshots(ctx context.Context) ([]ActiveSnapshot, error) {
 	// Active recovery surfaces last-acknowledged Working Snapshot revision, not
 	// the immutable Launch Pin revision, so restart headers match disk bytes.
@@ -1065,22 +1049,6 @@ func (s *ContinuityService) ActiveSnapshots(ctx context.Context) ([]ActiveSnapsh
 		snapshots = append(snapshots, found)
 	}
 	return snapshots, rows.Err()
-}
-
-// RecoverActiveWorkingSnapshots rematerializes each active Continuation's
-// persisted working_snapshot_bytes / last acknowledged revision. It never
-// overwrites a synchronized Working Snapshot with immutable Launch Pin bytes.
-func (s *ContinuityService) RecoverActiveWorkingSnapshots(ctx context.Context) error {
-	active, err := s.ActiveSnapshots(ctx)
-	if err != nil {
-		return err
-	}
-	for _, snapshot := range active {
-		if err := s.MaterializeWorkingSnapshot(ctx, snapshot.ContinuationID); err != nil {
-			return fmt.Errorf("recover Continuation Working Snapshot: %w", err)
-		}
-	}
-	return nil
 }
 
 func (s *Service) advanceContinuationWorkingSnapshotTx(ctx context.Context, tx *sql.Tx, projectID, continuationID string) ([]byte, string, bool, error) {
