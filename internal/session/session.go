@@ -1119,36 +1119,6 @@ func touchSessionActivityTx(tx *sql.Tx, sessionID string, now time.Time) error {
 	return nil
 }
 
-// AppendConversationEvent stores one user/runtime conversation entry. It is
-// the only write path for transcript content, preventing synthetic timeline
-// message duplication.
-func (s *Service) AppendConversationEvent(id, continuationID, role, text string) (Event, error) {
-	role = strings.TrimSpace(role)
-	if role == "" || strings.TrimSpace(text) == "" {
-		return Event{}, ErrMissingInput
-	}
-	payload := EventPayload{"role": role, "text": text}
-	if continuationID != "" {
-		continuation, err := s.Continuation(continuationID)
-		if err != nil || continuation.SessionID != id {
-			if err != nil {
-				return Event{}, err
-			}
-			return Event{}, ErrContinuationNotFound
-		}
-	}
-	return s.AppendEvent(id, EventKindConversation, payloadWithContinuation(payload, continuationID))
-}
-
-// AddAttachments stages additional operator files into the existing Session
-// Workdir and records only safe references in the Session event stream.
-// Existing files are never overwritten; attachment names are made unique in
-// the same way as initial Session attachments.
-func (s *Service) AddAttachments(id, continuationID string, input []Attachment) ([]Event, error) {
-	events, _, err := s.appendConversationInput(id, continuationID, input, "", "")
-	return events, err
-}
-
 // AppendConversationInput atomically records one operator message and all of
 // its attachments. Failed persistence removes newly copied files, so callers
 // never observe an attachment without the input that introduced it.
@@ -1350,22 +1320,6 @@ func (s *Service) Conversation(id string) ([]Event, error) {
 		}
 	}
 	return conversation, nil
-}
-
-// Timeline returns startup, runtime, turn, permission, attachment, and
-// lifecycle markers without synthetic conversation messages.
-func (s *Service) Timeline(id string) ([]Event, error) {
-	events, err := s.Events(id)
-	if err != nil {
-		return nil, err
-	}
-	timeline := make([]Event, 0, len(events))
-	for _, event := range events {
-		if event.Kind != EventKindConversation {
-			timeline = append(timeline, event)
-		}
-	}
-	return timeline, nil
 }
 
 // RecordRuntimeConfig stores the non-secret Runtime Turn Selection history for

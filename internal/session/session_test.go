@@ -624,7 +624,7 @@ func TestTerminalSessionContinuationClosesItsCapability(t *testing.T) {
 	}
 }
 
-func TestSessionContinuationsRetainRuntimeSelectionAndSeparateConversationFromTimeline(t *testing.T) {
+func TestSessionContinuationsRetainRuntimeSelectionAndConversation(t *testing.T) {
 	dataRoot := t.TempDir()
 	db, err := store.Open(filepath.Join(dataRoot, "pentest.db"))
 	if err != nil {
@@ -653,7 +653,7 @@ func TestSessionContinuationsRetainRuntimeSelectionAndSeparateConversationFromTi
 	if _, err := service.UpdateContinuationStatus(continuation.ID, RuntimeStatusRunning); err != nil {
 		t.Fatalf("mark continuation running: %v", err)
 	}
-	if _, err := service.AppendConversationEvent(created.ID, continuation.ID, "assistant", "I will inspect the application now."); err != nil {
+	if _, err := service.AppendEvent(created.ID, EventKindConversation, EventPayload{"role": "assistant", "text": "I will inspect the application now.", "continuation_id": continuation.ID}); err != nil {
 		t.Fatalf("append runtime conversation: %v", err)
 	}
 	if _, err := service.AppendEvent(created.ID, EventKindRuntimeOutput, EventPayload{"stream": "stdout", "text": "bounded output"}); err != nil {
@@ -669,15 +669,6 @@ func TestSessionContinuationsRetainRuntimeSelectionAndSeparateConversationFromTi
 	}
 	if len(conversation) != 2 || conversation[0].Kind != EventKindConversation || conversation[1].Payload["role"] != "assistant" {
 		t.Fatalf("conversation = %#v", conversation)
-	}
-	timeline, err := service.Timeline(created.ID)
-	if err != nil {
-		t.Fatalf("load timeline: %v", err)
-	}
-	for _, event := range timeline {
-		if event.Kind == EventKindConversation {
-			t.Fatalf("timeline duplicated conversation event: %#v", event)
-		}
 	}
 	versions, err := service.RuntimeConfigVersions(created.ID)
 	if err != nil {
