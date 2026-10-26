@@ -571,19 +571,6 @@ func TestRedactorIgnoresTriviallyShortSecrets(t *testing.T) {
 	}
 }
 
-// TestDetectBinaryReportsMissingWhenAbsent proves binary detection fails
-// cleanly when the configured binary does not exist, preserving the error for
-// the harness (Slice 9: adapter failure preserves error).
-func TestDetectBinaryReportsMissingWhenAbsent(t *testing.T) {
-	_, err := adapters.DetectBinary(adapters.DetectRequest{
-		Provider:       runtimeprofile.ProviderCodex,
-		ConfiguredPath: "/definitely/not/installed/codex",
-	})
-	if err == nil {
-		t.Fatal("expected detection error for missing binary")
-	}
-}
-
 func TestBuildLaunchArgsPreservesNonConflictingCustomArgsOrder(t *testing.T) {
 	custom := []string{"--strict", "--flag=value", "keep-me"}
 	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{

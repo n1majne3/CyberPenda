@@ -1,7 +1,7 @@
 // Package adapters holds provider-specific runtime logic that can be tested
-// without a real runtime binary: launch argument construction, secret redaction,
-// and binary detection. Real Run execution (smoke tasks) requires the binary to
-// be present and is exercised out-of-band; the pure logic here is unit-tested.
+// without a real runtime binary: launch argument construction and secret
+// redaction. Real Run execution (smoke tasks) requires the binary to be present
+// and is exercised out-of-band; the pure logic here is unit-tested.
 //
 // The package deliberately keeps these as pure functions rather than embedding
 // them in runtime.Adapter implementations, so the Slice 9 acceptance checks
@@ -13,8 +13,6 @@ package adapters
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -153,15 +151,6 @@ func appendRuntimeNonInteractiveArgs(provider runtimeprofile.Provider, args []st
 	return args
 }
 
-func defaultBinary(provider runtimeprofile.Provider) string {
-	registry := runtimeplugin.MustBuiltinRegistry()
-	plugin, ok := registry.Get(string(provider))
-	if !ok {
-		return ""
-	}
-	return plugin.Binary.Default
-}
-
 func launchRenderContext(req LaunchArgsRequest, binary string) runtimeplugin.RenderContext {
 	extra := append([]string{}, req.Profile.Fields.CustomArgs...)
 	extra = appendRuntimeNonInteractiveArgs(req.Provider, extra)
@@ -215,68 +204,6 @@ func piProviderArgs(fields runtimeprofile.Fields, customArgs []string) []string 
 		return nil
 	}
 	return []string{"--provider", providerID}
-}
-
-// DetectRequest is the input to DetectBinary.
-type DetectRequest struct {
-	Provider       runtimeprofile.Provider
-	ConfiguredPath string
-	// LookupPath is searched when ConfiguredPath is empty. Defaults to PATH.
-	LookupPath string
-}
-
-// DetectResult is the outcome of binary detection.
-type DetectResult struct {
-	Path    string
-	Version string
-}
-
-// DetectBinary checks that a configured or default provider binary exists and
-// is executable. It does not run the binary. On failure it returns a non-nil
-// error so the harness can record the failure with runtime, runner, task paths,
-// and event history preserved.
-func DetectBinary(req DetectRequest) (DetectResult, error) {
-	candidate := strings.TrimSpace(req.ConfiguredPath)
-	if candidate == "" {
-		candidate = defaultBinary(req.Provider)
-	}
-	if candidate == "" {
-		return DetectResult{}, fmt.Errorf("no binary configured or default for provider %q", req.Provider)
-	}
-
-	resolved := candidate
-	if !filepath.IsAbs(candidate) {
-		resolved = lookPath(candidate, req.LookupPath)
-	}
-
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return DetectResult{}, fmt.Errorf("detect binary %q: %w", candidate, err)
-	}
-	if info.IsDir() {
-		return DetectResult{}, fmt.Errorf("detected path %q is a directory, not a binary", resolved)
-	}
-	return DetectResult{Path: resolved}, nil
-}
-
-// lookPath searches LookupPath (or PATH) for an executable by name. It mirrors
-// exec.LookPath semantics without importing os/exec (kept light for testability).
-func lookPath(name, lookupPath string) string {
-	if lookupPath == "" {
-		lookupPath = os.Getenv("PATH")
-	}
-	for _, dir := range filepath.SplitList(lookupPath) {
-		if dir == "" {
-			continue
-		}
-		full := filepath.Join(dir, name)
-		if info, err := os.Stat(full); err == nil && !info.IsDir() {
-			if info.Mode()&0o111 != 0 {
-				return full
-			}
-		}
-	}
-	return name
 }
 
 // ErrSecretRedacted is returned when callers ask whether a payload was redacted.
