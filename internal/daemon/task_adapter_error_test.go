@@ -26,9 +26,9 @@ func TestBuildTaskAdapterReturnsActionableErrorForClaudeGLMProfile(t *testing.T)
 	proj := createAdapterErrorTestProject(t, server)
 	created := createAdapterErrorTestTask(t, server, proj.ID, profile.ID)
 
-	_, _, err := server.buildTaskAdapter(created, "")
+	_, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
 	if err == nil {
-		t.Fatal("expected buildTaskAdapter to fail")
+		t.Fatal("expected buildTaskLaunchPlanWithBinding to fail")
 	}
 	if !strings.Contains(err.Error(), "GLM_API_KEY") {
 		t.Fatalf("expected actionable API key error, got %v", err)
@@ -148,13 +148,13 @@ func TestBuildTaskAdapterAppliesHostProxyOnlySandboxNetworkFromRunControls(t *te
 		t.Fatalf("create task: %v", err)
 	}
 
-	_, runtimeConfig, err := server.buildTaskAdapter(created, "")
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("build adapter: %v", err)
 	}
-	launchCommand, ok := runtimeConfig["launch_command"].(map[string]any)
+	launchCommand, ok := plan.RuntimeConfig["launch_command"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected launch_command in runtime config, got %#v", runtimeConfig["launch_command"])
+		t.Fatalf("expected launch_command in runtime config, got %#v", plan.RuntimeConfig["launch_command"])
 	}
 	args, ok := launchCommand["args"].([]string)
 	if !ok {
@@ -209,13 +209,13 @@ func TestBuildTaskAdapterAppliesSandboxVPNTunFromRunControls(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	_, runtimeConfig, err := server.buildTaskAdapter(created, "")
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("build adapter: %v", err)
 	}
-	launchCommand, ok := runtimeConfig["launch_command"].(map[string]any)
+	launchCommand, ok := plan.RuntimeConfig["launch_command"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected launch_command in runtime config, got %#v", runtimeConfig["launch_command"])
+		t.Fatalf("expected launch_command in runtime config, got %#v", plan.RuntimeConfig["launch_command"])
 	}
 	args, ok := launchCommand["args"].([]string)
 	if !ok {
@@ -276,11 +276,11 @@ func TestSandboxLaunchPlanWiresImagePullProgressToDaemonLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	adapter, _, err := server.buildTaskAdapter(created, "")
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("build task adapter: %v", err)
 	}
-	if err := adapter.Run(context.Background(), created.Goal, func(task.EventKind, task.EventPayload) {}); err != nil {
+	if err := plan.Adapter.Run(context.Background(), created.Goal, func(task.EventKind, task.EventPayload) {}); err != nil {
 		t.Fatalf("run task adapter: %v", err)
 	}
 

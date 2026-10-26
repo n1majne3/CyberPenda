@@ -688,22 +688,6 @@ func (server *Server) recordLoopbackRewriteEvent(created task.Task) {
 	})
 }
 
-func (server *Server) buildTaskAdapter(created task.Task, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, launchModelOverride, "", "", nil, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	return plan.Adapter, plan.RuntimeConfig, nil
-}
-
-func (server *Server) buildTaskAdapterForGoal(created task.Task, goal string, launchModelOverride string) (runtime.Adapter, map[string]any, error) {
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, "", "", nil, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	return plan.Adapter, plan.RuntimeConfig, nil
-}
-
 func (server *Server) buildTaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string) (taskLaunchPlan, error) {
 	launch := resolveOwnerBlackboardRuntimeLaunch(
 		goal, created.RunControls.BlackboardMode == task.BlackboardModeDisabled,
@@ -2138,10 +2122,6 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 var errSemanticConclusionActionRequired = errors.New("semantic_conclusion_action_required")
 var errTaskControlOperationActive = errors.New("task control operation already active")
 
-func (server *Server) waitForWorkingGraphDrain(ctx context.Context, found task.Task) error {
-	return server.waitForWorkingGraphSettlement(ctx, found, false)
-}
-
 func (server *Server) waitForWorkingGraphSettlement(ctx context.Context, found task.Task, allowActionRequired bool) error {
 	if found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
 		_, err := server.settleTaskWorkingGraph(ctx, found, allowActionRequired)
@@ -2291,13 +2271,6 @@ func (server *Server) providerTaskContext(taskID string) context.Context {
 	server.controlMu.Lock()
 	defer server.controlMu.Unlock()
 	return server.providerTaskContextLocked(taskID)
-}
-
-func (server *Server) hasLiveProviderTaskContext(taskID string) bool {
-	server.controlMu.Lock()
-	defer server.controlMu.Unlock()
-	ctx := server.providerTaskContexts[taskID]
-	return ctx != nil && ctx.Err() == nil
 }
 
 func (server *Server) cancelProviderTaskControls(taskID string) bool {
@@ -2697,11 +2670,6 @@ func (server *Server) taskResumeContextWithoutBlackboard(found task.Task) (strin
 		TaskGoal: found.Goal,
 		Steering: directives,
 	}), eventIDs, nil
-}
-
-func (server *Server) isCodexTask(found task.Task) bool {
-	profile, err := server.resolveTaskRuntimeProfile(found)
-	return err == nil && profile.Provider == runtimeprofile.ProviderCodex
 }
 
 func (server *Server) isBlackboardV2Task(found task.Task) bool {
@@ -3689,28 +3657,6 @@ func (server *Server) selectionFromCapturedRuntimeConfigTimed(found task.Task) (
 	}, latestVersion.CreatedAt, nil
 }
 
-func modelProviderSnapshotFields(raw any) (providerID, model string) {
-	switch snapshot := raw.(type) {
-	case map[string]any:
-		providerID = configString(snapshot, "model_provider_id")
-		model = configString(snapshot, "model")
-	case modelprovider.Snapshot:
-		providerID = strings.TrimSpace(snapshot.ModelProviderID)
-		model = strings.TrimSpace(snapshot.Model)
-	case *modelprovider.Snapshot:
-		if snapshot != nil {
-			providerID = strings.TrimSpace(snapshot.ModelProviderID)
-			model = strings.TrimSpace(snapshot.Model)
-		}
-	}
-	return providerID, model
-}
-
-func (server *Server) precedingConversationTurnSelection(taskID string) (runtime.ProviderSessionRequest, bool) {
-	selection, _, ok := server.precedingConversationTurnSelectionTimed(taskID)
-	return selection, ok
-}
-
 func (server *Server) precedingConversationTurnSelectionTimed(taskID string) (runtime.ProviderSessionRequest, time.Time, bool) {
 	events, err := server.tasks.Events(taskID)
 	if err != nil {
@@ -3750,31 +3696,6 @@ func (server *Server) precedingConversationTurnSelectionTimed(taskID string) (ru
 		}, event.CreatedAt, true
 	}
 	return runtime.ProviderSessionRequest{}, time.Time{}, false
-}
-
-func nativeSteerIdempotencyConflict(prior task.Event, message string, selection runtime.ProviderSessionRequest) string {
-	if priorText, _ := prior.Payload["text"].(string); priorText != message {
-		return "steer request id already belongs to a different message"
-	}
-	priorProvider, _ := prior.Payload["model_provider_id"].(string)
-	priorModel, _ := prior.Payload["model"].(string)
-	if priorModel == "" {
-		priorModel, _ = prior.Payload["model_override"].(string)
-	}
-	priorEffort, _ := prior.Payload["requested_reasoning_effort"].(string)
-	if priorEffort == "" {
-		priorEffort, _ = prior.Payload["reasoning_effort"].(string)
-	}
-	// Legacy conversation events may omit effort; treat missing as high so a
-	// retry that resolves to the default does not false-conflict.
-	priorEffortNormalized, _ := runtimeprofile.NormalizeReasoningEffort(priorEffort)
-	requestedEffortNormalized, _ := runtimeprofile.NormalizeReasoningEffort(selection.RequestedReasoningEffort)
-	if strings.TrimSpace(priorProvider) != strings.TrimSpace(selection.ModelProviderID) ||
-		strings.TrimSpace(priorModel) != strings.TrimSpace(selection.Model) ||
-		priorEffortNormalized != requestedEffortNormalized {
-		return "steer request id already belongs to a different turn selection"
-	}
-	return ""
 }
 
 func configString(config map[string]any, key string) string {

@@ -588,28 +588,6 @@ func TestCurrentTurnSelectionUsesCapturedSnapshotNotEmptyProfileFields(t *testin
 	}
 }
 
-func TestNativeSteerIdempotencyTreatsMissingPriorEffortAsHigh(t *testing.T) {
-	// Legacy conversation events may omit effort. A retry that resolves to high
-	// must not false-conflict.
-	prior := task.Event{
-		Kind: task.EventKindConversation,
-		Payload: task.EventPayload{
-			"text": "continue", "model_provider_id": "p1", "model": "m1",
-			// no requested_reasoning_effort
-		},
-	}
-	if conflict := nativeSteerIdempotencyConflict(prior, "continue", runtime.ProviderSessionRequest{
-		ModelProviderID: "p1", Model: "m1", RequestedReasoningEffort: "high",
-	}); conflict != "" {
-		t.Fatalf("unexpected conflict for legacy high default: %s", conflict)
-	}
-	if conflict := nativeSteerIdempotencyConflict(prior, "continue", runtime.ProviderSessionRequest{
-		ModelProviderID: "p1", Model: "m1", RequestedReasoningEffort: "max",
-	}); conflict == "" {
-		t.Fatal("expected conflict when retrying with different effort")
-	}
-}
-
 func TestQueueSteerModelOnlySelectionCreatesConfigVersion(t *testing.T) {
 	// hasSelection must include selectedModel(), not only provider/profile.
 	root := t.TempDir()
