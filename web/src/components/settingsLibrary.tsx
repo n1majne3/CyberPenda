@@ -36,52 +36,6 @@ export function SettingsScrollPanel({
   );
 }
 
-export type SettingsStatSummaryProps = {
-  value: number;
-  unit: string;
-  total: number;
-  totalLabel?: string;
-  className?: string;
-  size?: "lg" | "md";
-};
-
-/** Large tabular stat shown in library toolbars (e.g. "12 enabled / 39 total"). */
-export function SettingsStatSummary({
-  value,
-  unit,
-  total,
-  totalLabel = "total",
-  className,
-  size = "lg",
-}: SettingsStatSummaryProps) {
-  return (
-    <div
-      className={cn(
-        "flex shrink-0 items-baseline gap-2 tabular-nums",
-        size === "md" && "text-right",
-        className,
-      )}
-    >
-      <span
-        className={cn(
-          "font-semibold tracking-tight text-foreground",
-          size === "lg" ? "text-2xl" : "text-lg",
-        )}
-      >
-        {value}
-      </span>
-      <span
-        className={cn(
-          "text-muted-foreground",
-          size === "lg" ? "text-sm" : "text-[11px]",
-        )}
-      >
-        {unit} <span className="text-border">/</span> {total} {totalLabel}
-      </span>
-    </div>
-  );
-}
-
 export type SettingsSearchFieldProps = Omit<
   InputHTMLAttributes<HTMLInputElement>,
   "size" | "onChange" | "value"
@@ -158,51 +112,6 @@ export function SettingsSegmentedFilter<T extends string>({
             value === option.id
               ? "bg-background text-foreground shadow-sm"
               : "text-muted-foreground hover:text-foreground",
-          )}
-          aria-pressed={value === option.id}
-        >
-          {option.label}
-          {option.count != null && (
-            <span className="ml-1 tabular-nums opacity-60"> {option.count}</span>
-          )}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-export type SettingsChipFilterProps<T extends string = string> = {
-  value: T;
-  onChange: (value: T) => void;
-  options: readonly SettingsFilterOption<T>[];
-  "aria-label": string;
-  className?: string;
-};
-
-/** Compact chip row for secondary filters (source kind, tags, etc.). */
-export function SettingsChipFilter<T extends string>({
-  value,
-  onChange,
-  options,
-  "aria-label": ariaLabel,
-  className,
-}: SettingsChipFilterProps<T>) {
-  return (
-    <div
-      className={cn("flex flex-wrap gap-1.5", className)}
-      role="group"
-      aria-label={ariaLabel}
-    >
-      {options.map((option) => (
-        <button
-          key={option.id}
-          type="button"
-          onClick={() => onChange(option.id)}
-          className={cn(
-            "rounded-md border px-2 py-0.5 text-[11px] font-medium transition-colors",
-            value === option.id
-              ? "border-foreground/15 bg-foreground/5 text-foreground"
-              : "border-transparent bg-muted/50 text-muted-foreground hover:text-foreground",
           )}
           aria-pressed={value === option.id}
         >

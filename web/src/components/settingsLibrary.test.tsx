@@ -2,11 +2,9 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
-  SettingsChipFilter,
   SettingsDetailPane,
   SettingsSearchField,
   SettingsSegmentedFilter,
-  SettingsStatSummary,
 } from "./settingsLibrary";
 
 describe("settingsLibrary primitives", () => {
@@ -42,29 +40,6 @@ describe("settingsLibrary primitives", () => {
     expect(screen.getByRole("button", { name: /enabled/i })).toHaveAttribute("aria-pressed", "false");
     await userEvent.click(screen.getByRole("button", { name: /enabled/i }));
     expect(onChange).toHaveBeenCalledWith("enabled");
-  });
-
-  it("chip filter marks the active chip", () => {
-    render(
-      <SettingsChipFilter
-        aria-label="Filter by source kind"
-        value="env"
-        onChange={() => {}}
-        options={[
-          { id: "all", label: "Any source" },
-          { id: "env", label: "env" },
-        ]}
-      />,
-    );
-    expect(screen.getByRole("button", { name: "env" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "Any source" })).toHaveAttribute("aria-pressed", "false");
-  });
-
-  it("stat summary renders value and total", () => {
-    render(<SettingsStatSummary value={12} unit="enabled" total={39} />);
-    expect(screen.getByText("12")).toBeInTheDocument();
-    expect(screen.getByText(/enabled/)).toBeInTheDocument();
-    expect(screen.getByText(/39/)).toBeInTheDocument();
   });
 
   it("detail pane keeps header footer and body structure", () => {
