@@ -121,14 +121,6 @@ func (s *Service) verifyManagedEvidencePayload(internalPath, digest string, size
 	if !info.Mode().IsRegular() {
 		return false, semanticError("evidence_integrity_failed", "managed Evidence payload is not a regular file", "key", nil)
 	}
-	// Use metadata from the opened descriptor, not the earlier path Lstat.
-	info, err = file.Stat()
-	if err != nil {
-		return false, fmt.Errorf("stat managed Evidence payload: %w", err)
-	}
-	if s.evidenceVerified.matches(internalPath, digest, size, info) {
-		return true, nil
-	}
 	hash := sha256.New()
 	actualSize, err := io.Copy(hash, file)
 	if evidenceLockViolation(err) {
@@ -143,11 +135,6 @@ func (s *Service) verifyManagedEvidencePayload(internalPath, digest string, size
 	if actualSize != size || hex.EncodeToString(hash.Sum(nil)) != digest {
 		return false, semanticError("evidence_integrity_failed", "managed Evidence payload failed integrity verification", "key", nil)
 	}
-	after, err := file.Stat()
-	if err != nil {
-		return false, fmt.Errorf("stat verified Evidence payload: %w", err)
-	}
-	s.evidenceVerified.remember(internalPath, digest, size, info, after)
 	return true, nil
 }
 
