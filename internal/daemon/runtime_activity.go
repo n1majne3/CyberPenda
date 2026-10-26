@@ -2,14 +2,12 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
 	"pentest/internal/owner"
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
-	"pentest/internal/session"
 	"pentest/internal/task"
 )
 
@@ -37,9 +35,6 @@ const (
 func (server *Server) computeRuntimeActivity(found task.Task) task.RuntimeActivity {
 	taskID := strings.TrimSpace(found.ID)
 	durableActive := durableTaskActive(found.Status)
-	if !durableActive {
-		server.clearRecoveredRuntimeActivity(taskID)
-	}
 	session, bound := server.providerSessions.get(taskID)
 	harnessActive := server.harness != nil && server.harness.IsActive(taskID)
 	expectsSession := server.taskExpectsProviderSession(found)
@@ -60,12 +55,6 @@ func (server *Server) computeRuntimeActivity(found task.Task) task.RuntimeActivi
 		}
 		return task.RuntimeActivity{Liveness: runtimeLivenessLive, TurnActivity: turn}
 	}
-	if durableActive {
-		if recovered, ok := server.recoveredRuntimeActivity(taskID); ok {
-			return recovered
-		}
-	}
-
 	// Persistent Runtime without a bound session cannot be live.
 	if expectsSession {
 		if durableActive {
@@ -82,251 +71,6 @@ func (server *Server) computeRuntimeActivity(found task.Task) task.RuntimeActivi
 		return task.RuntimeActivity{Liveness: runtimeLivenessOrphaned}
 	}
 	return task.RuntimeActivity{Liveness: runtimeLivenessOffline}
-}
-
-func (server *Server) recoveredRuntimeActivity(taskID string) (task.RuntimeActivity, bool) {
-	server.runtimeRecoveryMu.RLock()
-	defer server.runtimeRecoveryMu.RUnlock()
-	activity, ok := server.runtimeRecovery[strings.TrimSpace(taskID)]
-	return activity, ok
-}
-
-func (server *Server) setRecoveredRuntimeActivity(taskID string, activity task.RuntimeActivity) {
-	server.runtimeRecoveryMu.Lock()
-	defer server.runtimeRecoveryMu.Unlock()
-	taskID = strings.TrimSpace(taskID)
-	if taskID == "" {
-		return
-	}
-	server.runtimeRecovery[taskID] = activity
-}
-
-func (server *Server) clearRecoveredRuntimeActivity(taskID string) {
-	server.runtimeRecoveryMu.Lock()
-	delete(server.runtimeRecovery, strings.TrimSpace(taskID))
-	server.runtimeRecoveryMu.Unlock()
-}
-
-// recoverProviderSessionOwnership probes and adopts exact pre-existing
-// provider sessions during startup. It never calls ProviderSessionFactory.Open,
-// Harness.Launch, or any Task/Continuation creation API. The returned live Task
-// IDs may be excluded from stale-runtime interruption by the startup
-// coordinator; all other outcomes retain their closed Runtime Activity meaning.
-func (server *Server) recoverProviderSessionOwnership(ctx context.Context, requests []ProviderSessionRecoveryRequest) ProviderSessionRecoveryReport {
-	report := ProviderSessionRecoveryReport{
-		LiveOwnerIDs: []string{}, LifecycleProtectedOwnerIDs: []string{}, ReconciliationExcludedOwnerIDs: []string{},
-		Outcomes: make([]ProviderSessionRecoveryOutcome, 0, len(requests)),
-	}
-	recoveryFactory, supported := server.providerSessionFactory.(ProviderSessionRecoveryFactory)
-	for _, request := range requests {
-		outcome := ProviderSessionRecoveryOutcome{Owner: request.Owner, OwnerID: strings.TrimSpace(request.Owner.ID)}
-		if !supported {
-			server.orphanProviderSessionRecovery(request.Owner, &outcome, "runtime ownership recovery is unsupported")
-			report.Outcomes = append(report.Outcomes, outcome)
-			continue
-		}
-		if err := server.validateProviderSessionRecoveryRequest(request); err != nil {
-			server.orphanProviderSessionRecovery(request.Owner, &outcome, "runtime ownership recovery request is invalid")
-			report.Outcomes = append(report.Outcomes, outcome)
-			continue
-		}
-		result, err := recoveryFactory.Recover(ctx, request)
-		if err != nil {
-			server.orphanProviderSessionRecovery(request.Owner, &outcome, "runtime ownership could not be proven")
-			report.Outcomes = append(report.Outcomes, outcome)
-			continue
-		}
-		outcome.Liveness = result.Liveness
-		if result.Liveness == ProviderSessionRecoveryLive {
-			if err := server.validateAndBindRecoveredProviderSession(request, result.Binding); err != nil {
-				server.orphanProviderSessionRecovery(request.Owner, &outcome, "runtime ownership could not be proven")
-				report.Outcomes = append(report.Outcomes, outcome)
-				continue
-			}
-			if request.Owner.IsTask() {
-				server.clearRecoveredRuntimeActivity(outcome.OwnerID)
-			}
-			outcome.Adopted = true
-			outcome.Activity = server.recoveredOwnerActivity(request.Owner)
-			report.LiveOwnerIDs = append(report.LiveOwnerIDs, outcome.OwnerID)
-			report.LifecycleProtectedOwnerIDs = append(report.LifecycleProtectedOwnerIDs, outcome.OwnerID)
-			report.ReconciliationExcludedOwnerIDs = append(report.ReconciliationExcludedOwnerIDs, outcome.OwnerID)
-			report.Outcomes = append(report.Outcomes, outcome)
-			continue
-		}
-		if !validProviderSessionRecoveryLiveness(result.Liveness) || result.Binding.Session != nil || result.Binding.Adapter != nil {
-			server.orphanProviderSessionRecovery(request.Owner, &outcome, "runtime ownership recovery result is invalid")
-			report.Outcomes = append(report.Outcomes, outcome)
-			continue
-		}
-		activity := recoveryRuntimeActivity(result.Liveness)
-		outcome.Warning = activity.Warning
-		outcome.Activity = activity
-		if request.Owner.IsTask() {
-			server.setRecoveredRuntimeActivity(outcome.OwnerID, activity)
-		}
-		if result.Liveness == ProviderSessionRecoveryUnknown {
-			report.LifecycleProtectedOwnerIDs = append(report.LifecycleProtectedOwnerIDs, outcome.OwnerID)
-			report.ReconciliationExcludedOwnerIDs = append(report.ReconciliationExcludedOwnerIDs, outcome.OwnerID)
-		} else if result.Liveness == ProviderSessionRecoveryOffline {
-			report.ReconciliationExcludedOwnerIDs = append(report.ReconciliationExcludedOwnerIDs, outcome.OwnerID)
-		}
-		report.Outcomes = append(report.Outcomes, outcome)
-	}
-	return report
-}
-
-func (server *Server) validateProviderSessionRecoveryRequest(request ProviderSessionRecoveryRequest) error {
-	if request.Owner.Validate() != nil || strings.TrimSpace(request.Continuation.ID) == "" ||
-		request.Continuation.OwnerID != request.Owner.ID || strings.TrimSpace(request.ReceiptID) == "" ||
-		strings.TrimSpace(request.SourceSessionID) == "" ||
-		strings.TrimSpace(request.SourceRequestID) == "" {
-		return fmt.Errorf("recovery identity is incomplete")
-	}
-	if strings.TrimSpace(request.ContainerID) != strings.TrimSpace(request.Continuation.ContainerID) ||
-		strings.TrimSpace(request.NativeSessionID) != strings.TrimSpace(request.Continuation.NativeSessionID) ||
-		strings.TrimSpace(request.NativeSessionPath) != strings.TrimSpace(request.Continuation.NativeSessionPath) {
-		return fmt.Errorf("recovery metadata does not match Continuation")
-	}
-	if request.Owner.IsTask() {
-		storedTask, err := server.tasks.Get(request.Owner.ID)
-		if err != nil || !durableTaskActive(storedTask.Status) {
-			return fmt.Errorf("recovery Task is stale")
-		}
-		storedContinuation, err := server.tasks.Continuation(request.Continuation.ID)
-		if err != nil || !recoveryContinuationMetadataMatches(request, ownerContinuationFromTask(storedContinuation)) {
-			return fmt.Errorf("recovery Continuation is stale")
-		}
-		active, err := server.tasks.ActiveContinuation(request.Owner.ID)
-		if err != nil || active == nil || active.ID != request.Continuation.ID {
-			return fmt.Errorf("recovery Continuation is not the active pin")
-		}
-		return nil
-	}
-	storedSession, err := server.sessions.Get(request.Owner.ID)
-	if err != nil || storedSession.Lifecycle != session.LifecycleOpen {
-		return fmt.Errorf("recovery Session is stale")
-	}
-	storedContinuation, err := server.sessions.Continuation(request.Continuation.ID)
-	if err != nil || !recoveryContinuationMetadataMatches(request, ownerContinuationFromSession(storedContinuation)) {
-		return fmt.Errorf("recovery Continuation is stale")
-	}
-	active, err := server.sessions.ActiveContinuation(request.Owner.ID)
-	if err != nil || active == nil || active.ID != request.Continuation.ID {
-		return fmt.Errorf("recovery Continuation is not the active pin")
-	}
-	return nil
-}
-
-func recoveryContinuationMetadataMatches(request ProviderSessionRecoveryRequest, stored owner.Continuation) bool {
-	return stored.OwnerID == request.Owner.ID && stored.ContainerID == request.ContainerID &&
-		stored.NativeSessionID == request.NativeSessionID && stored.NativeSessionPath == request.NativeSessionPath
-}
-
-func validProviderSessionRecoveryLiveness(liveness ProviderSessionRecoveryLiveness) bool {
-	return liveness == ProviderSessionRecoveryLive || liveness == ProviderSessionRecoveryOffline ||
-		liveness == ProviderSessionRecoveryOrphaned || liveness == ProviderSessionRecoveryUnknown
-}
-
-func recoveryRuntimeActivity(liveness ProviderSessionRecoveryLiveness) task.RuntimeActivity {
-	activity := task.RuntimeActivity{Liveness: string(liveness)}
-	if liveness == ProviderSessionRecoveryUnknown {
-		activity.Warning = "runtime health cannot currently be determined"
-	}
-	return activity
-}
-
-func (server *Server) orphanProviderSessionRecovery(found owner.Contract, outcome *ProviderSessionRecoveryOutcome, warning string) {
-	outcome.Liveness = ProviderSessionRecoveryOrphaned
-	outcome.Adopted = false
-	outcome.Warning = warning
-	activity := recoveryRuntimeActivity(ProviderSessionRecoveryOrphaned)
-	outcome.Activity = activity
-	if found.IsTask() {
-		stored, err := server.tasks.Get(found.ID)
-		if err == nil && durableTaskActive(stored.Status) {
-			server.setRecoveredRuntimeActivity(outcome.OwnerID, activity)
-		} else {
-			server.clearRecoveredRuntimeActivity(outcome.OwnerID)
-		}
-	}
-}
-
-// applyProviderSessionRecoveryLifecycle runs only after generic restart
-// reconciliation has enumerated and cleaned orphaned Runtime identities.
-// Offline Tasks were temporarily excluded from that pass so their exact active
-// Continuation remains available for explicit cleanup before failure. Live and
-// unknown outcomes are intentionally lifecycle-neutral.
-func (server *Server) applyProviderSessionRecoveryLifecycle(outcomes []ProviderSessionRecoveryOutcome) {
-	for _, outcome := range outcomes {
-		if !outcome.Owner.IsTask() {
-			continue
-		}
-		if outcome.Liveness == ProviderSessionRecoveryOrphaned {
-			server.clearRecoveredRuntimeActivity(outcome.OwnerID)
-			continue
-		}
-		if outcome.Liveness != ProviderSessionRecoveryOffline {
-			continue
-		}
-		found, err := server.tasks.Get(outcome.OwnerID)
-		if err != nil || !durableTaskActive(found.Status) {
-			server.clearRecoveredRuntimeActivity(outcome.OwnerID)
-			continue
-		}
-		continuation, continuationErr := server.tasks.ActiveContinuation(outcome.OwnerID)
-		if continuationErr == nil && continuation != nil {
-			server.cleanupStaleContinuationContainer(*continuation)
-			_, _ = server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusFailed)
-		}
-		if _, err := server.tasks.UpdateStatus(outcome.OwnerID, task.StatusFailed); err != nil {
-			server.logger.Printf("task reconcile: failed to mark offline Task %s failed: %v", outcome.OwnerID, err)
-			continue
-		}
-		_, _ = server.tasks.AppendEvent(outcome.OwnerID, task.EventKindLifecycle, task.EventPayload{
-			"phase": "failed", "reason": "runtime_offline",
-		})
-		server.settleTaskAcceptedSteering(outcome.OwnerID, owner.SteeringReasonOwnerRuntimeLost, "Task Runtime was lost before the accepted steering dispatched")
-		server.clearRecoveredRuntimeActivity(outcome.OwnerID)
-	}
-}
-
-func (server *Server) validateAndBindRecoveredProviderSession(request ProviderSessionRecoveryRequest, binding ProviderSessionBinding) error {
-	if err := validateProviderSessionBinding(binding); err != nil {
-		return err
-	}
-	if binding.Session.SessionID() != strings.TrimSpace(request.SourceSessionID) {
-		return fmt.Errorf("recovered provider session identity changed")
-	}
-	capabilities := binding.Session.Capabilities()
-	if !capabilities.PersistentSession || !capabilities.SendTurn || sessionOffline(binding.Session) || sessionHealthUnknown(binding.Session) {
-		return fmt.Errorf("recovered provider session is not healthy and controllable")
-	}
-	if request.Owner.IsSession() {
-		return server.BindSessionProviderSession(request.Owner.ID, binding.Session)
-	}
-	return server.BindProviderSession(request.Owner.ID, binding.Session)
-}
-
-func (server *Server) recoveredOwnerActivity(contract owner.Contract) task.RuntimeActivity {
-	if contract.IsTask() {
-		if found, err := server.tasks.Get(contract.ID); err == nil {
-			return server.computeRuntimeActivity(found)
-		}
-		return task.RuntimeActivity{}
-	}
-	found, err := server.sessions.Get(contract.ID)
-	if err != nil {
-		return task.RuntimeActivity{}
-	}
-	decorated, err := server.decorateSession(found)
-	if err != nil {
-		return task.RuntimeActivity{}
-	}
-	return task.RuntimeActivity{
-		Liveness: decorated.RuntimeActivity.Liveness, TurnActivity: decorated.RuntimeActivity.TurnActivity,
-		Warning: decorated.RuntimeActivity.Warning,
-	}
 }
 
 func (server *Server) taskExpectsProviderSession(found task.Task) bool {

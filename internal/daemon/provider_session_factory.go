@@ -90,69 +90,6 @@ type ProviderSessionFactory interface {
 	Open(context.Context, ProviderSessionLaunchRequest) (ProviderSessionBinding, error)
 }
 
-// ProviderSessionRecoveryLiveness is the closed result of a non-spawning
-// ownership probe. It deliberately matches Runtime Activity liveness.
-type ProviderSessionRecoveryLiveness string
-
-const (
-	ProviderSessionRecoveryLive     ProviderSessionRecoveryLiveness = "live"
-	ProviderSessionRecoveryOffline  ProviderSessionRecoveryLiveness = "offline"
-	ProviderSessionRecoveryOrphaned ProviderSessionRecoveryLiveness = "orphaned"
-	ProviderSessionRecoveryUnknown  ProviderSessionRecoveryLiveness = "unknown"
-)
-
-// ProviderSessionRecoveryRequest identifies one exact durable Runtime and the
-// control request whose callbacks the daemon needs to recover. Metadata is
-// copied from the supplied Continuation so a factory never needs to query
-// aggregate storage or infer identity from provider output.
-type ProviderSessionRecoveryRequest struct {
-	Owner             owner.Contract
-	Continuation      owner.Continuation
-	ReceiptID         string
-	SourceSessionID   string
-	SourceRequestID   string
-	DispatchRequestID string
-	ContainerID       string
-	NativeSessionID   string
-	NativeSessionPath string
-}
-
-// ProviderSessionRecoveryResult returns a binding only when ownership of the
-// exact existing Runtime is proven live. Non-live results must not carry a
-// binding.
-type ProviderSessionRecoveryResult struct {
-	Liveness ProviderSessionRecoveryLiveness
-	Binding  ProviderSessionBinding
-}
-
-// ProviderSessionRecoveryFactory is an optional restart capability. Recover
-// MUST only probe or attach to the exact Runtime named by the request. It MUST
-// NOT call Open, launch a process/container, create a Continuation, or resume a
-// provider-native session in a replacement Runtime.
-type ProviderSessionRecoveryFactory interface {
-	Recover(context.Context, ProviderSessionRecoveryRequest) (ProviderSessionRecoveryResult, error)
-}
-
-// ProviderSessionRecoveryOutcome is safe coordinator input. It exposes no raw
-// provider data and distinguishes successful adoption from a liveness probe.
-type ProviderSessionRecoveryOutcome struct {
-	Owner    owner.Contract
-	OwnerID  string
-	Liveness ProviderSessionRecoveryLiveness
-	Adopted  bool
-	Warning  string
-	Activity task.RuntimeActivity
-}
-
-// ProviderSessionRecoveryReport exposes owner-neutral proven-live and
-// lifecycle exclusion sets used by startup reconciliation.
-type ProviderSessionRecoveryReport struct {
-	LiveOwnerIDs                   []string
-	LifecycleProtectedOwnerIDs     []string
-	ReconciliationExcludedOwnerIDs []string
-	Outcomes                       []ProviderSessionRecoveryOutcome
-}
-
 type ProviderSessionFactoryFunc func(context.Context, ProviderSessionLaunchRequest) (ProviderSessionBinding, error)
 
 func (f ProviderSessionFactoryFunc) Open(ctx context.Context, request ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {

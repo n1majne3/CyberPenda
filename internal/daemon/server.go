@@ -158,8 +158,6 @@ type Server struct {
 	providerSessions        *providerSessionRegistry
 	sessionProviderSessions *providerSessionRegistry
 	providerSessionFactory  ProviderSessionFactory
-	runtimeRecoveryMu       sync.RWMutex
-	runtimeRecovery         map[string]task.RuntimeActivity
 	runtimeStopTimeout      time.Duration
 	steeringDispatchTimeout time.Duration
 }
@@ -338,7 +336,6 @@ func NewServer(config Config) (*Server, error) {
 		providerSessions:        newProviderSessionRegistry(),
 		sessionProviderSessions: newProviderSessionRegistry(),
 		providerSessionFactory:  config.ProviderSessionFactory,
-		runtimeRecovery:         map[string]task.RuntimeActivity{},
 		runtimeStopTimeout:      10 * time.Second,
 		steeringDispatchTimeout: defaultAcceptedSteeringDispatchTimeout,
 	}
