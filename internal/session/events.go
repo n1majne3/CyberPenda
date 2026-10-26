@@ -172,18 +172,39 @@ func (s *Service) HistoryEventSeqByRef(id string, ref string) (int, bool, error)
 	if _, err := s.Get(id); err != nil {
 		return 0, false, err
 	}
-	var seq int
-	err := s.db.QueryRow(
-		`SELECT seq FROM session_events WHERE session_id=? AND (id=? OR instr(?, id || '-')=1) ORDER BY seq ASC LIMIT 1`,
-		id, ref, ref,
-	).Scan(&seq)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
+	candidates := historyReferenceCandidates(ref)
+	args := make([]any, 0, len(candidates)+1)
+	args = append(args, id)
+	for _, candidate := range candidates {
+		args = append(args, candidate)
 	}
+	var seq sql.NullInt64
+	err := s.db.QueryRow(
+		historyEventSeqByRefQuery(len(candidates)),
+		args...,
+	).Scan(&seq)
 	if err != nil {
 		return 0, false, fmt.Errorf("resolve Session Event reference: %w", err)
 	}
-	return seq, true, nil
+	if !seq.Valid {
+		return 0, false, nil
+	}
+	return int(seq.Int64), true, nil
+}
+
+func historyEventSeqByRefQuery(candidateCount int) string {
+	return `SELECT MIN(seq) FROM session_events WHERE +session_id=? AND id IN (` +
+		strings.TrimSuffix(strings.Repeat("?,", candidateCount), ",") + `)`
+}
+
+func historyReferenceCandidates(ref string) []string {
+	candidates := []string{ref}
+	for index := range ref {
+		if ref[index] == '-' {
+			candidates = append(candidates, ref[:index])
+		}
+	}
+	return candidates
 }
 
 func (s *Service) readTranscriptContextBefore(sessionID string, seq int, window *EventWindow) error {
