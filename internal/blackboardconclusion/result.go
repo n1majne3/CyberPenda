@@ -10,11 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
-	"pentest/internal/blackboardv2"
 	"pentest/internal/jsonnumber"
 )
 
@@ -372,50 +370,6 @@ func joinJSONPath(parent, field string) string {
 		return field
 	}
 	return parent + "." + field
-}
-
-// Compile deterministically lowers a validated result to Blackboard v2. The
-// caller remains the sole owner of the idempotency key and trusted identity.
-func Compile(result RuntimeAttemptResult, idempotencyKey string) (blackboardv2.ChangeBatch, error) {
-	if err := validateResult(result); err != nil {
-		return blackboardv2.ChangeBatch{}, err
-	}
-	if strings.TrimSpace(idempotencyKey) == "" {
-		return blackboardv2.ChangeBatch{}, fmt.Errorf("idempotency key is required")
-	}
-	tested := append([]RuntimeTestedTarget(nil), result.TestedTargets...)
-	produced := append([]RuntimeVersionedTarget(nil), result.ProducedTargets...)
-	sort.Slice(tested, func(i, j int) bool { return tested[i].Key < tested[j].Key })
-	sort.Slice(produced, func(i, j int) bool { return produced[i].Key < produced[j].Key })
-
-	changes := make([]blackboardv2.Change, 0, len(tested)*2+len(produced)+2)
-	for _, target := range tested {
-		if target.CreateObjective != nil {
-			changes = append(changes, blackboardv2.Change{
-				Op: "create", Key: target.Key, Type: "objective",
-				Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: target.CreateObjective.Objective},
-			})
-		}
-	}
-	attemptVersion := result.Attempt.ExpectedVersion
-	if result.Attempt.Create {
-		attemptVersion = 1
-		changes = append(changes, blackboardv2.Change{
-			Op: "create", Key: result.Attempt.Key, Type: "attempt",
-			Record: blackboardv2.AttemptRecord{Status: "open", Summary: result.Attempt.Summary},
-		})
-	}
-	for _, target := range tested {
-		changes = append(changes, blackboardv2.Change{Op: "relate", From: result.Attempt.Key, Relation: "tests", To: target.Key})
-	}
-	for _, target := range produced {
-		changes = append(changes, blackboardv2.Change{Op: "relate", From: result.Attempt.Key, Relation: "produced", To: target.Key})
-	}
-	changes = append(changes, blackboardv2.Change{
-		Op: "transition", Key: result.Attempt.Key, Version: attemptVersion,
-		Status: string(result.Attempt.Outcome), Summary: result.Attempt.Summary,
-	})
-	return blackboardv2.ChangeBatch{Schema: "semantic-change-batch/v2", IdempotencyKey: idempotencyKey, Changes: changes}, nil
 }
 
 func validateResult(result RuntimeAttemptResult) error {

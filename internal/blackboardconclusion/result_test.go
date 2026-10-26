@@ -3,15 +3,13 @@ package blackboardconclusion_test
 import (
 	"bytes"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 
 	"pentest/internal/blackboardconclusion"
-	"pentest/internal/blackboardv2"
 )
 
-func TestDecodeAndCompileNewAttemptAgainstCreatedObjective(t *testing.T) {
+func TestDecodeNewAttemptAgainstCreatedObjective(t *testing.T) {
 	raw := []byte(`{
 		"schema":"runtime-attempt-result/v1",
 		"base_revision":0,
@@ -39,26 +37,9 @@ func TestDecodeAndCompileNewAttemptAgainstCreatedObjective(t *testing.T) {
 		t.Fatal("SHA256 is empty")
 	}
 
-	batch, err := blackboardconclusion.Compile(validated.Result, "assisted-conclusion:receipt-1")
-	if err != nil {
-		t.Fatalf("Compile() error = %v", err)
-	}
-	want := blackboardv2.ChangeBatch{
-		Schema:         "semantic-change-batch/v2",
-		IdempotencyKey: "assisted-conclusion:receipt-1",
-		Changes: []blackboardv2.Change{
-			{Op: "create", Key: "objective:juice-shop-search-sqli", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Determine whether Juice Shop search is vulnerable to SQL injection."}},
-			{Op: "create", Key: "attempt:juice-shop-search-sqli", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Tested search SQL injection payloads without establishing exploitability."}},
-			{Op: "relate", From: "attempt:juice-shop-search-sqli", Relation: "tests", To: "objective:juice-shop-search-sqli"},
-			{Op: "transition", Key: "attempt:juice-shop-search-sqli", Version: 1, Status: "inconclusive", Summary: "Tested search SQL injection payloads without establishing exploitability."},
-		},
-	}
-	if !reflect.DeepEqual(batch, want) {
-		t.Fatalf("Compile() = %#v, want %#v", batch, want)
-	}
 }
 
-func TestDecodeAndCompilePreservesProjectBlackboardKeyStyle(t *testing.T) {
+func TestDecodePreservesProjectBlackboardKeyStyle(t *testing.T) {
 	raw := []byte(`{
 		"schema":"runtime-attempt-result/v1",
 		"base_revision":12,
@@ -75,21 +56,8 @@ func TestDecodeAndCompilePreservesProjectBlackboardKeyStyle(t *testing.T) {
 		"produced_targets":[]
 	}`)
 
-	validated, err := blackboardconclusion.Decode(raw)
-	if err != nil {
+	if _, err := blackboardconclusion.Decode(raw); err != nil {
 		t.Fatalf("Decode() error = %v", err)
-	}
-	batch, err := blackboardconclusion.Compile(validated.Result, "assisted-conclusion:preserve-key-style")
-	if err != nil {
-		t.Fatalf("Compile() error = %v", err)
-	}
-	want := []blackboardv2.Change{
-		{Op: "create", Key: "attempt/3124", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Recorded the current challenge work without changing its Blackboard Key style."}},
-		{Op: "relate", From: "attempt/3124", Relation: "tests", To: "objective/solve-nssctf-arena"},
-		{Op: "transition", Key: "attempt/3124", Version: 1, Status: "inconclusive", Summary: "Recorded the current challenge work without changing its Blackboard Key style."},
-	}
-	if !reflect.DeepEqual(batch.Changes, want) {
-		t.Fatalf("Compile().Changes = %#v, want %#v", batch.Changes, want)
 	}
 }
 
@@ -127,37 +95,6 @@ func TestDecodeRejectsAuthorityLifecycleAndInvalidAttemptFields(t *testing.T) {
 	invalidUTF8 := append([]byte(valid[:len(valid)-1]), 0xff, '}')
 	if _, err := blackboardconclusion.Decode(invalidUTF8); err == nil {
 		t.Fatal("Decode() accepted invalid UTF-8")
-	}
-}
-
-func TestCompileExistingSucceededAttemptSortsTestedAndProducedTargets(t *testing.T) {
-	result := blackboardconclusion.RuntimeAttemptResult{
-		Schema: "runtime-attempt-result/v1", BaseRevision: 9,
-		Attempt: blackboardconclusion.RuntimeAttemptDescriptor{
-			Key: "attempt:search", ExpectedVersion: 3, Summary: "Established reusable search behavior.", Outcome: blackboardconclusion.RuntimeAttemptSucceeded,
-		},
-		TestedTargets: []blackboardconclusion.RuntimeTestedTarget{
-			{Key: "objective:zeta", ExpectedVersion: 2},
-			{Key: "entity:alpha", ExpectedVersion: 1},
-		},
-		ProducedTargets: []blackboardconclusion.RuntimeVersionedTarget{
-			{Key: "finding:zeta", ExpectedVersion: 2},
-			{Key: "fact:alpha", ExpectedVersion: 1},
-		},
-	}
-	batch, err := blackboardconclusion.Compile(result, "assisted-conclusion:receipt-success")
-	if err != nil {
-		t.Fatalf("Compile() error = %v", err)
-	}
-	want := []blackboardv2.Change{
-		{Op: "relate", From: "attempt:search", Relation: "tests", To: "entity:alpha"},
-		{Op: "relate", From: "attempt:search", Relation: "tests", To: "objective:zeta"},
-		{Op: "relate", From: "attempt:search", Relation: "produced", To: "fact:alpha"},
-		{Op: "relate", From: "attempt:search", Relation: "produced", To: "finding:zeta"},
-		{Op: "transition", Key: "attempt:search", Version: 3, Status: "succeeded", Summary: "Established reusable search behavior."},
-	}
-	if !reflect.DeepEqual(batch.Changes, want) {
-		t.Fatalf("Compile().Changes = %#v, want %#v", batch.Changes, want)
 	}
 }
 
