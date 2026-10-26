@@ -61,7 +61,6 @@ export function launchSelectionFromProfile(profile: RuntimeProfile): Partial<Lau
 type DefaultLaunchFormInput = {
   plugins: RuntimePlugin[];
   modelProviders: ModelProvider[];
-  defaultProfile?: RuntimeProfile;
   projectRunner?: string;
 };
 
@@ -105,47 +104,6 @@ export function formFromPreset(
     reasoningEffort: displayReasoningEffort(selection.reasoningEffort),
     runner: projectRunner?.trim() || selection.runner || "sandbox",
   };
-}
-
-export function findLaunchProfileForSelection(
-  profiles: RuntimeProfile[],
-  form: Pick<LaunchForm, "runtime" | "modelProviderId" | "modelOverride">,
-): RuntimeProfile | undefined {
-  const runtime = form.runtime.trim();
-  const modelProviderId = form.modelProviderId.trim();
-  const modelOverride = form.modelOverride.trim();
-  if (!runtime || !modelProviderId) return undefined;
-  return profiles.find(
-    (profile) =>
-      profile.provider === runtime &&
-      (profile.fields.model_provider_id?.trim() ?? "") === modelProviderId &&
-      (profile.fields.model_override?.trim() ?? "") === modelOverride,
-  );
-}
-
-export function launchModelOverridePayload(
-  presetId: string,
-  form: Pick<LaunchForm, "modelOverride">,
-): { model_override?: string } {
-  if (!presetId.trim()) {
-    return {};
-  }
-  const modelOverride = form.modelOverride.trim();
-  if (!modelOverride) {
-    return {};
-  }
-  return { model_override: modelOverride };
-}
-
-/**
- * Launch always sends an explicit Requested Reasoning Effort (one of five).
- * Inheritance from Profile / high is applied when initializing the form, not
- * via an extra select option.
- */
-export function launchReasoningEffortPayload(
-  form: Pick<LaunchForm, "reasoningEffort">,
-): { reasoning_effort: string } {
-  return { reasoning_effort: displayReasoningEffort(form.reasoningEffort) };
 }
 
 export function launchSelectionPayload(
@@ -213,28 +171,17 @@ export function initialLaunchState(input: InitialLaunchStateInput): {
 
 export function defaultLaunchForm(input: DefaultLaunchFormInput): LaunchForm {
   const runtimes = launchRuntimes(input.plugins);
-  const fromProfile = input.defaultProfile ? launchSelectionFromProfile(input.defaultProfile) : {};
   const runtime =
-    fromProfile.runtime && runtimes.some((plugin) => plugin.id === fromProfile.runtime)
-      ? fromProfile.runtime
-      : runtimes.find((plugin) => plugin.id === DEFAULT_LAUNCH_RUNTIME_ID)?.id ?? runtimes[0]?.id ?? "";
+    runtimes.find((plugin) => plugin.id === DEFAULT_LAUNCH_RUNTIME_ID)?.id ?? runtimes[0]?.id ?? "";
   const plugin = input.plugins.find((candidate) => candidate.id === runtime);
   const compatible = selectableModelProviders(input.modelProviders, plugin);
-  const modelProviderId =
-    fromProfile.modelProviderId && compatible.some((provider) => provider.id === fromProfile.modelProviderId)
-      ? fromProfile.modelProviderId
-      : compatible[0]?.id ?? "";
-  const provider = compatible.find((candidate) => candidate.id === modelProviderId);
+  const provider = compatible[0];
   const models = modelsForProvider(provider);
-  const modelOverride =
-    fromProfile.modelOverride && models.includes(fromProfile.modelOverride)
-      ? fromProfile.modelOverride
-      : models[0] ?? "";
   return {
     runtime,
-    modelProviderId,
-    modelOverride,
-    reasoningEffort: displayReasoningEffort(fromProfile.reasoningEffort),
-    runner: input.projectRunner?.trim() || fromProfile.runner || "sandbox",
+    modelProviderId: provider?.id ?? "",
+    modelOverride: models[0] ?? "",
+    reasoningEffort: "high",
+    runner: input.projectRunner?.trim() || "sandbox",
   };
 }

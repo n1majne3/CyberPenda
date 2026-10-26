@@ -6,8 +6,6 @@ import {
   formFromPreset,
   initialLaunchState,
   launchRuntimes,
-  launchModelOverridePayload,
-  launchReasoningEffortPayload,
   launchSelectionPayload,
   modelsForProvider,
   presetMatchesRuntime,
@@ -167,16 +165,6 @@ describe("taskLaunchForm", () => {
     });
   });
 
-  it("always sends an explicit launch reasoning effort from the five values", () => {
-    // Empty inheritance resolves to high outside the select (no sixth option).
-    expect(launchReasoningEffortPayload({ reasoningEffort: "" })).toEqual({
-      reasoning_effort: "high",
-    });
-    expect(launchReasoningEffortPayload({ reasoningEffort: "max" })).toEqual({
-      reasoning_effort: "max",
-    });
-  });
-
   it("inherits profile reasoning effort or high when building launch form", () => {
     const missingEffort: RuntimeProfile = {
       id: "profile-missing",
@@ -309,32 +297,4 @@ describe("taskLaunchForm", () => {
     expect(form.modelProviderId).toBe("mimo");
   });
 
-  it("builds launch model override payload only for preset launches", () => {
-    expect(launchModelOverridePayload("", { modelOverride: "mimo-v2-pro" })).toEqual({});
-    expect(launchModelOverridePayload("codex-preset", { modelOverride: "" })).toEqual({});
-    expect(launchModelOverridePayload("codex-preset", { modelOverride: "mimo-v2-pro" })).toEqual({
-      model_override: "mimo-v2-pro",
-    });
-  });
-
-  it("picks compatible provider and default model for a runtime", () => {
-    const profile: RuntimeProfile = {
-      id: "legacy",
-      name: "Legacy",
-      provider: "codex",
-      fields: { model: "gpt-5" },
-      created_at: "",
-      updated_at: "",
-    };
-    const form = defaultLaunchForm({
-      plugins: [codexPlugin, piPlugin],
-      modelProviders: [mimoProvider, anthropicProvider],
-      defaultProfile: profile,
-      projectRunner: "sandbox",
-    });
-    expect(form.runtime).toBe("codex");
-    expect(form.modelProviderId).toBe("mimo");
-    expect(form.modelOverride).toBe("mimo-v2-flash");
-    expect(form.runner).toBe("sandbox");
-  });
 });
