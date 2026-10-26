@@ -259,10 +259,6 @@ const (
 	BlackboardConclusionReceiptApplied                              = owner.BlackboardConclusionReceiptApplied
 )
 
-// SemanticDebtWatermarks compare terminal Work Tool Results with the latest
-// successful semantic persistence that covers them.
-type SemanticDebtWatermarks = owner.SemanticDebtWatermarks
-
 // ConclusionDispatchKind is the immutable attempt category of one Conclusion
 // Dispatch (ADR 0021). Recovery-created dispatches are kind recovery.
 type ConclusionDispatchKind = owner.ConclusionDispatchKind
@@ -308,106 +304,6 @@ const (
 	ConclusionRecoveryDispatchFailed                 = owner.ConclusionRecoveryDispatchFailed
 	ConclusionRecoveryLegacyCorrelationUnproven      = owner.ConclusionRecoveryLegacyCorrelationUnproven
 )
-
-// BlackboardConclusionReceipt is the durable coordinator record for one
-// completed assisted work Runtime Turn. Structured result bytes remain
-// internal and are never projected on Task APIs.
-type BlackboardConclusionReceipt struct {
-	ID                            string                           `json:"id"`
-	TaskID                        string                           `json:"task_id"`
-	ContinuationID                string                           `json:"continuation_id"`
-	SourceRequestID               string                           `json:"source_request_id"`
-	SourceRequestCorrelationExact bool                             `json:"source_request_correlation_exact"`
-	SourceSessionID               string                           `json:"source_session_id"`
-	SourceTurnID                  string                           `json:"source_turn_id"`
-	InternalState                 BlackboardConclusionReceiptState `json:"internal_state"`
-	SourceWorkWatermark           int                              `json:"source_work_watermark"`
-	SemanticPersistenceWatermark  int                              `json:"semantic_persistence_watermark"`
-	DispatchRequestID             string                           `json:"dispatch_request_id,omitempty"`
-	ControlTurnID                 string                           `json:"control_turn_id,omitempty"`
-	BaseRevision                  *int                             `json:"base_revision,omitempty"`
-	SynchronizedRevision          *int                             `json:"synchronized_revision,omitempty"`
-	SourceSelection               TurnSelection                    `json:"source_selection"`
-	CanonicalResultJSON           []byte                           `json:"-"`
-	CanonicalResultSHA256         string                           `json:"canonical_result_sha256,omitempty"`
-	ApplyIdempotencyKey           string                           `json:"apply_idempotency_key,omitempty"`
-	AppliedRevision               *int                             `json:"applied_revision,omitempty"`
-	AutomaticTurnCount            int                              `json:"automatic_turn_count"`
-	RepairCount                   int                              `json:"repair_count"`
-	VersionRegenerationCount      int                              `json:"version_regeneration_count"`
-	ExplicitRetryCount            int                              `json:"explicit_retry_count"`
-	OperatorRetryKey              string                           `json:"-"`
-	SendAttemptCount              int                              `json:"send_attempt_count"`
-	SendStartedAt                 *time.Time                       `json:"send_started_at,omitempty"`
-	NextEligibleAt                *time.Time                       `json:"next_eligible_at,omitempty"`
-	ErrorCode                     BlackboardConclusionErrorCode    `json:"error_code,omitempty"`
-	// RecoveryReason is the closed operator-visible reason for a fail-closed
-	// action_required obligation (ADR 0021). It is never free-form text.
-	RecoveryReason string `json:"recovery_reason,omitempty"`
-	// ActiveDispatchID and DispatchKind expose the active Conclusion Dispatch
-	// so recovery can create a new dispatch without rewriting history.
-	ActiveDispatchID    string                  `json:"-"`
-	DispatchKind        ConclusionDispatchKind  `json:"-"`
-	DirectiveKind       ConclusionDirectiveKind `json:"-"`
-	ValidationReason    string                  `json:"validation_reason,omitempty"`
-	ValidationFieldPath string                  `json:"validation_field_path,omitempty"`
-	ValidationExpected  string                  `json:"validation_expected,omitempty"`
-	CreatedAt           time.Time               `json:"created_at"`
-	UpdatedAt           time.Time               `json:"updated_at"`
-}
-
-// View projects internal coordinator progress into the compact Task API
-// vocabulary. Canonical result bytes and dispatch idempotency stay private.
-func (receipt BlackboardConclusionReceipt) View(mode BlackboardMode) BlackboardConclusion {
-	return receipt.ViewAt(mode, time.Now().UTC())
-}
-
-func (receipt BlackboardConclusionReceipt) ViewAt(mode BlackboardMode, now time.Time) BlackboardConclusion {
-	view := BlackboardConclusion{
-		Mode: mode, SourceTurnID: receipt.SourceTurnID,
-		SourceWorkWatermark:          receipt.SourceWorkWatermark,
-		SemanticPersistenceWatermark: receipt.SemanticPersistenceWatermark,
-	}
-	switch receipt.InternalState {
-	case BlackboardConclusionReceiptClean:
-		view.State = BlackboardConclusionStateClean
-	case BlackboardConclusionReceiptPending:
-		view.State = BlackboardConclusionStatePending
-	case BlackboardConclusionReceiptApplied:
-		view.State = BlackboardConclusionStateClean
-		if receipt.AppliedRevision != nil {
-			view.AppliedRevision = intPointer(*receipt.AppliedRevision)
-		}
-	case BlackboardConclusionReceiptActionRequired:
-		view.State = BlackboardConclusionStateActionRequired
-		view.ErrorCode = receipt.ErrorCode
-		view.RecoveryReason = receipt.RecoveryReason
-		view.ValidationReason = receipt.ValidationReason
-		view.ValidationFieldPath = receipt.ValidationFieldPath
-		view.ValidationExpected = receipt.ValidationExpected
-		if receipt.ErrorCode == BlackboardConclusionErrorWorkTurnNeverSettled {
-			// A never-settled work turn is terminal: retrying cannot win because
-			// the provider never yields the active turn. Surface it as not
-			// retryable so the operator is directed to Finish instead.
-			view.RetryAvailable = false
-			break
-		}
-		if receipt.RecoveryReason == string(ConclusionRecoveryAcceptanceAmbiguous) {
-			// An acceptance-ambiguous provider delivery is never resent: the
-			// obligation is terminal-actionable and offers no generic Retry.
-			view.RetryAvailable = false
-			break
-		}
-		if receipt.NextEligibleAt != nil {
-			eligible := receipt.NextEligibleAt.UTC()
-			view.NextEligibleAt = &eligible
-			view.RetryAvailable = !now.Before(eligible)
-		}
-	default:
-		view.State = BlackboardConclusionStateConcluding
-	}
-	return view
-}
 
 // RuntimeConfigVersion is a historical task-specific runtime configuration
 // captured for a runtime continuation. A runtime-profile switch inside a task
@@ -610,14 +506,6 @@ var ErrSandboxVPNTunHostProxyConflict = errors.New("sandbox VPN TUN cannot combi
 
 // ErrInvalidContainerCLI reports an unsupported Task-level container CLI choice.
 var ErrInvalidContainerCLI = errors.New("container CLI must be docker or podman")
-
-var ErrInvalidBlackboardConclusionReceipt = errors.New("invalid Blackboard conclusion checkpoint receipt")
-
-var ErrBlackboardConclusionRetryCooldown = errors.New("Blackboard conclusion retry is not yet eligible")
-
-// ErrBlackboardConclusionWorkTurnNeverSettled reports a retry against a
-// non-retryable terminal reached when a provider work turn never yielded.
-var ErrBlackboardConclusionWorkTurnNeverSettled = errors.New("Blackboard conclusion work turn never settled")
 
 // ErrContinuationStatusConflict prevents a late lifecycle observer from
 // overwriting a Continuation that already reached a different terminal state.
@@ -1316,8 +1204,6 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 	}
 	return events, nil
 }
-
-func intPointer(value int) *int { return &value }
 
 // HarnessSteeringDirective is one unconsumed task-local directive selected in
 // Task Event order. EventID remains server authority and is never projected.
