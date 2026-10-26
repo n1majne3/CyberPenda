@@ -2,7 +2,6 @@ package report_test
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
 
@@ -12,14 +11,6 @@ import (
 	"pentest/internal/blackboardv2"
 	"pentest/internal/report"
 )
-
-type staticV2ReportReader struct {
-	projection blackboardv2.PentestReportProjection
-}
-
-func (reader staticV2ReportReader) PentestReport(context.Context, string) (blackboardv2.PentestReportProjection, error) {
-	return reader.projection, nil
-}
 
 func TestV2MarkdownRendersMultilineSemanticTextAsInertLiteralBlocks(t *testing.T) {
 	hostile := "first line\n# injected heading\n- injected list\n1. injected ordered list\n~~~\n```backticks\n---\n[link](javascript:alert(1))\n<div>html</div>"
@@ -38,17 +29,9 @@ func TestV2MarkdownRendersMultilineSemanticTextAsInertLiteralBlocks(t *testing.T
 		ConfirmedFacts:      []blackboardv2.ReportFact{{Category: hostile, Summary: hostile, Body: hostile, Confidence: "confirmed", ScopeStatus: hostile}},
 		TentativeFacts:      []blackboardv2.ReportFact{},
 	}
-	generator := report.NewV2Generator(staticV2ReportReader{projection: projection})
-
-	first, err := generator.Generate(context.Background(), report.V2Request{ProjectID: "ignored"})
-	if err != nil {
-		t.Fatalf("render hostile multiline report: %v", err)
-	}
-	second, err := generator.Generate(context.Background(), report.V2Request{ProjectID: "ignored"})
-	if err != nil {
-		t.Fatalf("render hostile multiline report again: %v", err)
-	}
-	if first.Markdown != second.Markdown {
+	first := report.RenderV2Markdown(projection)
+	second := report.RenderV2Markdown(projection)
+	if first != second {
 		t.Fatal("hostile multiline rendering is not deterministic")
 	}
 
@@ -56,24 +39,24 @@ func TestV2MarkdownRendersMultilineSemanticTextAsInertLiteralBlocks(t *testing.T
 		"\n# injected heading", "\n- injected list", "\n1. injected ordered list",
 		"\n~~~", "\n```backticks", "\n---", "\n[link]", "\n<div>",
 	} {
-		if strings.Contains(first.Markdown, unsafe) {
-			t.Fatalf("multiline semantic text escaped its literal block via %q:\n%s", unsafe, first.Markdown)
+		if strings.Contains(first, unsafe) {
+			t.Fatalf("multiline semantic text escaped its literal block via %q:\n%s", unsafe, first)
 		}
 	}
 	for _, literal := range []string{
 		"    # injected heading", "    - injected list", "    1. injected ordered list",
 		"    ~~~", "    ```backticks", "    ---", "    [link](javascript:alert(1))", "    <div>html</div>",
 	} {
-		if !strings.Contains(first.Markdown, literal) {
-			t.Fatalf("multiline semantic text did not preserve literal %q:\n%s", literal, first.Markdown)
+		if !strings.Contains(first, literal) {
+			t.Fatalf("multiline semantic text did not preserve literal %q:\n%s", literal, first)
 		}
 	}
-	if strings.Count(first.Markdown, "# Pentest Report") != 1 || strings.Contains(first.Markdown, "# project heading Pentest Report") {
-		t.Fatalf("multiline Project name altered report structure:\n%s", first.Markdown)
+	if strings.Count(first, "# Pentest Report") != 1 || strings.Contains(first, "# project heading Pentest Report") {
+		t.Fatalf("multiline Project name altered report structure:\n%s", first)
 	}
 	var rendered bytes.Buffer
 	markdown := goldmark.New(goldmark.WithRendererOptions(html.WithUnsafe()))
-	if err := markdown.Convert([]byte(first.Markdown), &rendered); err != nil {
+	if err := markdown.Convert([]byte(first), &rendered); err != nil {
 		t.Fatalf("parse rendered Markdown: %v", err)
 	}
 	for _, active := range []string{
@@ -84,7 +67,7 @@ func TestV2MarkdownRendersMultilineSemanticTextAsInertLiteralBlocks(t *testing.T
 			t.Fatalf("multiline semantic text became active Markdown %q:\n%s", active, rendered.String())
 		}
 	}
-	if !strings.HasSuffix(first.Markdown, "\n") || strings.HasSuffix(first.Markdown, "\n\n") {
-		t.Fatalf("Markdown must end with exactly one LF: %q", first.Markdown)
+	if !strings.HasSuffix(first, "\n") || strings.HasSuffix(first, "\n\n") {
+		t.Fatalf("Markdown must end with exactly one LF: %q", first)
 	}
 }

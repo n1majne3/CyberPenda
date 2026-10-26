@@ -114,30 +114,27 @@ func TestFindingConfirmationAndPentestReportEndToEnd(t *testing.T) {
 		t.Fatalf("unrelated graph revision changed report content\nbefore=%s\nafter=%s", raw, afterRaw)
 	}
 
-	generator := report.NewV2Generator(service)
-	first, err := generator.Generate(ctx, report.V2Request{ProjectID: alpha.ID})
+	reportProjection, err := service.PentestReport(ctx, alpha.ID)
 	if err != nil {
-		t.Fatalf("render Pentest report: %v", err)
+		t.Fatalf("project Pentest report for rendering: %v", err)
 	}
-	second, err := generator.Generate(ctx, report.V2Request{ProjectID: alpha.ID})
-	if err != nil {
-		t.Fatalf("render Pentest report again: %v", err)
+	first := report.RenderV2Markdown(reportProjection)
+	second := report.RenderV2Markdown(reportProjection)
+	if first != second || !strings.Contains(first, "Confirmed Findings") || !strings.Contains(first, "Tentative Facts") || !strings.Contains(first, "Unconfirmed Findings") {
+		t.Fatalf("report Markdown is not deterministic or clearly sectioned:\n%s", first)
 	}
-	if first.Markdown != second.Markdown || !strings.Contains(first.Markdown, "Confirmed Findings") || !strings.Contains(first.Markdown, "Tentative Facts") || !strings.Contains(first.Markdown, "Unconfirmed Findings") {
-		t.Fatalf("report Markdown is not deterministic or clearly sectioned:\n%s", first.Markdown)
+	if !strings.HasSuffix(first, "\n") || strings.HasSuffix(first, "\n\n") {
+		t.Fatalf("report Markdown must end with exactly one LF:\n%q", first)
 	}
-	if !strings.HasSuffix(first.Markdown, "\n") || strings.HasSuffix(first.Markdown, "\n\n") {
-		t.Fatalf("report Markdown must end with exactly one LF:\n%q", first.Markdown)
+	if strings.Contains(first, "_Generated:") || strings.Contains(first, alpha.ID) {
+		t.Fatalf("report Markdown leaked time or project identity:\n%s", first)
 	}
-	if strings.Contains(first.Markdown, "_Generated:") || strings.Contains(first.Markdown, alpha.ID) {
-		t.Fatalf("report Markdown leaked time or project identity:\n%s", first.Markdown)
-	}
-	if !strings.Contains(first.Markdown, "Key:** finding:login") {
-		t.Fatalf("report Markdown omitted Blackboard Key for navigation:\n%s", first.Markdown)
+	if !strings.Contains(first, "Key:** finding:login") {
+		t.Fatalf("report Markdown omitted Blackboard Key for navigation:\n%s", first)
 	}
 	// Markdown escapes hyphens in keys (fact:confirmed\-support).
-	if !strings.Contains(first.Markdown, "fact:confirmed\\-support") || !strings.Contains(first.Markdown, "fact:tentative\\-context") {
-		t.Fatalf("report Markdown omitted Fact Blackboard Keys for navigation:\n%s", first.Markdown)
+	if !strings.Contains(first, "fact:confirmed\\-support") || !strings.Contains(first, "fact:tentative\\-context") {
+		t.Fatalf("report Markdown omitted Fact Blackboard Keys for navigation:\n%s", first)
 	}
 
 	_, err = service.Apply(ctx, beta.ID, blackboardv2.ChangeBatch{
@@ -506,27 +503,24 @@ func TestCTFSolutionProjectionDerivesSolvedStateAndOmitsAuditSurfaces(t *testing
 		}
 	}
 
-	generator := report.NewCTFV2Generator(service)
-	first, err := generator.Generate(ctx, report.V2Request{ProjectID: createdProject.ID})
+	reportProjection, err := service.CTFSolution(ctx, createdProject.ID)
 	if err != nil {
-		t.Fatalf("render CTF markdown: %v", err)
+		t.Fatalf("project CTF solution for rendering: %v", err)
 	}
-	second, err := generator.Generate(ctx, report.V2Request{ProjectID: createdProject.ID})
-	if err != nil {
-		t.Fatalf("render CTF markdown again: %v", err)
+	first := report.RenderCTFV2Markdown(reportProjection)
+	second := report.RenderCTFV2Markdown(reportProjection)
+	if first != second || !strings.Contains(first, "Solved: yes") || !strings.Contains(first, "Verified Flags") {
+		t.Fatalf("CTF markdown not deterministic or clearly sectioned:\n%s", first)
 	}
-	if first.Markdown != second.Markdown || !strings.Contains(first.Markdown, "Solved: yes") || !strings.Contains(first.Markdown, "Verified Flags") {
-		t.Fatalf("CTF markdown not deterministic or clearly sectioned:\n%s", first.Markdown)
+	if strings.Contains(first, createdProject.ID) || strings.Contains(first, "state_hash") {
+		t.Fatalf("CTF markdown leaked project identity/hashes:\n%s", first)
 	}
-	if strings.Contains(first.Markdown, createdProject.ID) || strings.Contains(first.Markdown, "state_hash") {
-		t.Fatalf("CTF markdown leaked project identity/hashes:\n%s", first.Markdown)
-	}
-	if !strings.Contains(first.Markdown, "Key:** solution:flag") {
-		t.Fatalf("CTF markdown omitted Blackboard Key for navigation:\n%s", first.Markdown)
+	if !strings.Contains(first, "Key:** solution:flag") {
+		t.Fatalf("CTF markdown omitted Blackboard Key for navigation:\n%s", first)
 	}
 	// Markdown escapes hyphens in keys (fact:confirmed\-clue).
-	if !strings.Contains(first.Markdown, "fact:confirmed\\-clue") || !strings.Contains(first.Markdown, "fact:tentative\\-clue") {
-		t.Fatalf("CTF markdown omitted Fact Blackboard Keys for navigation:\n%s", first.Markdown)
+	if !strings.Contains(first, "fact:confirmed\\-clue") || !strings.Contains(first, "fact:tentative\\-clue") {
+		t.Fatalf("CTF markdown omitted Fact Blackboard Keys for navigation:\n%s", first)
 	}
 
 	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
@@ -546,9 +540,9 @@ func TestCTFSolutionProjectionDerivesSolvedStateAndOmitsAuditSurfaces(t *testing
 	if unsolved.Solved || len(unsolved.VerifiedFlags) != 0 {
 		t.Fatalf("solved state did not reverse: %#v", unsolved)
 	}
-	md, err := generator.Generate(ctx, report.V2Request{ProjectID: createdProject.ID})
-	if err != nil || !strings.Contains(md.Markdown, "Solved: no") {
-		t.Fatalf("unsolved markdown = %v\n%s", err, md.Markdown)
+	md := report.RenderCTFV2Markdown(unsolved)
+	if !strings.Contains(md, "Solved: no") {
+		t.Fatalf("unsolved markdown:\n%s", md)
 	}
 }
 

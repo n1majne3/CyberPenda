@@ -1,67 +1,10 @@
 package report
 
 import (
-	"context"
-	"fmt"
 	"strings"
 
 	"pentest/internal/blackboardv2"
 )
-
-// V2Reader is the semantic v2 report seam used by the renderer.
-type V2Reader interface {
-	PentestReport(context.Context, string) (blackboardv2.PentestReportProjection, error)
-}
-
-// CTFV2Reader is the semantic v2 CTF solution seam used by the renderer.
-type CTFV2Reader interface {
-	CTFSolution(context.Context, string) (blackboardv2.CTFSolutionProjection, error)
-}
-
-// V2Request selects the Project whose current v2 conclusions are rendered.
-type V2Request struct {
-	ProjectID string
-}
-
-// V2Generator renders the deterministic Blackboard v2 Pentest projection.
-type V2Generator struct {
-	reader V2Reader
-}
-
-// CTFV2Generator renders the deterministic Blackboard v2 CTF solution projection.
-type CTFV2Generator struct {
-	reader CTFV2Reader
-}
-
-// NewV2Generator returns a report generator backed by current v2 semantics.
-func NewV2Generator(reader V2Reader) *V2Generator {
-	return &V2Generator{reader: reader}
-}
-
-// NewCTFV2Generator returns a CTF solution generator backed by current v2 semantics.
-func NewCTFV2Generator(reader CTFV2Reader) *CTFV2Generator {
-	return &CTFV2Generator{reader: reader}
-}
-
-// Generate renders current confirmed conclusions separately from tentative
-// Facts and unconfirmed Findings. It adds no clock, identifiers, or history.
-func (g *V2Generator) Generate(ctx context.Context, request V2Request) (Report, error) {
-	projection, err := g.reader.PentestReport(ctx, request.ProjectID)
-	if err != nil {
-		return Report{}, fmt.Errorf("project v2 Pentest report: %w", err)
-	}
-	return Report{Status: "generated", Format: "markdown", Markdown: RenderV2Markdown(projection)}, nil
-}
-
-// Generate renders CTF solved state from verified flag Solutions only. It adds
-// no Trusted Origin, internal IDs, hashes, or provenance appendices.
-func (g *CTFV2Generator) Generate(ctx context.Context, request V2Request) (Report, error) {
-	projection, err := g.reader.CTFSolution(ctx, request.ProjectID)
-	if err != nil {
-		return Report{}, fmt.Errorf("project v2 CTF solution: %w", err)
-	}
-	return Report{Status: "generated", Format: "markdown", Markdown: RenderCTFV2Markdown(projection)}, nil
-}
 
 // RenderV2Markdown turns a current semantic Pentest projection into Markdown.
 func RenderV2Markdown(projection blackboardv2.PentestReportProjection) string {
