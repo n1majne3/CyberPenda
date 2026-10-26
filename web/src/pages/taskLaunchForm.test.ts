@@ -296,5 +296,4 @@ describe("taskLaunchForm", () => {
     expect(form.runtime).toBe("codex");
     expect(form.modelProviderId).toBe("mimo");
   });
-
 });
