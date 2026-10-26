@@ -10,7 +10,6 @@ import (
 	"pentest/internal/runtimeconfig"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
-	"pentest/internal/skill"
 )
 
 type resolvedLaunchConfiguration struct {
@@ -294,23 +293,6 @@ func (server *Server) taskSnapshotSkillIDs(foundTaskID string) ([]string, error)
 		return nil, err
 	}
 	return append([]string{}, snapshot.EnabledSkillIDs...), nil
-}
-
-func (server *Server) runtimeSnapshotSkillBundles(snapshot runtimeconfig.RuntimeConfigurationSnapshot) ([]skill.Bundle, error) {
-	bundles := make([]skill.Bundle, 0, len(snapshot.EnabledSkillIDs))
-	for _, skillID := range snapshot.EnabledSkillIDs {
-		captured, err := server.skills.Get(skillID)
-		if err != nil {
-			// Retired builtins stay in historical snapshots; continuation
-			// projects the surviving skills instead of failing.
-			if errors.Is(err, skill.ErrNotFound) {
-				continue
-			}
-			return nil, fmt.Errorf("resolve captured Skill %s: %w", skillID, err)
-		}
-		bundles = append(bundles, skill.Bundle{ID: captured.ID, Name: captured.Name, Source: captured.Source, Path: captured.BundlePath})
-	}
-	return bundles, nil
 }
 
 func (server *Server) latestSessionRuntimeSnapshot(sessionID string) (*runtimeconfig.RuntimeConfigurationSnapshot, error) {
