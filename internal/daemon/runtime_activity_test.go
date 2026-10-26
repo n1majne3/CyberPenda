@@ -17,6 +17,7 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 // #150 primary seam: daemon Task HTTP exposes Runtime Activity from current
@@ -183,7 +184,7 @@ func TestRuntimeActivityLiveIdleAndBusyForSandboxProviders(t *testing.T) {
 	} {
 		provider := provider
 		t.Run(string(provider), func(t *testing.T) {
-			session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+			session := fakeprovider.New(fakeprovider.Config{
 				SessionID:         "session-" + string(provider),
 				ManualAcknowledge: true,
 				Capabilities: runtimeplugin.Capabilities{
@@ -300,7 +301,7 @@ func TestRuntimeActivityHostPiHealthTransitions(t *testing.T) {
 
 func testRuntimeActivityHostHealthTransitions(t *testing.T, provider runtimeprofile.Provider) {
 	t.Helper()
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "host-activity-" + string(provider),
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -406,7 +407,7 @@ func TestRuntimeActivityOrphanedInterruptsWithoutStoredSessionAuthority(t *testi
 }
 
 func TestRuntimeActivityLostSessionOwnershipIsOrphanedNotLive(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-lost",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
@@ -446,7 +447,7 @@ func TestRuntimeActivityLostSessionOwnershipIsOrphanedNotLive(t *testing.T) {
 }
 
 func TestRuntimeActivityExplicitStopIsNotUnexpectedOffline(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-stop",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
@@ -491,7 +492,7 @@ func TestRuntimeActivityExplicitStopIsNotUnexpectedOffline(t *testing.T) {
 }
 
 func TestRuntimeActivityUnknownDoesNotMutateLifecycle(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-unknown",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
@@ -516,7 +517,7 @@ func TestRuntimeActivityUnknownDoesNotMutateLifecycle(t *testing.T) {
 }
 
 func TestRuntimeActivityListDecoratesSeparatelyFromStatus(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-list",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
@@ -553,7 +554,7 @@ func TestRuntimeActivityListDecoratesSeparatelyFromStatus(t *testing.T) {
 }
 
 func TestRuntimeActivityOrphanCleanupBeforeReplacementLaunch(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-replace",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true},
 	})
@@ -591,7 +592,7 @@ func TestRuntimeActivityOrphanCleanupBeforeReplacementLaunch(t *testing.T) {
 }
 
 func TestRuntimeActivityNoExtraAuditRecords(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-audit",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})

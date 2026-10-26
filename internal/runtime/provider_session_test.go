@@ -13,6 +13,7 @@ import (
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 func interactiveCapabilities() runtimeplugin.Capabilities {
@@ -27,8 +28,8 @@ func interactiveCapabilities() runtimeplugin.Capabilities {
 	}
 }
 
-func TestFakeProviderSessionEmitsBoundedObservations(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeEmitsBoundedObservations(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", ActiveTurnID: "turn-1",
 	})
 	var observed []runtime.ProviderSessionObservation
@@ -56,8 +57,8 @@ func TestFakeProviderSessionEmitsBoundedObservations(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionInTurnSteerPreservesWorkTurnLineage(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeInTurnSteerPreservesWorkTurnLineage(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-1",
 		Capabilities: runtimeplugin.Capabilities{SendTurn: true, InTurnSteer: true},
 	})
@@ -86,8 +87,8 @@ func TestFakeProviderSessionInTurnSteerPreservesWorkTurnLineage(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionRejectsChangedInTurnTarget(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeRejectsChangedInTurnTarget(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", ActiveTurnID: "turn-live",
 		Capabilities: runtimeplugin.Capabilities{InTurnSteer: true},
 	})
@@ -99,8 +100,8 @@ func TestFakeProviderSessionRejectsChangedInTurnTarget(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionTurnBusyTracksActiveRuntimeTurn(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeTurnBusyTracksActiveRuntimeTurn(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1",
 		Capabilities: runtimeplugin.Capabilities{
 			SendTurn: true,
@@ -130,8 +131,8 @@ func TestFakeProviderSessionTurnBusyTracksActiveRuntimeTurn(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionRejectsMalformedObservations(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{SessionID: "session-1", ActiveTurnID: "turn-1"})
+func TestProviderSessionFakeRejectsMalformedObservations(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{SessionID: "session-1", ActiveTurnID: "turn-1"})
 	for _, observation := range []runtime.ProviderSessionObservation{
 		{Kind: "raw_output"},
 		{Kind: runtime.ProviderSessionObservationToolUse, ToolCallID: "call-1"},
@@ -145,8 +146,8 @@ func TestFakeProviderSessionRejectsMalformedObservations(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionDefaultsRequestTurnKindToWork(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeDefaultsRequestTurnKindToWork(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
 	})
 	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "request-1", Message: "inspect"}, nil); err != nil {
@@ -161,8 +162,8 @@ func TestFakeProviderSessionDefaultsRequestTurnKindToWork(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionFreezesCompleteTurnLineage(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeFreezesCompleteTurnLineage(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
 	})
 	request := runtime.ProviderSessionRequest{
@@ -195,8 +196,8 @@ func TestFakeProviderSessionFreezesCompleteTurnLineage(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionMintsNewTurnAfterValidatedCompletion(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeMintsNewTurnAfterValidatedCompletion(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", ActiveTurnID: "work-turn-1",
 		Capabilities: runtimeplugin.Capabilities{SendTurn: true},
 	})
@@ -226,8 +227,8 @@ func TestFakeProviderSessionMintsNewTurnAfterValidatedCompletion(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionEmitsTypedCanonicalAttemptResult(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeEmitsTypedCanonicalAttemptResult(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
 	})
 	turn, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
@@ -257,8 +258,8 @@ func TestFakeProviderSessionEmitsTypedCanonicalAttemptResult(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionRejectsUnknownAttemptResultBeforeCallback(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeRejectsUnknownAttemptResultBeforeCallback(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
 	})
 	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
@@ -282,7 +283,7 @@ func TestFakeProviderSessionRejectsUnknownAttemptResultBeforeCallback(t *testing
 	}
 }
 
-func TestFakeProviderSessionEmitsBoundedInvalidAttemptResultNotification(t *testing.T) {
+func TestProviderSessionFakeEmitsBoundedInvalidAttemptResultNotification(t *testing.T) {
 	valid := `{"schema":"runtime-attempt-result/v1","base_revision":0,"attempt":{"key":"attempt:search","create":true,"summary":"Tested search.","outcome":"failed"},"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test search."}}],"produced_targets":[]}`
 	tests := []struct {
 		name string
@@ -296,7 +297,7 @@ func TestFakeProviderSessionEmitsBoundedInvalidAttemptResultNotification(t *test
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+			session := fakeprovider.New(fakeprovider.Config{
 				SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
 			})
 			turn, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
@@ -337,7 +338,7 @@ func TestFakeProviderSessionEmitsBoundedInvalidAttemptResultNotification(t *test
 	}
 }
 
-func TestFakeProviderSessionInvalidNotificationCarriesBoundedValidationDetail(t *testing.T) {
+func TestProviderSessionFakeInvalidNotificationCarriesBoundedValidationDetail(t *testing.T) {
 	valid := `{"schema":"runtime-attempt-result/v1","base_revision":0,"attempt":{"key":"attempt:search","create":true,"summary":"Tested search.","outcome":"failed"},"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test search."}}],"produced_targets":[]}`
 	tests := []struct {
 		name      string
@@ -353,7 +354,7 @@ func TestFakeProviderSessionInvalidNotificationCarriesBoundedValidationDetail(t 
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+			session := fakeprovider.New(fakeprovider.Config{
 				SessionID: "session-detail", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
 			})
 			if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
@@ -386,8 +387,8 @@ func TestFakeProviderSessionInvalidNotificationCarriesBoundedValidationDetail(t 
 	}
 }
 
-func TestFakeProviderSessionValidAttemptResultDoesNotEmitValidationFailure(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeValidAttemptResultDoesNotEmitValidationFailure(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", Capabilities: runtimeplugin.Capabilities{SendTurn: true},
 	})
 	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{
@@ -441,8 +442,8 @@ func waitForSessionEvents(t *testing.T, recorder *sessionEventRecorder, count in
 	t.Fatalf("timed out waiting for %d session events; got %#v", count, recorder.snapshot())
 }
 
-func TestFakeProviderSessionInterruptThenReplaceWaitsForAcknowledgement(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeInterruptThenReplaceWaitsForAcknowledgement(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:         "session-1",
 		ActiveTurnID:      "turn-1",
 		Capabilities:      interactiveCapabilities(),
@@ -493,8 +494,8 @@ func TestFakeProviderSessionInterruptThenReplaceWaitsForAcknowledgement(t *testi
 	}
 }
 
-func TestFakeProviderSessionRejectsUnsupportedCapability(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeRejectsUnsupportedCapability(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-1",
 		ActiveTurnID: "turn-1",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true},
@@ -509,8 +510,8 @@ func TestFakeProviderSessionRejectsUnsupportedCapability(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionDuplicateRequestIsIdempotent(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeDuplicateRequestIsIdempotent(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-1",
 		ActiveTurnID: "turn-1",
 		Capabilities: interactiveCapabilities(),
@@ -533,8 +534,8 @@ func TestFakeProviderSessionDuplicateRequestIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionLocalTimeoutCanRetrySameRequest(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeLocalTimeoutCanRetrySameRequest(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:         "session-1",
 		ActiveTurnID:      "turn-1",
 		Capabilities:      interactiveCapabilities(),
@@ -568,8 +569,8 @@ func TestFakeProviderSessionLocalTimeoutCanRetrySameRequest(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionSerializesConcurrentControls(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeSerializesConcurrentControls(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:         "session-1",
 		ActiveTurnID:      "turn-1",
 		Capabilities:      interactiveCapabilities(),
@@ -598,8 +599,8 @@ func TestFakeProviderSessionSerializesConcurrentControls(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionBindsRequestIDToOneOperation(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeBindsRequestIDToOneOperation(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", Capabilities: interactiveCapabilities(),
 	})
 	if _, err := session.SendTurn(context.Background(), runtime.ProviderSessionRequest{RequestID: "request-1", Message: "continue"}, nil); err != nil {
@@ -610,8 +611,8 @@ func TestFakeProviderSessionBindsRequestIDToOneOperation(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionPermissionResponseAndTypedFailure(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakePermissionResponseAndTypedFailure(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-1",
 		ActiveTurnID: "turn-1",
 		Capabilities: interactiveCapabilities(),
@@ -649,8 +650,8 @@ func TestFakeProviderSessionPermissionResponseAndTypedFailure(t *testing.T) {
 	}
 }
 
-func TestFakeProviderSessionCloseClearsActiveTurn(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+func TestProviderSessionFakeCloseClearsActiveTurn(t *testing.T) {
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", ActiveTurnID: "turn-live",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 	})

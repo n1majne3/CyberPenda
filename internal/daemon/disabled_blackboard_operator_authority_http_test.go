@@ -20,10 +20,10 @@ import (
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
 	"pentest/internal/projectinterface"
-	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 const disabledOutputOperatorToken = "disabled-output-operator-token"
@@ -427,7 +427,7 @@ func newDisabledOutputAuthorityFixture(t *testing.T, authToken string) disabledO
 	if err := os.MkdirAll(artifactRoot, 0o700); err != nil {
 		t.Fatalf("create Artifact Root: %v", err)
 	}
-	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	providerSession := fakeprovider.New(fakeprovider.Config{
 		SessionID: "disabled-output-session",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true,

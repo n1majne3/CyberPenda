@@ -19,6 +19,7 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 // #149 primary seam: Host Codex binds one Task-scoped provider session across
@@ -129,7 +130,7 @@ func writeExecutable(path, body string) error {
 }
 
 func TestHostCodexLaunchBindsPersistentSessionAcrossTurns(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "host-codex-thread-1",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
@@ -236,7 +237,7 @@ func TestHostCodexLaunchBindsPersistentSessionAcrossTurns(t *testing.T) {
 }
 
 func TestHostCodexProviderChangeQueuesMessageAndCreatesConfigVersion(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "host-codex-thread-a",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,

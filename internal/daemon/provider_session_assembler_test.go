@@ -14,6 +14,7 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 // The assembler seam conformance suite: every Runtime family passes the same
@@ -246,7 +247,7 @@ func (a *fakeAssembler) Setup(_ context.Context, _ productionBridgeTransport, _ 
 	if a.setupErr != nil {
 		return providerSessionSetup{}, a.setupErr
 	}
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "fake-asm-session",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptTurn: true, InterruptThenReplace: true,

@@ -18,6 +18,7 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 // #151 primary seam: Host Claude binds one Task-scoped Query session across
@@ -120,7 +121,7 @@ func newHostClaudePersistentFixture(t *testing.T, factory ProviderSessionFactory
 }
 
 func TestHostClaudeLaunchBindsPersistentQueryAcrossTurns(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "host-claude-session-1",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
@@ -225,7 +226,7 @@ func TestHostClaudeLaunchBindsPersistentQueryAcrossTurns(t *testing.T) {
 }
 
 func TestHostClaudeProviderChangeQueuesMessageAndCreatesConfigVersion(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "host-claude-session-a",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,

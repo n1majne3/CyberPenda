@@ -12,6 +12,7 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 type optionalBlackboardSessionFixture struct {
@@ -26,7 +27,7 @@ type optionalBlackboardSessionFixture struct {
 
 func newOptionalBlackboardSessionFixture(t *testing.T) optionalBlackboardSessionFixture {
 	t.Helper()
-	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	providerSession := fakeprovider.New(fakeprovider.Config{
 		SessionID: "native-session-without-blackboard",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true,

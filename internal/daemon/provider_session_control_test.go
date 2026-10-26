@@ -21,6 +21,7 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 type failingContinuationBindSession struct {
@@ -197,7 +198,7 @@ func TestNativeSteerRecordsCanonicalConversationAndOrderedProviderEvents(t *test
 		t.Fatal(err)
 	}
 
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-1",
 		ActiveTurnID: "turn-1",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
@@ -342,7 +343,7 @@ func TestNativeSteerRejectsModelProviderSelectionInsteadOfIgnoringIt(t *testing.
 		t.Fatal(err)
 	}
 
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "claude-session-1",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -419,7 +420,7 @@ func TestNativeSteerRejectsUnsupportedSessionWithoutConversation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := server.BindProviderSession(created.ID, runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{SessionID: "session-2", Capabilities: runtimeplugin.Capabilities{PersistentSession: true}})); err != nil {
+	if err := server.BindProviderSession(created.ID, fakeprovider.New(fakeprovider.Config{SessionID: "session-2", Capabilities: runtimeplugin.Capabilities{PersistentSession: true}})); err != nil {
 		t.Fatal(err)
 	}
 	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+project.ID+"/tasks/"+created.ID+"/steer", bytes.NewBufferString(`{"request_id":"req-unsupported","message":"focus"}`))
@@ -457,7 +458,7 @@ func TestNativeSteerProviderFailureIsAcceptedThenProjectedAsFailed(t *testing.T)
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
 		t.Fatal(err)
 	}
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-fail",
 		ActiveTurnID: "turn-fail",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
@@ -502,7 +503,7 @@ func TestNativeSteerNonSteerableTurnRequiresExplicitOperatorRecovery(t *testing.
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
 		t.Fatal(err)
 	}
-	provider := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	provider := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-review", ActiveTurnID: "turn-review",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true, InTurnSteer: true},
 		Failures:     map[runtime.ProviderSessionMode]error{runtime.ProviderSessionModeInTurnSteer: runtime.ErrProviderTurnNotSteerable},
@@ -573,7 +574,7 @@ func TestNativeSteerReplacementContinuationFailureFailsClosedWithoutApplied(t *t
 	if _, err := server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
 		t.Fatal(err)
 	}
-	inner := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	inner := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-bind-fail", ActiveTurnID: "turn-1",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
@@ -646,7 +647,7 @@ func TestTaskDetailExposesNativeSteerModeAndIdleState(t *testing.T) {
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
 		t.Fatal(err)
 	}
-	if err := server.BindProviderSession(created.ID, runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	if err := server.BindProviderSession(created.ID, fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-controls", Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
 	})); err != nil {
 		t.Fatal(err)
@@ -681,7 +682,7 @@ func TestStopClosesBoundProviderSession(t *testing.T) {
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusRunning); err != nil {
 		t.Fatal(err)
 	}
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{SessionID: "session-stop", Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true}})
+	session := fakeprovider.New(fakeprovider.Config{SessionID: "session-stop", Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true}})
 	if err := server.BindProviderSession(created.ID, session); err != nil {
 		t.Fatal(err)
 	}
@@ -724,7 +725,7 @@ func TestStopClosesProviderSessionBeforeWaitingForRuntimeResources(t *testing.T)
 		t.Fatal(err)
 	}
 	session := &stopRaceProviderSession{
-		ProviderSession: runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		ProviderSession: fakeprovider.New(fakeprovider.Config{
 			SessionID:    "session-stop-race",
 			Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 		}),
@@ -799,7 +800,7 @@ func TestStopWaitsForActiveProviderControlBeforeClosingSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := &delayedStopProviderSession{
-		ProviderSession: runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+		ProviderSession: fakeprovider.New(fakeprovider.Config{
 			SessionID:    "session-active-stop",
 			Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 		}),
@@ -994,7 +995,7 @@ func TestServerCloseDrainsInFlightProviderSteerBeforeClosingDatabase(t *testing.
 		_ = server.Close()
 		t.Fatal(err)
 	}
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-close", ManualAcknowledge: true,
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InTurnSteer: true},
 	})
@@ -1074,7 +1075,7 @@ func TestNativeSteerReplacementCarriesBlackboardGrant(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-1", ActiveTurnID: "turn-1",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})
@@ -1159,7 +1160,7 @@ func (session *countingTurnStateSession) TurnState() runtime.ProviderSessionTurn
 }
 
 func TestPrepareNativeSteerUsesOneTurnSnapshotForModeAndFence(t *testing.T) {
-	base := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	base := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-atomic",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InTurnSteer: true, InterruptThenReplace: true,
@@ -1185,7 +1186,7 @@ func TestPrepareNativeSteerUsesOneTurnSnapshotForModeAndFence(t *testing.T) {
 }
 
 func TestPrepareNativeSteerReplacesNonWorkActiveTurn(t *testing.T) {
-	base := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	base := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-control",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InTurnSteer: true, InterruptThenReplace: true,
@@ -1207,7 +1208,7 @@ func TestPrepareNativeSteerReplacesNonWorkActiveTurn(t *testing.T) {
 }
 
 func TestPrepareAcceptedNativeSteerStartsAfterPendingOwnerSettlement(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-concluding", ActiveTurnID: "turn-conclusion", ActiveTurnKind: runtime.RuntimeTurnKindControl,
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InTurnSteer: true,
@@ -1225,7 +1226,7 @@ func TestPrepareAcceptedNativeSteerStartsAfterPendingOwnerSettlement(t *testing.
 }
 
 func TestPrepareNativeSteerCanExplicitlyReplaceActiveTurn(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "session-replace", ActiveTurnID: "turn-old",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InTurnSteer: true, InterruptThenReplace: true,

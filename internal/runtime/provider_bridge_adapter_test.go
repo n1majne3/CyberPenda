@@ -1,25 +1,27 @@
-package runtime
+package runtime_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
+	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
-// contentEmitSession delegates control semantics to FakeProviderSession but
+// contentEmitSession delegates control semantics to fakeprovider.Session but
 // emits one LLM output line through the turn emit callback, so the bridge
 // adapter's emit wrapper can be observed directly.
 type contentEmitSession struct {
-	*FakeProviderSession
+	*fakeprovider.Session
 	text string
 }
 
-func (s contentEmitSession) SendTurn(ctx context.Context, request ProviderSessionRequest, emit ProviderSessionEmit) (ProviderSessionResult, error) {
+func (s contentEmitSession) SendTurn(ctx context.Context, request runtime.ProviderSessionRequest, emit runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error) {
 	emit(task.EventKindRuntimeOutput, task.EventPayload{"stream": "stdout", "text": s.text})
-	return s.FakeProviderSession.SendTurn(ctx, request, emit)
+	return s.Session.SendTurn(ctx, request, emit)
 }
 
 // TestProviderSessionRunAdapterKeepsContentUnredacted pins issue #288: LLM
@@ -29,13 +31,13 @@ func TestProviderSessionRunAdapterKeepsContentUnredacted(t *testing.T) {
 	const line = "assistant: bearer secret-bridge-token-123456"
 	closed := make(chan struct{})
 	session := contentEmitSession{
-		FakeProviderSession: NewFakeProviderSession(FakeProviderSessionConfig{
+		Session: fakeprovider.New(fakeprovider.Config{
 			SessionID:    "bridge-1",
 			Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 		}),
 		text: line,
 	}
-	adapter := NewProviderSessionRunAdapter(session, closed)
+	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
 	adapter.BindContinuation("continuation-1")
 
 	var events []task.EventPayload

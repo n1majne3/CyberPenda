@@ -18,12 +18,13 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 // TestCodexLaunchSendsResolvedRequestedReasoningEffort is the primary #144
-// acceptance seam: real domain services + SQLite, deterministic FakeProviderSession.
+// acceptance seam: real domain services + SQLite, deterministic fake provider session.
 func TestCodexLaunchSendsResolvedRequestedReasoningEffort(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "effort-session-1",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true,
@@ -93,7 +94,7 @@ func TestCodexLaunchSendsResolvedRequestedReasoningEffort(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if len(requests) == 0 {
-		t.Fatal("expected FakeProviderSession to receive the initial turn")
+		t.Fatal("expected fake provider session to receive the initial turn")
 	}
 	first := requests[0]
 	if first.RequestedReasoningEffort != "max" {
@@ -130,7 +131,7 @@ func TestCodexLaunchSendsResolvedRequestedReasoningEffort(t *testing.T) {
 }
 
 func TestCodexLaunchDefaultsRequestedReasoningEffortToHighWhenMissing(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "effort-session-default",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true,
@@ -203,7 +204,7 @@ func TestCodexLaunchDefaultsRequestedReasoningEffortToHighWhenMissing(t *testing
 
 func TestTaskCreateHTTPAcceptsLaunchReasoningEffortOverrideWithoutMutatingProfile(t *testing.T) {
 	// HTTP path for launch override validation; uses fake provider so preflight/provider session stay lightweight.
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "effort-http",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 	})
@@ -335,7 +336,7 @@ func TestPiLaunchPinsDefaultThinkingLevelForSubagents(t *testing.T) {
 }
 
 type effortProviderSessionFactory struct {
-	session *runtime.FakeProviderSession
+	session *fakeprovider.Session
 	adapter *runtime.ProviderSessionRunAdapter
 }
 

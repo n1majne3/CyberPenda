@@ -22,6 +22,7 @@ import (
 	"pentest/internal/session"
 	"pentest/internal/store"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 	"pentest/internal/timeline"
 	"pentest/internal/transcript"
 )
@@ -213,7 +214,7 @@ func TestDisabledTaskHTTPResumePreservesOmittedBlackboardProjection(t *testing.T
 		t.Fatalf("stop disabled Task status = %d body %s", stoppedResponse.Code, stoppedResponse.Body.String())
 	}
 
-	replacementSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	replacementSession := fakeprovider.New(fakeprovider.Config{
 		SessionID: "disabled-owner-replacement-session",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
@@ -286,7 +287,7 @@ func TestDisabledSessionHTTPReplacementPreservesOmittedBlackboardProjection(t *t
 		t.Fatalf("stop disabled Session status = %d body %s", stoppedResponse.Code, stoppedResponse.Body.String())
 	}
 
-	replacementSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	replacementSession := fakeprovider.New(fakeprovider.Config{
 		SessionID: "disabled-session-replacement-runtime",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true,
@@ -366,7 +367,7 @@ func TestDisabledTaskHTTPSteerCreatesOrdinaryContinuationWithoutBlackboard(t *te
 	detail := waitForDisabledTaskPublicContinuation(t, server, projectID, created.ID, 2)
 	assertDisabledTaskPublicContinuation(t, detail, 2, task.StatusRunning)
 	factory.mu.Lock()
-	provider, _ := factory.session.(*runtime.FakeProviderSession)
+	provider, _ := factory.session.(*fakeprovider.Session)
 	factory.mu.Unlock()
 	if provider == nil {
 		t.Fatal("disabled Task provider session is unavailable")
@@ -416,7 +417,7 @@ func TestDisabledSessionHTTPSteerCreatesOrdinaryContinuationWithoutBlackboard(t 
 	detail := waitForDisabledSessionPublicContinuation(t, server, created.ID, 2)
 	assertDisabledSessionPublicContinuation(t, detail, 2, session.RuntimeStatusRunning)
 	factory.mu.Lock()
-	provider, _ := factory.session.(*runtime.FakeProviderSession)
+	provider, _ := factory.session.(*fakeprovider.Session)
 	factory.mu.Unlock()
 	if provider == nil {
 		t.Fatal("disabled Session provider session is unavailable")
@@ -455,7 +456,7 @@ func TestDisabledTaskHTTPFinishIgnoresOnlyBlackboardReconciliationDebt(t *testin
 	}
 
 	factory.mu.Lock()
-	provider, _ := factory.session.(*runtime.FakeProviderSession)
+	provider, _ := factory.session.(*fakeprovider.Session)
 	factory.mu.Unlock()
 	if provider == nil {
 		t.Fatal("disabled Task provider session is unavailable")
@@ -527,7 +528,7 @@ func TestDisabledTaskHTTPStopIgnoresTerminalBlackboardReconcilerFailure(t *testi
 	}
 	assertDisabledTaskPublicContinuation(t, stopped, 1, task.StatusStopped)
 
-	provider := disabledFakeProviderSession(t, factory)
+	provider := disabledFakeProvider(t, factory)
 	if !provider.SessionClosed() {
 		t.Fatal("Disabled Stop did not close the ProviderSession")
 	}
@@ -603,7 +604,7 @@ func newDisabledBlackboardHTTPFixture(t *testing.T) (*Server, string, string, *r
 }
 
 func newDisabledBlackboardProviderFactory(sessionID, activeTurnID string) *recordingProviderSessionFactory {
-	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	providerSession := fakeprovider.New(fakeprovider.Config{
 		SessionID: sessionID, ActiveTurnID: activeTurnID,
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true, ResumeSession: true},
 	})
@@ -976,11 +977,11 @@ func waitForDisabledTaskPublicStatus(t *testing.T, server *Server, projectID, ta
 	return task.Task{}
 }
 
-func disabledFakeProviderSession(t *testing.T, factory *recordingProviderSessionFactory) *runtime.FakeProviderSession {
+func disabledFakeProvider(t *testing.T, factory *recordingProviderSessionFactory) *fakeprovider.Session {
 	t.Helper()
 	factory.mu.Lock()
 	defer factory.mu.Unlock()
-	provider, ok := factory.session.(*runtime.FakeProviderSession)
+	provider, ok := factory.session.(*fakeprovider.Session)
 	if !ok || provider == nil {
 		t.Fatalf("Disabled ProviderSession boundary = %T", factory.session)
 	}

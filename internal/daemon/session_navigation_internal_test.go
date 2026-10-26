@@ -13,6 +13,7 @@ import (
 	"pentest/internal/runtimeplugin"
 	sessiondomain "pentest/internal/session"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 func TestLimitedSessionNavigationPromotesAnOlderBusySession(t *testing.T) {
@@ -38,7 +39,7 @@ func TestLimitedSessionNavigationPromotesAnOlderBusySession(t *testing.T) {
 		}
 	}
 
-	provider := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	provider := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "busy-session-runtime",
 		ActiveTurnID: "busy-session-turn",
 		Capabilities: runtimeplugin.Capabilities{

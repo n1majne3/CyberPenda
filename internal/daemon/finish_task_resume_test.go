@@ -22,6 +22,7 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 // failingFinishReconciler injects Continuation reconciliation failure so Finish
@@ -105,13 +106,13 @@ func (f *finishSessionFactory) Requests() []ProviderSessionLaunchRequest {
 // finishBoundSession mirrors production bridges: session Close signals the run
 // adapter closed channel so Finish can waitHarnessInactive without cancel.
 type finishBoundSession struct {
-	*runtime.FakeProviderSession
+	*fakeprovider.Session
 	closed chan struct{}
 	once   sync.Once
 }
 
 func (s *finishBoundSession) Close(ctx context.Context) error {
-	err := s.FakeProviderSession.Close(ctx)
+	err := s.Session.Close(ctx)
 	if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) {
 		s.signalClosed()
 	}
@@ -139,10 +140,10 @@ func newFinishSessionPair(sessionID string) (runtime.ProviderSession, runtime.Ad
 
 func newFinishSessionPairWithCaps(sessionID string, caps runtimeplugin.Capabilities) (runtime.ProviderSession, runtime.Adapter) {
 	closed := make(chan struct{})
-	fake := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	fake := fakeprovider.New(fakeprovider.Config{
 		SessionID: sessionID, Capabilities: caps,
 	})
-	session := &finishBoundSession{FakeProviderSession: fake, closed: closed}
+	session := &finishBoundSession{Session: fake, closed: closed}
 	adapter := runtime.NewProviderSessionRunAdapter(session, closed)
 	return session, adapter
 }
@@ -1006,7 +1007,7 @@ func TestBlackboardFinishDoesNotCompleteTask(t *testing.T) {
 // delayedFinishCloseSession blocks inside Close so Finish cannot complete
 // reconciliation before provider resources shut down.
 type delayedFinishCloseSession struct {
-	*runtime.FakeProviderSession
+	*fakeprovider.Session
 	closed       chan struct{}
 	closeEntered chan struct{}
 	allowClose   chan struct{}
@@ -1029,23 +1030,23 @@ func (s *delayedFinishCloseSession) Close(ctx context.Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	err := s.FakeProviderSession.Close(ctx)
+	err := s.Session.Close(ctx)
 	s.once.Do(func() { close(s.closed) })
 	return err
 }
 
 func TestFinishTaskShutdownHappensBeforeReconciliation(t *testing.T) {
-	inner := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	inner := fakeprovider.New(fakeprovider.Config{
 		SessionID: "finish-order",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
 		},
 	})
 	session := &delayedFinishCloseSession{
-		FakeProviderSession: inner,
-		closed:              make(chan struct{}),
-		closeEntered:        make(chan struct{}),
-		allowClose:          make(chan struct{}),
+		Session:      inner,
+		closed:       make(chan struct{}),
+		closeEntered: make(chan struct{}),
+		allowClose:   make(chan struct{}),
 	}
 	adapter := runtime.NewProviderSessionRunAdapter(session, session.closed)
 	factory := &finishSessionFactory{session: session, adapter: adapter}
@@ -1193,7 +1194,7 @@ func postResume(server *Server, projectID, taskID string) *httptest.ResponseReco
 
 // failingCloseSession fails Close once (Finish abort), then allows cleanup/Stop.
 type failingCloseSession struct {
-	*runtime.FakeProviderSession
+	*fakeprovider.Session
 	closed     chan struct{}
 	failClose  atomic.Bool
 	closeCount atomic.Int32
@@ -1204,7 +1205,7 @@ func (s *failingCloseSession) Close(ctx context.Context) error {
 	if s.failClose.Load() {
 		return errors.New("injected provider close failure")
 	}
-	err := s.FakeProviderSession.Close(ctx)
+	err := s.Session.Close(ctx)
 	select {
 	case <-s.closed:
 	default:
@@ -1218,22 +1219,22 @@ func (s *failingCloseSession) Close(ctx context.Context) error {
 // under finish intent — which must not write terminal status (sole owner is
 // handleFinishTask after harness exit).
 type silentCloseSession struct {
-	*runtime.FakeProviderSession
+	*fakeprovider.Session
 }
 
 func (s *silentCloseSession) Close(ctx context.Context) error {
-	return s.FakeProviderSession.Close(ctx)
+	return s.Session.Close(ctx)
 }
 
 func TestFinishTaskSoleOwnerAfterCancelDrivenHarnessExit(t *testing.T) {
 	neverClosed := make(chan struct{})
-	fake := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	fake := fakeprovider.New(fakeprovider.Config{
 		SessionID: "finish-silent-close",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
 		},
 	})
-	session := &silentCloseSession{FakeProviderSession: fake}
+	session := &silentCloseSession{Session: fake}
 	adapter := runtime.NewProviderSessionRunAdapter(session, neverClosed)
 	factory := &finishSessionFactory{session: session, adapter: adapter}
 	server, created, _ := newFinishTaskFixture(t, factory)
@@ -1284,15 +1285,15 @@ func TestFinishTaskSoleOwnerAfterCancelDrivenHarnessExit(t *testing.T) {
 }
 
 func TestFinishTaskClearsIntentWhenProviderCloseFails(t *testing.T) {
-	inner := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	inner := fakeprovider.New(fakeprovider.Config{
 		SessionID: "finish-close-fail",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
 		},
 	})
 	session := &failingCloseSession{
-		FakeProviderSession: inner,
-		closed:              make(chan struct{}),
+		Session: inner,
+		closed:  make(chan struct{}),
 	}
 	session.failClose.Store(true)
 	adapter := runtime.NewProviderSessionRunAdapter(session, session.closed)
@@ -1365,7 +1366,7 @@ func TestFinishTaskClearsIntentWhenProviderCloseFails(t *testing.T) {
 // hangCloseSession blocks Close until ctx deadline (Finish timeout), then
 // fails fast so server cleanup and residual Stop cannot hang.
 type hangCloseSession struct {
-	*runtime.FakeProviderSession
+	*fakeprovider.Session
 	closed   chan struct{}
 	started  chan struct{}
 	once     sync.Once
@@ -1380,7 +1381,7 @@ func (s *hangCloseSession) Close(ctx context.Context) error {
 	})
 	if s.timedOut.Load() {
 		// After first deadline, allow process exit without permanent hang.
-		err := s.FakeProviderSession.Close(ctx)
+		err := s.Session.Close(ctx)
 		select {
 		case <-s.closed:
 		default:
@@ -1400,16 +1401,16 @@ func (s *hangCloseSession) Close(ctx context.Context) error {
 }
 
 func TestFinishTaskClearsIntentWhenProviderCloseTimesOut(t *testing.T) {
-	inner := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	inner := fakeprovider.New(fakeprovider.Config{
 		SessionID: "finish-close-timeout",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
 		},
 	})
 	session := &hangCloseSession{
-		FakeProviderSession: inner,
-		closed:              make(chan struct{}),
-		started:             make(chan struct{}),
+		Session: inner,
+		closed:  make(chan struct{}),
+		started: make(chan struct{}),
 	}
 	adapter := runtime.NewProviderSessionRunAdapter(session, session.closed)
 	factory := &finishSessionFactory{session: session, adapter: adapter}

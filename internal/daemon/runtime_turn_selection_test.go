@@ -19,16 +19,17 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 var errUnsupportedEffortForTest = errors.New("reasoning effort max is not supported for this model")
 
-// #145 primary seam: real domain services + SQLite + FakeProviderSession.
+// #145 primary seam: real domain services + SQLite + fake provider session.
 // Same-provider model/effort changes stay on the existing Codex session with a
 // complete Runtime Turn Selection and no Runtime Config Version.
 
 func TestCodexNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "codex-thread-1",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, InTurnSteer: true,
@@ -180,7 +181,7 @@ func TestCodexNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testin
 		t.Fatalf("session/thread identity changed: bound=%v id=%q want codex-thread-1", ok, sessionIDOf(bound))
 	}
 	if session.SessionID() != "codex-thread-1" {
-		t.Fatalf("FakeProviderSession identity changed to %q", session.SessionID())
+		t.Fatalf("fake provider session identity changed to %q", session.SessionID())
 	}
 
 	// Idempotent retry with the same selection is accepted.
@@ -214,7 +215,7 @@ func TestCodexNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testin
 }
 
 func TestCodexNativeSteerAlwaysSendsCompleteResolvedSelection(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "codex-thread-complete",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -321,7 +322,7 @@ func TestCodexNativeSteerAlwaysSendsCompleteResolvedSelection(t *testing.T) {
 }
 
 func TestCodexNativeSteerRejectsProviderChangeWithoutRecordingConversation(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "codex-thread-provider",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -412,7 +413,7 @@ func TestCodexNativeSteerRejectsProviderChangeWithoutRecordingConversation(t *te
 }
 
 func TestCodexNativeSteerUnsupportedEffortFailsTurnWithoutDowngrade(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "codex-thread-effort-fail",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -803,12 +804,12 @@ func TestQueueSteerProviderChangeCreatesConfigVersionAndKeepsMessage(t *testing.
 	}
 }
 
-// #146 primary seam for Claude Code: same FakeProviderSession path as Codex,
+// #146 primary seam for Claude Code: same fake provider session path as Codex,
 // with a Claude Runtime Profile so acceptance proves shared turn selection
 // reaches the Claude provider-session request boundary.
 
 func TestClaudeNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "claude-session-1",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -956,14 +957,14 @@ func TestClaudeNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testi
 		t.Fatalf("Claude session identity changed: bound=%v id=%q want claude-session-1", ok, sessionIDOf(bound))
 	}
 	if session.SessionID() != "claude-session-1" {
-		t.Fatalf("FakeProviderSession identity changed to %q", session.SessionID())
+		t.Fatalf("fake provider session identity changed to %q", session.SessionID())
 	}
 
 	server.harness.StopAndWait(created.ID, 2*time.Second)
 }
 
 func TestClaudeNativeSteerAlwaysSendsCompleteResolvedSelection(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "claude-session-complete",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -1070,7 +1071,7 @@ func TestClaudeNativeSteerAlwaysSendsCompleteResolvedSelection(t *testing.T) {
 }
 
 func TestClaudeNativeSteerProviderChangeRequiresRestartAndDoesNotTouchLiveSession(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "claude-session-provider",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -1161,7 +1162,7 @@ func TestClaudeNativeSteerProviderChangeRequiresRestartAndDoesNotTouchLiveSessio
 }
 
 func TestClaudeNativeSteerUnsupportedEffortFailsTurnWithoutDowngrade(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "claude-session-effort-fail",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -1269,7 +1270,7 @@ func TestClaudeNativeSteerUnsupportedEffortFailsTurnWithoutDowngrade(t *testing.
 	}
 }
 
-func waitForProviderRequests(t *testing.T, session *runtime.FakeProviderSession, min int) {
+func waitForProviderRequests(t *testing.T, session *fakeprovider.Session, min int) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1292,7 +1293,7 @@ func sessionIDOf(session runtime.ProviderSession) string {
 // runtime that already projected multiple Model Providers switches providers
 // natively (no Config Projection restart) and carries the full turn selection.
 func TestPiNativeSteerAcceptsCrossProviderWithoutRestart(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "pi-session-1", ActiveTurnID: "pi-work-turn-1", ActiveTurnKind: runtime.RuntimeTurnKindWork,
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, InTurnSteer: true,
@@ -1434,7 +1435,7 @@ func TestPiNativeSteerAcceptsCrossProviderWithoutRestart(t *testing.T) {
 // TestPiNativeSteerRejectsProviderOutsideProjectedSet keeps the projected set
 // fixed until the next Config Projection / Runtime restart.
 func TestPiNativeSteerRejectsProviderOutsideProjectedSet(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "pi-session-2",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -1523,7 +1524,7 @@ func TestPiNativeSteerRejectsProviderOutsideProjectedSet(t *testing.T) {
 // fixed-at-restart semantics: legacy tasks missing projected_model_provider_ids
 // cannot perform arbitrary native cross-provider selection.
 func TestPiNativeSteerFailsClosedWithoutProjectedSet(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "pi-session-legacy",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,

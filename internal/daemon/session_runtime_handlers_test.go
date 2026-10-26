@@ -23,6 +23,7 @@ import (
 	"pentest/internal/session"
 	"pentest/internal/skill"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 	"pentest/internal/workinggraph"
 )
 
@@ -397,7 +398,7 @@ func TestSessionSandboxProjectsWorkingGraphPathsThroughWorkdirMount(t *testing.T
 func TestCreateSandboxSessionMountsExternalManagedWorkdirThroughPublicHTTP(t *testing.T) {
 	volumeRoot := filepath.Join(t.TempDir(), "data")
 	sessionRoot := filepath.Join(t.TempDir(), "external-sessions")
-	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	providerSession := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-external-workdir",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 	})
@@ -472,7 +473,7 @@ func multipartSessionRequest(t *testing.T, method, target, payload, filename, co
 }
 
 func TestCreateSessionProjectsUploadedAttachmentPathIntoInitialRuntimeTurn(t *testing.T) {
-	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	providerSession := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-attachment-path",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 	})
@@ -543,7 +544,7 @@ func TestCreateSessionProjectsUploadedAttachmentPathIntoInitialRuntimeTurn(t *te
 }
 
 func TestResumedSessionDoesNotAdvertiseDeletedHistoricalAttachments(t *testing.T) {
-	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	providerSession := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-stale-attachment-1",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 	})
@@ -590,7 +591,7 @@ func TestResumedSessionDoesNotAdvertiseDeletedHistoricalAttachments(t *testing.T
 		t.Fatalf("remove historical attachment: %v", err)
 	}
 	factory.mu.Lock()
-	factory.session = runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	factory.session = fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-stale-attachment-2",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 	})
@@ -635,7 +636,7 @@ func TestResumedSessionDoesNotAdvertiseDeletedHistoricalAttachments(t *testing.T
 }
 
 func TestRejectedResumeAttachmentDoesNotCreateAContinuationOrEvent(t *testing.T) {
-	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	providerSession := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-invalid-resume-attachment",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 	})
@@ -731,7 +732,7 @@ func TestRejectedResumeAttachmentDoesNotCreateAContinuationOrEvent(t *testing.T)
 func TestRejectedSessionRuntimeTurnsDoNotPersistAttachments(t *testing.T) {
 	for _, endpoint := range []string{"messages", "steer"} {
 		t.Run(endpoint, func(t *testing.T) {
-			providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+			providerSession := fakeprovider.New(fakeprovider.Config{
 				SessionID: "session-rejected-" + endpoint,
 				Capabilities: runtimeplugin.Capabilities{
 					PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -902,7 +903,7 @@ func TestSessionRuntimeRecoveryFailsClosedAcrossDaemonRestart(t *testing.T) {
 }
 
 func TestSessionRestartCarriesNativeProviderIdentityIntoTheNewContinuation(t *testing.T) {
-	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	providerSession := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "native-session-1",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, ResumeSession: true},
 	})
@@ -1027,7 +1028,7 @@ func TestSessionProviderControlsUseTheSameOwnerContractForBuiltInProviders(t *te
 		runtimeprofile.ProviderCodex, runtimeprofile.ProviderClaudeCode, runtimeprofile.ProviderPi,
 	} {
 		t.Run(string(provider), func(t *testing.T) {
-			providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+			providerSession := fakeprovider.New(fakeprovider.Config{
 				SessionID:    "session-" + string(provider),
 				Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
 			})
@@ -1072,7 +1073,7 @@ func TestSessionProviderControlsUseTheSameOwnerContractForBuiltInProviders(t *te
 }
 
 func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testing.T) {
-	providerSession := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	providerSession := fakeprovider.New(fakeprovider.Config{
 		SessionID:         "session-provider-1",
 		ManualAcknowledge: true,
 		Capabilities: runtimeplugin.Capabilities{

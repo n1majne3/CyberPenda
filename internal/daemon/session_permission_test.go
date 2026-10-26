@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"pentest/internal/runtime"
 	"pentest/internal/session"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 func TestSessionPermissionResponseValidationAndReplay(t *testing.T) {
@@ -22,7 +22,7 @@ func TestSessionPermissionResponseValidationAndReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{SessionID: "permission-provider"})
+	provider := fakeprovider.New(fakeprovider.Config{SessionID: "permission-provider"})
 	if err := server.BindSessionProviderSession(created.ID, provider); err != nil {
 		t.Fatal(err)
 	}

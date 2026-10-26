@@ -15,6 +15,7 @@ import (
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 // #193: the Workspace Sidebar loads one bounded navigation projection instead
@@ -77,7 +78,7 @@ func navigationTaskIDs(summary map[string]any) []string {
 // racing the in-process fake runner's completion timing.
 func bindLiveIdleRuntime(t *testing.T, server *daemon.Server, taskID string) {
 	t.Helper()
-	provider := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	provider := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "idle-runtime-" + taskID,
 		ActiveTurnID: "idle-turn-" + taskID,
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true},
@@ -93,7 +94,7 @@ func bindLiveIdleRuntime(t *testing.T, server *daemon.Server, taskID string) {
 // through the real registry, not a mock.
 func bindBusyRuntime(t *testing.T, server *daemon.Server, taskID string) {
 	t.Helper()
-	provider := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	provider := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "busy-runtime-" + taskID,
 		ActiveTurnID: "busy-turn-" + taskID,
 		Capabilities: runtimeplugin.Capabilities{

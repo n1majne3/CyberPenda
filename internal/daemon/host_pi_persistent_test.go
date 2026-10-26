@@ -17,6 +17,7 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 // #152 primary seam: Host Pi binds one Task-scoped RPC session across turns via
@@ -163,7 +164,7 @@ func assertRuntimeConfigHasNoSecrets(t *testing.T, config map[string]any, forbid
 }
 
 func TestHostPiLaunchBindsPersistentRPCSessionAcrossTurns(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "host-pi-session-1",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -281,7 +282,7 @@ func TestHostPiLaunchBindsPersistentRPCSessionAcrossTurns(t *testing.T) {
 }
 
 func TestHostPiOutsideProjectedSetRequiresRestartPath(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "host-pi-session-a",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, InTurnSteer: true,

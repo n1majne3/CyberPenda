@@ -17,6 +17,7 @@ import (
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 type persistentTestAdapter struct {
@@ -81,7 +82,7 @@ func (f *recordingProviderSessionFactory) Requests() []ProviderSessionLaunchRequ
 }
 
 func TestLaunchAssemblyBindsAndReusesTaskOwnedProviderSessionAcrossContinuations(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "task-session-1",
 		Capabilities: runtimeplugin.Capabilities{
 			PersistentSession: true, SendTurn: true, InterruptThenReplace: true,
@@ -198,7 +199,7 @@ func TestLaunchAssemblyFactoryFailureFailsClosedAfterContinuationCreation(t *tes
 }
 
 func TestLaunchBoundNativeSteerRebindsHarnessAndFinalizesReplacement(t *testing.T) {
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "task-session-steer", ActiveTurnID: "turn-1",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
 	})

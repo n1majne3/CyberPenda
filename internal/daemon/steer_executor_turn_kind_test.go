@@ -11,6 +11,7 @@ import (
 	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 // An interrupt-then-replace steer creates a new Runtime Turn from operator
@@ -43,7 +44,7 @@ func TestInterruptThenReplaceSteerSendsWorkTurnKind(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	session := runtime.NewFakeProviderSession(runtime.FakeProviderSessionConfig{
+	session := fakeprovider.New(fakeprovider.Config{
 		SessionID:    "session-1",
 		ActiveTurnID: "turn-1",
 		Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true, InterruptThenReplace: true},
