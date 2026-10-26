@@ -17,15 +17,6 @@ import (
 // validation before any credential or Runtime projection.
 var ErrUnsafeBlackboardV2Layout = errors.New("unsafe Blackboard v2 task layout")
 
-// ErrUnsafeCodexV2Layout remains for callers that still check the Codex-era name.
-var ErrUnsafeCodexV2Layout = ErrUnsafeBlackboardV2Layout
-
-// PrepareCodexV2TaskLayout is the Codex specialization of the shared v2 layout
-// validator.
-func PrepareCodexV2TaskLayout(rootDir, taskID string) (Layout, error) {
-	return PrepareBlackboardV2TaskLayout(rootDir, taskID, runtimeprofile.ProviderCodex)
-}
-
 // PrepareBlackboardV2TaskLayout validates every existing task-local directory
 // before creating any missing directory. V2 launch preparation uses this
 // before projecting config, credentials, or Runtime context.
@@ -113,13 +104,6 @@ func PrepareBlackboardV2TaskLayout(rootDir, taskID string, provider runtimeprofi
 		_ = directory.Close()
 	}
 	return layout, nil
-}
-
-// ProjectCodexV2RuntimeConfig projects Codex config without ever constructing
-// the legacy identity context. Credential lookup retains its Project binding,
-// but the generic Codex writer receives no IDs, daemon address, or auth token.
-func ProjectCodexV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
-	return ProjectBlackboardV2RuntimeConfig(layout, profile, req)
 }
 
 // ProjectBlackboardV2RuntimeConfig projects provider config for a Blackboard v2
@@ -281,12 +265,6 @@ func prepareBlackboardV2Skills(layout Layout, profile runtimeprofile.Profile, re
 	return nil
 }
 
-// CodexV2ProfileWithModelSnapshot applies the in-memory model resolution that
-// config projection would otherwise discover only after touching the layout.
-func CodexV2ProfileWithModelSnapshot(profile runtimeprofile.Profile, snapshot modelprovider.Snapshot) runtimeprofile.Profile {
-	return profileWithModelSnapshot(profile, snapshot)
-}
-
 // BlackboardV2ProfileWithModelSnapshot is the shared name for model snapshot
 // application during v2 launch planning.
 func BlackboardV2ProfileWithModelSnapshot(profile runtimeprofile.Profile, snapshot modelprovider.Snapshot) runtimeprofile.Profile {
@@ -309,10 +287,6 @@ func blackboardV2Layout(rootDir, taskID, providerDir string) Layout {
 func safeBlackboardV2PathComponent(value string) bool {
 	return value != "" && value != "." && value != ".." && filepath.Base(value) == value &&
 		!filepath.IsAbs(value) && !strings.ContainsAny(value, `/\\`)
-}
-
-func safeCodexV2PathComponent(value string) bool {
-	return safeBlackboardV2PathComponent(value)
 }
 
 func validateExistingBlackboardV2Directory(root *os.Root, relative string) error {
@@ -350,10 +324,6 @@ func validateExistingBlackboardV2Directory(root *os.Root, relative string) error
 	}
 	_ = current.Close()
 	return nil
-}
-
-func validateExistingCodexV2Directory(root *os.Root, relative string) error {
-	return validateExistingBlackboardV2Directory(root, relative)
 }
 
 func openBlackboardV2Directory(root *os.Root, relative string) (*os.Root, error) {
@@ -395,10 +365,6 @@ func openBlackboardV2Directory(root *os.Root, relative string) (*os.Root, error)
 	return current, nil
 }
 
-func openCodexV2Directory(root *os.Root, relative string) (*os.Root, error) {
-	return openBlackboardV2Directory(root, relative)
-}
-
 func rejectBlackboardV2Symlink(root *os.Root, relative string) error {
 	info, err := root.Lstat(relative)
 	if errors.Is(err, os.ErrNotExist) {
@@ -411,12 +377,4 @@ func rejectBlackboardV2Symlink(root *os.Root, relative string) error {
 		return fmt.Errorf("task launch file is a symbolic link at %q", relative)
 	}
 	return nil
-}
-
-func rejectCodexV2Symlink(root *os.Root, relative string) error {
-	return rejectBlackboardV2Symlink(root, relative)
-}
-
-func codexV2Layout(rootDir, taskID string) Layout {
-	return blackboardV2Layout(rootDir, taskID, providerHomeDir(runtimeprofile.ProviderCodex))
 }
