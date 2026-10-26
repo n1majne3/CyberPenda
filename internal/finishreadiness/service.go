@@ -4,8 +4,6 @@ package finishreadiness
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 
 	"pentest/internal/store"
@@ -17,7 +15,6 @@ const (
 	BlockerConclusionActionRequired = "blackboard_conclusion_action_required"
 	BlockerOpenAttempts             = "open_attempts"
 	BlockerReconciliation           = "continuation_reconciliation"
-	BlockerInvalidFinishIntent      = "invalid_finish_intent"
 )
 
 type Blocker struct {
@@ -81,16 +78,6 @@ func (service *Service) Evaluate(ctx context.Context, projectID, taskID string) 
 	}
 	if !blackboardDisabled && continuation != nil && continuation.EndedAt != nil && continuation.BlackboardReconciliationStatus != task.ReconciliationCompleted {
 		readiness.Blockers = append(readiness.Blockers, Blocker{Code: BlockerReconciliation, Count: 1, Message: "The latest terminal Continuation is not reconciled.", Links: []string{readinessLink("continuation", projectID, taskID)}})
-	}
-	if !blackboardDisabled && continuation != nil {
-		var invalidated int
-		err := service.db.QueryRowContext(ctx, `SELECT invalidated FROM blackboard_v2_finish_intents WHERE continuation_id=?`, continuation.ID).Scan(&invalidated)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return Readiness{}, err
-		}
-		if err == nil && invalidated == 1 {
-			readiness.Blockers = append(readiness.Blockers, Blocker{Code: BlockerInvalidFinishIntent, Count: 1, Message: "The Blackboard Finish Intent was invalidated. Record a new Finish Intent.", Links: []string{readinessLink("blackboard", projectID, taskID)}})
-		}
 	}
 	readiness.ReadyToFinish = len(readiness.Blockers) == 0
 	return readiness, nil
