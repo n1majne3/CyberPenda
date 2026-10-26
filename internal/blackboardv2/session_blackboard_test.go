@@ -223,15 +223,18 @@ func TestSessionBlackboardContinuationPinsWorkingSnapshotAndFinishesOnlyContinua
 		t.Fatalf("Session pin after write = %#v", updatedPin)
 	}
 
-	baseOne := 1
-	second, err := board.ApplyForOwnerAtRevision(ctx, created.OwnerContract(), baseOne, blackboardv2.ChangeBatch{
+	second, err := board.ApplyForSessionAuthority(ctx, authority, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "continuation-update",
 		Changes: []blackboardv2.Change{{Op: "update", Key: "fact:continuity", Type: "fact", Version: 1, Record: blackboardv2.FactPatch{
 			Summary: stringPtr("Updated pinned Session state"),
 		}}},
 	})
 	if err != nil || second.Revision != 2 {
-		t.Fatalf("Session Continuation revisioned write = %#v, %v", second, err)
+		t.Fatalf("Session Continuation second write = %#v, %v", second, err)
+	}
+	secondPin, err := board.ReadSessionContinuationPin(ctx, created.ID, continuation.ID)
+	if err != nil || secondPin.Launch.Revision != 0 || secondPin.Working.Revision != 2 {
+		t.Fatalf("Session pin after second write = %#v, %v", secondPin, err)
 	}
 	if _, err := board.ApplyForOwnerAtRevision(ctx, created.OwnerContract(), 1, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "continuation-stale",
