@@ -32,6 +32,22 @@ changed_files() {
     || echo "FORCE_CODE"
 }
 
+# Allowlist of docs-only paths. Markdown is NOT docs by default: embedded skills
+# (internal/**), docs read by name in tests, and docs copied into build outputs
+# are code. Every Markdown file is still scanned by repo-wide contract tests, and
+# README.md carries two content assertions; the docs-contracts CI job runs those
+# tests (./scripts and ./internal/blackboardv2) for every docs-only change.
+is_docs_only() {
+  case "$1" in
+    # Read by name in internal/blackboardv2/replacement_proof_test.go.
+    docs/specs/blackboard-*.md|docs/adr/0014-*.md) return 1 ;;
+    # Copied into the hosted bundle by scripts/build-tsecbench-hosted-bundle.sh.
+    docs/tsecbench/*) return 1 ;;
+    README.md|README.*.md|GLOSSARY.md|AGENTS.md|LICENSE|LICENSE.*|docs/*) return 0 ;;
+  esac
+  return 1
+}
+
 code=false
 while IFS= read -r file; do
   [ -z "$file" ] && continue
@@ -39,14 +55,11 @@ while IFS= read -r file; do
     code=true
     break
   fi
-  case "$file" in
-    *.md|docs|docs/*|LICENSE|LICENSE.*|CHANGELOG|CHANGELOG.*|AUTHORS|AUTHORS.*)
-      ;;
-    *)
-      code=true
-      break
-      ;;
-  esac
+  if is_docs_only "$file"; then
+    continue
+  fi
+  code=true
+  break
 done < <(changed_files "$@")
 
 printf 'code=%s\n' "$code"

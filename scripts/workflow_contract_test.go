@@ -63,6 +63,12 @@ func TestCIReplacesOlderRunsForTheSameRef(t *testing.T) {
 	if !strings.Contains(w.Concurrency.Group, "github.ref") || !strings.Contains(w.Concurrency.Group, "github.workflow") {
 		t.Fatal("CI must scope concurrency to the same workflow and ref")
 	}
+	// GitHub keeps only one pending run per group, so a shared main group would
+	// drop older main commits. main must get a per-commit group.
+	want := "github.ref == 'refs/heads/main' && github.sha || github.ref"
+	if !strings.Contains(w.Concurrency.Group, want) {
+		t.Fatalf("CI concurrency group must be per-sha on main (%q): got %q", want, w.Concurrency.Group)
+	}
 	cancel := fmt.Sprint(w.Concurrency.Cancel)
 	// PRs cancel superseded runs; main must not, so every main commit is fully validated.
 	if cancel == "true" {

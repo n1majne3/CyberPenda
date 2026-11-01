@@ -37,6 +37,46 @@ func TestCICodeChangesRequired(t *testing.T) {
 			wantOut: "code=true",
 		},
 		{
+			name:    "translated readme alone",
+			files:   "README.zh-CN.md\nGLOSSARY.md\n",
+			wantOut: "code=false",
+		},
+		{
+			name:    "embedded builtin skill markdown is code",
+			files:   "internal/skill/builtins/assets/ctf-orchestrator/SKILL.md\n",
+			wantOut: "code=true",
+		},
+		{
+			name:    "embedded mode skill bundle is code",
+			files:   "internal/modeskill/bundles/cyberpenda-blackboard-interactive/SKILL.md\n",
+			wantOut: "code=true",
+		},
+		{
+			name:    "contract-tested spec is code",
+			files:   "docs/specs/blackboard-v2-spec.md\n",
+			wantOut: "code=true",
+		},
+		{
+			name:    "contract-tested adr is code",
+			files:   "docs/adr/0014-use-one-versioned-blackboard-v2-project-interface.md\n",
+			wantOut: "code=true",
+		},
+		{
+			name:    "tsecbench bundle doc is code",
+			files:   "docs/tsecbench/README.md\n",
+			wantOut: "code=true",
+		},
+		{
+			name:    "markdown outside the allowlist is code",
+			files:   ".claude/skills/verify-cyberpenda/SKILL.md\n",
+			wantOut: "code=true",
+		},
+		{
+			name:    "unread docs tree is docs",
+			files:   "docs/research/notes.md\ndocs/adr/0001-global-default-on-skills.md\n",
+			wantOut: "code=false",
+		},
+		{
 			name:    "license alone",
 			files:   "LICENSE\n",
 			wantOut: "code=false",
