@@ -83,6 +83,15 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - name: "TEMP diagnostic: container engine probe latency"
+        if: matrix.shard == 0
+        run: |
+          for cli in docker podman; do
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              s=$(date +%s.%N); $cli info >/dev/null 2>&1; rc=$?; e=$(date +%s.%N)
+              echo "$cli info #$i rc=$rc $(echo "$e - $s" | bc)s"
+            done
+          done
       - name: Go tests (internal/daemon shard ${{ matrix.shard }}/3)
         run: scripts/ci-go-test-daemon-shard.sh ${{ matrix.shard }} 3
 
