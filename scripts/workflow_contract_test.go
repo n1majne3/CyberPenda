@@ -1,6 +1,7 @@
 package scripts_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +15,7 @@ type workflowContract struct {
 	On          map[string]any `yaml:"on"`
 	Concurrency struct {
 		Group  string `yaml:"group"`
-		Cancel bool   `yaml:"cancel-in-progress"`
+		Cancel any    `yaml:"cancel-in-progress"`
 	} `yaml:"concurrency"`
 	Jobs map[string]struct {
 		Steps []struct {
@@ -59,8 +60,22 @@ func workflowJobText(t *testing.T, source, name string) string {
 
 func TestCIReplacesOlderRunsForTheSameRef(t *testing.T) {
 	w := readWorkflowContract(t, "ci.yml")
-	if !w.Concurrency.Cancel || !strings.Contains(w.Concurrency.Group, "github.ref") || !strings.Contains(w.Concurrency.Group, "github.workflow") {
-		t.Fatal("CI must cancel older runs within the same workflow and ref")
+	if !strings.Contains(w.Concurrency.Group, "github.ref") || !strings.Contains(w.Concurrency.Group, "github.workflow") {
+		t.Fatal("CI must scope concurrency to the same workflow and ref")
+	}
+	// GitHub keeps only one pending run per group, so a shared main group would
+	// drop older main commits. main must get a per-commit group.
+	want := "github.ref == 'refs/heads/main' && github.sha || github.ref"
+	if !strings.Contains(w.Concurrency.Group, want) {
+		t.Fatalf("CI concurrency group must be per-sha on main (%q): got %q", want, w.Concurrency.Group)
+	}
+	cancel := fmt.Sprint(w.Concurrency.Cancel)
+	// PRs cancel superseded runs; main must not, so every main commit is fully validated.
+	if cancel == "true" {
+		t.Fatal("CI must not cancel-in-progress unconditionally; main commits must run to completion")
+	}
+	if !strings.Contains(cancel, "github.ref") || !strings.Contains(cancel, "refs/heads/main") {
+		t.Fatalf("CI cancel-in-progress must keep main runs: got %q", cancel)
 	}
 }
 
@@ -104,5 +119,41 @@ func TestRuntimeSmokeRequiresCredentialsBeforeAnyBuild(t *testing.T) {
 				t.Fatal("preflight disclosed a credential")
 			}
 		})
+	}
+}
+
+// ci-result is the single gate for branch protection; every CI job must feed it
+// so a skipped or failed job can never be silently ignored.
+func TestCIResultGateCoversEveryJob(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w struct {
+		Jobs map[string]struct {
+			Needs any    `yaml:"needs"`
+			If    string `yaml:"if"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &w); err != nil {
+		t.Fatal(err)
+	}
+	gate, ok := w.Jobs["ci-result"]
+	if !ok {
+		t.Fatal("CI must define the ci-result gate job")
+	}
+	if !strings.Contains(gate.If, "always()") {
+		t.Fatal("ci-result must run even when upstream jobs are skipped")
+	}
+	needs := map[string]bool{}
+	if list, ok := gate.Needs.([]any); ok {
+		for _, n := range list {
+			needs[fmt.Sprint(n)] = true
+		}
+	}
+	for name := range w.Jobs {
+		if name != "ci-result" && !needs[name] {
+			t.Errorf("ci-result must need job %q", name)
+		}
 	}
 }

@@ -1,0 +1,19 @@
+# internal/daemon per-test seconds on ubuntu-latest, from CI run 41323551530.
+# Only tests >= 1s are listed; others use the script default weight.
+# Refresh from the "--- PASS: TestX (Ns)" lines printed by scripts/ci-go-test-daemon-shard.sh.
+TestTaskCreateHTTPAcceptsLaunchReasoningEffortOverrideWithoutMutatingProfile	10.81
+TestClaudeCodeRunningTaskAllowsInterruptSteer	5.05
+TestDeleteRunningTaskIsRejected	5.04
+TestPiRunningTaskAllowsInterruptSteer	5.04
+TestRunningNativeRuntimeWithoutSessionDisablesInterruptSteer	5.04
+TestWorkspaceNavigationScalesToOneRequestForManyProjects	4.82
+TestRuntimeActivityNoExtraAuditRecords	3.11
+TestTaskHostBrowserServiceStopsAndResumeUsesCapturedChoice	3.11
+TestSessionHostBrowserServiceStopsAndResumeUsesCapturedChoice	3.10
+TestCreateSandboxSessionMountsExternalManagedWorkdirThroughPublicHTTP	2.79
+TestClaudeAndPiV2LongRunRereadAfterAtomicReplacement	2.45
+TestWorkspaceNavigationResponseSizeIndependentOfTaskHistory	2.08
+TestLaunchTaskReturnsBeforeRuntimeProcessCompletes	2.04
+TestClaudeAndPiV2ResumeUsesFreshPinAndSharedSnapshotBytes	1.35
+TestTaskLaunchCapturesExplicitHostBrowserEnablement	1.11
+TestSessionLaunchCapturesHostBrowserChoiceWithoutChangingRunner	1.06

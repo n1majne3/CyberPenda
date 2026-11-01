@@ -1,4 +1,4 @@
-.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image build-tsecbench-hosted-image smoke-tsecbench-hosted-image tsecbench-hosted-runtime-inventory build-tsecbench-hosted-bundle test test-ci test-ci-windows test-backend test-concurrency smoke-sandbox-fgs smoke-runtime-tasks clean
+.PHONY: dev ensure-web-deps build build-ui ensure-embed-stub install-git-hooks build-sandbox-image build-sandbox-smoke-image build-tsecbench-hosted-image smoke-tsecbench-hosted-image tsecbench-hosted-runtime-inventory build-tsecbench-hosted-bundle test test-ci test-ci-rest test-ci-windows test-backend test-concurrency smoke-sandbox-fgs smoke-runtime-tasks clean
 
 # Run the daemon and the Vite dev server together for local development.
 # The Vite proxy forwards /api and /health to the daemon on :8787.
@@ -105,6 +105,10 @@ test: test-backend
 
 # CI default: unit/integration tests only (no Docker, no LLM credentials).
 test-ci: test-backend
+
+# CI shard helper: everything except the long internal/daemon package.
+test-ci-rest: ensure-embed-stub
+	go test -timeout 20m $$(go list ./cmd/... ./internal/... ./scripts | grep -vxF 'pentest/internal/daemon')
 
 test-concurrency: ensure-embed-stub
 	go test -race -shuffle=on -cpu=1,4 -count=1 -timeout 10m ./internal/runtime ./internal/daemon -run '^Test(TaskStartupWaitRequiresDurableContinuation|CompletedTaskMessageQueuesOnceAndResumesSameTask|ResumeWaitsForTerminalHarnessReleaseThenLaunchesOnce|ResumeTimesOutWhenTerminalHarnessStaysActive|ServerCloseStopsActiveTaskHarnessBeforeClosingStore|OwnerHarnessCanStopBeforeRunningPersistence|HarnessShutdownAllAndWaitReleasesRuntimeWithoutFinalizingDurableState|SessionHarnessRebindsFinalEventsAndConfirmsStop|FGSOutboxAcceptedDuringRuntimeAndReadableByOperator)$$'

@@ -274,6 +274,11 @@ func TestUpdateBumpsUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
+	// The Windows wall clock can return the same instant for back-to-back calls;
+	// wait until it has moved so the assertion checks Update, not clock resolution.
+	for !time.Now().UTC().After(created.UpdatedAt) {
+		time.Sleep(time.Millisecond)
+	}
 
 	updated, err := service.Update(created.ID, "Acme Renamed", "", project.Scope{}, false, project.Defaults{}, false)
 	if err != nil {

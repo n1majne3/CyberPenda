@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -145,8 +146,21 @@ func navigationProjectWithTasks(t *testing.T, server *daemon.Server, profileID, 
 func navigationFixture(t *testing.T) (*daemon.Server, string) {
 	t.Helper()
 	server := newDaemon(t)
+	// Navigation tests launch many sandbox Tasks; engine readiness is not their
+	// subject, so answer preflight's engine probes instantly instead of running
+	// `docker info` + `podman info` (~0.77s on CI) for every launch.
+	daemon.SetPreflightContainerRunnerForTest(server, readyContainerEngineProbe)
 	profileID := createRuntimeProfile(t, server, `{"name":"Fake","provider":"fake"}`)
 	return server, profileID
+}
+
+// readyContainerEngineProbe reports a ready Docker engine for `info` and fails
+// any other command, so it can only stand in for preflight's readiness probe.
+func readyContainerEngineProbe(_ context.Context, name string, args ...string) ([]byte, error) {
+	if len(args) == 1 && args[0] == "info" {
+		return []byte("Server:\n Name: Docker\n Operating System: Docker Engine (" + name + " test probe)\n"), nil
+	}
+	return nil, fmt.Errorf("unexpected container command in navigation test: %s %v", name, args)
 }
 
 // launchTaskForProject creates a Task through the public API and returns its

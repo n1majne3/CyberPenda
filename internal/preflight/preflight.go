@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
@@ -158,6 +159,15 @@ type Service struct {
 	capabilityCache   modelprovider.CapabilityLookup
 	// containerRunner probes the host container CLI. Nil uses the real CLI.
 	containerRunner runner.CommandRunner
+}
+
+// detectEngine probes the live engine on every call. Preflight must never
+// accept a launch on a stale "ready" result: an engine can stop at any time.
+func (s *Service) detectEngine(ctx context.Context, cli string) (runner.EngineInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return runner.EngineInfo{}, err
+	}
+	return runner.DetectEngine(ctx, cli, s.containerRunner)
 }
 
 // NewService returns a preflight Service.
@@ -681,11 +691,36 @@ func (s *Service) checkContainerEngine(ctx context.Context, result *Result, requ
 	}
 
 	// Probe both engines so the UI can show which CLIs are ready on this host.
-	availability := make([]string, 0, 2)
+	// The probes are independent, so run them concurrently.
+	candidates := []string{"docker", "podman"}
+	probes := make([]struct {
+		info runner.EngineInfo
+		err  error
+	}, len(candidates))
+	var wg sync.WaitGroup
+	for index, candidate := range candidates {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			probes[index].info, probes[index].err = s.detectEngine(ctx, candidate)
+		}()
+	}
+	wg.Wait()
+	// A cancelled request must not pass preflight, even if a probe double
+	// ignored the context.
+	if err := ctx.Err(); err != nil {
+		result.add(Check{
+			Name:   "container_engine",
+			Status: CheckFail,
+			Detail: fmt.Sprintf("container engine probe cancelled: %v", err),
+		})
+		return
+	}
+	availability := make([]string, 0, len(candidates))
 	var selectedInfo runner.EngineInfo
 	var selectedErr error
-	for _, candidate := range []string{"docker", "podman"} {
-		info, err := runner.DetectEngine(ctx, candidate, s.containerRunner)
+	for index, candidate := range candidates {
+		info, err := probes[index].info, probes[index].err
 		if err != nil {
 			availability = append(availability, candidate+": unavailable")
 			if candidate == selected {
@@ -722,7 +757,7 @@ func (s *Service) checkContainerEngine(ctx context.Context, result *Result, requ
 	// DetectEngine may have used absolute test CLI only for selected path; when
 	// probing bare "docker"/"podman" the selected info is from the loop above.
 	if selectedInfo.CLI == "" {
-		info, err := runner.DetectEngine(ctx, selected, s.containerRunner)
+		info, err := s.detectEngine(ctx, selected)
 		if err != nil {
 			result.add(Check{
 				Name:   "container_engine",
