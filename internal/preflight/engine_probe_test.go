@@ -3,6 +3,7 @@ package preflight_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -40,36 +41,76 @@ func sandboxRequest(t *testing.T, svc services) preflight.Request {
 	return preflight.Request{RuntimeProfileID: profile.ID, Runner: "sandbox", ContainerCLI: "docker"}
 }
 
-func TestEngineProbeReusesSuccessfulProbeWithinTTL(t *testing.T) {
+func TestEngineProbeHitsLiveEngineOnEveryLaunch(t *testing.T) {
 	svc := newTestServices(t)
 	request := sandboxRequest(t, svc)
-	now := time.Unix(1_700_000_000, 0)
 	var counter engineProbeCounter
+	var mu sync.Mutex
+	dockerUp := true
 	svc.preflight = svc.preflight.WithContainerRunner(func(_ context.Context, name string, _ ...string) ([]byte, error) {
 		counter.record(name)
+		mu.Lock()
+		defer mu.Unlock()
+		if name == "docker" && !dockerUp {
+			return nil, errors.New("engine stopped")
+		}
 		return []byte("Server:\n Name: Docker\n"), nil
 	})
-	preflight.SetEngineProbeClock(svc.preflight, func() time.Time { return now })
 
 	for range 3 {
 		if result := svc.preflight.Run(context.Background(), request); !result.Pass {
 			t.Fatalf("expected pass, got %#v", result.Checks)
 		}
 	}
-	if counter.count("docker") != 1 || counter.count("podman") != 1 {
-		t.Fatalf("probes within TTL = docker:%d podman:%d, want 1 each", counter.count("docker"), counter.count("podman"))
+	if counter.count("docker") != 3 || counter.count("podman") != 3 {
+		t.Fatalf("probes = docker:%d podman:%d, want one live probe per engine per launch", counter.count("docker"), counter.count("podman"))
 	}
 
-	now = now.Add(preflight.EngineProbeTTL)
-	if result := svc.preflight.Run(context.Background(), request); !result.Pass {
-		t.Fatalf("expected pass after expiry, got %#v", result.Checks)
-	}
-	if counter.count("docker") != 2 || counter.count("podman") != 2 {
-		t.Fatalf("probes after TTL = docker:%d podman:%d, want 2 each", counter.count("docker"), counter.count("podman"))
+	// An engine that stops right after a successful probe is reported on the
+	// very next launch; no earlier "ready" result is reused.
+	mu.Lock()
+	dockerUp = false
+	mu.Unlock()
+	result := svc.preflight.Run(context.Background(), request)
+	if result.Pass || checkPassed(result, "container_engine") {
+		t.Fatalf("stopped engine passed preflight: %#v", result.Checks)
 	}
 }
 
-func TestEngineProbeNeverCachesFailures(t *testing.T) {
+func TestEngineProbeRejectsCancelledRequest(t *testing.T) {
+	svc := newTestServices(t)
+	request := sandboxRequest(t, svc)
+	// The double ignores ctx and always reports ready, so only preflight's own
+	// context handling can reject the launch.
+	svc.preflight = svc.preflight.WithContainerRunner(func(context.Context, string, ...string) ([]byte, error) {
+		return []byte("Server:\n Name: Docker\n"), nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := svc.preflight.Run(ctx, request)
+	if result.Pass || checkPassed(result, "container_engine") {
+		t.Fatalf("cancelled request passed preflight: %#v", result.Checks)
+	}
+	if detail := checkDetail(result, "container_engine"); !strings.Contains(detail, context.Canceled.Error()) {
+		t.Fatalf("container_engine detail = %q, want context cancellation", detail)
+	}
+}
+
+func TestEngineProbeRejectsRequestCancelledDuringProbe(t *testing.T) {
+	svc := newTestServices(t)
+	request := sandboxRequest(t, svc)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc.preflight = svc.preflight.WithContainerRunner(func(context.Context, string, ...string) ([]byte, error) {
+		cancel()
+		return []byte("Server:\n Name: Docker\n"), nil
+	})
+	if result := svc.preflight.Run(ctx, request); result.Pass || checkPassed(result, "container_engine") {
+		t.Fatalf("request cancelled during probe passed preflight: %#v", result.Checks)
+	}
+}
+
+func TestEngineProbeFailuresReprobeEveryLaunch(t *testing.T) {
 	svc := newTestServices(t)
 	request := sandboxRequest(t, svc)
 	var counter engineProbeCounter
@@ -101,23 +142,6 @@ func TestEngineProbeNeverCachesFailures(t *testing.T) {
 	ready = true
 	if result := svc.preflight.Run(context.Background(), request); !result.Pass {
 		t.Fatalf("expected pass once docker is ready, got %#v", result.Checks)
-	}
-}
-
-func TestEngineProbeCacheResetsWhenRunnerChanges(t *testing.T) {
-	svc := newTestServices(t)
-	request := sandboxRequest(t, svc)
-	svc.preflight = svc.preflight.WithContainerRunner(func(context.Context, string, ...string) ([]byte, error) {
-		return []byte("Server:\n Name: Docker\n"), nil
-	})
-	if result := svc.preflight.Run(context.Background(), request); !result.Pass {
-		t.Fatalf("expected pass, got %#v", result.Checks)
-	}
-	svc.preflight = svc.preflight.WithContainerRunner(func(context.Context, string, ...string) ([]byte, error) {
-		return nil, errors.New("engine down")
-	})
-	if result := svc.preflight.Run(context.Background(), request); result.Pass {
-		t.Fatalf("stale cached probe survived a runner change: %#v", result.Checks)
 	}
 }
 

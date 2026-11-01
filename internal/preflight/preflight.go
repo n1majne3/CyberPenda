@@ -14,7 +14,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"time"
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
@@ -160,63 +159,15 @@ type Service struct {
 	capabilityCache   modelprovider.CapabilityLookup
 	// containerRunner probes the host container CLI. Nil uses the real CLI.
 	containerRunner runner.CommandRunner
-	// engineProbes memoizes successful `<cli> info` probes for engineProbeTTL.
-	engineProbes engineProbeCache
 }
 
-// engineProbeTTL bounds how long a successful engine probe is reused. Each
-// `docker info`/`podman info` costs hundreds of milliseconds on a real host, and
-// every launch preflight probes both engines. Failures are never cached, so a
-// missing or stopped engine is reported on the very next launch with the same
-// error, and a newly started engine is picked up immediately.
-const engineProbeTTL = 5 * time.Second
-
-type engineProbeCache struct {
-	mu      sync.Mutex
-	entries map[string]engineProbeEntry
-	now     func() time.Time
-}
-
-type engineProbeEntry struct {
-	info runner.EngineInfo
-	at   time.Time
-}
-
-func (c *engineProbeCache) clock() time.Time {
-	if c.now != nil {
-		return c.now()
-	}
-	return time.Now()
-}
-
-func (c *engineProbeCache) reset() {
-	c.mu.Lock()
-	c.entries = nil
-	c.mu.Unlock()
-}
-
-// detectEngine returns a fresh cached probe for cli, or probes the engine and
-// caches the result only when it succeeds.
+// detectEngine probes the live engine on every call. Preflight must never
+// accept a launch on a stale "ready" result: an engine can stop at any time.
 func (s *Service) detectEngine(ctx context.Context, cli string) (runner.EngineInfo, error) {
-	key := runner.NormalizeContainerCLI(cli)
-	c := &s.engineProbes
-	c.mu.Lock()
-	if entry, ok := c.entries[key]; ok && c.clock().Sub(entry.at) < engineProbeTTL {
-		c.mu.Unlock()
-		return entry.info, nil
+	if err := ctx.Err(); err != nil {
+		return runner.EngineInfo{}, err
 	}
-	c.mu.Unlock()
-	info, err := runner.DetectEngine(ctx, cli, s.containerRunner)
-	if err != nil {
-		return info, err
-	}
-	c.mu.Lock()
-	if c.entries == nil {
-		c.entries = make(map[string]engineProbeEntry)
-	}
-	c.entries[key] = engineProbeEntry{info: info, at: c.clock()}
-	c.mu.Unlock()
-	return info, nil
+	return runner.DetectEngine(ctx, cli, s.containerRunner)
 }
 
 // NewService returns a preflight Service.
@@ -248,7 +199,6 @@ func (s *Service) WithCapabilityCache(cache modelprovider.CapabilityLookup) *Ser
 // and VPN TUN checks. Tests supply fakes; production leaves this nil.
 func (s *Service) WithContainerRunner(run runner.CommandRunner) *Service {
 	s.containerRunner = run
-	s.engineProbes.reset()
 	return s
 }
 
@@ -756,6 +706,16 @@ func (s *Service) checkContainerEngine(ctx context.Context, result *Result, requ
 		}()
 	}
 	wg.Wait()
+	// A cancelled request must not pass preflight, even if a probe double
+	// ignored the context.
+	if err := ctx.Err(); err != nil {
+		result.add(Check{
+			Name:   "container_engine",
+			Status: CheckFail,
+			Detail: fmt.Sprintf("container engine probe cancelled: %v", err),
+		})
+		return
+	}
 	availability := make([]string, 0, len(candidates))
 	var selectedInfo runner.EngineInfo
 	var selectedErr error
