@@ -75,25 +75,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Packed by measured time: one shard is dominated by
-        # TestWorkspaceNavigationScalesToOneRequestForManyProjects (~190s alone).
-        shard: [0, 1, 2]
+        # Packed by measured time (scripts/ci-daemon-test-times.tsv): ~106s of
+        # tests plus ~20s compile per shard; two shards keep daemon tests well
+        # under the Windows build on the critical path.
+        shard: [0, 1]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: "TEMP diagnostic: container engine probe latency"
-        if: matrix.shard == 0
-        run: |
-          for cli in docker podman; do
-            for i in 1 2 3 4 5 6 7 8 9 10; do
-              s=$(date +%s.%N); $cli info >/dev/null 2>&1; rc=$?; e=$(date +%s.%N)
-              echo "$cli info #$i rc=$rc $(echo "$e - $s" | bc)s"
-            done
-          done
-      - name: Go tests (internal/daemon shard ${{ matrix.shard }}/3)
-        run: scripts/ci-go-test-daemon-shard.sh ${{ matrix.shard }} 3
+      - name: Go tests (internal/daemon shard ${{ matrix.shard }}/2)
+        run: scripts/ci-go-test-daemon-shard.sh ${{ matrix.shard }} 2
 
   concurrency:
     needs: changes
