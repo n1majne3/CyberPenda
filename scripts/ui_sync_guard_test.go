@@ -61,8 +61,12 @@ func TestBuildUIUsesPortableEmbedSynchronizationWithoutCommitGate(t *testing.T) 
 	assertContains(t, windowsJob, "runs-on: windows-latest")
 	assertContains(t, windowsJob, "shell: cmd")
 	assertContains(t, windowsJob, "node --test scripts/web-build.test.mjs")
-	assertContains(t, windowsJob, "make build")
+	assertContains(t, windowsJob, "web-build-cli.mjs build-ui")
+	assertContains(t, windowsJob, "go build -o pentestd.exe")
 	assertContains(t, windowsJob, "pentestd.exe")
+	if strings.Contains(windowsJob, "choco install") {
+		t.Fatal("windows CI must not spend time on choco; call node/go directly")
+	}
 
 	releaseBytes, err := os.ReadFile(filepath.Join(repoRoot, ".github", "workflows", "release.yml"))
 	if err != nil {

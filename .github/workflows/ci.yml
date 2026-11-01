@@ -8,20 +8,67 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR pushes; never cancel main so every main commit is fully validated.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
-  test:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: detect
+        name: Detect code changes (skip docs-only)
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BASE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            base="$PR_BASE"
+            head="$PR_HEAD"
+          else
+            base="$PUSH_BASE"
+            head="$GITHUB_SHA_VALUE"
+          fi
+          scripts/ci-code-changes-required.sh "$base" "$head" >> "$GITHUB_OUTPUT"
+
+  test-rest:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Go tests
-        run: make test-ci
+      - name: Go tests (all packages except internal/daemon)
+        run: make test-ci-rest
+
+  test-daemon:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Go tests (internal/daemon shard ${{ matrix.shard }}/4)
+        run: scripts/ci-go-test-daemon-shard.sh ${{ matrix.shard }} 4
 
   concurrency:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -33,6 +80,8 @@ jobs:
         run: make test-concurrency
 
   web:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -56,9 +105,23 @@ jobs:
       - name: Unit tests
         working-directory: web
         run: npm run test
-      - name: Install browser
+      - name: Resolve Playwright version
+        id: playwright
+        working-directory: web
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install browser + OS deps
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         working-directory: web
         run: npx playwright install --with-deps chromium
+      - name: Install browser OS deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        working-directory: web
+        run: npx playwright install-deps chromium
       - name: Browser tests
         working-directory: web
         run: npm run test:browser
@@ -66,6 +129,8 @@ jobs:
         run: make build-ui
 
   windows-build:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
@@ -77,23 +142,26 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Install GNU Make
-        shell: cmd
-        run: choco install make --no-progress -y
       - name: Test native Windows web build helper
         shell: cmd
         run: node --test scripts/web-build.test.mjs
       - name: Build native Windows daemon
         shell: cmd
-        run: make build
+        run: |
+          node scripts/web-build-cli.mjs build-ui
+          go build -o pentestd.exe ./cmd/pentestd
       - name: Verify native executable
         shell: cmd
         run: if not exist pentestd.exe exit /b 1
       - name: Go tests
         shell: bash
-        run: make test-ci-windows
+        run: |
+          node scripts/web-build-cli.mjs ensure-embed-stub
+          go test -timeout 20m $(go list ./cmd/... ./internal/... | grep -vxF 'pentest/internal/daemon' | grep -vxF 'pentest/internal/runner')
 
   app-image:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -107,8 +175,12 @@ jobs:
           tags: cyberpenda-app:ci
           build-args: |
             VERSION=ci
+          cache-from: type=gha,scope=pentestd-app
+          cache-to: type=gha,mode=max,scope=pentestd-app
 
   sandbox-smoke-changes:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     outputs:
       required: ${{ steps.detect.outputs.required }}
@@ -135,8 +207,8 @@ jobs:
           scripts/ci-sandbox-smoke-required.sh "$base" "$head" >> "$GITHUB_OUTPUT"
 
   smoke-sandbox-fgs:
-    needs: sandbox-smoke-changes
-    if: needs.sandbox-smoke-changes.outputs.required == 'true'
+    needs: [changes, sandbox-smoke-changes]
+    if: needs.changes.outputs.code == 'true' && needs.sandbox-smoke-changes.outputs.required == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -150,3 +222,64 @@ jobs:
           PENTEST_SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci
           SANDBOX_IMAGE: cyberpenda-sandbox-smoke:ci
         run: make smoke-sandbox-fgs
+
+  # Always runs so docs-only PRs do not leave required checks pending if protection is added later.
+  ci-result:
+    needs:
+      - changes
+      - test-rest
+      - test-daemon
+      - concurrency
+      - web
+      - windows-build
+      - app-image
+      - sandbox-smoke-changes
+      - smoke-sandbox-fgs
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate CI result
+        env:
+          CODE: ${{ needs.changes.outputs.code }}
+          CHANGES: ${{ needs.changes.result }}
+          TEST_REST: ${{ needs.test-rest.result }}
+          TEST_DAEMON: ${{ needs.test-daemon.result }}
+          CONCURRENCY: ${{ needs.concurrency.result }}
+          WEB: ${{ needs.web.result }}
+          WINDOWS: ${{ needs.windows-build.result }}
+          APP_IMAGE: ${{ needs.app-image.result }}
+          SMOKE_DETECT: ${{ needs.sandbox-smoke-changes.result }}
+          SMOKE: ${{ needs.smoke-sandbox-fgs.result }}
+        run: |
+          set -euo pipefail
+          if [ "$CHANGES" != "success" ]; then
+            echo "changes job failed: $CHANGES" >&2
+            exit 1
+          fi
+          if [ "$CODE" != "true" ]; then
+            echo "docs-only change; code jobs skipped"
+            exit 0
+          fi
+          fail=0
+          for pair in \
+            "test-rest:$TEST_REST" \
+            "test-daemon:$TEST_DAEMON" \
+            "concurrency:$CONCURRENCY" \
+            "web:$WEB" \
+            "windows-build:$WINDOWS" \
+            "app-image:$APP_IMAGE" \
+            "sandbox-smoke-changes:$SMOKE_DETECT"
+          do
+            name="${pair%%:*}"
+            result="${pair##*:}"
+            if [ "$result" != "success" ]; then
+              echo "$name => $result" >&2
+              fail=1
+            fi
+          done
+          # smoke is optional (skipped when not required)
+          if [ "$SMOKE" != "success" ] && [ "$SMOKE" != "skipped" ]; then
+            echo "smoke-sandbox-fgs => $SMOKE" >&2
+            fail=1
+          fi
+          exit "$fail"

@@ -1,6 +1,7 @@
 package scripts_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,7 +15,7 @@ type workflowContract struct {
 	On          map[string]any `yaml:"on"`
 	Concurrency struct {
 		Group  string `yaml:"group"`
-		Cancel bool   `yaml:"cancel-in-progress"`
+		Cancel any    `yaml:"cancel-in-progress"`
 	} `yaml:"concurrency"`
 	Jobs map[string]struct {
 		Steps []struct {
@@ -59,8 +60,16 @@ func workflowJobText(t *testing.T, source, name string) string {
 
 func TestCIReplacesOlderRunsForTheSameRef(t *testing.T) {
 	w := readWorkflowContract(t, "ci.yml")
-	if !w.Concurrency.Cancel || !strings.Contains(w.Concurrency.Group, "github.ref") || !strings.Contains(w.Concurrency.Group, "github.workflow") {
-		t.Fatal("CI must cancel older runs within the same workflow and ref")
+	if !strings.Contains(w.Concurrency.Group, "github.ref") || !strings.Contains(w.Concurrency.Group, "github.workflow") {
+		t.Fatal("CI must scope concurrency to the same workflow and ref")
+	}
+	cancel := fmt.Sprint(w.Concurrency.Cancel)
+	// PRs cancel superseded runs; main must not, so every main commit is fully validated.
+	if cancel == "true" {
+		t.Fatal("CI must not cancel-in-progress unconditionally; main commits must run to completion")
+	}
+	if !strings.Contains(cancel, "github.ref") || !strings.Contains(cancel, "refs/heads/main") {
+		t.Fatalf("CI cancel-in-progress must keep main runs: got %q", cancel)
 	}
 }
 
