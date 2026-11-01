@@ -16,7 +16,7 @@ cd "$root"
 shard_index="${1:?shard index required}"
 shard_count="${2:?shard count required}"
 times_file="${CI_DAEMON_TEST_TIMES:-scripts/ci-daemon-test-times.tsv}"
-default_weight="${CI_DAEMON_TEST_DEFAULT_SECONDS:-0.5}"
+default_weight="${CI_DAEMON_TEST_DEFAULT_SECONDS:-0.15}"
 
 if ! [[ "$shard_index" =~ ^[0-9]+$ && "$shard_count" =~ ^[0-9]+$ ]]; then
   echo "shard index/count must be non-negative integers" >&2
@@ -92,5 +92,6 @@ status=0
 go test -timeout 20m ./internal/daemon -run "^(${pattern})$" -count=1 -v 2>&1 | tee "$log" || status=$?
 
 echo "--- slowest tests in shard ${shard_index}/${shard_count} ---"
-sed -nE 's/^--- (PASS|FAIL): (Test[^ ]+) \(([0-9.]+)s\)$/\3\t\2/p' "$log" | LC_ALL=C sort -t$'\t' -k1,1gr | head -n 15
+# awk (not head) consumes all input so sort never hits SIGPIPE under pipefail.
+sed -nE 's/^--- (PASS|FAIL): (Test[^ ]+) \(([0-9.]+)s\)$/\3\t\2/p' "$log" | LC_ALL=C sort -t$'\t' -k1,1gr | awk 'NR <= 15'
 exit "$status"

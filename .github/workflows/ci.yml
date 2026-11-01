@@ -60,14 +60,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        # Packed by measured time: one shard is dominated by
+        # TestWorkspaceNavigationScalesToOneRequestForManyProjects (~190s alone).
+        shard: [0, 1, 2]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Go tests (internal/daemon shard ${{ matrix.shard }}/4)
-        run: scripts/ci-go-test-daemon-shard.sh ${{ matrix.shard }} 4
+      - name: Go tests (internal/daemon shard ${{ matrix.shard }}/3)
+        run: scripts/ci-go-test-daemon-shard.sh ${{ matrix.shard }} 3
 
   concurrency:
     needs: changes
@@ -95,7 +97,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install web dependencies
         working-directory: web
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund
       - name: Web build helper tests
         run: node --test scripts/web-build.test.mjs
       - name: Vite browser proxy contract
@@ -108,10 +110,8 @@ jobs:
       - name: Unit tests
         working-directory: web
         run: npm run test
-      - name: Build UI (embed path is local-only, not committed)
-        run: make build-ui
 
-  # Browser tests run beside lint/unit/build instead of after them.
+  # Browser tests and the production UI build run beside lint/unit tests.
   web-browser:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -125,7 +125,7 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install web dependencies
         working-directory: web
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit --no-fund
       - name: Resolve Playwright version
         id: playwright
         working-directory: web
@@ -146,6 +146,8 @@ jobs:
       - name: Browser tests
         working-directory: web
         run: npm run test:browser
+      - name: Build UI (embed path is local-only, not committed)
+        run: make build-ui
 
   windows-build:
     needs: changes
@@ -210,6 +212,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
+        with:
+          cleanup: false # ephemeral runner; skip ~9s builder teardown
       - uses: docker/build-push-action@v7
         with:
           context: .
@@ -220,7 +224,9 @@ jobs:
           build-args: |
             VERSION=ci
           cache-from: type=gha,scope=pentestd-app
-          cache-to: type=gha,mode=max,scope=pentestd-app
+          # Only main writes the layer cache (PRs read it), so per-PR copies do
+          # not churn the 10 GB repository cache or pay export time.
+          cache-to: ${{ github.event_name == 'push' && 'type=gha,mode=max,scope=pentestd-app' || '' }}
 
   smoke-sandbox-fgs:
     needs: changes
