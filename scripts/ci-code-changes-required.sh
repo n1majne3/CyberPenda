@@ -25,7 +25,11 @@ changed_files() {
     return
   fi
 
-  git diff --name-only "$base...$head" 2>/dev/null || git diff --name-only "$base" "$head"
+  # Fail safe: if the diff cannot be computed (e.g. force-pushed base missing),
+  # run everything instead of silently treating the change as docs-only.
+  git diff --name-only "$base...$head" 2>/dev/null \
+    || git diff --name-only "$base" "$head" 2>/dev/null \
+    || echo "FORCE_CODE"
 }
 
 code=false

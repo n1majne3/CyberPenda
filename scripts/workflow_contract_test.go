@@ -115,3 +115,39 @@ func TestRuntimeSmokeRequiresCredentialsBeforeAnyBuild(t *testing.T) {
 		})
 	}
 }
+
+// ci-result is the single gate for branch protection; every CI job must feed it
+// so a skipped or failed job can never be silently ignored.
+func TestCIResultGateCoversEveryJob(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var w struct {
+		Jobs map[string]struct {
+			Needs any    `yaml:"needs"`
+			If    string `yaml:"if"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &w); err != nil {
+		t.Fatal(err)
+	}
+	gate, ok := w.Jobs["ci-result"]
+	if !ok {
+		t.Fatal("CI must define the ci-result gate job")
+	}
+	if !strings.Contains(gate.If, "always()") {
+		t.Fatal("ci-result must run even when upstream jobs are skipped")
+	}
+	needs := map[string]bool{}
+	if list, ok := gate.Needs.([]any); ok {
+		for _, n := range list {
+			needs[fmt.Sprint(n)] = true
+		}
+	}
+	for name := range w.Jobs {
+		if name != "ci-result" && !needs[name] {
+			t.Errorf("ci-result must need job %q", name)
+		}
+	}
+}

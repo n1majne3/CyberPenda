@@ -16,12 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.detect.outputs.code }}
+      sandbox: ${{ steps.detect.outputs.required }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: detect
-        name: Detect code changes (skip docs-only)
+        name: Detect code and sandbox smoke changes
         env:
           EVENT_NAME: ${{ github.event_name }}
           PUSH_BASE: ${{ github.event.before }}
@@ -29,6 +30,7 @@ jobs:
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           GITHUB_SHA_VALUE: ${{ github.sha }}
         run: |
+          set -o pipefail
           if [ "$EVENT_NAME" = "pull_request" ]; then
             base="$PR_BASE"
             head="$PR_HEAD"
@@ -36,7 +38,8 @@ jobs:
             base="$PUSH_BASE"
             head="$GITHUB_SHA_VALUE"
           fi
-          scripts/ci-code-changes-required.sh "$base" "$head" >> "$GITHUB_OUTPUT"
+          scripts/ci-code-changes-required.sh "$base" "$head" | tee -a "$GITHUB_OUTPUT"
+          scripts/ci-sandbox-smoke-required.sh "$base" "$head" | tee -a "$GITHUB_OUTPUT"
 
   test-rest:
     needs: changes
@@ -105,6 +108,24 @@ jobs:
       - name: Unit tests
         working-directory: web
         run: npm run test
+      - name: Build UI (embed path is local-only, not committed)
+        run: make build-ui
+
+  # Browser tests run beside lint/unit/build instead of after them.
+  web-browser:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
       - name: Resolve Playwright version
         id: playwright
         working-directory: web
@@ -125,14 +146,17 @@ jobs:
       - name: Browser tests
         working-directory: web
         run: npm run test:browser
-      - name: Build UI (embed path is local-only, not committed)
-        run: make build-ui
 
   windows-build:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     steps:
+      - name: Disable Defender real-time scanning (ephemeral runner; npm/go file I/O)
+        shell: pwsh
+        run: |
+          try { Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop; "Defender real-time scanning disabled" }
+          catch { Write-Warning "Could not disable Defender real-time scanning: $_" }
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
@@ -153,8 +177,28 @@ jobs:
       - name: Verify native executable
         shell: cmd
         run: if not exist pentestd.exe exit /b 1
+
+  # Go tests on Windows do not need the real UI build or setup-node (the embed
+  # stub only needs the preinstalled node), so they run beside windows-build.
+  windows-test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Disable Defender real-time scanning (ephemeral runner; npm/go file I/O)
+        shell: pwsh
+        run: |
+          try { Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop; "Defender real-time scanning disabled" }
+          catch { Write-Warning "Could not disable Defender real-time scanning: $_" }
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
       - name: Go tests
         shell: bash
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
         run: |
           node scripts/web-build-cli.mjs ensure-embed-stub
           go test -timeout 20m $(go list ./cmd/... ./internal/... | grep -vxF 'pentest/internal/daemon' | grep -vxF 'pentest/internal/runner')
@@ -178,37 +222,9 @@ jobs:
           cache-from: type=gha,scope=pentestd-app
           cache-to: type=gha,mode=max,scope=pentestd-app
 
-  sandbox-smoke-changes:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      required: ${{ steps.detect.outputs.required }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-      - id: detect
-        name: Detect sandbox smoke changes
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PUSH_BASE: ${{ github.event.before }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
-          PR_HEAD: ${{ github.event.pull_request.head.sha }}
-          GITHUB_SHA_VALUE: ${{ github.sha }}
-        run: |
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            base="$PR_BASE"
-            head="$PR_HEAD"
-          else
-            base="$PUSH_BASE"
-            head="$GITHUB_SHA_VALUE"
-          fi
-          scripts/ci-sandbox-smoke-required.sh "$base" "$head" >> "$GITHUB_OUTPUT"
-
   smoke-sandbox-fgs:
-    needs: [changes, sandbox-smoke-changes]
-    if: needs.changes.outputs.code == 'true' && needs.sandbox-smoke-changes.outputs.required == 'true'
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.sandbox == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -231,9 +247,10 @@ jobs:
       - test-daemon
       - concurrency
       - web
+      - web-browser
       - windows-build
+      - windows-test
       - app-image
-      - sandbox-smoke-changes
       - smoke-sandbox-fgs
     if: always()
     runs-on: ubuntu-latest
@@ -246,9 +263,11 @@ jobs:
           TEST_DAEMON: ${{ needs.test-daemon.result }}
           CONCURRENCY: ${{ needs.concurrency.result }}
           WEB: ${{ needs.web.result }}
+          WEB_BROWSER: ${{ needs.web-browser.result }}
           WINDOWS: ${{ needs.windows-build.result }}
+          WINDOWS_TEST: ${{ needs.windows-test.result }}
           APP_IMAGE: ${{ needs.app-image.result }}
-          SMOKE_DETECT: ${{ needs.sandbox-smoke-changes.result }}
+          SANDBOX: ${{ needs.changes.outputs.sandbox }}
           SMOKE: ${{ needs.smoke-sandbox-fgs.result }}
         run: |
           set -euo pipefail
@@ -266,9 +285,10 @@ jobs:
             "test-daemon:$TEST_DAEMON" \
             "concurrency:$CONCURRENCY" \
             "web:$WEB" \
+            "web-browser:$WEB_BROWSER" \
             "windows-build:$WINDOWS" \
-            "app-image:$APP_IMAGE" \
-            "sandbox-smoke-changes:$SMOKE_DETECT"
+            "windows-test:$WINDOWS_TEST" \
+            "app-image:$APP_IMAGE"
           do
             name="${pair%%:*}"
             result="${pair##*:}"
@@ -277,9 +297,14 @@ jobs:
               fail=1
             fi
           done
-          # smoke is optional (skipped when not required)
-          if [ "$SMOKE" != "success" ] && [ "$SMOKE" != "skipped" ]; then
-            echo "smoke-sandbox-fgs => $SMOKE" >&2
+          # smoke runs only when sandbox paths changed; then it must pass.
+          if [ "$SANDBOX" = "true" ]; then
+            want="success"
+          else
+            want="skipped"
+          fi
+          if [ "$SMOKE" != "$want" ]; then
+            echo "smoke-sandbox-fgs => $SMOKE (expected $want)" >&2
             fail=1
           fi
           exit "$fail"

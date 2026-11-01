@@ -58,3 +58,19 @@ func TestCICodeChangesRequired(t *testing.T) {
 		})
 	}
 }
+
+func TestCICodeChangesRequiredFailsSafeOnUnknownBase(t *testing.T) {
+	repoRoot := repoRoot(t)
+	script := filepath.Join(repoRoot, "scripts", "ci-code-changes-required.sh")
+	for _, base := range []string{"", "0000000000000000000000000000000000000000", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"} {
+		cmd := exec.Command("bash", script, base, "HEAD")
+		cmd.Dir = repoRoot
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("base %q: script failed: %v\n%s", base, err, out)
+		}
+		if got := strings.TrimSpace(string(out)); got != "code=true" {
+			t.Fatalf("base %q: got %q, want code=true (unknown base must run full CI)", base, got)
+		}
+	}
+}
