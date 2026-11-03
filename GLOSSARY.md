@@ -914,6 +914,10 @@ _Avoid_: full replacement, duplicate finding
 A durable reference to raw or derived proof that supports a **Project Fact** or **Finding**.
 _Avoid_: attachment, log dump, fact body
 
+**Evidence Integrity Health**:
+The current integrity check of managed **Evidence Artifact** payloads for a **Project**. Each health request reads and verifies the current payload bytes. File metadata cached from an earlier request does not establish current integrity.
+_Avoid_: metadata-only verification, cached current integrity
+
 **Artifact Root**:
 The managed local storage root for project or task evidence, logs, and generated files.
 _Avoid_: arbitrary host path, download folder

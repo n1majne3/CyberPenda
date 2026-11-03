@@ -689,7 +689,7 @@ type healthFixture struct {
 	runtimeRoot    string
 }
 
-func newHealthFixture(t *testing.T, kind string) healthFixture {
+func newHealthFixture(t testing.TB, kind string) healthFixture {
 	t.Helper()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "pentest.db")
