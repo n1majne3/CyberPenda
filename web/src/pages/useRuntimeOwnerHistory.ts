@@ -9,8 +9,6 @@ import { prefersReducedMotion } from "./runtimeOwnerView";
 const TIMELINE_ROW_ESTIMATE = 48;
 
 export function useOwnerHistoryState() {
-  // replaced atomically when the selected owner changes so Timeline and
-  // Transcript content from the prior owner can never merge into the new
   const historyRef = useRef<OwnerHistory>(emptyHistory());
   const [history, setHistoryState] = useState<OwnerHistory>(emptyHistory());
   const commitHistory = (next: OwnerHistory) => {
@@ -53,12 +51,10 @@ export function useRuntimeOwnerHistory({
   // Monotonic generation so slower in-flight polls cannot overwrite newer data.
   const loadGeneration = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
-  // Owner identity at request time; a response can merge only when its owner
   const ownerIDRef = useRef(ownerID);
   const activeViewRef = useRef(activeView);
   const timelineAtTailRef = useRef(true);
   const timelineViewport = useRef<HTMLDivElement>(null);
-  // Mirror render values into refs after each render so poll and paging
   useEffect(() => {
     ownerIDRef.current = ownerID;
     activeViewRef.current = activeView;
