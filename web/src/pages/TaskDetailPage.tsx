@@ -1,32 +1,26 @@
-import { useCallback, useEffect, useState, useRef, type KeyboardEvent, type ReactNode, type RefObject } from "react";
-import { flushSync } from "react-dom";
-import { Link, useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { Square, Terminal, GitBranch, MessageSquare, Play, ChevronRight, ChevronsUpDown, Wrench, User, Bot, ArrowDown, ArrowUp, CheckCircle2, Trash2, CircleX, KeyRound, ListPlus, Loader2, Maximize2, Minimize2, Flag, TriangleAlert, Archive, ArchiveRestore, Pencil, Paperclip, Brain, PlugZap, Info } from "lucide-react";
-import { apiGet, type FinishReadiness, type ModelProvider, type ProviderPermissionRequest, type RuntimeActivity, type RuntimePlugin, type RuntimeProfile, type TaskTranscriptEntry } from "@/lib/api";
-import { Button, Badge, Chip, Input, Select, Textarea } from "@/components/ui";
-import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { ErrorState, LoadingState, PageContainer } from "@/components/shared";
-import { SubagentHistory } from "@/components/task-transcript/SubagentHistory";
+import { useEffect, useState, useRef } from "react";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
+import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
+import { apiGet, type FinishReadiness, type ModelProvider, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
+import { Button } from "@/components/ui";
+import { ErrorState, LoadingState } from "@/components/shared";
 import { AgentTranscriptView } from "@/components/task-transcript/AgentTranscriptView";
-import { AttachmentFileRow } from "@/components/AttachmentPicker";
-import { collapsedTranscriptTitle, toolCallFields } from "./taskDetailView";
-import { displayReasoningEffort, REASONING_EFFORT_VALUES, selectableModelProviders } from "./runtimeProfileForm";
-import { modelsForProvider } from "./taskLaunchForm";
-import { formatDateTime, formatRelativeTime } from "@/lib/format";
-import { anchorSubagentBlocks, mergeTimelineItems, mergeTranscriptEntries, prependTimelineItems, prependTranscriptEntries } from "@/lib/ownerEvents";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
-import { useVirtualWindow } from "@/lib/virtualWindow";
 import { taskRuntimeOwnerAdapter, sessionRuntimeOwnerAdapter, type RuntimeOwnerAdapter } from "@/lib/runtimeOwner/adapter";
-import { canPiNativeCrossProvider, conversationModeText, conversationQueueUnavailable, conversationSendLabel, newSteerRequestID, resolveConversationAction, resolveConversationSendMode, steerPendingState } from "@/lib/runtimeOwner/conversationKernel";
-import { ACTIVE_OWNER_STATUSES, statusWord } from "@/lib/runtimeOwner/status";
-import { cn } from "@/lib/utils";
+import { ACTIVE_OWNER_STATUSES } from "@/lib/runtimeOwner/status";
 import { FGSBoard } from "./FGSPage";
-import { emptyHistory, type ConversationSendMode, type OwnerHistory, type RuntimeOwnerKind, type RuntimeOwnerView } from "@/lib/runtimeOwner/types";
-
-// needs real row layout, so rows carry no content-visibility size hints that
-const TRANSCRIPT_ROW_ESTIMATE = 72;
-const TIMELINE_ROW_ESTIMATE = 48;
+import { emptyHistory, type RuntimeOwnerKind, type RuntimeOwnerView } from "@/lib/runtimeOwner/types";
+import { runtimeOwnerBlackboardMode, liveReasoningEntryID } from "./runtimeOwnerView";
+import { TranscriptList } from "./RuntimeOwnerTranscript";
+import { ProviderPermissionRequests, RuntimeOwnerComposer } from "./RuntimeOwnerComposer";
+import { RuntimeOwnerConfirmDialogs, RuntimeOwnerHeader, RuntimeOwnerNotices } from "./RuntimeOwnerHeader";
+import { deriveConversationControls } from "./runtimeOwnerConversationControls";
+import { useRuntimeOwnerActions } from "./useRuntimeOwnerActions";
+import { useOwnerHistoryState, useRuntimeOwnerHistory } from "./useRuntimeOwnerHistory";
+import { useConversationFollow } from "./useConversationFollow";
+import { useContinuationSelection } from "./useContinuationSelection";
+import { RuntimeOwnerViewTabs } from "./RuntimeOwnerViewTabs";
+import { RuntimeOwnerShell } from "./RuntimeOwnerChrome";
 
 export function TaskDetailPage() {
   return <RuntimeOwnerDetailPage ownerKind="task" />;
@@ -46,268 +40,89 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   );
   const hasSessionBlackboard = isSession && owner !== null && owner.id === ownerID && owner.blackboardProtocol === "fgs" && runtimeOwnerBlackboardMode(owner) !== "disabled";
   const activeView = requestedView === "blackboard" && !hasSessionBlackboard ? "conversation" : requestedView;
-  const [autoFollow, setAutoFollow] = useState(true);
+  const { historyRef, history, commitHistory } = useOwnerHistoryState();
+  const {
+    autoFollow,
+    autoFollowRef,
+    conversationEnd,
+    cancelAutoFollowSettlement,
+    resetConversationFollow,
+    transcriptDisplayRows,
+    transcriptWindow,
+    bindTranscriptViewport,
+    bindTranscriptRows,
+    scrollToLatest,
+    scrollToTop,
+  } = useConversationFollow({ owner, activeView, history, historyRef, commitHistory });
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [steering, setSteering] = useState("");
   const [forceReplaceNext, setForceReplaceNext] = useState(false);
-  const [continuationModelProvider, setContinuationModelProvider] = useState("");
-  const [continuationModelOverride, setContinuationModelOverride] = useState("");
-  const [continuationReasoningEffort, setContinuationReasoningEffort] = useState("high");
-  const [turnSelectionSeeded, setTurnSelectionSeeded] = useState(false);
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
   const [modelProviders, setModelProviders] = useState<ModelProvider[]>([]);
   const [runtimePlugins, setRuntimePlugins] = useState<RuntimePlugin[]>([]);
+  const {
+    continuationModelProvider,
+    continuationModelOverride,
+    setContinuationModelOverride,
+    continuationReasoningEffort,
+    setContinuationReasoningEffort,
+    setTurnSelectionSeeded,
+    currentRuntimeProvider,
+    continuationModelProviders,
+    continuationModelOptions,
+    continuationModelPayload,
+    selectContinuationModelProvider,
+  } = useContinuationSelection({ owner, profiles, modelProviders, runtimePlugins });
   const [permissionBusy, setPermissionBusy] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const [confirmAction, setConfirmAction] = useState<"stop" | "finish" | "delete" | null>(null);
   const attachmentInput = useRef<HTMLInputElement>(null);
-  const conversationViewport = useRef<HTMLDivElement>(null);
-  const conversationScrollTop = useRef(0);
-  const timelineViewport = useRef<HTMLDivElement>(null);
-  const conversationEnd = useRef<HTMLDivElement>(null);
-  const autoFollowRef = useRef(true);
-  const programmaticAutoFollow = useRef(false);
-  // Monotonic generation so slower in-flight polls cannot overwrite newer data.
-  const loadGeneration = useRef(0);
-  const abortRef = useRef<AbortController | null>(null);
-  // Owner identity at request time; a response can merge only when its owner
-  const ownerIDRef = useRef(ownerID);
-  const activeViewRef = useRef(activeView);
-  const timelineAtTailRef = useRef(true);
-  // Mirror render values into refs after each render so poll and paging
-  useEffect(() => {
-    ownerIDRef.current = ownerID;
-    activeViewRef.current = activeView;
-  });
-
-  // replaced atomically when the selected owner changes so Timeline and
-  // Transcript content from the prior owner can never merge into the new
-  const historyRef = useRef<OwnerHistory>(emptyHistory());
-  const [history, setHistoryState] = useState<OwnerHistory>(emptyHistory());
-  const commitHistory = (next: OwnerHistory) => {
-    historyRef.current = next;
-    setHistoryState(next);
-  };
-
-  const cancelAutoFollowSettlement = useCallback(() => {
-    programmaticAutoFollow.current = false;
-  }, []);
-
-  // Keep programmatic follow distinct from operator scrolling. Later scroll
-  // events repin until explicit operator input ends programmatic follow.
-  const settleConversationBottom = useCallback((container: HTMLDivElement) => {
-    programmaticAutoFollow.current = true;
-    container.scrollTo?.({ top: container.scrollHeight, behavior: "auto" });
-    conversationScrollTop.current = container.scrollTop;
-  }, []);
-
   const base = isSession ? `/api/sessions/${sessionId}` : `/api/projects/${projectId}/tasks/${taskId}`;
   // The behavioral owner adapter owns every endpoint and payload shape; the
   // workspace keeps only rendering and orchestration.
   const ownerAdapter: RuntimeOwnerAdapter = isSession ? sessionRuntimeOwnerAdapter(base) : taskRuntimeOwnerAdapter(base);
 
-  async function loadAll(mode: "initial" | "poll") {
-    if (!ownerID || (!isSession && !projectId)) return;
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const generation = ++loadGeneration.current;
-    const requestOwner = ownerID;
-    const before = historyRef.current;
-    try {
-      const loaded = await ownerAdapter.loadWorkspace(controller.signal, mode, before);
-      // A response can merge only when its owner identity and request
-      // generation still match; a route change replaces owner-local state
-      // before any merge can run.
-      if (generation !== loadGeneration.current || requestOwner !== ownerIDRef.current || controller.signal.aborted) {
-        return;
-      }
-      setOwner(loaded.owner);
-      setFinishReadiness(loaded.finishReadiness ?? null);
-      if (loaded.owner.kind === "session") setTitleDraft(loaded.owner.title);
-      // Merge into the latest state at commit time, not the pre-request
-      // snapshot, so a backward page (or any other concurrent history
-      // change) committed while this request was in flight is preserved
-      // instead of being wiped by the merge.
-      const latest = historyRef.current;
-      const next: OwnerHistory = {
-        ...latest,
-        timeline: mode === "initial" ? loaded.timeline : mergeTimelineItems(latest.timeline, loaded.timeline),
-        transcript: mode === "initial" ? loaded.transcript : mergeTranscriptEntries(latest.transcript, loaded.transcript),
-        timelineCursor: loaded.timelineCursor,
-        transcriptCursor: loaded.transcriptCursor,
-        ...(mode === "initial" ? {
-          timelineHasOlder: loaded.timelineHasOlder,
-          transcriptHasOlder: loaded.transcriptHasOlder,
-          transcriptBefore: loaded.transcriptBefore,
-        } : {}),
-      };
-      applyHistoryDelta(
-        mode,
-        next,
-        latest,
-        mode === "poll" ? next.timeline.length - latest.timeline.length : 0,
-        mode === "poll" ? next.transcript.length - latest.transcript.length : 0,
-      );
-      setError(null);
-    } catch (e) {
-      if (controller.signal.aborted || generation !== loadGeneration.current || requestOwner !== ownerIDRef.current) {
-        return;
-      }
-      setError((e as Error).message);
-    }
-  }
+  const {
+    abortRef,
+    timelineViewport,
+    resetTimelineTail,
+    loadAll,
+    loadOlderConversation,
+    loadOlderTimeline,
+    handleTimelineSortDirection,
+    handleTimelineAtTail,
+    jumpToTimelineLatest,
+    scrollTimelineToTop,
+    scrollTimelineToBottom,
+  } = useRuntimeOwnerHistory({
+    ownerID,
+    isSession,
+    projectId,
+    activeView,
+    ownerAdapter,
+    autoFollowRef,
+    historyRef,
+    commitHistory,
+    setOwner,
+    setFinishReadiness,
+    setTitleDraft,
+    setError,
+    setActionError,
+  });
 
-  // Applies one merged history page. Live-tail deltas never move an operator
-  // who is reading older history: at the tail the container follows the new
-  // rows (chronological sort shifts by the appended height; the newest-first
-  // top stays put and the new rows render at the tail), and away from the
-  // tail an unseen-event count accumulates instead of forcing scroll.
-  function applyHistoryDelta(
-    mode: "initial" | "poll",
-    next: OwnerHistory,
-    latest: OwnerHistory,
-    timelineDelta: number,
-    transcriptDelta: number,
-  ) {
-    if (mode === "initial") {
-      commitHistory(next);
-      return;
-    }
-    if (transcriptDelta > 0 && activeViewRef.current === "conversation" && !autoFollowRef.current) {
-      next = { ...next, transcriptUnseen: latest.transcriptUnseen + transcriptDelta };
-    }
-    if (timelineDelta > 0 && activeViewRef.current === "timeline") {
-      if (timelineAtTailRef.current) {
-        const container = timelineViewport.current;
-        // Newest-first tail: the appended rows render at the top and the
-        // operator stays at the tail without any scroll movement.
-        if (container && timelineSortRef.current === "chronological") {
-          // Render the appended rows first, then shift the reading position
-          // by the appended height so the previously visible content stays in
-          // place and the new tail rows appear.
-          flushSync(() => commitHistory(next));
-          container.scrollTop += timelineDelta * TIMELINE_ROW_ESTIMATE;
-          return;
-        }
-        commitHistory(next);
-        return;
-      }
-      next = { ...next, timelineUnseen: latest.timelineUnseen + timelineDelta };
-    }
-    commitHistory(next);
-  }
-
-  // loadOlderConversation prepends one backward Transcript page. The virtual
-  // window measures the new rows and compensates scrollTop, so the reading
-  // position survives without a manual estimate-based shift.
-  async function loadOlderConversation() {
-    const current = historyRef.current;
-    if (current.loadingOlder !== null || current.transcript.length === 0 || !current.transcriptHasOlder) return;
-    const before = current.transcriptBefore ?? current.transcript[0]!.seq;
-    commitHistory({ ...current, loadingOlder: "transcript" });
-    try {
-      const page = await ownerAdapter.loadOlderTranscript(before);
-      const latest = historyRef.current;
-      const merged = prependTranscriptEntries(latest.transcript, page.entries ?? []);
-      commitHistory({ ...latest, transcript: merged, transcriptHasOlder: page.has_older === true, transcriptBefore: page.before, loadingOlder: null });
-    } catch (e) {
-      commitHistory({ ...historyRef.current, loadingOlder: null });
-      setActionError((e as Error).message);
-    }
-  }
-
-  // loadOlderTimeline prepends one backward Timeline page. In the default
-  // newest-first sort the older rows land at the bottom of the list, so the
-  // visible anchor needs no adjustment; in chronological sort the page lands
-  // above the operator and the container shifts by the prepended height.
-  async function loadOlderTimeline() {
-    const current = historyRef.current;
-    if (current.loadingOlder !== null || current.timeline.length === 0 || !current.timelineHasOlder) return;
-    const before = current.timeline[0]!.seq;
-    const anchor = timelineViewport.current?.scrollTop ?? 0;
-    commitHistory({ ...current, loadingOlder: "timeline" });
-    try {
-      const page = await ownerAdapter.loadOlderTimeline(before);
-      const latest = historyRef.current;
-      const merged = prependTimelineItems(latest.timeline, page.items ?? []);
-      const prepended = merged.length - latest.timeline.length;
-      const next: OwnerHistory = { ...latest, timeline: merged, timelineHasOlder: page.has_older === true, loadingOlder: null };
-      flushSync(() => commitHistory(next));
-      const viewport = timelineViewport.current;
-      if (viewport && prepended > 0 && timelineSortRef.current === "chronological") {
-        viewport.scrollTop = anchor + prepended * TIMELINE_ROW_ESTIMATE;
-      }
-    } catch (e) {
-      commitHistory({ ...historyRef.current, loadingOlder: null });
-      setActionError((e as Error).message);
-    }
-  }
-
-  // Timeline sort direction, mirrored so the poll and paging closures can read
-  // the latest value without stale captures.
-  const timelineSortRef = useRef<"chronological" | "newest_first">("newest_first");
-  function handleTimelineSortDirection(direction: "chronological" | "newest_first") {
-    timelineSortRef.current = direction;
-  }
-
-  // Timeline tail state: at the tail (newest-first: the top; chronological:
-  // the bottom) live deltas shift the container; away from the tail they
-  // accumulate an unseen count instead.
-  function handleTimelineAtTail(atTail: boolean) {
-    timelineAtTailRef.current = atTail;
-    if (atTail && historyRef.current.timelineUnseen > 0) {
-      commitHistory({ ...historyRef.current, timelineUnseen: 0 });
-    }
-  }
-
-  function jumpToTimelineLatest() {
-    const container = timelineViewport.current;
-    if (container) {
-      // The tail is the newest end of the list: the top in the default
-      // newest-first sort, the bottom in chronological sort.
-      const behavior = prefersReducedMotion() ? "auto" : "smooth";
-      if (timelineSortRef.current === "chronological") {
-        container.scrollTo({ top: container.scrollHeight, behavior });
-      } else {
-        container.scrollTo({ top: 0, behavior });
-      }
-    }
-    if (historyRef.current.timelineUnseen > 0) {
-      commitHistory({ ...historyRef.current, timelineUnseen: 0 });
-    }
-  }
-
-  function scrollTimelineToTop() {
-    timelineViewport.current?.scrollTo?.({
-      top: 0,
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-    });
-  }
-
-  function scrollTimelineToBottom() {
-    const container = timelineViewport.current;
-    container?.scrollTo?.({
-      top: container.scrollHeight,
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-    });
-  }
-
-  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
+  /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
     // Initial load on mount/owner change. A route change aborts old requests
     // and atomically replaces owner-local history with an empty record before
     // any merge, so Timeline and Transcript content from the prior owner can
     // never appear on the new route (#202).
     setTurnSelectionSeeded(false);
-    autoFollowRef.current = true;
-    setAutoFollow(true);
-    conversationScrollTop.current = 0;
-    timelineAtTailRef.current = true;
+    resetConversationFollow();
+    resetTimelineTail();
     commitHistory(emptyHistory());
     loadAll("initial");
     Promise.all([
@@ -320,80 +135,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       cancelAutoFollowSettlement();
     };
   }, [isSession, ownerID, projectId]);
-  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
-
-  // Seed the composer once from the preceding Runtime Turn Selection. Later
-  // submits retain the operator's choice instead of resetting.
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    if (turnSelectionSeeded || !owner) return;
-    const preceding = owner.runtimeControls?.turn_selection;
-    if (!preceding) {
-      setTurnSelectionSeeded(true);
-      return;
-    }
-    setContinuationModelProvider(preceding.model_provider_id?.trim() ?? "");
-    setContinuationModelOverride(preceding.model?.trim() ?? "");
-    setContinuationReasoningEffort(displayReasoningEffort(preceding.reasoning_effort));
-    setTurnSelectionSeeded(true);
-  }, [owner, turnSelectionSeeded]);
-  /* eslint-enable react-hooks/set-state-in-effect */
-
-  /* eslint-disable react-hooks/exhaustive-deps */
-  useEffect(() => {
-    if (!owner || activeView !== "conversation") return;
-    const container = conversationViewport.current;
-    if (!container) return;
-
-    function updateAutoFollow() {
-      const previousScrollTop = conversationScrollTop.current;
-      const nextScrollTop = container!.scrollTop;
-      conversationScrollTop.current = nextScrollTop;
-      // A small upward movement is an explicit reading action even when it
-      // remains inside the near-bottom threshold. Disable follow immediately
-      // so the next live Transcript delta cannot pull a page-long message back
-      // to the tail.
-      const movingAwayFromTail = nextScrollTop < previousScrollTop;
-      const pinned = !movingAwayFromTail && isNearScrollBottom(container!);
-      if (programmaticAutoFollow.current) {
-        if (!pinned && autoFollowRef.current) {
-          container!.scrollTo?.({ top: container!.scrollHeight, behavior: "auto" });
-          conversationScrollTop.current = container!.scrollTop;
-        }
-        return;
-      }
-      autoFollowRef.current = pinned;
-      setAutoFollow((current) => current === pinned ? current : pinned);
-      // Returning to the tail dismisses any accumulated unseen count.
-      if (pinned && historyRef.current.transcriptUnseen > 0) {
-        commitHistory({ ...historyRef.current, transcriptUnseen: 0 });
-      }
-    }
-
-    const acceptOperatorScroll = (event: Event) => {
-      programmaticAutoFollow.current = false;
-      // Browser wheel scrolling can update layout before the following scroll
-      // event reaches this listener. Record the upward reading intent here so
-      // an in-flight live Transcript update cannot win that race and repin.
-      if (event instanceof WheelEvent && event.deltaY < 0) {
-        autoFollowRef.current = false;
-        setAutoFollow(false);
-      }
-    };
-
-    container.addEventListener("scroll", updateAutoFollow, { passive: true });
-    container.addEventListener("wheel", acceptOperatorScroll, { passive: true });
-    container.addEventListener("touchstart", acceptOperatorScroll, { passive: true });
-    container.addEventListener("pointerdown", acceptOperatorScroll, { passive: true });
-    container.addEventListener("keydown", acceptOperatorScroll);
-    return () => {
-      container.removeEventListener("scroll", updateAutoFollow);
-      container.removeEventListener("wheel", acceptOperatorScroll);
-      container.removeEventListener("touchstart", acceptOperatorScroll);
-      container.removeEventListener("pointerdown", acceptOperatorScroll);
-      container.removeEventListener("keydown", acceptOperatorScroll);
-    };
-  }, [owner?.id, activeView]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
   // Poll events while the runtime owner is active and the tab is visible.
@@ -407,267 +148,41 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   }, [owner?.status, isVisible]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
-  useEffect(() => {
-    if (activeView === "conversation" && autoFollowRef.current) {
-      const container = conversationViewport.current;
-      if (container) settleConversationBottom(container);
-    }
-    // autoFollow is a dependency because enabling follow re-renders with the
-    // end-anchored virtual window; the synchronous settle in scrollToLatest
-    // ran on the previous layout and must be repeated on the taller one.
-  }, [activeView, autoFollow, history.transcript.length, settleConversationBottom]);
 
-  // Virtualized rendering window for the conversation transcript (#202): DOM
-  // size stays bounded while older history pages accumulate in state. The
-  // container element is stored in state so the hook attaches its scroll
-  // listener once the workspace renders after the owner loads.
-  const [transcriptViewport, setTranscriptViewport] = useState<HTMLDivElement | null>(null);
-  // The element wrapping exactly the rendered transcript rows; the virtual
-  // window measures it so the rows always cover the viewport (#blank band).
-  const [transcriptRowsElement, setTranscriptRowsElement] = useState<HTMLDivElement | null>(null);
-  // The window slices display rows (tool results already paired with their
-  // calls), so row keys and measured heights match the rendered DOM 1:1.
-  const transcriptDisplayRows = buildTranscriptRows(history.transcript);
-  const transcriptWindow = useVirtualWindow({
-    itemCount: transcriptDisplayRows.length,
-    viewport: transcriptViewport,
-    estimateHeight: TRANSCRIPT_ROW_ESTIMATE,
-    anchorEnd: autoFollow,
-    windowElement: transcriptRowsElement,
-    rowKey: (index) => transcriptDisplayRows[index]!.entry.id,
-  });
-  const bindTranscriptViewport = useCallback((node: HTMLDivElement | null) => {
-    conversationViewport.current = node;
-    if (node && !autoFollowRef.current) {
-      node.scrollTop = conversationScrollTop.current;
-    }
-    setTranscriptViewport(node);
-  }, []);
-  const bindTranscriptRows = useCallback((node: HTMLDivElement | null) => {
-    setTranscriptRowsElement(node);
-  }, []);
-
-  const currentProfileRuntimeProvider = owner?.runtimeConfiguration?.runtime_plugin_id ?? profiles.find((profile) => profile.id === owner?.runtimeProfileID)?.provider;
-  const currentRuntimeProvider =
-    owner?.runtimeControls?.runtime_provider ??
-    owner?.activeContinuation?.runtimeProvider ??
-    owner?.latestContinuation?.runtimeProvider ??
-    currentProfileRuntimeProvider;
-  const runtimePlugin = runtimePlugins.find((plugin) => plugin.id === currentRuntimeProvider);
-  const continuationModelProviders = selectableModelProviders(
-    modelProviders,
-    runtimePlugin,
+  const {
+    stop,
+    finishTask,
+    deleteTask,
+    resumeNative,
+    queueSteer,
+    sendConversationMessage,
+    handleComposerKeyDown,
+    respondToPermission,
+    saveSessionTitle,
+    changeSessionLifecycle,
+  } = useRuntimeOwnerActions({
+    owner,
+    ownerAdapter,
+    loadAll,
+    setActionError,
+    navigate,
+    projectId,
+    continuationModelPayload,
+    steering,
+    setSteering,
+    sending,
+    setSending,
     continuationModelProvider,
-  );
-  const selectedContinuationModelProvider =
-    continuationModelProviders.find((provider) => provider.id === continuationModelProvider) ??
-    modelProviders.find((provider) => provider.id === continuationModelProvider);
-  // Compute inline instead of useMemo: the compiler cannot preserve memoization
-  // over selectedContinuationModelProvider (it may be mutated later), and the
-  // derivation is a cheap filter.
-  const continuationModelOptions = modelsForProvider(selectedContinuationModelProvider);
-
-  // Keep continuationModelOverride valid for the selected provider by adjusting
-  // state during render (not in an effect), comparing against the previous
-  // provider/option set so we only reset when the selection actually changes.
-  const overrideKey = `${continuationModelProvider}:${continuationModelOptions.join(",")}`;
-  const [lastOverrideKey, setLastOverrideKey] = useState("");
-  if (lastOverrideKey !== overrideKey) {
-    setLastOverrideKey(overrideKey);
-    if (!continuationModelProvider) {
-      if (continuationModelOverride) setContinuationModelOverride("");
-    } else if (!continuationModelOverride || !continuationModelOptions.includes(continuationModelOverride)) {
-      setContinuationModelOverride(continuationModelOptions[0] ?? "");
-    }
-  }
-
-  function scrollToLatest() {
-    const container = conversationViewport.current;
-    if (!container) return;
-    autoFollowRef.current = true;
-    setAutoFollow(true);
-    settleConversationBottom(container);
-    if (historyRef.current.transcriptUnseen > 0) {
-      commitHistory({ ...historyRef.current, transcriptUnseen: 0 });
-    }
-  }
-
-  function scrollToTop() {
-    const container = conversationViewport.current;
-    if (!container) return;
-    autoFollowRef.current = false;
-    setAutoFollow(false);
-    cancelAutoFollowSettlement();
-    conversationScrollTop.current = 0;
-    container.scrollTo({ top: 0, behavior: prefersReducedMotion() ? "auto" : "smooth" });
-  }
-
-  async function stop() {
-    if (!owner) return;
-    try {
-      await ownerAdapter.stop();
-      setActionError(null);
-      loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
-  }
-
-  async function finishTask() {
-    if (!owner?.capabilities.finish) return;
-    try {
-      await ownerAdapter.finish();
-      setActionError(null);
-      loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
-  }
-
-  async function deleteTask() {
-    if (!owner?.capabilities.delete) return;
-    try {
-      await ownerAdapter.remove();
-      navigate(owner.kind === "session" ? "/sessions" : `/projects/${projectId}/tasks`);
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
-  }
-
-  async function resumeNative() {
-    if (!owner?.capabilities.resumeWithoutMessage) return;
-    try {
-      await ownerAdapter.resume(continuationModelPayload());
-      setActionError(null);
-      loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
-  }
-
-  async function queueSteer() {
-    const directive = steering.trim();
-    if (!directive || sending || !owner) return;
-    if (conversationQueueUnavailable(owner, continuationModelProvider.trim())) {
-      setActionError("Queue cannot switch a Session model provider; use Switch provider and resume.");
-      return;
-    }
-    setSending(true);
-    try {
-      await ownerAdapter.queueSteer(directive, continuationModelPayload(), owner.capabilities.attachments ? attachments : []);
-      if (owner.capabilities.attachments) {
-        setAttachments([]);
-        if (attachmentInput.current) attachmentInput.current.value = "";
-      }
-      setSteering("");
-      setActionError(null);
-      await loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    } finally {
-      setSending(false);
-    }
-  }
-
-  async function sendConversationMessage() {
-    const message = steering.trim();
-    if (!message || sending || !owner) return;
-    setSending(true);
-    const requestID = newSteerRequestID();
-    try {
-      const modelPayload = continuationModelPayload();
-      const action = resolveConversationAction(owner, {
-        running: ACTIVE_OWNER_STATUSES.has(owner.status),
-        nativeSteerAvailable: owner.runtimeControls?.native_steer_available ?? false,
-        interruptSteerAvailable: owner.runtimeControls?.interrupt_steer_available ?? false,
-        queueSteerAvailable: owner.runtimeControls?.queue_steer_available ?? true,
-        resumeAvailable: owner.runtimeControls?.resume_available ?? !ACTIVE_OWNER_STATUSES.has(owner.status),
-        nativeResumeAvailable: owner.runtimeControls?.native_resume_available ?? false,
-        precedingProviderID: owner.runtimeControls?.turn_selection?.model_provider_id?.trim() ?? "",
-        selectedProviderID: continuationModelProvider.trim(),
-        runtimeProvider: currentRuntimeProvider ?? "",
-        nativeSteerMode: owner.runtimeControls?.native_steer_mode,
-        forceReplace: forceReplaceNext,
-      }, requestID);
-      await action.run(message, modelPayload, ownerAdapter, owner.capabilities.attachments ? attachments : []);
-      setSteering("");
-      setForceReplaceNext(false);
-      if (owner.capabilities.attachments) {
-        setAttachments([]);
-        if (attachmentInput.current) attachmentInput.current.value = "";
-      }
-      setActionError(null);
-      await loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    } finally {
-      setSending(false);
-    }
-  }
-
-  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
-    event.preventDefault();
-    void sendConversationMessage();
-  }
-
-  async function respondToPermission(permissionRequestID: string, decision: "allow" | "deny") {
-    setPermissionBusy(permissionRequestID);
-    try {
-      await ownerAdapter.respondPermission(permissionRequestID, decision);
-      setActionError(null);
-      loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    } finally {
-      setPermissionBusy("");
-    }
-  }
-
-  async function saveSessionTitle() {
-    if (owner?.kind !== "session" || !titleDraft.trim()) return;
-    try {
-      await ownerAdapter.rename(titleDraft.trim());
-      setEditingTitle(false);
-      setActionError(null);
-      await loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
-  }
-
-  async function changeSessionLifecycle(action: "archive" | "restore") {
-    if (owner?.kind !== "session") return;
-    try {
-      await ownerAdapter.changeLifecycle(action);
-      setActionError(null);
-      await loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
-  }
-
-  function continuationModelPayload() {
-    const providerID = continuationModelProvider.trim();
-    const model = continuationModelOverride.trim();
-    const effort = displayReasoningEffort(continuationReasoningEffort);
-    // Every Runtime Turn sends the complete resolved selection. `model` is the
-    // canonical field; model_override is kept as a compatibility alias.
-    const payload: {
-      model_provider_id?: string;
-      model?: string;
-      model_override?: string;
-      reasoning_effort: string;
-    } = {
-      reasoning_effort: effort,
-    };
-    if (providerID) payload.model_provider_id = providerID;
-    if (model) {
-      payload.model = model;
-      payload.model_override = model;
-    }
-    return payload;
-  }
+    attachments,
+    setAttachments,
+    attachmentInput,
+    forceReplaceNext,
+    setForceReplaceNext,
+    currentRuntimeProvider,
+    setPermissionBusy,
+    titleDraft,
+    setEditingTitle,
+  });
 
   function selectView(view: "conversation" | "timeline" | "blackboard") {
     setActiveView(view);
@@ -690,13 +205,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     setSearchParams(next, { replace: true });
   }
 
-  function selectContinuationModelProvider(providerID: string) {
-    setContinuationModelProvider(providerID);
-    const provider = continuationModelProviders.find((item) => item.id === providerID) ??
-      modelProviders.find((item) => item.id === providerID);
-    setContinuationModelOverride(modelsForProvider(provider)[0] ?? "");
-  }
-
   if (error) {
     return (
       <RuntimeOwnerShell projectChrome={!isSession}>
@@ -712,77 +220,32 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     );
   }
   const currentContinuation = owner.activeContinuation ?? owner.latestContinuation;
-  const controls = owner.runtimeControls;
-  const nativeResumeAvailable = controls?.native_resume_available ?? Boolean(currentContinuation?.nativeSessionID);
-  const resumeAvailable = !ACTIVE_OWNER_STATUSES.has(owner.status) || controls?.resume_available === true;
-  const queueSteerAvailable = controls?.queue_steer_available ?? true;
-  const interruptSteerAvailable = controls?.interrupt_steer_available ?? nativeResumeAvailable;
-  const nativeSteerAvailable = controls?.native_steer_available ?? false;
-  const nativeSteerMode = controls?.native_steer_mode;
-  const providerPermissions = controls?.provider_permissions ?? [];
-  const running = ACTIVE_OWNER_STATUSES.has(owner.status);
-  // Finish gate trusts server RuntimeControls only (live+idle already applied).
-  const finishAvailable = controls?.finish_available === true;
-  const sendMode: ConversationSendMode = owner.kind === "session" && owner.lifecycle !== "open"
-    ? "unavailable"
-    : resolveConversationSendMode({
-      running,
-      nativeSteerAvailable,
-      interruptSteerAvailable,
-      queueSteerAvailable,
-      resumeAvailable,
-    });
-  const precedingProviderID = controls?.turn_selection?.model_provider_id?.trim() ?? "";
-  const selectedProviderID = continuationModelProvider.trim();
-  // Pi native cross-provider only with explicit projected set membership.
-  // Codex/Claude and legacy Pi (missing ids) restart; empty preceding is a switch.
-  const piNativeCrossProvider = owner.kind === "task" && canPiNativeCrossProvider({
-    runtimeProvider: currentRuntimeProvider ?? "",
-    nativeSteerAvailable: nativeSteerAvailable || interruptSteerAvailable,
-    projectedModelProviderIDs: controls?.projected_model_provider_ids,
-    targetProviderID: selectedProviderID,
+  const {
+    controls,
+    nativeResumeAvailable,
+    resumeAvailable,
+    providerPermissions,
+    running,
+    finishAvailable,
+    sendMode,
+    providerSwitchRequested,
+    providerSwitchAvailable,
+    queueActionAvailable,
+    sendActionLabel,
+    replacementRecoveryAvailable,
+  } = deriveConversationControls({
+    owner,
+    currentContinuation,
+    currentRuntimeProvider,
+    continuationModelProvider,
+    continuationModelOverride,
+    continuationReasoningEffort,
+    forceReplaceNext,
   });
-  const providerSwitchRequested =
-    running &&
-    selectedProviderID !== "" &&
-    selectedProviderID !== precedingProviderID &&
-    !piNativeCrossProvider;
-  const providerSwitchAvailable = owner.kind === "session" || queueSteerAvailable;
-  const queueActionAvailable = queueSteerAvailable;
-  const currentTurnModel = controls?.turn_selection?.model?.trim() ?? "";
-  const currentTurnEffort = controls?.turn_selection?.reasoning_effort?.trim() ?? "";
-  const selectedTurnModel = continuationModelOverride.trim();
-  const selectedTurnEffort = continuationReasoningEffort.trim();
-  const turnSelectionChanged = !providerSwitchRequested && currentRuntimeProvider === "codex" && (
-    (selectedTurnModel !== "" && selectedTurnModel !== currentTurnModel) ||
-    (selectedTurnEffort !== "" && selectedTurnEffort !== currentTurnEffort)
-  );
-  const sendActionLabel = forceReplaceNext
-    ? "Interrupt and replace"
-    : providerSwitchRequested
-      ? providerSwitchAvailable ? "Switch provider and resume" : "Provider switch unavailable"
-      : conversationSendLabel(sendMode, nativeSteerMode, turnSelectionChanged);
-  const steerActionRequired = controls?.native_steer_state === "action_required";
-  const replacementRecoveryAvailable = steerActionRequired && interruptSteerAvailable && [
-    "active_turn_not_steerable", "target_turn_changed", "target_turn_completed",
-  ].includes(controls?.native_steer_error_code ?? "");
   const focusMode = searchParams.get("focus") === "1";
   const runtimeDisplayName = profiles.find((profile) => profile.id === owner.runtimeProfileID)?.name
     ?? currentContinuation?.runtimeProvider
     ?? "Runtime";
-  const continuationTitle = currentContinuation
-    ? [
-        `continuation #${currentContinuation.number}`,
-        `runtime: ${currentContinuation.runtimeProvider}`,
-        `runner: ${owner.runner}`,
-        `status: ${currentContinuation.status}`,
-        (controls?.native_session_captured || currentContinuation.nativeSessionID) ? "native session: captured" : "",
-        controls?.same_runtime_provider_only ? "same runtime only" : "",
-        owner.activeContinuation && owner.latestContinuation && owner.latestContinuation.id !== owner.activeContinuation.id
-          ? `prior terminal: #${owner.latestContinuation.number} (${owner.latestContinuation.status})`
-          : "",
-      ].filter(Boolean).join(" · ")
-    : "";
 
   return (
     <RuntimeOwnerShell
@@ -793,167 +256,40 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       contentClassName={focusMode ? undefined : "mx-auto max-w-6xl px-0 pb-0 lg:px-0 lg:pb-0"}
       bodyClassName={focusMode ? "flex h-full min-h-0 flex-col" : "flex min-h-[32rem] flex-1 flex-col pb-0 lg:min-h-0"}
     >
-      <header data-testid="task-session-header" className="shrink-0 rounded-t-xl border border-b-0 border-border bg-card px-2 py-2 sm:px-3">
-        <div className="flex min-w-0 items-start gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {owner.capabilities.rename && editingTitle ? (
-                <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <Input
-                    aria-label="Session title"
-                    value={titleDraft}
-                    onChange={(event) => setTitleDraft(event.target.value)}
-                    className="h-8 min-w-0"
-                    autoFocus
-                  />
-                  <Button size="sm" onClick={() => void saveSessionTitle()} disabled={!titleDraft.trim()}>Save</Button>
-                  <Button size="sm" variant="ghost" onClick={() => setEditingTitle(false)}>Cancel</Button>
-                </div>
-              ) : (
-                <h1 className="min-w-0 truncate text-base font-semibold tracking-tight" title={owner.title}>{owner.title}</h1>
-              )}
-              <StatusBadge status={owner.status} />
-              <RuntimeActivityBadge activity={owner.runtimeActivity} />
-              <BlackboardConclusionBadge owner={owner} />
-            </div>
-            {currentContinuation && (
-              <div
-                data-testid="continuation-summary"
-                title={continuationTitle}
-                className="mt-1 hidden min-w-0 items-center gap-1 overflow-hidden whitespace-nowrap font-mono text-[11px] text-muted-foreground sm:flex"
-              >
-                <span>continuation #{currentContinuation.number}</span>
-                <span aria-hidden="true">·</span>
-                <span>runtime {currentContinuation.runtimeProvider}</span>
-                <span aria-hidden="true">·</span>
-                <span>runner {owner.runner}</span>
-                <span aria-hidden="true">·</span>
-                <span>Updated {formatRelativeTime(owner.updatedAt)}</span>
-              </div>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {owner.kind === "task" && projectId && owner.challengeHistoryAvailable && (
-              <Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/tasks/${owner.id}/challenges`)} aria-label="Challenge history" title="Open Challenge history">
-                <Wrench className="h-4 w-4" /> <span className="hidden sm:inline">Challenge history</span>
-              </Button>
-            )}
-            {owner.capabilities.rename && !editingTitle && (
-              <Button size="icon" variant="outline" onClick={() => setEditingTitle(true)} aria-label={`Rename ${owner.title}`} title="Rename Session" className="h-8 w-8">
-                <Pencil className="h-4 w-4" />
-              </Button>
-            )}
-            {owner.capabilities.archive && (
-              <Button size="icon" variant="outline" onClick={() => void changeSessionLifecycle("archive")} aria-label="Archive" title="Archive Session" className="h-8 w-8">
-                <Archive className="h-4 w-4" />
-              </Button>
-            )}
-            {owner.capabilities.restore && (
-              <Button size="icon" variant="outline" onClick={() => void changeSessionLifecycle("restore")} aria-label="Restore" title="Restore Session" className="h-8 w-8">
-                <ArchiveRestore className="h-4 w-4" />
-              </Button>
-            )}
-            {running && finishAvailable && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setConfirmAction("finish")}
-                aria-label="Finish task"
-                title="Finish Task: close Runtime and mark completed"
-                data-testid="finish-task"
-              >
-                <Flag className="h-4 w-4" /> <span className="hidden sm:inline">Finish</span>
-              </Button>
-            )}
-            {owner.capabilities.resumeWithoutMessage && !running && (
-              <Button size="sm" variant="ghost" onClick={resumeNative} disabled={!resumeAvailable} aria-label="Resume" title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
-                <Play className="h-4 w-4" /> <span className="hidden sm:inline">Resume</span>
-              </Button>
-            )}
-            {owner.capabilities.delete && (
-              <Button size="icon" variant="outline" onClick={() => setConfirmAction("delete")} aria-label={`Delete ${owner.kind}`} title={`Delete ${owner.kind === "session" ? "Session" : "Task"}`} className="h-8 w-8 text-destructive hover:text-destructive">
-                <Trash2 className="h-4 w-4" />
-              </Button>
-            )}
-            <Button
-              size="icon"
-              variant="outline"
-              onClick={() => selectFocus(!focusMode)}
-              aria-label={focusMode ? "Exit focus view" : "Enter focus view"}
-              title={focusMode ? "Exit focus view" : "Enter focus view"}
-              className="h-8 w-8"
-            >
-              {focusMode ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-            </Button>
-          </div>
-        </div>
-      </header>
+      <RuntimeOwnerHeader
+        owner={owner}
+        projectId={projectId}
+        currentContinuation={currentContinuation}
+        controls={controls}
+        editingTitle={editingTitle}
+        setEditingTitle={setEditingTitle}
+        titleDraft={titleDraft}
+        setTitleDraft={setTitleDraft}
+        saveSessionTitle={saveSessionTitle}
+        changeSessionLifecycle={changeSessionLifecycle}
+        running={running}
+        finishAvailable={finishAvailable}
+        setConfirmAction={setConfirmAction}
+        resumeNative={resumeNative}
+        resumeAvailable={resumeAvailable}
+        nativeResumeAvailable={nativeResumeAvailable}
+        focusMode={focusMode}
+        selectFocus={selectFocus}
+        navigate={navigate}
+      />
 
-      {owner.kind === "session" && !focusMode && (
-        <div role="note" className="flex shrink-0 items-center gap-2 border-b border-info/20 bg-info/5 px-3 py-2 text-xs text-muted-foreground">
-          <Info className="h-4 w-4 shrink-0 text-info" aria-hidden="true" />
-          <span>Non-Project Mode — no Project Scope is applied, so Runtime execution is not Scope-constrained.</span>
-        </div>
-      )}
+      <RuntimeOwnerNotices owner={owner} focusMode={focusMode} finishReadiness={finishReadiness} />
 
-      {owner.kind === "task" && finishReadiness && !finishReadiness.ready_to_finish && (
-        <section
-          aria-label="Finish Readiness"
-          className="shrink-0 space-y-2 border-b border-warning/30 bg-warning/5 px-3 py-2"
-        >
-          <div className="flex items-center gap-2 text-sm font-medium text-warning">
-            <TriangleAlert className="h-4 w-4" />
-            <span>Finish Readiness blockers</span>
-          </div>
-          <div className="grid gap-2 lg:grid-cols-2">
-            {finishReadiness.blockers.map((blocker) => (
-              <div key={blocker.code} className="rounded-md border border-warning/30 bg-background/70 p-2 text-xs">
-                <p className="font-medium text-foreground">{blocker.message}</p>
-                <p className="font-mono text-muted-foreground">{blocker.code} · {blocker.count}</p>
-                {blocker.links?.map((link) => (
-                  <a key={link} href={link} className="mt-1 inline-block font-medium text-signal hover:underline">
-                    Open {blocker.code}
-                  </a>
-                ))}
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
-      <div className="flex h-10 shrink-0 items-center gap-1 border-x border-border bg-card px-2 sm:px-3">
-        <button
-          type="button"
-          className={tabClass(activeView === "conversation")}
-          aria-pressed={activeView === "conversation"}
-          onClick={() => selectView("conversation")}
-        >
-          Conversation
-        </button>
-        <button
-          type="button"
-          className={tabClass(activeView === "timeline")}
-          aria-pressed={activeView === "timeline"}
-          onClick={() => selectView("timeline")}
-        >
-          Timeline
-        </button>
-        {hasSessionBlackboard && <button
-          type="button"
-          className={tabClass(activeView === "blackboard")}
-          aria-pressed={activeView === "blackboard"}
-          onClick={() => selectView("blackboard")}
-        >
-          Blackboard
-        </button>}
-        <div className="ml-auto">
-          {activeView === "conversation" ? (
-            <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />
-          ) : activeView === "timeline" ? (
-            <TimelineScrollControls onTop={scrollTimelineToTop} onBottom={scrollTimelineToBottom} />
-          ) : null}
-        </div>
-      </div>
+      <RuntimeOwnerViewTabs
+        activeView={activeView}
+        hasSessionBlackboard={hasSessionBlackboard}
+        selectView={selectView}
+        autoFollow={autoFollow}
+        scrollToTop={scrollToTop}
+        scrollToLatest={scrollToLatest}
+        scrollTimelineToTop={scrollTimelineToTop}
+        scrollTimelineToBottom={scrollTimelineToBottom}
+      />
 
       <div
         data-testid="task-workspace"
@@ -1105,869 +441,14 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         />
       </div>
 
-      <ConfirmDialog
-        open={confirmAction === "stop"}
-        // Keep the dialog title short; put the long Task Goal only in the
-        // body so the confirm actions stay on-screen.
-        title={owner ? `Stop ${owner.kind}?` : "Stop?"}
-        description={
-          owner
-            ? `Stopping “${owner.title}” closes its Runtime without deleting its work.`
-            : undefined
-        }
-        confirmLabel="Stop"
-        destructive
-        onConfirm={() => { setConfirmAction(null); void stop(); }}
-        onCancel={() => setConfirmAction(null)}
-      />
-      <ConfirmDialog
-        open={confirmAction === "finish"}
-        title="Finish task?"
-        description={
-          owner
-            ? `This marks “${owner.title}” completed after closing the Runtime.`
-            : "This marks the Task completed after closing the Runtime."
-        }
-        confirmLabel="Finish"
-        onConfirm={() => { setConfirmAction(null); void finishTask(); }}
-        onCancel={() => setConfirmAction(null)}
-      />
-      <ConfirmDialog
-        open={confirmAction === "delete"}
-        title={owner?.kind === "session" ? "Delete archived session?" : "Delete task?"}
-        description={
-          owner?.kind === "session"
-            ? `This removes “${owner.title}” and its Session Workdir and Events.`
-            : owner
-              ? `This removes “${owner.title}” and its Workdir.`
-              : "This removes the Task and its Workdir."
-        }
-        confirmLabel="Delete"
-        destructive
-        onConfirm={() => { setConfirmAction(null); void deleteTask(); }}
-        onCancel={() => setConfirmAction(null)}
+      <RuntimeOwnerConfirmDialogs
+        owner={owner}
+        confirmAction={confirmAction}
+        setConfirmAction={setConfirmAction}
+        stop={stop}
+        finishTask={finishTask}
+        deleteTask={deleteTask}
       />
     </RuntimeOwnerShell>
   );
-}
-
-type RuntimeOwnerShellProps = {
-  projectChrome: boolean;
-  children: ReactNode;
-  hideChrome?: boolean;
-  className?: string;
-  bodyClassName?: string;
-  contentClassName?: string;
-  "data-testid"?: string;
-};
-
-function RuntimeOwnerShell({ projectChrome, children, bodyClassName, contentClassName, ...props }: RuntimeOwnerShellProps) {
-  if (projectChrome) {
-    return <ProjectPageShell bodyClassName={bodyClassName} contentClassName={contentClassName} {...props}>{children}</ProjectPageShell>;
-  }
-  return (
-    <PageContainer
-      data-testid={props["data-testid"]}
-      className={cn("mx-auto flex w-full max-w-6xl min-w-0 flex-col p-0 lg:p-0", props.className)}
-    >
-      <div className={cn("flex min-h-0 min-w-0 w-full flex-1 flex-col", contentClassName, bodyClassName)}>{children}</div>
-    </PageContainer>
-  );
-}
-
-function tabClass(active: boolean) {
-  return [
-    "inline-flex h-full items-center border-b-2 px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-    active ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
-  ].join(" ");
-}
-
-function isNearScrollBottom(container: HTMLElement, threshold = 160) {
-  return container.scrollHeight - (container.scrollTop + container.clientHeight) <= threshold;
-}
-
-function FloatingScrollControls({
-  autoFollow,
-  onTop,
-  onBottom,
-}: {
-  autoFollow: boolean;
-  onTop: () => void;
-  onBottom: () => void;
-}) {
-  const latestLabel = autoFollow
-    ? "Scroll to latest (auto-follow on)"
-    : "Scroll to latest (auto-follow off)";
-
-  return (
-    <div className="flex items-center gap-1">
-      <Button size="sm" variant="outline" className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none" onClick={onTop} aria-label="Scroll to top" title="Top">
-        <ArrowUp className="h-4 w-4" />
-      </Button>
-      <Button
-        size="sm"
-        variant={autoFollow ? "secondary" : "outline"}
-        className="relative h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
-        onClick={onBottom}
-        aria-label={latestLabel}
-        title={latestLabel}
-      >
-        <ArrowDown className="h-4 w-4" />
-        {autoFollow && (
-          <CheckCircle2 className="absolute right-0.5 top-0.5 h-3 w-3 text-signal" aria-hidden="true" />
-        )}
-      </Button>
-    </div>
-  );
-}
-
-function TimelineScrollControls({
-  onTop,
-  onBottom,
-}: {
-  onTop: () => void;
-  onBottom: () => void;
-}) {
-  return (
-    <div className="flex items-center gap-1">
-      <Button
-        size="sm"
-        variant="outline"
-        className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
-        onClick={onTop}
-        aria-label="Scroll Timeline to top"
-        title="Timeline top"
-      >
-        <ArrowUp className="h-4 w-4" />
-      </Button>
-      <Button
-        size="sm"
-        variant="outline"
-        className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
-        onClick={onBottom}
-        aria-label="Scroll Timeline to bottom"
-        title="Timeline bottom"
-      >
-        <ArrowDown className="h-4 w-4" />
-      </Button>
-    </div>
-  );
-}
-
-function ProviderPermissionRequests({
-  permissions,
-  permissionBusy,
-  onRespond,
-}: {
-  permissions: ProviderPermissionRequest[];
-  permissionBusy: string;
-  onRespond: (permissionRequestID: string, decision: "allow" | "deny") => void;
-}) {
-  return (
-    <section className="mt-5 rounded-lg border border-warning/25 bg-warning/5 p-3" aria-label="Provider permission requests">
-      <div className="space-y-2">
-        <div className="flex items-center gap-2 text-xs font-medium text-warning-foreground">
-          <KeyRound className="h-3.5 w-3.5" /> Provider permission
-        </div>
-        {permissions.map((permission) => (
-          <div key={permission.permission_request_id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-warning/20 bg-background/70 px-3 py-2">
-            <div className="min-w-0">
-              <div className="text-sm">Permission request</div>
-              <code className="block max-w-full truncate text-xs text-muted-foreground">{permission.permission_request_id}</code>
-            </div>
-            <div className="flex gap-2">
-              <Button
-                size="sm"
-                onClick={() => onRespond(permission.permission_request_id, "allow")}
-                disabled={permissionBusy !== ""}
-                aria-label={`Allow provider permission ${permission.permission_request_id}`}
-              >
-                <CheckCircle2 className="h-4 w-4" /> Allow
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => onRespond(permission.permission_request_id, "deny")}
-                disabled={permissionBusy !== ""}
-                aria-label={`Deny provider permission ${permission.permission_request_id}`}
-              >
-                <CircleX className="h-4 w-4" /> Deny
-              </Button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function RuntimeOwnerComposer({
-  ownerLabel,
-  value,
-  onChange,
-  onKeyDown,
-  onSend,
-  onQueue,
-  onStop,
-  onFinish,
-  finishAvailable,
-  sending,
-  running,
-  queueAvailable,
-  queueDisabled,
-  providerSwitchRequested,
-  providerSwitchAvailable,
-  sendMode,
-  sendActionLabel,
-  actionError,
-  steerState,
-  steerError,
-  replacementRecoveryAvailable,
-  replacementSelected,
-  onUseReplacement,
-  continuationModelProviders,
-  continuationModelProvider,
-  continuationModelOverride,
-  continuationModelOptions,
-  continuationReasoningEffort,
-  onSelectProvider,
-  onSelectModel,
-  onSelectReasoningEffort,
-  attachments,
-  attachmentInputRef,
-  onAttachmentsChange,
-}: {
-  ownerLabel: "Task" | "Session";
-  value: string;
-  onChange: (value: string) => void;
-  onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
-  onSend: () => void;
-  onQueue: () => void;
-  onStop: () => void;
-  onFinish: () => void;
-  finishAvailable: boolean;
-  sending: boolean;
-  running: boolean;
-  queueAvailable: boolean;
-  queueDisabled: boolean;
-  providerSwitchRequested: boolean;
-  providerSwitchAvailable: boolean;
-  sendMode: ConversationSendMode;
-  sendActionLabel: string;
-  actionError: string | null;
-  steerState?: string;
-  steerError?: string;
-  replacementRecoveryAvailable: boolean;
-  replacementSelected: boolean;
-  onUseReplacement: () => void;
-  continuationModelProviders: ModelProvider[];
-  continuationModelProvider: string;
-  continuationModelOverride: string;
-  continuationModelOptions: string[];
-  continuationReasoningEffort: string;
-  onSelectProvider: (providerID: string) => void;
-  onSelectModel: (model: string) => void;
-  onSelectReasoningEffort: (effort: string) => void;
-  attachments?: File[];
-  attachmentInputRef?: RefObject<HTMLInputElement | null>;
-  onAttachmentsChange?: (files: File[]) => void;
-}) {
-  // The runtime is offline but resumable when the only admitted send mode is
-  // resume: explain the state and its consequence instead of a bare badge.
-  const runtimeOffline = sendMode === "resume";
-  return (
-    <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none lg:px-0">
-      <div className="mx-auto max-w-3xl space-y-2">
-        {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
-        {runtimeOffline && (
-          <div className="flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-[hsl(28_90%_32%)]">
-            <PlugZap className="h-3.5 w-3.5 flex-none" />
-            <span>The Runtime is offline. Sending a message resumes this Session with a new Runtime.</span>
-          </div>
-        )}
-        {steerState === "action_required" && (
-          <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
-            <span>{steerError || "Steering needs operator action."}</span>
-            {replacementRecoveryAvailable && (
-              <Button type="button" size="sm" variant="outline" onClick={onUseReplacement} disabled={replacementSelected}>
-                {replacementSelected ? "Replacement selected" : "Use interrupt and replace"}
-              </Button>
-            )}
-          </div>
-        )}
-        <div className="overflow-hidden rounded-lg border border-input bg-card shadow-sm focus-within:border-ring">
-          <Textarea
-            aria-label={`${ownerLabel} message`}
-            name="task_message"
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder="Focus on admin.example.com next…"
-            title="Enter to send; Shift+Enter for a new line"
-            rows={2}
-            autoComplete="off"
-            className="max-h-40 min-h-[60px] resize-y rounded-none border-0 bg-transparent px-3 py-2.5 shadow-none focus-visible:border-transparent focus-visible:ring-0"
-          />
-          <div className="flex flex-wrap items-center gap-1.5 px-2 py-1.5 md:flex-nowrap">
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 md:flex-nowrap">
-              {onAttachmentsChange && (
-                <label className="inline-flex h-7 cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent px-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                  <Paperclip className="h-3.5 w-3.5" />
-                  <span>{attachments?.length ? `${attachments.length} attached` : "Attach"}</span>
-                  <input
-                    ref={attachmentInputRef}
-                    type="file"
-                    multiple
-                    className="sr-only"
-                    aria-label="Attach files to Session message"
-                    onChange={(event) => onAttachmentsChange(Array.from(event.target.files ?? []))}
-                  />
-                </label>
-              )}
-              {onAttachmentsChange && <span className="mx-1 h-4 w-px bg-border" />}
-              <div className="relative max-w-full sm:max-w-[13rem]">
-                <Select
-                  size="sm"
-                  className="h-7 min-w-0 w-auto max-w-full appearance-none border-0 bg-transparent px-1.5 pr-6 text-xs shadow-none focus-visible:ring-2"
-                  name="continuation_model_provider"
-                  value={continuationModelProvider}
-                  onChange={(event) => onSelectProvider(event.target.value)}
-                  aria-label="Continuation model provider"
-                >
-                  <option value="">Select model provider</option>
-                  {continuationModelProviders.map((provider) => (
-                    <option key={provider.id} value={provider.id}>{provider.name}</option>
-                  ))}
-                </Select>
-                <ChevronsUpDown className="pointer-events-none absolute right-1 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-              </div>
-              <div className="relative max-w-full sm:max-w-[13rem]">
-                <Select
-                  size="sm"
-                  className="h-7 min-w-0 w-auto max-w-full appearance-none border-0 bg-transparent px-1.5 pr-6 text-xs font-medium shadow-none focus-visible:ring-2"
-                  name="continuation_model"
-                  value={continuationModelOverride}
-                  onChange={(event) => onSelectModel(event.target.value)}
-                  aria-label="Continuation model"
-                  disabled={!continuationModelProvider || continuationModelOptions.length === 0}
-                >
-                  {continuationModelOptions.length === 0 ? (
-                    <option value="">Default model</option>
-                  ) : continuationModelOptions.map((model) => (
-                    <option key={model} value={model}>{model}</option>
-                  ))}
-                </Select>
-                <ChevronsUpDown className="pointer-events-none absolute right-1 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-              </div>
-              <div className="relative w-[5.25rem] shrink-0">
-                <Select
-                  size="sm"
-                  className="h-7 w-full appearance-none whitespace-nowrap border-0 bg-transparent px-1.5 pr-6 text-xs shadow-none focus-visible:ring-2"
-                  name="continuation_reasoning_effort"
-                  value={displayReasoningEffort(continuationReasoningEffort)}
-                  onChange={(event) => onSelectReasoningEffort(event.target.value)}
-                  aria-label="Continuation reasoning effort"
-                >
-                  {REASONING_EFFORT_VALUES.map((effort) => (
-                    <option key={effort} value={effort}>{effort}</option>
-                  ))}
-                </Select>
-                <ChevronsUpDown className="pointer-events-none absolute right-1 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-              </div>
-              {!runtimeOffline && (
-                <Badge variant={sendMode === "unavailable" ? "warning" : "outline"} size="sm">
-                  {providerSwitchRequested ? "switch provider" : conversationModeText(sendMode)}
-                </Badge>
-              )}
-              {steerPendingState(steerState) && (
-                <Badge variant="warning" size="sm" data-testid="steer-pending-badge">
-                  steering pending…
-                </Badge>
-              )}
-              {steerState === "failed" && (
-                <Badge variant="destructive" size="sm" data-testid="steer-failed-badge">
-                  steering failed
-                </Badge>
-              )}
-            </div>
-            <div className="ml-auto flex shrink-0 items-center gap-1">
-              {running && queueAvailable && sendMode !== "queue" && (
-                <Button
-                  size="icon-xl"
-                  variant="ghost"
-                  onClick={onQueue}
-                  disabled={!value.trim() || sending || queueDisabled}
-                  aria-label="Queue message"
-                  title={queueDisabled ? "Queue cannot switch a Session model provider" : "Queue message"}
-                >
-                  <ListPlus className="h-4 w-4" />
-                </Button>
-              )}
-              {running && finishAvailable && (
-                <Button
-                  size="icon-xl"
-                  variant="ghost"
-                  onClick={onFinish}
-                  disabled={sending}
-                  aria-label={`Finish ${ownerLabel.toLowerCase()}`}
-                  title="Finish Task: close Runtime and mark completed"
-                  data-testid="finish-task-composer"
-                >
-                  <Flag className="h-4 w-4" />
-                </Button>
-              )}
-              {running && (
-                <Button size="icon-xl" variant="destructive" onClick={onStop} disabled={sending} aria-label={`Stop ${ownerLabel.toLowerCase()}`} title={`Stop ${ownerLabel}`}>
-                  <Square className="h-4 w-4" />
-                </Button>
-              )}
-              <Button
-                data-testid="composer-send"
-                size="icon-xl"
-                onClick={onSend}
-                disabled={!value.trim() || sending || sendMode === "unavailable" || (providerSwitchRequested && !providerSwitchAvailable)}
-                aria-label={sendActionLabel}
-                title={sendActionLabel}
-              >
-                {sending ? <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" /> : <ArrowUp className="h-4 w-4" />}
-              </Button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const variant =
-    status === "running" ? "success" :
-    status === "failed" ? "danger" :
-    status === "paused" || status === "interrupted" ? "warning" : "neutral";
-  const label = status ? statusWord(status) : "Unknown";
-  return <Chip variant={variant} dot className="shrink-0 whitespace-nowrap">{label}</Chip>;
-}
-
-function RuntimeActivityBadge({ activity }: { activity?: RuntimeActivity }) {
-  if (!activity?.liveness) return null;
-  const label =
-    activity.liveness === "live"
-      ? activity.turn_activity === "busy" ? "Runtime busy" : "Runtime idle"
-      : activity.liveness === "offline"
-        ? "Runtime offline"
-        : "Runtime state unknown";
-  const variant =
-    activity.liveness === "live"
-      ? activity.turn_activity === "busy" ? "success" : "info"
-      : activity.liveness === "offline" ? "danger" : "warning";
-  return (
-    <Chip
-      variant={variant}
-      dot
-      data-testid="runtime-activity"
-      title={activity.warning || label}
-      className="shrink-0 whitespace-nowrap"
-    >
-      {label}
-    </Chip>
-  );
-}
-
-function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }) {
-  const { projectId } = useParams();
-  const mode = runtimeOwnerBlackboardMode(owner);
-  if (mode === "disabled") {
-    return (
-      <Chip
-        variant="neutral"
-        dot
-        data-testid="blackboard-conclusion-state"
-        title="Blackboard: Disabled"
-        className="min-w-0 shrink"
-      >
-        <span className="truncate whitespace-nowrap">Blackboard: Disabled</span>
-      </Chip>
-    );
-  }
-  if (owner.blackboardProtocol === "fgs") return <Link className="rounded border px-2 py-1 text-xs" to={owner.kind === "session" ? `/sessions/${owner.id}/blackboard` : `/projects/${projectId}/blackboard`}>Blackboard · FGS</Link>;
-  const state = owner.blackboardConclusion?.state ?? "clean";
-  const sourceTurn = owner.blackboardConclusion?.source_turn_id;
-  const appliedRevision = owner.blackboardConclusion?.applied_revision;
-  const stateLabel = state === "action_required" ? "action required" : state;
-	const modeLabel = mode === "working_graph" ? "Working Graph" : "Interactive";
-	const label = `Blackboard · ${modeLabel} · ${stateLabel}${appliedRevision !== undefined ? ` · applied revision ${appliedRevision}` : ""}`;
-  const details = [label];
-  if (sourceTurn) details.push(`source Turn ${sourceTurn}`);
-  if (appliedRevision !== undefined) details.push(`applied revision ${appliedRevision}`);
-  return (
-    <Chip
-      variant={state === "action_required" ? "danger" : state === "pending" || state === "concluding" ? "warning" : "signal"}
-      dot
-      data-testid="blackboard-conclusion-state"
-      title={details.join(" · ")}
-      className="min-w-0 shrink"
-    >
-      <span className="truncate whitespace-nowrap">{label}</span>
-    </Chip>
-  );
-}
-
-function runtimeOwnerBlackboardMode(owner: RuntimeOwnerView) {
-  return owner.blackboardMode ?? owner.blackboardConclusion?.mode ?? "interactive";
-}
-
-function liveReasoningEntryID(entries: TaskTranscriptEntry[], runtimeBusy: boolean): string | undefined {
-  if (!runtimeBusy || entries.length === 0) return undefined;
-  const maxSeq = Math.max(...entries.map((entry) => entry.seq));
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    if (entry?.kind === "reasoning" && entry.status === "streaming" && entry.seq === maxSeq) return entry.id;
-  }
-  return undefined;
-}
-
-type TranscriptLane = "user" | "runtime" | "system" | "divider";
-
-type TranscriptDisplayRow = {
-  entry: TaskTranscriptEntry;
-  result?: TaskTranscriptEntry;
-  lane: TranscriptLane;
-  laneStart: boolean;
-};
-
-function TranscriptList({
-  rows,
-  rowsRef,
-  endRef,
-  liveReasoningID,
-  runtimeLabel,
-}: {
-  rows: TranscriptDisplayRow[];
-  rowsRef: (node: HTMLDivElement | null) => void;
-  endRef: RefObject<HTMLDivElement | null>;
-  liveReasoningID?: string;
-  runtimeLabel: string;
-}) {
-  return (
-    <div ref={rowsRef} data-testid="transcript-rows">
-      {rows.map((row, index) => {
-        const spacing = index === 0 ? "" : row.lane === "user" && row.laneStart ? "mt-4" : "mt-1";
-        return (
-          <div
-            key={row.entry.id}
-            data-vw-key={row.entry.id}
-            data-testid="transcript-row"
-            className={`${spacing}`}
-          >
-            {row.lane === "divider" ? (
-              <TranscriptRow entry={row.entry} />
-            ) : (
-              <TranscriptTurnGroup
-                lane={row.lane}
-                showMarker={row.laneStart}
-                entry={row.entry}
-                runtimeLabel={runtimeLabel}
-              >
-                <TranscriptRow
-                  entry={row.entry}
-                  pairedResult={row.result}
-                  autoExpandReasoning={row.entry.id === liveReasoningID}
-                />
-              </TranscriptTurnGroup>
-            )}
-          </div>
-        );
-      })}
-      {rows.length === 0 && (
-        <div className="flex flex-col items-center justify-center gap-2 py-12 text-center text-sm text-muted-foreground">
-          <MessageSquare className="size-5 opacity-50" aria-hidden="true" />
-          <p>No transcript yet. Send a message below to start.</p>
-        </div>
-      )}
-      <div ref={endRef} />
-    </div>
-  );
-}
-
-function buildTranscriptRows(entries: TaskTranscriptEntry[]): TranscriptDisplayRow[] {
-  entries = anchorSubagentBlocks(entries);
-  const resultByCallID = new Map<string, TaskTranscriptEntry>();
-  for (const entry of entries) {
-    if (entry.kind === "tool_result" && entry.tool_call_id) resultByCallID.set(entry.tool_call_id, entry);
-  }
-  const absorbedResults = new Set<string>();
-  const rows: TranscriptDisplayRow[] = [];
-  for (const entry of entries) {
-    if (absorbedResults.has(entry.id)) continue;
-    const result = entry.kind === "tool_call" && entry.tool_call_id ? resultByCallID.get(entry.tool_call_id) : undefined;
-    if (result) absorbedResults.add(result.id);
-    const lane = transcriptLane(entry);
-    rows.push({
-      entry,
-      result,
-      lane,
-      laneStart: lane === "divider" || rows.length === 0 || rows[rows.length - 1]!.lane !== lane,
-    });
-  }
-  return rows;
-}
-
-function transcriptLane(entry: TaskTranscriptEntry): TranscriptLane {
-  if (entry.kind === "continuation") return "divider";
-  if (entry.role === "user") return "user";
-  if (entry.role === "system") return "system";
-  return "runtime";
-}
-
-function TranscriptTurnGroup({
-  lane,
-  showMarker,
-  entry,
-  runtimeLabel,
-  children,
-}: {
-  lane: Exclude<TranscriptLane, "divider">;
-  showMarker: boolean;
-  entry: TaskTranscriptEntry;
-  runtimeLabel: string;
-  children: ReactNode;
-}) {
-  const label = lane === "user" ? "You" : lane === "runtime" ? runtimeLabel : "System";
-  return (
-    <div className="relative pl-6">
-      {showMarker && (
-        <span
-          className={cn(
-            "absolute left-0 top-1 flex h-4 w-4 items-center justify-center rounded-full border",
-            lane === "user" && "border-border bg-card",
-            lane === "runtime" && "border-signal/40 bg-signal/10 text-signal",
-            lane === "system" && "border-border bg-muted",
-          )}
-        >
-          {lane === "user" && <User className="h-2.5 w-2.5" aria-hidden="true" />}
-          {lane === "runtime" && <Bot className="h-2.5 w-2.5" aria-hidden="true" />}
-          {lane === "system" && <GitBranch className="h-2.5 w-2.5" aria-hidden="true" />}
-        </span>
-      )}
-      <div className="border-l border-border pl-4">
-        {showMarker && (
-          <div data-testid="transcript-turn-header" className="mb-1 flex items-center gap-2 text-xs">
-            <span className={cn("font-medium", lane === "runtime" && "text-signal")}>{label}</span>
-            {entry.created_at && (
-              <span className="text-muted-foreground" title={formatDateTime(entry.created_at)}>
-                {formatRelativeTime(entry.created_at)}
-              </span>
-            )}
-          </div>
-        )}
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function TranscriptRow({
-  entry,
-  pairedResult,
-  autoExpandReasoning = false,
-}: {
-  entry: TaskTranscriptEntry;
-  pairedResult?: TaskTranscriptEntry;
-  autoExpandReasoning?: boolean;
-}) {
-  if (entry.kind === "continuation") {
-    return (
-      <div className="flex items-center justify-center gap-2 py-1 text-xs text-muted-foreground">
-        <span className="h-px flex-1 bg-border" />
-        <GitBranch className="h-3.5 w-3.5 shrink-0" />
-        <span className="min-w-0 break-words text-center">#{entry.seq} {entry.text}</span>
-        <span className="h-px flex-1 bg-border" />
-      </div>
-    );
-  }
-
-  if (entry.kind === "attachment") {
-    const filename = typeof entry.details?.filename === "string" ? entry.details.filename : "attachment";
-    const size = typeof entry.details?.size === "number" ? entry.details.size : undefined;
-    return <AttachmentFileRow name={filename} size={size} prefix="Attached" />;
-  }
-
-  if (entry.kind === "tool_call" || entry.kind === "tool_result") {
-    return (
-      <ToolTranscriptRow
-        call={entry.kind === "tool_call" ? entry : undefined}
-        result={entry.kind === "tool_call" ? pairedResult : entry}
-      />
-    );
-  }
-
-  if (entry.kind === "subagent_block") {
-    return <SubagentBlockRow entry={entry} />;
-  }
-
-  if (entry.kind === "reasoning" || entry.kind === "runtime_output") {
-    return <CollapsedTranscriptRow entry={entry} autoExpand={autoExpandReasoning && entry.kind === "reasoning"} />;
-  }
-
-  const isUser = entry.role === "user";
-  const isAssistant = entry.role === "assistant" || entry.role === "runtime";
-  return (
-    <div
-      data-testid="transcript-message-bubble"
-      className={cn(
-        "min-w-0 whitespace-pre-wrap break-words text-sm leading-6 text-foreground",
-        isUser && "rounded-lg border border-border bg-card px-3.5 py-3",
-        isAssistant && "border-l-2 border-signal/40 py-1 pl-4",
-        !isUser && !isAssistant && "rounded-md border border-border bg-muted/30 px-3 py-2",
-      )}
-    >
-      {entry.text}
-    </div>
-  );
-}
-
-function ToolTranscriptRow({ call, result }: { call?: TaskTranscriptEntry; result?: TaskTranscriptEntry }) {
-  const [manuallyOpen, setManuallyOpen] = useState(false);
-  const isError = Boolean((result?.details as { is_error?: boolean } | undefined)?.is_error) || result?.status === "failed";
-  const title = call ? collapsedTranscriptTitle(call) : result ? collapsedTranscriptTitle(result) : "Tool";
-  const duration = call?.created_at && result?.created_at ? formatTranscriptDuration(call.created_at, result.created_at) : "";
-  return (
-    <details
-      data-testid="transcript-tool-row"
-      open={manuallyOpen}
-      onToggle={(event) => setManuallyOpen(event.currentTarget.open)}
-      className="group"
-    >
-      <summary className="-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-        {isError ? <CircleX className="h-4 w-4 shrink-0 text-destructive" /> : <CheckCircle2 className="h-4 w-4 shrink-0 text-success" />}
-        <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-muted-foreground transition-colors group-hover:text-foreground group-open:text-foreground">{title}</span>
-        {result?.text && <span className="max-w-[40%] truncate text-xs text-muted-foreground">{collapsedTranscriptTitle(result)}</span>}
-        {isError && <Chip variant="danger" className="h-4 px-1 text-[9px]">failed</Chip>}
-        {duration && <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/70">{duration}</span>}
-      </summary>
-      <div className="ml-[1.625rem] space-y-3 border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
-        {call && <ToolCallDetails entry={call} />}
-        {result && <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-foreground/80">{result.text || "(empty)"}</pre>}
-      </div>
-    </details>
-  );
-}
-
-function SubagentBlockRow({ entry }: { entry: TaskTranscriptEntry }) {
-  const [open, setOpen] = useState(false);
-  const history = typeof entry.details?.history === "string" ? entry.details.history : "";
-  const items = Array.isArray(entry.details?.items) ? (entry.details?.items as TaskTranscriptEntry[]) : [];
-  // The child's items render with the same row machinery as the main thread:
-  // tool calls pair with their results and collapse like every other tool row.
-  const rows = buildTranscriptRows(items);
-  return (
-    <details data-testid="transcript-subagent-row" className="group" onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary className={cn(
-        "-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden",
-      )}>
-        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-        <Bot className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-[13px] transition-colors group-hover:text-foreground group-open:text-foreground">
-          {collapsedTranscriptTitle(entry)}
-        </span>
-      </summary>
-      {history && open && Array.isArray(entry.details?.legacy_items) && buildTranscriptRows(entry.details.legacy_items as TaskTranscriptEntry[]).map((row) => <TranscriptRow key={`legacy-${row.entry.id}`} entry={row.entry} pairedResult={row.result} />)}
-      {history && open && <div className="ml-[1.625rem] border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
-        <SubagentHistory key={history} history={history} renderItems={(items) => buildTranscriptRows(items).map((row) => (
-          <TranscriptRow key={row.entry.id} entry={row.entry} pairedResult={row.result} />
-        ))} />
-      </div>}
-      {!history && rows.length > 0 && (
-        <div className="ml-[1.625rem] space-y-1 border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
-          {rows.map((row) => (
-            <TranscriptRow key={`${entry.id}-${row.entry.id}`} entry={row.entry} pairedResult={row.result} />
-          ))}
-        </div>
-      )}
-    </details>
-  );
-}
-
-function CollapsedTranscriptRow({ entry, autoExpand = false }: { entry: TaskTranscriptEntry; autoExpand?: boolean }) {
-  const [manuallyOpen, setManuallyOpen] = useState(false);
-  const wasAutoExpanded = useRef(false);
-  useEffect(() => {
-    if (wasAutoExpanded.current && !autoExpand) setManuallyOpen(false);
-    wasAutoExpanded.current = autoExpand;
-  }, [autoExpand]);
-  const isReasoning = entry.kind === "reasoning";
-  const Icon = isReasoning ? Brain : Terminal;
-  return (
-    <details
-      data-testid={isReasoning ? "transcript-reasoning-row" : "transcript-tool-row"}
-      open={autoExpand || manuallyOpen}
-      onToggle={(event) => {
-        if (!autoExpand) setManuallyOpen(event.currentTarget.open);
-      }}
-      className="group"
-    >
-      <summary className={cn(
-        "-mx-1 flex min-h-9 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm transition-colors hover:bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden",
-        isReasoning && "italic text-muted-foreground",
-      )}>
-        <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-        <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-[13px] transition-colors group-hover:text-foreground group-open:text-foreground">{collapsedTranscriptTitle(entry)}</span>
-      </summary>
-      <div className="ml-[1.625rem] border-l border-border/60 pb-3 pl-4 pr-2 pt-2">
-        <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs leading-5 text-foreground/80">{collapsedBody(entry)}</pre>
-      </div>
-    </details>
-  );
-}
-
-function formatTranscriptDuration(start: string, end: string): string {
-  const milliseconds = Date.parse(end) - Date.parse(start);
-  if (!Number.isFinite(milliseconds) || milliseconds < 0) return "";
-  if (milliseconds < 1000) return `${milliseconds}ms`;
-  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)}s`;
-}
-
-function ToolCallDetails({ entry }: { entry: TaskTranscriptEntry }) {
-  const fields = toolCallFields(entry);
-  if (fields.length === 0) {
-    return <p className="text-xs text-muted-foreground">No arguments.</p>;
-  }
-  return (
-    <dl className="space-y-1">
-      {fields.map((field) => (
-        <div
-          key={field.label}
-          className={field.block ? "space-y-0.5" : "flex flex-wrap items-baseline gap-x-2 gap-y-0.5"}
-        >
-          <dt className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/80">{field.label}</dt>
-          {field.block ? (
-            <dd>
-              <pre className="overflow-x-auto whitespace-pre-wrap break-words py-0.5 font-mono text-xs leading-5 text-foreground/85">{field.value}</pre>
-            </dd>
-          ) : (
-            <dd className="min-w-0 break-words font-mono text-xs text-foreground/90">{field.value}</dd>
-          )}
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function collapsedBody(entry: TaskTranscriptEntry) {
-  if (entry.kind === "tool_result") return entry.text || "(empty)";
-
-  const parts: string[] = [];
-  if (entry.text) parts.push(entry.text);
-  if (entry.tool_call_id) parts.push(`tool_call_id: ${entry.tool_call_id}`);
-  if (entry.tool_name) parts.push(`tool_name: ${entry.tool_name}`);
-  if (entry.details && Object.keys(entry.details).length > 0) {
-    parts.push(JSON.stringify(entry.details, null, 2));
-  }
-  return parts.join("\n\n") || "(empty)";
-}
-
-function prefersReducedMotion(): boolean {
-  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 }

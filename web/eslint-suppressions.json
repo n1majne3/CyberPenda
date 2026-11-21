@@ -29,6 +29,11 @@
       "count": 3
     }
   },
+  "src/components/LaunchSummaryRail.tsx": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
   "src/components/Logo.tsx": {
     "local/no-comments": {
       "count": 1
@@ -46,7 +51,7 @@
   },
   "src/components/RuntimeLaunchControls.tsx": {
     "local/no-comments": {
-      "count": 13
+      "count": 3
     }
   },
   "src/components/ThemeProvider.tsx": {
@@ -104,6 +109,11 @@
       "count": 1
     }
   },
+  "src/components/useRuntimeLaunchControls.ts": {
+    "local/no-comments": {
+      "count": 7
+    }
+  },
   "src/components/workspaceSidebarActivity.ts": {
     "local/no-comments": {
       "count": 12
@@ -131,12 +141,37 @@
   },
   "src/lib/api.ts": {
     "local/no-comments": {
-      "count": 56
+      "count": 34
+    }
+  },
+  "src/lib/blackboardEntries.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/lib/blackboardHealth.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/lib/blackboardReports.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/lib/blackboardTypes.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/lib/blackboardValidation.ts": {
+    "local/no-comments": {
+      "count": 2
     }
   },
   "src/lib/blackboardv2.ts": {
     "local/no-comments": {
-      "count": 19
+      "count": 5
     }
   },
   "src/lib/ownerEvents.ts": {
@@ -164,6 +199,16 @@
       "count": 1
     }
   },
+  "src/lib/runtimeTypes.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/lib/taskTypes.ts": {
+    "local/no-comments": {
+      "count": 19
+    }
+  },
   "src/lib/useDocumentVisibility.ts": {
     "local/no-comments": {
       "count": 1
@@ -179,14 +224,19 @@
       "count": 8
     }
   },
+  "src/pages/BlackboardHealthPanel.tsx": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
   "src/pages/BlackboardPage.test.tsx": {
     "local/no-comments": {
       "count": 7
     }
   },
-  "src/pages/BlackboardPage.tsx": {
+  "src/pages/BlackboardRecordPanel.tsx": {
     "local/no-comments": {
-      "count": 4
+      "count": 3
     }
   },
   "src/pages/CredentialBindingsPage.test.tsx": {
@@ -196,7 +246,12 @@
   },
   "src/pages/CredentialBindingsPage.tsx": {
     "local/no-comments": {
-      "count": 9
+      "count": 8
+    }
+  },
+  "src/pages/CredentialBindingsTable.tsx": {
+    "local/no-comments": {
+      "count": 1
     }
   },
   "src/pages/EvidencePage.tsx": {
@@ -249,6 +304,21 @@
       "count": 1
     }
   },
+  "src/pages/RuntimeOwnerComposer.tsx": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/pages/RuntimeOwnerHeader.tsx": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/pages/RuntimeOwnerTranscript.tsx": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
   "src/pages/RuntimeProfilesPage.test.tsx": {
     "local/no-comments": {
       "count": 14
@@ -256,7 +326,7 @@
   },
   "src/pages/RuntimeProfilesPage.tsx": {
     "local/no-comments": {
-      "count": 12
+      "count": 8
     }
   },
   "src/pages/SessionDetailPage.test.tsx": {
@@ -291,7 +361,7 @@
   },
   "src/pages/TaskDetailPage.tsx": {
     "local/no-comments": {
-      "count": 87
+      "count": 10
     }
   },
   "src/pages/TaskLaunchPage.test.tsx": {
@@ -309,6 +379,16 @@
       "count": 2
     }
   },
+  "src/pages/runtimeOwnerConversationControls.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/pages/runtimeProfileEditorModel.ts": {
+    "local/no-comments": {
+      "count": 4
+    }
+  },
   "src/pages/runtimeProfileForm.ts": {
     "local/no-comments": {
       "count": 7
@@ -317,6 +397,21 @@
   "src/pages/taskDetailView.ts": {
     "local/no-comments": {
       "count": 5
+    }
+  },
+  "src/pages/useContinuationSelection.ts": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/pages/useConversationFollow.ts": {
+    "local/no-comments": {
+      "count": 22
+    }
+  },
+  "src/pages/useRuntimeOwnerHistory.ts": {
+    "local/no-comments": {
+      "count": 36
     }
   },
   "src/test/mockApi.ts": {

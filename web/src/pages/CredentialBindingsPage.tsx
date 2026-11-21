@@ -1,40 +1,18 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import {
-  KeyRound,
-  LoaderCircle,
-  Pencil,
-  Plus,
-  RefreshCw,
-  Search,
-  Trash2,
-  X,
-} from "lucide-react";
+import { KeyRound, LoaderCircle, Plus, RefreshCw, Search } from "lucide-react";
 import { apiGet, apiPut, apiDelete, type CredentialBinding, type ModelProvider, type RuntimeProfile } from "@/lib/api";
-import { Badge, Button, Chip, Input, Label, Select } from "@/components/ui";
+import { Button } from "@/components/ui";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import {
-  SettingsAlert,
-  SettingsPageHeader,
-  SettingsPanel,
-  SettingsSplitLayout,
-  SettingsPageShell,
-} from "@/components/shared";
-import {
-  SettingsDetailPane,
-  SettingsListColumn,
-} from "@/components/settingsLibrary";
+import { SettingsAlert, SettingsPageHeader, SettingsPanel, SettingsSplitLayout, SettingsPageShell } from "@/components/shared";
+import { SettingsListColumn } from "@/components/settingsLibrary";
 import { cn } from "@/lib/utils";
+import { CredentialBindingsTable } from "./CredentialBindingsTable";
+import { CredentialBindingCreatePane, CredentialBindingEditPane } from "./CredentialBindingForms";
 
 type StatusFilter = "all" | "active" | "disabled";
 type SourceFilter = "all" | "env" | "literal";
 
 const emptyForm = { credential_ref: "", kind: "literal", value: "", destination_env: "" };
-
-const SOURCE_KIND_LABELS: Record<string, string> = {
-  env: "Environment variable",
-  literal: "Literal secret",
-};
 
 export function CredentialBindingsPage() {
   const [bindings, setBindings] = useState<CredentialBinding[]>([]);
@@ -357,254 +335,31 @@ export function CredentialBindingsPage() {
               </Button>
             </SettingsPanel>
           ) : (
-            <div
-              className="overflow-hidden rounded-lg border border-border bg-card shadow-sm lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain"
-              data-testid="credentials-library-list"
-            >
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-                    <th className="px-4 py-2.5 font-medium">Reference</th>
-                    <th className="px-4 py-2.5 font-medium">Source</th>
-                    <th className="px-4 py-2.5 font-medium">Used by</th>
-                    <th className="w-[80px] px-4 py-2.5 font-medium"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {filteredBindings.map((binding) => {
-                    const provider = modelProviderForRef(binding.credential_ref);
-                    const usedByProfiles = profilesUsingRef(binding.credential_ref);
-                    const destinationEnv =
-                      binding.source.destination_env ||
-                      (binding.source.kind === "env" ? binding.source.value : "");
-                    const sourceDisplay = binding.disabled
-                      ? null
-                      : formatSourceDisplay(binding.source.kind, binding.source.value);
-
-                    return (
-                      <tr
-                        key={binding.id}
-                        data-testid={`credential-row-${binding.id}`}
-                        className={cn(
-                          "group transition-colors hover:bg-muted/30",
-                          binding.disabled && "opacity-75",
-                        )}
-                      >
-                        <td className="px-4 py-3">
-                          <div className="truncate font-mono font-medium">{binding.credential_ref}</div>
-                          <div className="mt-1 flex items-center gap-1">
-                            <Chip variant="neutral" className="h-4 text-[9px]">{binding.scope}</Chip>
-                            {binding.disabled && (
-                              <Chip variant="danger" className="h-4 text-[9px]">disabled</Chip>
-                            )}
-                          </div>
-                          {provider && (
-                            <div className="mt-0.5 text-xs text-muted-foreground">
-                              Model provider ·{" "}
-                              <Link
-                                to={`/model-providers?selected=${provider.id}`}
-                                className="text-info hover:underline"
-                              >
-                                {provider.name}
-                              </Link>
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          {binding.disabled ? (
-                            <span className="text-xs text-muted-foreground">Not resolved</span>
-                          ) : (
-                            <>
-                              {destinationEnv && (
-                                <div className="truncate font-mono text-xs" title={destinationEnv}>
-                                  {destinationEnv}
-                                </div>
-                              )}
-                              <div className="text-xs text-muted-foreground">
-                                {binding.source.kind}
-                                {sourceDisplay && (
-                                  <> · <span className="font-mono">{sourceDisplay}</span></>
-                                )}
-                              </div>
-                            </>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-muted-foreground">
-                          {/* Classification first: a binding is either a Model
-                              Provider key (managed on the Model providers page)
-                              or a Global Environment Variable (injected into
-                              every Runtime). Profile references are secondary. */}
-                          {provider ? (
-                            <span className="text-xs font-medium">
-                              Provider key · {provider.name}
-                            </span>
-                          ) : (
-                            <span className="text-xs font-medium">
-                              Global env var
-                            </span>
-                          )}
-                          {usedByProfiles.length > 0 && (
-                            <div className="mt-1 flex flex-wrap gap-1">
-                              {usedByProfiles.slice(0, 3).map((name) => (
-                                <Badge key={name} variant="outline" size="sm" className="max-w-full truncate font-normal">
-                                  {name}
-                                </Badge>
-                              ))}
-                              {usedByProfiles.length > 3 && (
-                                <span className="text-[11px] text-muted-foreground">
-                                  +{usedByProfiles.length - 3} more
-                                </span>
-                              )}
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex items-center justify-end gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
-                            <Button
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={`Edit ${binding.credential_ref} binding`}
-                              onClick={() => startEdit(binding)}
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon-sm"
-                              aria-label={`Delete ${binding.credential_ref} binding`}
-                              onClick={() => setConfirmDelete({ id: binding.id, credentialRef: binding.credential_ref })}
-                              className="text-destructive"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {filteredBindings.length !== bindings.length && (
-                <div className="border-t border-border bg-muted/20 px-4 py-2 text-xs text-muted-foreground">
-                  Showing {filteredBindings.length} of {bindings.length} bindings
-                </div>
-              )}
-            </div>
+            <CredentialBindingsTable
+              filteredBindings={filteredBindings}
+              modelProviderForRef={modelProviderForRef}
+              profilesUsingRef={profilesUsingRef}
+              startEdit={startEdit}
+              setConfirmDelete={setConfirmDelete}
+              bindings={bindings}
+            />
           )}
         </SettingsListColumn>
 
         <SettingsListColumn>
           {editing ? (
-            <SettingsDetailPane
-              data-testid="credential-binding-edit-panel"
-              className="lg:flex-1"
-              header={
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="font-medium">Edit binding</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Change the source for <span className="font-mono">{editing.credential_ref}</span>. References are immutable.
-                    </p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={cancelEdit}
-                    aria-label="Cancel edit form"
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              }
-              footer={
-                <>
-                  <Button onClick={saveEdit} disabled={saving || editSaveDisabled}>
-                    Save changes
-                  </Button>
-                  <Button variant="outline" onClick={cancelEdit} disabled={saving}>
-                    Cancel
-                  </Button>
-                </>
-              }
-              bodyClassName="space-y-3"
-            >
-              <div>
-                <Label htmlFor="credential-ref-edit">Credential reference</Label>
-                <Input
-                  id="credential-ref-edit"
-                  name="credential_ref"
-                  value={editing.credential_ref}
-                  disabled
-                  readOnly
-                  className="font-mono text-xs"
-                />
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  The reference identifies the binding; create a new binding to use a different reference.
-                </p>
-              </div>
-
-              <div>
-                <Label htmlFor="credential-source-kind-edit">Source kind</Label>
-                <Select
-                  id="credential-source-kind-edit"
-                  name="source_kind"
-                  value={form.kind}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      kind: e.target.value,
-                      value: e.target.value === editing.source.kind ? form.value : "",
-                    })
-                  }
-                >
-                  <option value="literal">literal — stored secret (recommended)</option>
-                  <option value="env">env — read from host environment</option>
-                </Select>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {SOURCE_KIND_LABELS[form.kind] ?? form.kind}
-                  {form.kind === "literal" && " · value is stored by the daemon"}
-                  {form.kind === "env" && " · secret stays out of the daemon"}
-                </p>
-              </div>
-
-              <div>
-                <Label htmlFor="credential-source-value-edit">{sourceValueLabel}</Label>
-                <Input
-                  id="credential-source-value-edit"
-                  name="source_value"
-                  type={form.kind === "literal" ? "password" : "text"}
-                  value={form.value}
-                  onChange={(e) => setForm({ ...form, value: e.target.value })}
-                  placeholder={editingLiteralKeep ? "Leave blank to keep the stored secret" : form.kind === "env" ? "OPENAI_API_KEY…" : "sk-…"}
-                  autoComplete="off"
-                  spellCheck={false}
-                  className={form.kind === "literal" ? undefined : "font-mono text-xs"}
-                />
-                {form.kind === "env" && (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    Use the host environment variable name, not the secret.
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <Label htmlFor="credential-destination-env-edit">Runtime environment variable name</Label>
-                <Input
-                  id="credential-destination-env-edit"
-                  name="destination_env"
-                  value={form.destination_env}
-                  onChange={(e) => setForm({ ...form, destination_env: e.target.value })}
-                  placeholder="NSSCTF_AGENT_TOKEN…"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono text-xs"
-                />
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  The runtime env var name. Injected into every Runtime.
-                  {destinationEnvRequired ? " Required." : " Defaults to the host variable name when empty."}
-                </p>
-              </div>
-            </SettingsDetailPane>
+            <CredentialBindingEditPane
+              editing={editing}
+              cancelEdit={cancelEdit}
+              saveEdit={saveEdit}
+              saving={saving}
+              editSaveDisabled={editSaveDisabled}
+              form={form}
+              setForm={setForm}
+              sourceValueLabel={sourceValueLabel}
+              editingLiteralKeep={editingLiteralKeep}
+              destinationEnvRequired={destinationEnvRequired}
+            />
           ) : !creating ? (
             <div
               data-testid="credential-binding-create-panel"
@@ -618,118 +373,15 @@ export function CredentialBindingsPage() {
               <p className="mt-3 text-xs text-muted-foreground">Manage Model Provider API keys on the Model Providers page when a credential is used only for LLM authentication.</p>
             </div>
           ) : (
-            <SettingsDetailPane
-              data-testid="credential-binding-create-panel"
-              className="lg:flex-1"
-              header={
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h3 className="font-medium">New binding</h3>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      Reference an existing secret source without storing the value in the UI.
-                    </p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={cancelCreate}
-                    aria-label="Cancel binding form"
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-              }
-              footer={
-                <>
-                  <Button
-                    onClick={create}
-                    disabled={
-                      saving ||
-                      !form.credential_ref.trim() ||
-                      !form.value.trim() ||
-                      (destinationEnvRequired && !form.destination_env.trim())
-                    }
-                  >
-                    Create binding
-                  </Button>
-                  <Button variant="outline" onClick={cancelCreate} disabled={saving}>
-                    Cancel
-                  </Button>
-                </>
-              }
-              bodyClassName="space-y-3"
-            >
-              <div>
-                <Label htmlFor="credential-ref">Credential reference</Label>
-                <Input
-                  id="credential-ref"
-                  name="credential_ref"
-                  value={form.credential_ref}
-                  onChange={(e) => setForm({ ...form, credential_ref: e.target.value })}
-                  placeholder="codex-api-key…"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="credential-source-kind">Source kind</Label>
-                <Select
-                  id="credential-source-kind"
-                  name="source_kind"
-                  value={form.kind}
-                  onChange={(e) => setForm({ ...form, kind: e.target.value, value: "" })}
-                >
-                  <option value="literal">literal — stored secret (recommended)</option>
-                  <option value="env">env — read from host environment</option>
-                </Select>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  {SOURCE_KIND_LABELS[form.kind] ?? form.kind}
-                  {form.kind === "literal" && " · value is stored by the daemon"}
-                  {form.kind === "env" && " · secret stays out of the daemon"}
-                </p>
-              </div>
-
-              <div>
-                <Label htmlFor="credential-source-value">{sourceValueLabel}</Label>
-                <Input
-                  id="credential-source-value"
-                  name="source_value"
-                  type={form.kind === "literal" ? "password" : "text"}
-                  value={form.value}
-                  onChange={(e) => setForm({ ...form, value: e.target.value })}
-                  placeholder={form.kind === "env" ? "OPENAI_API_KEY…" : "sk-…"}
-                  autoComplete="off"
-                  spellCheck={false}
-                  className={form.kind === "literal" ? undefined : "font-mono text-xs"}
-                />
-                {form.kind === "env" && (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    Use the host environment variable name, not the secret.
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <Label htmlFor="credential-destination-env">Runtime environment variable name</Label>
-                <Input
-                  id="credential-destination-env"
-                  name="destination_env"
-                  value={form.destination_env}
-                  onChange={(e) => setForm({ ...form, destination_env: e.target.value })}
-                  placeholder="NSSCTF_AGENT_TOKEN…"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="font-mono text-xs"
-                />
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  The runtime env var name. Injected into every Runtime.
-                  {destinationEnvRequired
-                    ? " Required."
-                    : " Defaults to the host variable name when empty."}
-                </p>
-              </div>
-            </SettingsDetailPane>
+            <CredentialBindingCreatePane
+              cancelCreate={cancelCreate}
+              create={create}
+              saving={saving}
+              form={form}
+              destinationEnvRequired={destinationEnvRequired}
+              setForm={setForm}
+              sourceValueLabel={sourceValueLabel}
+            />
           )}
         </SettingsListColumn>
       </SettingsSplitLayout>
@@ -748,10 +400,4 @@ export function CredentialBindingsPage() {
       />
     </SettingsPageShell>
   );
-}
-
-function formatSourceDisplay(kind: string, value?: string): string {
-  if (!value) return "";
-  if (kind === "literal") return "••••••••";
-  return value;
 }
