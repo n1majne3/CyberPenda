@@ -32,7 +32,6 @@ describe("ProjectPageShell", () => {
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeInTheDocument();
     expect(screen.getByText("body")).toBeInTheDocument();
 
-    // IA order from read contract §19.1: Overview → Tasks → Blackboard → Findings →
     for (const label of [
       "Overview",
       "Tasks",

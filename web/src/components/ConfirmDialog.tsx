@@ -28,7 +28,6 @@ export function ConfirmDialog({
   useEffect(() => {
     if (!open) return;
     restoreFocusRef.current = document.activeElement;
-    // Land on Cancel so an accidental Enter/Space never confirms a destructive
     cancelRef.current?.focus();
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {

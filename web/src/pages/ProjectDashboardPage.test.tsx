@@ -26,7 +26,6 @@ const project = {
   updated_at: "",
 };
 
-// least one named in-scope asset): not ready because every asset count is 0.
 const dashboard = {
   project_id: "project-1",
   name: "Acme External",

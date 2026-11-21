@@ -36,11 +36,8 @@ export function useVirtualWindow(options: {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [measured, setMeasured] = useState(false);
-  // Measured height per stable row key; only rows rendered at least once have
   const [rowHeights, setRowHeights] = useState<ReadonlyMap<string, number>>(() => new Map());
-  // Extra rows rendered past the estimate-derived end so the rows actually
   const [extension, setExtension] = useState(0);
-  // The DOM reading anchor recorded on the previous pass: a stable row key
   const anchorRef = useRef<{ key: string; contentOffset: number } | null>(null);
   const [contentVersion, setContentVersion] = useState(0);
 
@@ -79,7 +76,6 @@ export function useVirtualWindow(options: {
     return () => observer.disconnect();
   }, [windowElement]);
 
-  // Reset the extension during render while the list is empty so a reloaded
   if (itemCount === 0 && extension !== 0) {
     setExtension(0);
   }
@@ -101,23 +97,16 @@ export function useVirtualWindow(options: {
   const topIndex = indexAt(offsets, scrollTop);
   const derivedStart = Math.max(0, topIndex - OVERSCAN);
   const windowSize = Math.ceil(height / estimateHeight) + OVERSCAN * 2;
-  // past the estimated total, so the derived start can reach the end of the
-  // list; once it does, anchor the window to the final items instead.
   const anchorTail = anchorEnd || derivedStart + windowSize >= itemCount;
   const startIndex = anchorTail ? Math.max(0, itemCount - windowSize) : derivedStart;
   const baseEnd = Math.min(itemCount, indexAt(offsets, scrollTop + height) + 1 + OVERSCAN);
   const endIndex = anchorTail ? itemCount : Math.min(itemCount, baseEnd + extension);
 
-  // rows have committed and real layout exists. The state updates must live
-  // in this effect: the measured layout only exists after commit, exactly
   /* eslint-disable react-hooks/set-state-in-effect */
   useLayoutEffect(() => {
     if (!measured || !viewport || itemCount === 0) return;
     const viewportTop = viewport.getBoundingClientRect().top;
 
-    // 1) Keep the reading position with a DOM anchor: a row near the viewport
-    // top recorded on the previous pass. The difference between its recorded
-    // caused above it (window slide, spacer corrections, measurements), so
     if (!anchorEnd && anchorRef.current && windowElement) {
       const anchorElement = windowElement.querySelector(
         `[data-vw-key="${CSS.escape(anchorRef.current.key)}"]`,
@@ -148,7 +137,6 @@ export function useVirtualWindow(options: {
       setRowHeights(nextHeights);
     }
 
-    // viewport top. Rows keep stable keys, so the next pass can find this
     if (windowElement) {
       for (const child of windowElement.children) {
         const element = child as HTMLElement;

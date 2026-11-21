@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { apiGet } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 
 type FGSNode = {
   key: string; type: "goal" | "step" | "fact"; version: number;
@@ -61,7 +62,7 @@ export function FGSBoard({ scope, id }: { scope: "projects" | "sessions"; id: st
       <label className="text-sm">Filter nodes<input className="ml-2 rounded-md border bg-background px-3 py-2" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Key, text, or state" /></label>
     </div>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-    {delivery?.last_accepted_at && <p className="text-xs text-muted-foreground">Last accepted: <time dateTime={delivery.last_accepted_at}>{new Date(delivery.last_accepted_at).toLocaleString()}</time></p>}
+    {delivery?.last_accepted_at && <p className="text-xs text-muted-foreground">Last accepted: <time dateTime={delivery.last_accepted_at}>{formatDateTime(delivery.last_accepted_at)}</time></p>}
     {!!delivery?.action_required && <div role="alert" className="space-y-2 rounded-lg border border-destructive/40 p-4 text-sm"><p>{delivery.action_required} update(s) need repair or withdrawal.</p>{delivery.receipts?.filter((receipt) => receipt.state === "action_required").map((receipt) => <p key={`${receipt.continuation_id}:${receipt.id}`}><span className="font-mono">{receipt.continuation_id}/{receipt.id}</span>: {receipt.message}</p>)}</div>}
     {graph?.nodes.length === 0 && <p className="rounded-lg border border-dashed p-8 text-sm text-muted-foreground">No accepted updates yet. Goals, Steps, and Facts appear when the Runtime publishes them.</p>}
     {!!graph?.nodes.length && <div className="overflow-auto rounded-lg border bg-card">

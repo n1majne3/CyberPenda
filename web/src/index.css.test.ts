@@ -3,8 +3,6 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// than render a component, we assert directly on the token file so the test
-// guarantees.
 const cssPath = resolve(dirname(fileURLToPath(import.meta.url)), "index.css");
 const css = readFileSync(cssPath, "utf8");
 

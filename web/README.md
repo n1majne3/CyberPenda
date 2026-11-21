@@ -1,73 +1,25 @@
-# React + TypeScript + Vite
+# CyberPenda web dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+The React dashboard for `pentestd`. Vite builds it, and `make build` embeds the build in the daemon.
 
-Currently, two official plugins are available:
+## Commands
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Run these commands in `web/`:
 
-## React Compiler
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Start the Vite dev server on port 5173. It sends `/api` and `/health` to the daemon on `127.0.0.1:8787`. Use `make dev` at the repository root to start both. |
+| `npm run build` | Type-check and build into `dist/`. |
+| `npm run build:demo` | Build the read-only demo (`VITE_DEMO_MODE=true`, `src/demo/`). Vercel uses this build (`vercel.json`). |
+| `npm run lint` | Run ESLint. The `local/no-comments` rule bans code comments; `eslint-suppressions.json` is the ratchet for the remaining ones. |
+| `npm run test` | Run the Vitest unit tests (jsdom). |
+| `npm run test:browser` | Run the Playwright specs in `e2e/` against a Vite dev server on port 4173. |
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Layout
 
-## Expanding the ESLint configuration
+- `src/pages/`: one component for each route in `src/App.tsx`.
+- `src/components/`: shared UI, the Workspace Sidebar, and the Runtime Owner Workspace transcript.
+- `src/lib/`: the daemon API client, Blackboard v2 parsing, and Runtime Owner adapters.
+- `src/demo/`: the fixture data for the demo build.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Use the terms in the repository `GLOSSARY.md`.

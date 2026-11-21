@@ -1,6 +1,3 @@
-// load the complete Timeline and Transcript once, then refresh only the
-// events after the last committed cursor. These pure reducers keep both
-// projections ordered and deduplicated across retry, reconnect, and daemon
 import type { TaskTimelineItem, TaskTranscriptEntry } from "./api";
 
 export interface ProjectionDelta<T> {
@@ -24,7 +21,6 @@ export function mergeTimelineItems(existing: TaskTimelineItem[], delta: TaskTime
     const existingIndex = existingByIdentity.get(identity);
     if (existingIndex !== undefined) {
       if (item.seq > updated[existingIndex]!.seq) {
-        // Keep the item at its first visible position while replacing its
         const previous = updated[existingIndex]!;
         updated[existingIndex] = {
           ...item,

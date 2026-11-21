@@ -15,8 +15,6 @@ import {
   Select,
 } from "./ui";
 
-// and Vercel-style focus rings) so a future refactor cannot silently regress
-
 describe("Card", () => {
   it("uses a neutral bordered surface with restrained shadow", () => {
     const { container } = render(<Card>x</Card>);

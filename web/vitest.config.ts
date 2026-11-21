@@ -2,7 +2,6 @@ import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 
-// Separate Vitest config so the production `vite build` (which runs `tsc -b`
 export default defineConfig({
   plugins: [react()],
   resolve: {

@@ -69,7 +69,6 @@ describe("api client auth", () => {
     vi.stubGlobal("fetch", fetchMock);
     await expect(apiPost("/api/projects", {name:"test"})).rejects.toThrow();
     await expect(apiGet("/api/v2/projects/p/fgs", {headers:{Authorization:"Bearer explicit"}})).rejects.toThrow();
-    // The denied mutation triggers one session-repair attempt, never a replay;
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/projects");
     expect(fetchMock.mock.calls[1][0]).toBe("/api/operator-session");

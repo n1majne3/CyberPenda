@@ -4,7 +4,6 @@ import { join, relative } from "node:path";
 
 const srcRoot = join(process.cwd(), "src");
 
-// because some emoji carry combining marks; String.fromCodePoint avoids that.
 const emojiPattern = new RegExp(
   "[" + String.fromCodePoint(
     0x1f9ea,

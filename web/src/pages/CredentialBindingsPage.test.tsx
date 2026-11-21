@@ -214,8 +214,6 @@ describe("CredentialBindingsPage", () => {
     expect(screen.queryByText("sk-super-secret")).not.toBeInTheDocument();
   });
 
-  // Regression: a literal binding created through the form MUST carry
-  // destination_env, otherwise projection silently fails at launch (the root
   it("sends destination_env when creating a literal binding", async () => {
     const fetchMock = mockApi({
       "/api/credential-bindings": { bindings: [] },

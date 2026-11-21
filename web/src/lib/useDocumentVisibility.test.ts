@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 
-// getter only), so each test overrides it via defineProperty and dispatches the
 function setVisibility(value: DocumentVisibilityState) {
   Object.defineProperty(document, "visibilityState", { value, configurable: true });
   document.dispatchEvent(new Event("visibilitychange"));

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { useVirtualWindow } from "@/lib/virtualWindow";
 
-// jsdom reports clientHeight 0 on real elements, so each test defines the
 function fakeViewport(clientHeight: number) {
   const el = document.createElement("div");
   Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true });
@@ -19,7 +18,6 @@ function rect(top: number, bottom: number) {
   return { top, bottom, height, width: 100, left: 0, right: 100, x: 0, y: top, toJSON: () => ({}) };
 }
 
-// height and viewport-relative rect follow the given content offsets, so the
 function attachRows(wrapper: HTMLElement, viewport: HTMLElement, offsets: number[], heights: number[]) {
   for (let i = 0; i < offsets.length; i += 1) {
     const row = document.createElement("div");
