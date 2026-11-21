@@ -1,4 +1,4 @@
-internal/adapters/adapters.go	30
+internal/adapters/adapters.go	29
 internal/adapters/adapters_test.go	21
 internal/adapters/blackboard_v2_resume.go	2
 internal/blackboardconclusion/result.go	27
