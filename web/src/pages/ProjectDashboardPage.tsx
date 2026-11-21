@@ -12,14 +12,14 @@ import {
   FolderLock,
   LayoutGrid,
   ListChecks,
-  RefreshCw,
   Plus,
   Rocket,
 } from "lucide-react";
-import { apiGet, apiPost, type Dashboard, type Project, type ProjectKind, type Task } from "@/lib/api";
+import { apiGet, type Dashboard, type Project, type Task } from "@/lib/api";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { Button, buttonVariants, Card, CardDescription, CardTitle, Chip } from "@/components/ui";
+import { buttonVariants, Card, CardDescription, CardTitle, Chip } from "@/components/ui";
 import { formatRelativeTime } from "@/lib/format";
+import { ProjectKindConversionCard } from "./ProjectKindConversionCard";
 import { cn } from "@/lib/utils";
 
 const OPEN_TASK_STATUSES: Record<string, true> = { pending: true, running: true, paused: true };
@@ -31,8 +31,6 @@ export function ProjectDashboardPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [conversionPreview, setConversionPreview] = useState<ProjectKindConversionPreview | null>(null);
-  const [converting, setConverting] = useState(false);
 
   useEffect(() => {
     if (!projectId) return;
@@ -96,7 +94,6 @@ export function ProjectDashboardPage() {
   const base = `/projects/${projectId}`;
   const scopeReady = dash.scope.ready;
   const projectKindLabel = project.kind === "ctf_challenge" ? "CTF Challenge Project" : "Pentest Project";
-  const targetKind: ProjectKind = project.kind === "ctf_challenge" ? "pentest" : "ctf_challenge";
 
   // Count badges on the section tabs come from the shared ProjectNav chrome,
   // so the dashboard renders no second nav (keeps every tab on one plane).
@@ -147,40 +144,6 @@ export function ProjectDashboardPage() {
   // stand in for open exploration objectives, running Tasks for active
   // attempts, and current Findings for verified solutions.
   const openTaskCount = tasks.filter((task) => OPEN_TASK_STATUSES[task.status]).length;
-
-  async function previewKindConversion() {
-    if (!projectId) return;
-    setConverting(true);
-    try {
-      const preview = await apiPost<ProjectKindConversionPreview>(`/api/projects/${projectId}/kind-conversion/preview`, {
-        target_kind: targetKind,
-      });
-      setConversionPreview(preview);
-      setError(null);
-    } catch (cause) {
-      setError((cause as Error).message);
-    } finally {
-      setConverting(false);
-    }
-  }
-
-  async function confirmKindConversion() {
-    if (!projectId || !conversionPreview?.ready) return;
-    setConverting(true);
-    try {
-      const converted = await apiPost<Project>(`/api/projects/${projectId}/kind-conversion`, {
-        target_kind: targetKind,
-        confirm: true,
-      });
-      setProject(converted);
-      setConversionPreview(null);
-      setError(null);
-    } catch (cause) {
-      setError((cause as Error).message);
-    } finally {
-      setConverting(false);
-    }
-  }
 
   return (
     <ProjectPageShell
@@ -339,38 +302,7 @@ export function ProjectDashboardPage() {
         </section>
       </div>
 
-      <Card role="region" aria-labelledby="project-kind-title" className="min-w-0 gap-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <CardTitle id="project-kind-title">Project kind</CardTitle>
-            <CardDescription className="mt-1">
-              Project Kind controls valid Finding, Solution, and report semantics.
-            </CardDescription>
-          </div>
-          <Button variant="outline" size="sm" onClick={previewKindConversion} disabled={converting}>
-            <RefreshCw className="h-4 w-4" /> Change Project kind
-          </Button>
-        </div>
-        {conversionPreview && (
-          <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
-            {conversionPreview.ready ? (
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <p>Conversion is ready. No active Task or incompatible Project Knowledge blocks it.</p>
-                <Button size="sm" onClick={confirmKindConversion} disabled={converting}>Confirm conversion</Button>
-              </div>
-            ) : (
-              <div>
-                <p className="font-medium text-warning">Conversion is blocked.</p>
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-muted-foreground">
-                  {conversionPreview.blockers.map((blocker) => (
-                    <li key={blocker.code}>{kindConversionBlockerLabel(blocker)}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </div>
-        )}
-      </Card>
+      <ProjectKindConversionCard key={project.id} project={project} onConverted={setProject} />
 
       {!isCTF && (
         <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-6">
@@ -381,27 +313,6 @@ export function ProjectDashboardPage() {
       )}
     </ProjectPageShell>
   );
-}
-
-interface ProjectKindConversionPreview {
-  project_id: string;
-  current_kind: ProjectKind;
-  target_kind: ProjectKind;
-  ready: boolean;
-  blockers: Array<{ code: string; count: number }>;
-}
-
-function kindConversionBlockerLabel(blocker: { code: string; count: number }) {
-  switch (blocker.code) {
-    case "active_tasks":
-      return `${blocker.count} non-terminal Task${blocker.count === 1 ? "" : "s"}`;
-    case "incompatible_findings":
-      return `${blocker.count} current Finding${blocker.count === 1 ? "" : "s"}`;
-    case "incompatible_solutions":
-      return `${blocker.count} current Solution${blocker.count === 1 ? "" : "s"}`;
-    default:
-      return `${blocker.code}: ${blocker.count}`;
-  }
 }
 
 function StatCard({
