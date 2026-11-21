@@ -60,7 +60,7 @@ func TestClaudeSettingsDeepMergesCustomConfigFileOverlay(t *testing.T) {
 }`,
 		},
 	}
-	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)})
 	if err != nil {
 		t.Fatalf("project: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestClaudeSettingsStructuredFieldsWinOverOverlay(t *testing.T) {
 }`,
 		},
 	}
-	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)})
 	if err != nil {
 		t.Fatalf("project: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestCodexConfigTOMLOverlayMergesExtraSections(t *testing.T) {
 			CustomConfigFile: "# my extras\n[features]\nweb_search = true\n\n[sandbox_workspace_write]\nnetwork_access = true\n",
 		},
 	}
-	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)})
 	if err != nil {
 		t.Fatalf("project: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestPiModelsJSONOverlayMergesCustomModels(t *testing.T) {
 			CustomConfigFile: `{"extra":{"myCustomKey":true}}`,
 		},
 	}
-	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)})
 	if err != nil {
 		t.Fatalf("project: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestProjectionRejectsOverlayWithSecretShapedValues(t *testing.T) {
 			CustomConfigFile: `{"env":{"MY_API_KEY":"sk-live-123"}}`,
 		},
 	}
-	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{}); err == nil {
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)}); err == nil {
 		t.Fatal("expected projection to reject secret-shaped overlay value")
 	}
 }
@@ -190,7 +190,7 @@ func TestProjectionRejectsMalformedOverlay(t *testing.T) {
 			CustomConfigFile: "invalid = [",
 		},
 	}
-	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{}); err == nil {
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)}); err == nil {
 		t.Fatal("expected projection to reject malformed overlay")
 	}
 }
@@ -275,7 +275,8 @@ func TestClaudePermissionsAllowPreservesOperatorEntries(t *testing.T) {
 		},
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		DaemonAddr: "127.0.0.1:8787",
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
+		DaemonAddr:                  "127.0.0.1:8787",
 	})
 	if err != nil {
 		t.Fatalf("project: %v", err)
@@ -335,7 +336,8 @@ func TestProjectedConfigTextClaudePreviewShowsCredentialChannels(t *testing.T) {
 	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode}
 	profile.Fields.APIKeys = map[string]string{"ANTHROPIC_API_KEY": "«redacted:sk-…»"}
 	req := runner.ProjectionRequest{
-		DaemonAddr: "127.0.0.1:8787",
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
+		DaemonAddr:                  "127.0.0.1:8787",
 		ModelSnapshot: &modelprovider.Snapshot{
 			APIKeyEnv: "MIMO_API_KEY",
 		},
