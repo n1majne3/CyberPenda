@@ -2,44 +2,9 @@ package blackboardv2
 
 import (
 	"context"
-	"database/sql"
 
 	"pentest/internal/owner"
 )
-
-// ApplyForOwnerContinuation applies a server-bound Working Graph batch without
-// allowing Runtime payloads to select another owner or Continuation.
-func (s *Service) ApplyForOwnerContinuation(ctx context.Context, contract owner.Contract, continuationID string, batch ChangeBatch) (ChangeResult, error) {
-	if err := validateOwnerContract(contract); err != nil {
-		return ChangeResult{}, err
-	}
-	if contract.IsSession() {
-		return s.ApplyForSessionContinuation(ctx, contract.SessionID, continuationID, batch)
-	}
-	return s.ApplyForContinuation(ctx, contract.ProjectID, continuationID, batch)
-}
-
-// CurrentRelationshipVersionForOwner resolves the optimistic-concurrency
-// version needed by a server-compiled unrelate operation.
-func (s *Service) CurrentRelationshipVersionForOwner(ctx context.Context, contract owner.Contract, from, relation, to string) (int, error) {
-	if err := validateOwnerContract(contract); err != nil {
-		return 0, err
-	}
-	query := `SELECT version FROM blackboard_v2_relationships WHERE project_id=? AND from_key=? AND relation=? AND to_key=?`
-	ownerID := contract.ProjectID
-	if contract.IsSession() {
-		query = `SELECT version FROM blackboard_v2_session_relationships WHERE session_id=? AND from_key=? AND relation=? AND to_key=?`
-		ownerID = contract.SessionID
-	}
-	var version int
-	if err := s.db.QueryRowContext(ctx, query, ownerID, from, relation, to).Scan(&version); err != nil {
-		if err == sql.ErrNoRows {
-			return 0, semanticError("not_found", "relationship was not found", "relation", nil)
-		}
-		return 0, err
-	}
-	return version, nil
-}
 
 // ApplyForOwner dispatches the shared semantic kernel through an explicit
 // owner capability contract. A Session contract can never fall through to the
@@ -92,28 +57,6 @@ func (s *Service) RuntimeSnapshotForOwner(ctx context.Context, contract owner.Co
 		return s.SessionRuntimeSnapshot(ctx, contract.SessionID)
 	}
 	return s.RuntimeSnapshot(ctx, contract.ProjectID)
-}
-
-func (s *Service) ProjectRuntimeSnapshotForOwner(ctx context.Context, contract owner.Contract) (RuntimeSnapshotProjection, error) {
-	if err := validateOwnerContract(contract); err != nil {
-		return RuntimeSnapshotProjection{}, err
-	}
-	if contract.IsSession() {
-		return s.SessionRuntimeSnapshotProjection(ctx, contract.SessionID)
-	}
-	return s.ProjectRuntimeSnapshot(ctx, contract.ProjectID)
-}
-
-// SemanticHealthForOwner reuses the same health DTO while keeping Session
-// records out of Project health projections.
-func (s *Service) SemanticHealthForOwner(ctx context.Context, contract owner.Contract) (SemanticHealth, error) {
-	if err := validateOwnerContract(contract); err != nil {
-		return SemanticHealth{}, err
-	}
-	if contract.IsSession() {
-		return s.SessionSemanticHealth(ctx, contract.SessionID)
-	}
-	return s.ProjectSemanticHealth(ctx, contract.ProjectID)
 }
 
 func validateOwnerContract(contract owner.Contract) error {
