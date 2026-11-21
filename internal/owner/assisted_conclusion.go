@@ -47,21 +47,6 @@ type ConclusionValidationDetail struct {
 	Expected  string
 }
 
-// BlackboardConclusionReceiptStateAfter reports whether current is a durable
-// forward state relative to target. The repair/version states intentionally
-// remain outside this compact replay ordering; their transitions are claimed
-// by their explicit owner-local operations.
-func BlackboardConclusionReceiptStateAfter(current, target BlackboardConclusionReceiptState) bool {
-	order := map[BlackboardConclusionReceiptState]int{
-		BlackboardConclusionReceiptPending:           0,
-		BlackboardConclusionReceiptDispatchRequested: 1,
-		BlackboardConclusionReceiptAwaitingResult:    2,
-		BlackboardConclusionReceiptValidated:         3,
-		BlackboardConclusionReceiptApplied:           4,
-	}
-	return order[current] > order[target]
-}
-
 // ConclusionDispatchKind is the immutable attempt category of one Conclusion
 // Dispatch. Recovery-created dispatches are always kind recovery; repair,
 // version regeneration, and operator retry dispatches keep their own kind.

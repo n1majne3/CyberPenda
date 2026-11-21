@@ -215,13 +215,14 @@ func isV2Multiline(value string) bool {
 	return strings.ContainsAny(value, "\r\n")
 }
 
+var v2MarkdownEscaper = strings.NewReplacer(
+	"\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]",
+	"<", "\\<", ">", "\\>", "#", "\\#", "|", "\\|", "!", "\\!", "-", "\\-",
+	"+", "\\+", ".", "\\.", "=", "\\=", "~", "\\~", "(", "\\(", ")", "\\)",
+)
+
 func escapeV2Markdown(value string) string {
-	replacer := strings.NewReplacer(
-		"\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "[", "\\[", "]", "\\]",
-		"<", "\\<", ">", "\\>", "#", "\\#", "|", "\\|", "!", "\\!", "-", "\\-",
-		"+", "\\+", ".", "\\.", "=", "\\=", "~", "\\~", "(", "\\(", ")", "\\)",
-	)
-	return replacer.Replace(value)
+	return v2MarkdownEscaper.Replace(value)
 }
 
 func renderCTFV2Markdown(projection blackboardv2.CTFSolutionProjection) string {

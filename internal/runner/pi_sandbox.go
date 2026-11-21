@@ -47,5 +47,5 @@ func shellQuote(value string) string {
 	if value == "" {
 		return "''"
 	}
-	return "'" + strings.ReplaceAll(value, "'", `'\'"'"'`) + "'"
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }

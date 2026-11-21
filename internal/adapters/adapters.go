@@ -1,7 +1,6 @@
 package adapters
 
 import (
-	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -193,9 +192,6 @@ func piProviderArgs(fields runtimeprofile.Fields, customArgs []string) []string 
 	}
 	return []string{"--provider", providerID}
 }
-
-// ErrSecretRedacted is returned when callers ask whether a payload was redacted.
-var ErrSecretRedacted = errors.New("secret value redacted")
 
 // secretPatterns matches common secret shapes so resolved values never reach
 // task events. Patterns are deliberately conservative: they redact anything that

@@ -11,8 +11,8 @@ const SchemaVersion = 1
 
 var (
 	ErrInvalidExtension = errors.New("invalid runtime extension")
-	idPattern           = regexp.MustCompile("^[a-z][a-z0-9_.-]*$")
-	secretLikePattern   = regexp.MustCompile("(?i)(sk-|bearer\\s+|api[_-]?key=|token=|secret=|password=)")
+	idPattern           = regexp.MustCompile(`^[a-z][a-z0-9_.-]*$`)
+	secretLikePattern   = regexp.MustCompile(`(?i)(sk-|bearer\s+|api[_-]?key=|token=|secret=|password=)`)
 )
 
 type Extension struct {

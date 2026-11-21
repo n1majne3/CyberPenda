@@ -42,12 +42,11 @@ type LaunchRequest struct {
 }
 
 type Harness struct {
-	tasks *task.Service
-	core  *OwnerHarness
+	core *OwnerHarness
 }
 
 func NewHarness(tasks *task.Service) *Harness {
-	h := &Harness{tasks: tasks}
+	h := &Harness{}
 	h.core = NewOwnerHarness(OwnerHarnessConfig{
 		VerifyOwner: func(ownerID string) error {
 			_, err := tasks.Get(ownerID)

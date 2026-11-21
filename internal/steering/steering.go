@@ -14,9 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
+	"pentest/internal/keymutex"
 	"pentest/internal/owner"
 	"pentest/internal/store"
 )
@@ -50,17 +50,11 @@ type AcceptRequest struct {
 // the same table and the same transition vocabulary.
 type Service struct {
 	db           *store.DB
-	requestMu    sync.Mutex
-	requestLocks map[string]*steeringRequestLock
-}
-
-type steeringRequestLock struct {
-	mu   sync.Mutex
-	refs int
+	requestLocks keymutex.Group
 }
 
 func NewService(db *store.DB) *Service {
-	return &Service{db: db, requestLocks: make(map[string]*steeringRequestLock)}
+	return &Service{db: db}
 }
 
 // AcquireRequest serializes acceptance side effects for one owner/request
@@ -69,25 +63,7 @@ func NewService(db *store.DB) *Service {
 // while two identical HTTP requests race inside one daemon.
 func (s *Service) AcquireRequest(kind owner.Kind, ownerID, requestID string) func() {
 	key := string(kind) + "\x00" + strings.TrimSpace(ownerID) + "\x00" + strings.TrimSpace(requestID)
-	s.requestMu.Lock()
-	lock := s.requestLocks[key]
-	if lock == nil {
-		lock = &steeringRequestLock{}
-		s.requestLocks[key] = lock
-	}
-	lock.refs++
-	s.requestMu.Unlock()
-
-	lock.mu.Lock()
-	return func() {
-		lock.mu.Unlock()
-		s.requestMu.Lock()
-		lock.refs--
-		if lock.refs == 0 {
-			delete(s.requestLocks, key)
-		}
-		s.requestMu.Unlock()
-	}
+	return s.requestLocks.Lock(key)
 }
 
 const steeringRecordColumns = `id, owner_kind, owner_id, request_id, client_selection_identity, operator_message, message, mode, model_provider_id, model,

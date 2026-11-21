@@ -1,4 +1,4 @@
-internal/adapters/adapters.go	30
+internal/adapters/adapters.go	29
 internal/adapters/adapters_test.go	21
 internal/adapters/blackboard_v2_resume.go	2
 internal/blackboardconclusion/result.go	27
@@ -205,7 +205,7 @@ internal/modelprovider/resolver_test.go	7
 internal/modelprovidermigrate/migrate_test.go	8
 internal/modeskill/modeskill.go	19
 internal/modeskill/modeskill_test.go	5
-internal/owner/assisted_conclusion.go	40
+internal/owner/assisted_conclusion.go	36
 internal/owner/owner.go	10
 internal/owner/runtime.go	4
 internal/owner/steering.go	57
