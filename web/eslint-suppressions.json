@@ -71,7 +71,12 @@
   },
   "src/components/WorkspaceSidebar.tsx": {
     "local/no-comments": {
-      "count": 54
+      "count": 30
+    }
+  },
+  "src/components/WorkspaceSidebarRows.tsx": {
+    "local/no-comments": {
+      "count": 11
     }
   },
   "src/components/icon-source.test.ts": {
@@ -115,6 +120,16 @@
     }
   },
   "src/components/ui.test.tsx": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
+  "src/components/workspaceSidebarActivity.ts": {
+    "local/no-comments": {
+      "count": 12
+    }
+  },
+  "src/components/workspaceSidebarStyles.ts": {
     "local/no-comments": {
       "count": 1
     }

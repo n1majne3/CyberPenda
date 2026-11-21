@@ -3,6 +3,8 @@ import { render, waitFor, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { ProjectListPage } from "./ProjectListPage";
+import { WorkspaceSidebar } from "@/components/WorkspaceSidebar";
+import { ThemeProvider } from "@/components/ThemeProvider";
 import { mockApi } from "@/test/mockApi";
 
 function renderPage() {
@@ -88,6 +90,58 @@ describe("ProjectListPage", () => {
       url: "/api/projects",
       body: { name: "Arena", kind: "ctf_challenge", scope: {} },
     });
+  });
+
+  it("refreshes the Workspace Sidebar Projects after a Project is created", async () => {
+    const user = userEvent.setup();
+    const projects: Array<Record<string, unknown>> = [];
+    const json = (body: unknown, status = 200) =>
+      new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url === "/api/projects" && init?.method === "POST") {
+          const created = {
+            id: "project-new",
+            name: "Sidebar Project",
+            kind: "pentest",
+            scope: {},
+            defaults: {},
+            created_at: "2026-11-21T00:00:00Z",
+            updated_at: "2026-11-21T00:00:00Z",
+          };
+          projects.push(created);
+          return json(created, 201);
+        }
+        if (url.startsWith("/api/workspace/navigation")) {
+          return json({
+            projects: projects.map((item) => ({ ...item, last_activity_at: item.updated_at, tasks: [] })),
+          });
+        }
+        if (url.startsWith("/api/sessions")) return json({ sessions: [] });
+        return json({ projects });
+      }),
+    );
+
+    render(
+      <ThemeProvider>
+        <MemoryRouter initialEntries={["/?new=1"]}>
+          <WorkspaceSidebar />
+          <ProjectListPage />
+        </MemoryRouter>
+      </ThemeProvider>,
+    );
+
+    const sidebar = screen.getByRole("navigation", { name: "Primary routes" });
+    expect(await within(sidebar).findByText("No projects")).toBeInTheDocument();
+
+    await user.type(await screen.findByLabelText("Project name"), "Sidebar Project");
+    await user.selectOptions(screen.getByLabelText("Project kind"), "pentest");
+    await user.click(screen.getByRole("button", { name: /^create$/i }));
+
+    expect(await within(sidebar).findByRole("region", { name: /sidebar project/i })).toBeInTheDocument();
+    expect(within(sidebar).queryByText("No projects")).not.toBeInTheDocument();
   });
 
   it("renders Geist project cards with scan metadata that does not rely on color alone", async () => {
