@@ -227,7 +227,7 @@ func errorsInvalidTranscriptPage(detail string) error {
 	return fmt.Errorf("invalid hosted Transcript page: %s", detail)
 }
 
-// exactMasker masks only the two known hosted credential values. It does not
+// exactMasker masks only the known hosted credential values. It does not
 // apply shape-based secret detection because unrelated Transcript content must
 // remain unchanged. JSON conversion provides a deep copy before replacement.
 type exactMasker struct {
