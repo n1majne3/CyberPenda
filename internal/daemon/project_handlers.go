@@ -157,9 +157,7 @@ func (server *Server) handleUpdateProject(response http.ResponseWriter, request 
 	scopeTouched := false
 	defaultsTouched := false
 
-	if input.Name != nil {
-		name = *input.Name
-	} else {
+	if input.Name == nil || input.Description == nil {
 		existing, err := server.projects.Get(id)
 		if err != nil {
 			if errors.Is(err, project.ErrNotFound) {
@@ -170,6 +168,10 @@ func (server *Server) handleUpdateProject(response http.ResponseWriter, request 
 			return
 		}
 		name = existing.Name
+		description = existing.Description
+	}
+	if input.Name != nil {
+		name = *input.Name
 	}
 	if input.Description != nil {
 		description = *input.Description
