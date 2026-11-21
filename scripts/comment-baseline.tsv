@@ -270,7 +270,7 @@ internal/runner/mcp_instructions_test.go	3
 internal/runner/mode_skill_projection_test.go	2
 internal/runner/overlay.go	41
 internal/runner/prepared_projection.go	6
-internal/runner/projection.go	54
+internal/runner/projection.go	53
 internal/runner/projection_claude.go	7
 internal/runner/projection_claude_test.go	8
 internal/runner/projection_codex.go	20
@@ -289,7 +289,7 @@ internal/runner/projection_source_roundtrip_test.go	11
 internal/runner/projection_writefile_test.go	6
 internal/runner/runner.go	43
 internal/runner/runner_test.go	2
-internal/runner/sandbox_skills.go	17
+internal/runner/sandbox_skills.go	15
 internal/runner/sandbox_skills_test.go	17
 internal/runner/target.go	19
 internal/runtime/blackboard_interface.go	20

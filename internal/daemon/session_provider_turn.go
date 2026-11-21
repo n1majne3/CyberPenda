@@ -68,9 +68,15 @@ func (server *Server) enqueueSessionProviderTurn(sessionID string, provider runt
 		protocol := newSteerEmitProtocol(continuationID, spec)
 		result, err := operation(ctx, selection, protocol.emit)
 		if err != nil || protocol.transitionErr() != nil {
-			server.persistSessionProviderEventForContinuation(sessionID, protocol.currentID(), task.EventKindLifecycle, task.EventPayload{
+			failPayload := task.EventPayload{
 				"phase": "provider_turn_failed", "request_id": requestID, "mode": string(mode), "outcome": "failed",
-			})
+			}
+			if err != nil {
+				failure := classifyNativeSteerFailure(err)
+				failPayload["error_code"] = failure.code
+				failPayload["error"] = failure.message
+			}
+			server.persistSessionProviderEventForContinuation(sessionID, protocol.currentID(), task.EventKindLifecycle, failPayload)
 			if transitionErr := protocol.transitionErr(); transitionErr != nil {
 				_ = server.closeSessionProviderSession(sessionID)
 				if current := protocol.currentID(); current != "" {

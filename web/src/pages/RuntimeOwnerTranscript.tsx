@@ -153,6 +153,19 @@ export function TranscriptRow({
     return <CollapsedTranscriptRow entry={entry} autoExpand={autoExpandReasoning && entry.kind === "reasoning"} />;
   }
 
+  if (entry.kind === "error") {
+    return (
+      <div
+        role="alert"
+        data-testid="transcript-error-row"
+        className="flex min-w-0 items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3.5 py-2.5 text-sm leading-6 text-destructive"
+      >
+        <CircleX className="mt-1 h-4 w-4 shrink-0" aria-hidden="true" />
+        <div className="min-w-0 whitespace-pre-wrap break-words">{entry.text || "Runtime turn failed"}</div>
+      </div>
+    );
+  }
+
   const isUser = entry.role === "user";
   const isAssistant = entry.role === "assistant" || entry.role === "runtime";
   return (

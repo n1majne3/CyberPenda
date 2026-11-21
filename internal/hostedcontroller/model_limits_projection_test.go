@@ -12,6 +12,7 @@ import (
 
 	"pentest/internal/hostedcontroller"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
@@ -94,6 +95,7 @@ func TestHostedModelLimitsReachRuntimeConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			request := runner.ProjectionRequest{
+				BlackboardMode:              modeskill.ModeDisabled,
 				ModelProviders:              providers,
 				GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(listedProviders),
 				CapabilityCache: modelprovider.NewCapabilityCache(map[string]modelprovider.CatalogLimits{

@@ -109,7 +109,7 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 			return nil
 		}
 		return parseMessageRecord(record, opts, roleFromType(recordType), createdAt)
-	case "assistant", "user", "message", "assistant_message", "agent_message", "agentmessage", "response.output_text", "output_text", "message_delta", "content_block_delta", "toolresult":
+	case "assistant", "user", "message", "message_end", "assistant_message", "agent_message", "agentmessage", "response.output_text", "output_text", "message_delta", "content_block_delta", "toolresult":
 		// "toolresult" is the pi-subagents child transcript spelling; its
 		// message role ("toolResult") selects the tool-result projection.
 		return stampAgentIdentity(parseMessageRecord(record, opts, roleFromType(recordType), createdAt), record)
@@ -188,18 +188,40 @@ func parseMessageRecord(record map[string]any, opts ParseOptions, role string, c
 			if messageID == "" {
 				messageID = firstText(message, "uuid", "message_id", "messageId", "id")
 			}
-			return assignReasoningBlockIDs(turns, messageID)
+			turns = assignReasoningBlockIDs(turns, messageID)
+			if errTurn, hasErr := piMessageErrorTurn(record, message, opts, messageRole, createdAt); hasErr {
+				turns = append(turns, errTurn)
+			}
+			return turns
 		}
 		if text := firstText(message, "text", "content", "message"); text != "" {
-			return []Turn{{Kind: KindText, Role: messageRole, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+			turns := []Turn{{Kind: KindText, Role: messageRole, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+			if errTurn, hasErr := piMessageErrorTurn(record, message, opts, messageRole, createdAt); hasErr {
+				turns = append(turns, errTurn)
+			}
+			return turns
+		}
+		if errTurn, hasErr := piMessageErrorTurn(record, message, opts, messageRole, createdAt); hasErr {
+			return []Turn{errTurn}
 		}
 	}
 	recordRole := normalizeMessageRole(stringValue(record, "role"), role)
 	if content, ok := sliceValue(record, "content"); ok {
-		return assignReasoningBlockIDs(parseContentBlocks(content, opts, recordRole, createdAt), firstText(record, "uuid", "message_id", "messageId", "id"))
+		turns := assignReasoningBlockIDs(parseContentBlocks(content, opts, recordRole, createdAt), firstText(record, "uuid", "message_id", "messageId", "id"))
+		if errTurn, hasErr := piMessageErrorTurn(record, nil, opts, recordRole, createdAt); hasErr {
+			turns = append(turns, errTurn)
+		}
+		return turns
 	}
 	if text := firstText(record, "text", "content", "message"); text != "" {
-		return []Turn{{Kind: KindText, Role: recordRole, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+		turns := []Turn{{Kind: KindText, Role: recordRole, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+		if errTurn, hasErr := piMessageErrorTurn(record, nil, opts, recordRole, createdAt); hasErr {
+			turns = append(turns, errTurn)
+		}
+		return turns
+	}
+	if errTurn, hasErr := piMessageErrorTurn(record, nil, opts, recordRole, createdAt); hasErr {
+		return []Turn{errTurn}
 	}
 	return nil
 }
@@ -217,6 +239,35 @@ func normalizeMessageRole(raw, fallback string) string {
 	}
 }
 
+func piMessageErrorTurn(record, message map[string]any, opts ParseOptions, role string, createdAt time.Time) (Turn, bool) {
+	if !opts.IncludeErrors {
+		return Turn{}, false
+	}
+	var stopReason, errText string
+	if message != nil {
+		stopReason = strings.ToLower(strings.TrimSpace(firstText(message, "stopReason", "stop_reason")))
+		errText = strings.TrimSpace(firstText(message, "errorMessage", "error_message"))
+	}
+	if stopReason == "" {
+		stopReason = strings.ToLower(strings.TrimSpace(firstText(record, "stopReason", "stop_reason")))
+	}
+	if errText == "" {
+		errText = strings.TrimSpace(firstText(record, "errorMessage", "error_message"))
+	}
+	if stopReason != "error" && errText == "" {
+		return Turn{}, false
+	}
+	if errText == "" {
+		errText = "provider returned an error"
+	}
+	return Turn{
+		Kind:         KindError,
+		Role:         role,
+		Text:         errText,
+		ContentIndex: -1,
+		CreatedAt:    createdAt,
+	}, true
+}
 func assignReasoningBlockIDs(turns []Turn, messageID string) []Turn {
 	if messageID == "" {
 		return turns

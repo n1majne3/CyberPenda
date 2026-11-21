@@ -19,6 +19,18 @@ func entryFromTurn(turn runtimeoutput.Turn, base Entry) (Entry, bool) {
 		return toolCallEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-call")), true
 	case runtimeoutput.KindToolResult:
 		return toolResultEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-result")), true
+	case runtimeoutput.KindError:
+		return Entry{
+			ID:           entryID(base.ID, "-error", turn.ContentIndex),
+			Seq:          base.Seq,
+			Continuation: base.Continuation,
+			Kind:         KindError,
+			Role:         RoleRuntime,
+			Text:         turn.Text,
+			Status:       "failed",
+			Stream:       base.Stream,
+			CreatedAt:    base.CreatedAt,
+		}, true
 	default:
 		return Entry{}, false
 	}

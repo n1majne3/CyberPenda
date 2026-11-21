@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"pentest/internal/credential"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -48,6 +49,7 @@ func TestProjectPiConfigWritesModelsAndAuth(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:              modeskill.ModeDisabled,
 		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
 		Owner:                       owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
 		Credentials:                 creds,
@@ -176,6 +178,7 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:              modeskill.ModeDisabled,
 		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
 		Owner:                       owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
 	})
@@ -260,6 +263,7 @@ func TestProjectPiSettingsIgnoresHostSettings(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:              modeskill.ModeDisabled,
 		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
 		Owner:                       owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
 	})

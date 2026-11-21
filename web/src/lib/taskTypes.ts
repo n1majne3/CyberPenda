@@ -141,7 +141,7 @@ export interface TaskTranscriptEntry {
   id: string;
   seq: number;
   continuation: number;
-  kind: "message" | "reasoning" | "tool_call" | "tool_result" | "runtime_output" | "continuation" | string;
+  kind: "message" | "reasoning" | "tool_call" | "tool_result" | "runtime_output" | "continuation" | "error" | string;
   role: "user" | "assistant" | "system" | "runtime" | "tool" | string;
   text?: string;
   tool_call_id?: string;

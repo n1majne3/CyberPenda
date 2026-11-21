@@ -9,6 +9,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -94,6 +95,7 @@ func TestProjectPiModelsDeclareReasoningCapability(t *testing.T) {
 			},
 		}
 		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+			BlackboardMode:              modeskill.ModeDisabled,
 			GlobalModelProviderSnapshot: mustSnapshotModelProviders(t, providers),
 			ModelProviders:              providers,
 		}); err != nil {
@@ -131,6 +133,7 @@ func TestProjectPiModelsDeclareReasoningCapability(t *testing.T) {
 			},
 		}
 		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+			BlackboardMode:              modeskill.ModeDisabled,
 			GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
 			Owner:                       owner.NewTaskContract("task-pi-legacy", "project-1", layout.Workdir),
 			Credentials:                 creds,
@@ -177,6 +180,7 @@ func TestProjectPiModelsWriteResolvedContextWindowAndMaxTokens(t *testing.T) {
 		Provider: runtimeprofile.ProviderPi,
 		Fields:   runtimeprofile.Fields{ModelProviderID: created.ID},
 	}, runner.ProjectionRequest{
+		BlackboardMode:              modeskill.ModeDisabled,
 		GlobalModelProviderSnapshot: mustSnapshotModelProviders(t, providers),
 		ModelProviders:              providers,
 		CapabilityCache:             cache,
@@ -256,6 +260,7 @@ func TestProjectPiConfigWritesExecuteSubagentType(t *testing.T) {
 		},
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:              modeskill.ModeDisabled,
 		GlobalModelProviderSnapshot: mustSnapshotModelProviders(t, providers),
 		ModelProviders:              providers,
 	})
@@ -327,7 +332,7 @@ func TestProjectPiSettingsPinDefaultThinkingLevel(t *testing.T) {
 			Provider: runtimeprofile.ProviderPi,
 			Fields:   runtimeprofile.Fields{Model: "DeepSeek-V4-Pro", ReasoningEffort: "max"},
 		}
-		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)}); err != nil {
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)}); err != nil {
 			t.Fatalf("project config: %v", err)
 		}
 
@@ -351,6 +356,7 @@ func TestProjectPiSettingsPinDefaultThinkingLevel(t *testing.T) {
 			Fields:   runtimeprofile.Fields{Model: "DeepSeek-V4-Pro", ReasoningEffort: "max"},
 		}
 		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+			BlackboardMode:              modeskill.ModeDisabled,
 			GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
 			RequestedReasoningEffort:    "low",
 		}); err != nil {
@@ -373,7 +379,7 @@ func TestProjectPiSettingsPinDefaultThinkingLevel(t *testing.T) {
 			Provider: runtimeprofile.ProviderPi,
 			Fields:   runtimeprofile.Fields{Model: "DeepSeek-V4-Pro"},
 		}
-		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)}); err != nil {
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)}); err != nil {
 			t.Fatalf("project config: %v", err)
 		}
 
@@ -394,6 +400,7 @@ func TestProjectPiSettingsPinDefaultThinkingLevel(t *testing.T) {
 			Fields:   runtimeprofile.Fields{Model: "DeepSeek-V4-Pro"},
 		}
 		_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+			BlackboardMode:              modeskill.ModeDisabled,
 			GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
 			RequestedReasoningEffort:    "ultra",
 		})
@@ -419,7 +426,7 @@ func TestProjectPiSettingsPinsLaunchProviderAndModel(t *testing.T) {
 				Env:   map[string]string{"PI_PROVIDER_ID": "hub"},
 			},
 		}
-		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)}); err != nil {
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)}); err != nil {
 			t.Fatalf("project config: %v", err)
 		}
 		settings := readJSONFile(t, filepath.Join(layout.ProviderHome, "agent", "settings.json"))
@@ -445,6 +452,7 @@ func TestProjectPiSettingsPinsLaunchProviderAndModel(t *testing.T) {
 			},
 		}
 		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+			BlackboardMode:              modeskill.ModeDisabled,
 			GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
 			LaunchModelOverride:         "deepseek-v4-pro",
 		}); err != nil {
@@ -466,7 +474,7 @@ func TestProjectPiSettingsPinsLaunchProviderAndModel(t *testing.T) {
 			Provider: runtimeprofile.ProviderPi,
 			Fields:   runtimeprofile.Fields{Model: "deepseek-flash"},
 		}
-		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)}); err != nil {
+		if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)}); err != nil {
 			t.Fatalf("project config: %v", err)
 		}
 		settings := readJSONFile(t, filepath.Join(layout.ProviderHome, "agent", "settings.json"))
@@ -500,7 +508,7 @@ func TestProjectPiConfigRejectsMissingGlobalModelProviderSnapshot(t *testing.T) 
 		Provider: runtimeprofile.ProviderPi,
 		Fields:   runtimeprofile.Fields{Model: "demo-model", Endpoint: "https://api.example.test/v1"},
 	}
-	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{}); err == nil {
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled}); err == nil {
 		t.Fatal("expected Pi projection without GlobalModelProviderSnapshot to fail closed")
 	}
 }

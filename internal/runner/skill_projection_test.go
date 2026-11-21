@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
@@ -33,6 +34,7 @@ func TestProjectRuntimeConfigProjectsEnabledSkills(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode: modeskill.ModeDisabled,
 		SkillBundles: []skill.Bundle{{
 			ID:   "recon-helper",
 			Name: "Recon Helper",
@@ -77,6 +79,7 @@ func TestProjectRuntimeConfigProjectsEnabledSkillsForClaudeCode(t *testing.T) {
 	}
 
 	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode: modeskill.ModeDisabled,
 		SkillBundles: []skill.Bundle{{
 			ID:   "recon-helper",
 			Name: "Recon Helper",
@@ -114,6 +117,7 @@ func TestProjectRuntimeConfigProjectsBuiltinSkillsWithSourceFreeFolderNames(t *t
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode: modeskill.ModeDisabled,
 		SkillBundles: []skill.Bundle{{
 			ID:     "cyberstrikeai-tooling-nmap",
 			Name:   "cyberstrikeai-tooling-nmap",
