@@ -161,7 +161,6 @@ export function BlackboardConclusionBadge({ owner }: { owner: RuntimeOwnerView }
 	const label = `Blackboard · ${modeLabel} · ${stateLabel}${appliedRevision !== undefined ? ` · applied revision ${appliedRevision}` : ""}`;
   const details = [label];
   if (sourceTurn) details.push(`source Turn ${sourceTurn}`);
-  if (appliedRevision !== undefined) details.push(`applied revision ${appliedRevision}`);
   return (
     <Chip
       variant={state === "action_required" ? "danger" : state === "pending" || state === "concluding" ? "warning" : "signal"}

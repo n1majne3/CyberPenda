@@ -184,15 +184,22 @@ export function ModelProvidersPage() {
     setSaving(true);
     setError(null);
     setSavedNotice(false);
+    let created: ModelProvider | null = null;
     try {
-      const created = await apiPost<ModelProvider>("/api/model-providers", buildModelProviderPayload(form));
+      created = await apiPost<ModelProvider>("/api/model-providers", buildModelProviderPayload(form));
       await saveCredentialSource(created, form);
       setCreating(false);
       await load();
       setSelectedId(created.id);
       showSavedNotice();
     } catch (e) {
-      setError((e as Error).message);
+      const message = (e as Error).message;
+      if (created) {
+        setCreating(false);
+        await load().catch(() => {});
+        setSelectedId(created.id);
+      }
+      setError(message);
     } finally {
       setSaving(false);
     }
