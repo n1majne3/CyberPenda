@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
+	"unicode/utf8"
 
 	googlejsonschema "github.com/google/jsonschema-go/jsonschema"
 	detailedjsonschema "github.com/santhosh-tekuri/jsonschema/v6"
@@ -24,10 +24,7 @@ import (
 
 const detailedToolSchemaURL = "https://cyberpenda.local/schemas/blackboard-v2.schema.json"
 
-var blackboardV2ContractInputSchemas = struct {
-	sync.Mutex
-	values map[string]*detailedjsonschema.Schema
-}{values: make(map[string]*detailedjsonschema.Schema)}
+var blackboardV2ContractInputSchemas contractInputSchemaCache
 
 // DecodeContractInput gives every trusted v2 adapter the same exact Contract
 // validation, number normalization, and DTO decoding.
@@ -36,30 +33,12 @@ func DecodeContractInput(schemaName string, sessionOwner bool, raw json.RawMessa
 	if sessionOwner {
 		cacheKey = schemaName + ":session"
 	}
-	blackboardV2ContractInputSchemas.Lock()
-	schema := blackboardV2ContractInputSchemas.values[cacheKey]
-	if schema == nil {
-		harness, err := blackboardv2contract.NewHarness()
-		if err != nil {
-			blackboardV2ContractInputSchemas.Unlock()
-			panic(fmt.Errorf("load Blackboard v2 Contract input %s: %w", schemaName, err))
-		}
-		inputSchema, err := harness.ToolInputSchema(schemaName)
-		if err != nil {
-			blackboardV2ContractInputSchemas.Unlock()
-			panic(fmt.Errorf("load Blackboard v2 input Schema %s: %w", schemaName, err))
-		}
-		if sessionOwner {
-			inputSchema = SessionToolInputSchema(inputSchema)
-		}
-		schema, err = compileDetailedToolSchema(inputSchema)
-		if err != nil {
-			blackboardV2ContractInputSchemas.Unlock()
-			panic(fmt.Errorf("compile Blackboard v2 input Schema %s: %w", schemaName, err))
-		}
-		blackboardV2ContractInputSchemas.values[cacheKey] = schema
+	schema, err := blackboardV2ContractInputSchemas.load(cacheKey, func() (*detailedjsonschema.Schema, error) {
+		return loadContractInputSchema(schemaName, sessionOwner)
+	})
+	if err != nil {
+		panic(err)
 	}
-	blackboardV2ContractInputSchemas.Unlock()
 	return decodeContractInput(schema, raw, target)
 }
 
@@ -162,6 +141,16 @@ func compileDetailedToolSchema(source *googlejsonschema.Schema) (*detailedjsonsc
 }
 
 func validateDetailedToolArgs(schema *detailedjsonschema.Schema, raw json.RawMessage) (any, *blackboardv2.Error) {
+	if !utf8.Valid(raw) {
+		return nil, invalidToolSchemaError("arguments", map[string]any{"reason": "invalid_json"})
+	}
+	if err := rejectDuplicateJSONFields(raw); err != nil {
+		details := map[string]any{"reason": "invalid_json"}
+		if syntaxErr, ok := err.(*json.SyntaxError); ok {
+			details["byte_offset"] = syntaxErr.Offset
+		}
+		return nil, invalidToolSchemaError("arguments", details)
+	}
 	var instance any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
