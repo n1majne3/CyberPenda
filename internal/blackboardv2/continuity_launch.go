@@ -103,7 +103,8 @@ func (s *ContinuityService) CreateContinuation(ctx context.Context, req Continua
 	restoreWorkingSnapshot := func() {
 		restorePriorWorkingSnapshotFile(s.runtimeRoot, req.TaskID, workingPath, previousBytes, previousExists)
 	}
-	if err := materializeWorkingSnapshot(s.runtimeRoot, req.TaskID, projection.Bytes); err != nil {
+	if err := s.publishWorkingSnapshot(s.runtimeRoot, req.TaskID, projection.Bytes); err != nil {
+		restoreWorkingSnapshot()
 		return ContinuationLaunch{}, fmt.Errorf("publish initial Working Blackboard Snapshot: %w", err)
 	}
 	grantBound := false
