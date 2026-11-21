@@ -9,6 +9,7 @@ import (
 
 func decodeContractJSON(raw []byte) (any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
 	value, err := decodeContractJSONValue(decoder)
 	if err != nil {
 		return nil, err
