@@ -4,6 +4,7 @@ import { AlertTriangle, CheckCircle2, FileText, FolderOpen, Globe, Plus, Server,
 import { apiGet, apiPost, type Project, type ProjectKind } from "@/lib/api";
 import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Select } from "@/components/ui";
 import { PageContainer } from "@/components/shared";
+import { notifyWorkspaceNavigationChanged } from "@/lib/workspaceNavigation";
 
 export function ProjectListPage() {
   const [searchParams] = useSearchParams();
@@ -48,6 +49,7 @@ export function ProjectListPage() {
 	if (!name.trim() || !kind) return;
     try {
       await apiPost<Project>("/api/projects", { name, kind, scope: {} });
+      notifyWorkspaceNavigationChanged();
       setName("");
 	  setKind("");
       dismissCreateForm();
