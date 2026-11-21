@@ -2,7 +2,7 @@ const icons={shield:'<path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6Z"/><path d="m8 1
 const icon=name=>`<svg viewBox="0 0 24 24" aria-hidden="true">${icons[name]||icons.file}</svg>`;
 const esc=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state={kind:'pentest',protocol:'working_graph',taskFilter:'All',draftTasks:[],savedScope:null,sent:[],archived:false};
-const pages={overview:'Overview',projects:'Projects',sessions:'Sessions',archived:'Archived Sessions',session:'Session', 'session-board':'Session Blackboard',tasks:'Tasks',launch:'New task',task:'Task',blackboard:'Blackboard',facts:'Facts',findings:'Findings',evidence:'Evidence',report:'Report',solution:'Solution',scope:'Scope',challenges:'Challenge history',profiles:'Runtime profiles',providers:'Model providers',credentials:'Credentials',skills:'Skills'};
+const pages={overview:'Overview',projects:'Projects',sessions:'Sessions','new-session':'New Session',archived:'Archived Sessions',session:'Session', 'session-board':'Session Blackboard',tasks:'Tasks',launch:'New task',task:'Task',blackboard:'Blackboard',facts:'Facts',findings:'Findings',evidence:'Evidence',report:'Report',solution:'Solution',scope:'Scope',challenges:'Challenge history',profiles:'Runtime profiles',providers:'Model providers',credentials:'Credentials',skills:'Skills'};
 let view='overview',toastTimer;
 const path=key=>`#${key}`;
 const nav=(key,label,i,extra='')=>`<a class="nav-link ${view===key?'active':''}" href="${path(key)}" ${view===key?'aria-current="page"':''}>${icon(i)}<span>${label}</span>${extra}</a>`;
