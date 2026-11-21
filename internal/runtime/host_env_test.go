@@ -4,11 +4,19 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
 	"pentest/internal/task"
 )
+
+func skipUnlessPOSIXShell(t *testing.T) {
+	t.Helper()
+	if goruntime.GOOS == "windows" {
+		t.Skip("POSIX shell process doubles require Unix")
+	}
+}
 
 func TestBuildHostProcessEnvStripsDaemonSecretsAndDeduplicates(t *testing.T) {
 	t.Setenv("PENTEST_AUTH_TOKEN", "daemon-secret-token")
@@ -44,6 +52,7 @@ func TestBuildHostProcessEnvStripsDaemonSecretsAndDeduplicates(t *testing.T) {
 }
 
 func TestCommandAdapterStripsDaemonAuthTokenFromChildEnv(t *testing.T) {
+	skipUnlessPOSIXShell(t)
 	t.Setenv("PENTEST_AUTH_TOKEN", "daemon-secret-must-not-leak")
 	outFile := filepath.Join(t.TempDir(), "child-env.txt")
 	adapter := NewCommandAdapter(CommandAdapterConfig{
@@ -69,6 +78,7 @@ func TestCommandAdapterStripsDaemonAuthTokenFromChildEnv(t *testing.T) {
 }
 
 func TestDockerCLISandboxBridgeDockerPassesCreateEnvWithoutArgvLeak(t *testing.T) {
+	skipUnlessPOSIXShell(t)
 	dir := t.TempDir()
 	outFile := filepath.Join(dir, "captured.txt")
 	fakeDocker := filepath.Join(dir, "docker")
@@ -104,6 +114,7 @@ func TestDockerCLISandboxBridgeDockerPassesCreateEnvWithoutArgvLeak(t *testing.T
 }
 
 func TestDockerCreateDoesNotOverrideHostDockerHostFromCreateEnv(t *testing.T) {
+	skipUnlessPOSIXShell(t)
 	t.Setenv("DOCKER_HOST", "unix:///var/run/host-daemon.sock")
 	dir := t.TempDir()
 	outFile := filepath.Join(dir, "captured.txt")
@@ -170,6 +181,7 @@ func TestDockerCreateDoesNotOverrideHostDockerHostFromCreateEnv(t *testing.T) {
 }
 
 func TestCommandAdapterRedactsStdoutAndStderrSecrets(t *testing.T) {
+	skipUnlessPOSIXShell(t)
 	opaqueSecret := "opaque-grant-secret-9f8e7d6c5b"
 	adapter := NewCommandAdapter(CommandAdapterConfig{
 		Name:    "redact-check",
@@ -202,6 +214,7 @@ func TestCommandAdapterRedactsStdoutAndStderrSecrets(t *testing.T) {
 }
 
 func TestDockerSandboxAdapterRedactsStdoutAndStderrSecrets(t *testing.T) {
+	skipUnlessPOSIXShell(t)
 	dir := t.TempDir()
 	fakeDocker := filepath.Join(dir, "docker")
 	opaqueSecret := "opaque-sandbox-secret-1a2b3c4d"
