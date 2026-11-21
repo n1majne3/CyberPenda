@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
@@ -155,6 +156,7 @@ func TestProjectRuntimeConfigWritesSelectedEndpointBaseURL(t *testing.T) {
 				Fields:   runtimeprofile.Fields{ModelProviderID: provider.ID},
 			}
 			projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+				BlackboardMode: modeskill.ModeDisabled,
 				ModelProviders: providers,
 			})
 			if err != nil {
@@ -238,6 +240,7 @@ func TestModelProviderSnapshotCarriesEndpointProvenanceWithoutSecrets(t *testing
 		Fields:   runtimeprofile.Fields{ModelProviderID: provider.ID},
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode: modeskill.ModeDisabled,
 		ModelProviders: providers,
 	})
 	if err != nil {

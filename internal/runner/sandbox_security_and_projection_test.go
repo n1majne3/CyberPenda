@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 )
@@ -104,7 +105,7 @@ func TestProjectCodexConfigOnlyWritesOpenAIAPIKeyToAuthJSON(t *testing.T) {
 			},
 		},
 	}
-	_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
+	_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled})
 	if err != nil {
 		t.Fatalf("project codex config: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestProjectPiConfigPrefersProviderAPIKeyOverAlphabeticalCredentials(t *test
 			},
 		},
 	}
-	_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
+	_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled})
 	if err != nil {
 		t.Fatalf("project pi config: %v", err)
 	}

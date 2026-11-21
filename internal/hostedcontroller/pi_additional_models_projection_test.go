@@ -14,6 +14,7 @@ import (
 	"pentest/internal/credential"
 	"pentest/internal/hostedcontroller"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -135,6 +136,7 @@ func TestHostedPIAdditionalModelsReachTheProjectedPiRegistry(t *testing.T) {
 		"second-model": {ContextWindow: 200000, MaxOutputTokens: 32000},
 	}, "", nil)
 	materialized, err := runner.MaterializeLaunchCredentials(capturedProfile, runner.ProjectionRequest{
+		BlackboardMode:  modeskill.ModeDisabled,
 		Owner:           ownerContract,
 		Credentials:     credentials,
 		ModelProviders:  providers,
@@ -147,6 +149,7 @@ func TestHostedPIAdditionalModelsReachTheProjectedPiRegistry(t *testing.T) {
 		t.Fatalf("materialized launch credentials = %#v, want both model keys", materialized)
 	}
 	request := runner.ProjectionRequest{
+		BlackboardMode:              modeskill.ModeDisabled,
 		Owner:                       ownerContract,
 		Credentials:                 credentials,
 		ModelProviders:              providers,

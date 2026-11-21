@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 )
@@ -28,7 +29,7 @@ func TestProjectClaudeSettingsUsesInlineAPIKeys(t *testing.T) {
 		},
 	}
 
-	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
+	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled})
 	if err != nil {
 		t.Fatalf("project config: %v", err)
 	}

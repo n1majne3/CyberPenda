@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeprofile"
@@ -50,6 +51,7 @@ func TestProjectRuntimeConfigProjectsRuntimeExtensions(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:    modeskill.ModeDisabled,
 		RuntimeExtensions: registry,
 	})
 	if err != nil {
@@ -91,6 +93,7 @@ func TestProjectRuntimeConfigKeepsCatalogRuntimeExtensionRefs(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:    modeskill.ModeDisabled,
 		RuntimeExtensions: registry,
 	})
 	if err != nil {
@@ -127,6 +130,7 @@ func TestProjectRuntimeConfigRejectsUnknownLocalRuntimeExtensionRefs(t *testing.
 	}
 
 	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:    modeskill.ModeDisabled,
 		RuntimeExtensions: registry,
 	}); err == nil {
 		t.Fatal("expected unknown local runtime extension to fail")

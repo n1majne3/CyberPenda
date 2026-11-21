@@ -12,26 +12,34 @@ import (
 	"pentest/internal/skill"
 )
 
+func validateBlackboardMode(mode modeskill.Mode) error {
+	if !modeskill.Valid(mode) {
+		return fmt.Errorf("invalid Blackboard Mode: %q", mode)
+	}
+	return nil
+}
+
 func projectModeAndUserSkills(layout Layout, req ProjectionRequest) error {
+	if err := validateBlackboardMode(req.BlackboardMode); err != nil {
+		return err
+	}
 	if req.BlackboardProtocol == "fgs" && req.BlackboardMode != modeskill.ModeDisabled {
 		if err := modeskill.RetireGenerated(layout.SkillsRoot); err != nil {
 			return err
 		}
 	}
-	if req.BlackboardMode != "" && req.BlackboardMode != modeskill.ModeDisabled && req.BlackboardProtocol != "fgs" {
+	if req.BlackboardMode != modeskill.ModeDisabled && req.BlackboardProtocol != "fgs" {
 		if _, err := modeskill.Project(layout.SkillsRoot, req.BlackboardMode); err != nil {
 			return err
 		}
 	}
 	for _, bundle := range req.SkillBundles {
-		if req.BlackboardMode != "" {
-			validate := modeskill.ValidateBundleCompatibility
-			if req.BlackboardProtocol == "fgs" {
-				validate = modeskill.ValidateFGSBundleCompatibility
-			}
-			if err := validate(req.BlackboardMode, bundle); err != nil {
-				return err
-			}
+		validate := modeskill.ValidateBundleCompatibility
+		if req.BlackboardProtocol == "fgs" {
+			validate = modeskill.ValidateFGSBundleCompatibility
+		}
+		if err := validate(req.BlackboardMode, bundle); err != nil {
+			return err
 		}
 	}
 	if len(req.SkillBundles) > 0 {
@@ -41,7 +49,7 @@ func projectModeAndUserSkills(layout Layout, req ProjectionRequest) error {
 }
 
 func addModeSkillProjectionPreview(projection *ConfigProjection, mode modeskill.Mode, layout Layout) {
-	if mode == "" || mode == modeskill.ModeDisabled {
+	if mode == modeskill.ModeDisabled {
 		return
 	}
 	spec, err := modeskill.Resolve(mode)
