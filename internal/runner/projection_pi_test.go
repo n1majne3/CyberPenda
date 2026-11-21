@@ -200,6 +200,7 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	want := map[string]bool{
 		"npm:@tintinweb/pi-subagents": true,
 		"npm:pi-web-access":           true,
+		"npm:pi-rtk-optimizer":        true,
 		"npm:pi-mcp-adapter":          true,
 		"npm:pi-subagents":            true,
 	}
@@ -212,8 +213,8 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 			t.Fatalf("expected packages to contain %q, got %#v", ref, settings.Packages)
 		}
 	}
-	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 4 {
-		t.Fatalf("expected packages preview with 4 entries, got %#v", projection.Config["packages"])
+	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 5 {
+		t.Fatalf("expected packages preview with 5 entries, got %#v", projection.Config["packages"])
 	}
 }
 
@@ -287,11 +288,11 @@ func TestProjectPiSettingsIgnoresHostSettings(t *testing.T) {
 		t.Fatalf("defaultThinkingLevel = %#v, want resolved high (never host low)", got)
 	}
 	packages, _ := settings["packages"].([]any)
-	if len(packages) != 2 || packages[0] != "npm:@tintinweb/pi-subagents" || packages[1] != "npm:pi-web-access" {
+	if len(packages) != 3 || packages[0] != "npm:@tintinweb/pi-subagents" || packages[1] != "npm:pi-web-access" || packages[2] != "npm:pi-rtk-optimizer" {
 		t.Fatalf("packages = %#v, want only the built-in defaults (host packages must not leak)", packages)
 	}
-	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 2 {
-		t.Fatalf("expected packages preview with 2 entries, got %#v", projection.Config["packages"])
+	if preview, ok := projection.Config["packages"].([]string); !ok || len(preview) != 3 {
+		t.Fatalf("expected packages preview with 3 entries, got %#v", projection.Config["packages"])
 	}
 }
 
