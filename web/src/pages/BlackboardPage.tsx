@@ -31,13 +31,13 @@ function useBlackboardTab(): { tab: BlackboardTab; recordKey?: string } {
 export function BlackboardPage() {
  const { projectId = "" } = useParams<{ projectId: string }>();
  const [project, setProject] = useState<Project>();
- const [error, setError] = useState("");
+ const [error, setError] = useState<{ projectId: string; message: string } | null>(null);
  useEffect(() => {
   let active = true;
-  apiGet<Project>(`/api/projects/${projectId}`).then((value) => { if (active) setProject(value); }).catch((err: unknown) => { if (active) setError(err instanceof Error ? err.message : "Cannot read Project"); });
+  apiGet<Project>(`/api/projects/${projectId}`).then((value) => { if (active) setProject(value); }).catch((err: unknown) => { if (active) setError({ projectId, message: err instanceof Error ? err.message : "Cannot read Project" }); });
   return () => { active = false; };
  }, [projectId]);
- if (error) return <p role="alert">{error}</p>;
+ if (error?.projectId === projectId) return <p role="alert">{error.message}</p>;
  if (!project || project.id !== projectId) return <p className="p-6">Loading Blackboard…</p>;
  if (project.blackboard_protocol === "fgs") return <ProjectPageShell title="Blackboard"><FGSBoard key={projectId} scope="projects" id={projectId} /></ProjectPageShell>;
  return <LegacyBlackboardPage />;

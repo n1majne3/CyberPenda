@@ -51,3 +51,16 @@ it("keeps an older page visible during live updates and rejects a stale owner re
   expect(screen.getByText("second owner")).toBeVisible();
   expect(screen.queryByText("wrong owner")).not.toBeInTheDocument();
 });
+
+it("waits before it retries a failed live update", async () => {
+  const fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("after=")) return new Response(JSON.stringify({ error: "daemon down" }), { status: 500, headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ entries: [{ id: "new", seq: 40, kind: "message", text: "recent child work" }], cursor: 40, before: 40, has_older: false, has_newer: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+  });
+  vi.stubGlobal("fetch", fetch);
+  render(<SubagentHistory history="/api/owner/children/a" renderItems={(items) => items.map((item) => <p key={item.id}>{item.text}</p>)} />);
+  expect(await screen.findByRole("alert")).toBeInTheDocument();
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 200)); });
+  expect(fetch.mock.calls.filter(([url]) => String(url).includes("after=")).length).toBe(1);
+});
