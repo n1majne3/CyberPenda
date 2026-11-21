@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	detailedjsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 
 	"pentest/internal/blackboardv2grammar"
 )
@@ -68,7 +69,7 @@ type Harness struct {
 	manifest    manifest
 	definitions map[string]fixtureDefinition
 	schemaBytes []byte
-	resolved    map[string]*jsonschema.Resolved
+	resolved    map[string]*detailedjsonschema.Schema
 }
 
 // InputExtensionError reports one closed Contract rule that JSON Schema
@@ -111,7 +112,7 @@ func NewHarness() (*Harness, error) {
 		manifest:    m,
 		definitions: make(map[string]fixtureDefinition, len(m.Fixtures)),
 		schemaBytes: schemaBytes,
-		resolved:    make(map[string]*jsonschema.Resolved),
+		resolved:    make(map[string]*detailedjsonschema.Schema),
 	}
 	for _, definition := range m.Fixtures {
 		if definition.Name == "" || definition.Schema == "" || (definition.Path == "" && len(definition.Value) == 0) {
@@ -357,16 +358,8 @@ func (h *Harness) ValidateFixture(name string) error {
 func (h *Harness) Validate(schemaName string, raw []byte) error {
 	resolved, ok := h.resolved[schemaName]
 	if !ok {
-		var schema jsonschema.Schema
-		if err := json.Unmarshal(h.schemaBytes, &schema); err != nil {
-			return fmt.Errorf("decode Blackboard v2 schema: %w", err)
-		}
-		if _, exists := schema.Defs[schemaName]; !exists {
-			return fmt.Errorf("unknown Blackboard v2 schema %q", schemaName)
-		}
-		schema.Ref = "#/$defs/" + schemaName
 		var err error
-		resolved, err = schema.Resolve(nil)
+		resolved, err = compileContractSchema(h.schemaBytes, schemaName)
 		if err != nil {
 			return fmt.Errorf("resolve Blackboard v2 schema %q: %w", schemaName, err)
 		}
