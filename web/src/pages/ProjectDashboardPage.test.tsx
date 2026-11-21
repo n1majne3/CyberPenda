@@ -92,6 +92,116 @@ const tasks = {
 };
 
 describe("ProjectDashboardPage", () => {
+  function conversionApi(kind = "pentest", fail?: "preview" | "confirm", blocked = false) {
+    const target = kind === "pentest" ? "ctf_challenge" : "pentest";
+    let failed = false;
+    let checked = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const preview = url.endsWith("/kind-conversion/preview");
+      const confirm = url.endsWith("/kind-conversion");
+      if ((preview && fail === "preview" || confirm && fail === "confirm") && !failed) {
+        failed = true;
+        return new Response(JSON.stringify({ error: "Please try again" }), { status: 503 });
+      }
+      if (preview) {
+        const blockers = blocked && !checked ? [
+          { code: "active_tasks", count: 1 },
+          { code: "incompatible_findings", count: 2 },
+          { code: "incompatible_solutions", count: 3 },
+        ] : [];
+        checked = true;
+        return new Response(JSON.stringify({ current_kind: kind, target_kind: target, ready: !blockers.length, blockers }));
+      }
+      if (confirm) {
+        expect(JSON.parse(String(init?.body))).toEqual({ target_kind: target, confirm: true });
+        return new Response(JSON.stringify({ ...project, kind: target }));
+      }
+      if (url.endsWith("/dashboard")) return new Response(JSON.stringify(dashboard));
+      if (url.endsWith("/tasks")) return new Response(JSON.stringify(tasks));
+      return new Response(JSON.stringify({ ...project, kind }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it.each(["preview", "confirm"] as const)("keeps the Dashboard and recovers from a %s failure", async (failure) => {
+    const user = userEvent.setup();
+    conversionApi("pentest", failure);
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /change project kind/i }));
+    if (failure === "confirm") await user.click(screen.getByRole("button", { name: /confirm conversion to/i }));
+    const card = screen.getByRole("region", { name: "Project kind" });
+    expect(within(card).getByRole("alert")).toHaveTextContent("Please try again");
+    expect(screen.getByRole("heading", { name: project.name })).toBeVisible();
+    expect(screen.queryByText("Couldn't load dashboard")).not.toBeInTheDocument();
+    await user.click(within(card).getByRole("button", { name: /retry/i }));
+    if (failure === "preview") await user.click(screen.getByRole("button", { name: /confirm conversion to/i }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Project Kind changed to CTF Challenge.");
+  });
+
+  it("confirms conversion from CTF Challenge to Pentest", async () => {
+    const user = userEvent.setup();
+    conversionApi("ctf_challenge");
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /change project kind/i }));
+    expect(screen.getByText("CTF Challenge → Pentest")).toBeVisible();
+    expect(screen.getByText(/Only Project Kind changes/)).toHaveTextContent("Historical Task Types stay unchanged. Findings and Solutions are not converted into each other.");
+    await user.click(screen.getByRole("button", { name: "Confirm conversion to Pentest" }));
+    expect(await screen.findByText("Pentest Project")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Project Kind changed to Pentest.");
+  });
+
+  it("links each blocker and re-checks before confirmation", async () => {
+    const user = userEvent.setup();
+    conversionApi("pentest", undefined, true);
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /change project kind/i }));
+    expect(screen.queryByRole("button", { name: /confirm conversion/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Review Tasks" })).toHaveAttribute("href", "/projects/project-1/tasks");
+    expect(screen.getByRole("link", { name: "Review Findings" })).toHaveAttribute("href", "/projects/project-1/findings");
+    expect(screen.getByRole("link", { name: "Review Solutions in Blackboard" })).toHaveAttribute("href", "/projects/project-1/blackboard");
+    await user.click(screen.getByRole("button", { name: "Re-check" }));
+    expect(await screen.findByRole("button", { name: "Confirm conversion to CTF Challenge" })).toBeEnabled();
+  });
+
+  it("cancels with the keyboard without a conversion request", async () => {
+    const user = userEvent.setup();
+    const fetchMock = conversionApi();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: /change project kind/i }));
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    cancel.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByText("Pentest → CTF Challenge")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /change project kind/i })).toHaveFocus();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/kind-conversion"))).toHaveLength(0);
+  });
+
+  it("shows request progress and prevents double submission", async () => {
+    const user = userEvent.setup();
+    const normalFetch = conversionApi();
+    let resolveRequest: (response: Response) => void = () => {};
+    const pendingFetch = vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      String(input).includes("/kind-conversion")
+        ? new Promise<Response>((resolve) => { resolveRequest = resolve; })
+        : normalFetch(input, init));
+    vi.stubGlobal("fetch", pendingFetch);
+    renderPage();
+    await user.dblClick(await screen.findByRole("button", { name: /change project kind/i }));
+    expect(screen.getByRole("status")).toHaveTextContent("Checking…");
+    expect(pendingFetch.mock.calls.filter(([url]) => String(url).includes("/kind-conversion"))).toHaveLength(1);
+    resolveRequest(new Response(JSON.stringify({ current_kind: "pentest", target_kind: "ctf_challenge", ready: true, blockers: [] })));
+    const confirm = await screen.findByRole("button", { name: /confirm conversion to/i });
+    await user.dblClick(confirm);
+    expect(screen.getByRole("status")).toHaveTextContent("Converting…");
+    expect(confirm).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(pendingFetch.mock.calls.filter(([url]) => String(url).endsWith("/kind-conversion"))).toHaveLength(1);
+    resolveRequest(new Response(JSON.stringify({ ...project, kind: "ctf_challenge" })));
+    expect(await screen.findByText("CTF Challenge Project")).toBeVisible();
+  });
+
   it("shows a concise loading state before dashboard data resolves", () => {
     vi.stubGlobal(
       "fetch",
@@ -229,8 +339,10 @@ describe("ProjectDashboardPage", () => {
     renderPage();
     await user.click(await screen.findByRole("button", { name: /change project kind/i }));
     expect(await screen.findByText(/conversion is ready/i)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /confirm conversion/i }));
+    expect(screen.getByText("Pentest → CTF Challenge")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /confirm conversion to CTF Challenge/i }));
     expect(await screen.findByText("CTF Challenge Project")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Project Kind changed to CTF Challenge.");
     // The report route does not exist for CTF projects, so the footer button hides.
     expect(screen.queryByRole("link", { name: /open report/i })).not.toBeInTheDocument();
   });
