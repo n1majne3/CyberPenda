@@ -57,9 +57,9 @@ func projectCodexConfig(layout Layout, profile runtimeprofile.Profile, req Proje
 
 	authPath := ""
 	var authPreview map[string]any
-	if len(materialized) > 0 {
+	authDoc := buildCodexAuth(materialized)
+	if len(authDoc) > 0 {
 		authPath = filepath.Join(layout.ProviderHome, "auth.json")
-		authDoc := buildCodexAuth(materialized)
 		if err := writeJSONConfigFile(authPath, authDoc); err != nil {
 			return ConfigProjection{}, err
 		}
@@ -280,13 +280,10 @@ func appendCodexMultiAgentTOML(b *strings.Builder, profile runtimeprofile.Profil
 }
 
 func buildCodexAuth(materialized map[string]string) map[string]string {
-	auth := make(map[string]string, len(materialized))
+	auth := make(map[string]string, 1)
 	for key, value := range materialized {
-		switch strings.ToUpper(key) {
-		case "OPENAI_API_KEY":
+		if strings.EqualFold(key, "OPENAI_API_KEY") {
 			auth["OPENAI_API_KEY"] = value
-		default:
-			auth[key] = value
 		}
 	}
 	return auth

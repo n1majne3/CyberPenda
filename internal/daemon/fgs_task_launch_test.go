@@ -68,8 +68,12 @@ func TestFGSTaskBoundLaunchKeepsInstructionsAndSchema(t *testing.T) {
 			if !ok {
 				t.Fatal("missing sandbox adapter")
 			}
-			if !strings.Contains(strings.Join(args, "\n"), "PENTEST_BLACKBOARD_PROTOCOL=fgs") {
-				t.Fatal("missing FGS process protocol")
+			createEnv, ok := runtime.DockerSandboxCreateEnv(bound.Adapter)
+			if !ok {
+				t.Fatal("missing sandbox create env")
+			}
+			if !strings.Contains(strings.Join(args, "\n"), "PENTEST_BLACKBOARD_PROTOCOL") || createEnv["PENTEST_BLACKBOARD_PROTOCOL"] != "fgs" {
+				t.Fatalf("missing FGS process protocol: env=%q", createEnv["PENTEST_BLACKBOARD_PROTOCOL"])
 			}
 			if _, err := server.buildTaskLaunchPlan(found, "Continue", "", "", "high"); err != nil {
 				t.Fatalf("repeated projection: %v", err)

@@ -52,6 +52,15 @@ func TestBuildSandboxCommandMountsPinnedBlackboardAndScopeReadOnly(t *testing.T)
 	if err != nil {
 		t.Fatalf("prepare layout: %v", err)
 	}
+	pentestDir := filepath.Join(layout.Workdir, ".pentest")
+	if err := os.MkdirAll(pentestDir, 0o700); err != nil {
+		t.Fatalf("mkdir .pentest: %v", err)
+	}
+	for _, file := range []string{"blackboard.json", "scope.json"} {
+		if err := os.WriteFile(filepath.Join(pentestDir, file), []byte("{}"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", file, err)
+		}
+	}
 	command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
 		Layout: layout, Provider: runtimeprofile.ProviderCodex, RuntimeCommand: []string{"codex", "exec"},
 		ReadOnlyTaskFiles: []string{"workdir/.pentest/blackboard.json", "workdir/.pentest/scope.json"},

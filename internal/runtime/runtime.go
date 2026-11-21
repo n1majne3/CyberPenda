@@ -7,7 +7,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -234,15 +233,12 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 	contentEmit := func(kind task.EventKind, payload task.EventPayload) {
 		emitMu.Lock()
 		defer emitMu.Unlock()
-		emit(kind, payload)
+		emit(kind, redactor.RedactKnownSecrets(payload))
 	}
 
 	cmd := exec.CommandContext(ctx, a.config.Program, a.config.Args...)
 	cmd.Dir = a.config.Workdir
-	cmd.Env = os.Environ()
-	for key, value := range a.config.Env {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
+	cmd.Env = buildHostProcessEnv(a.config.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

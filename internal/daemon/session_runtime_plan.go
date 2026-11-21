@@ -197,7 +197,7 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		}
 		adapter = runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
 			Name: string(profile.Provider), ContainerCLI: command.Program, Image: image,
-			CreateArgs: command.Args, SecretValues: runtime.EnvSecretValues(processEnv),
+			CreateArgs: command.Args, CreateEnv: command.Env, SecretValues: runtime.EnvSecretValues(processEnv),
 		})
 	} else {
 		adapter = runtime.NewCommandAdapter(runtime.CommandAdapterConfig{

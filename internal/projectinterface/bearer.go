@@ -15,5 +15,5 @@ func BearerToken(request *http.Request) string {
 			return strings.TrimSpace(token)
 		}
 	}
-	return request.URL.Query().Get("token")
+	return ""
 }

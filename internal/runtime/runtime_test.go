@@ -254,7 +254,10 @@ func TestCommandRuntimeOutputKeepsSecretShapedContent(t *testing.T) {
 		switch kinds[i] {
 		case task.EventKindRuntimeOutput:
 			text, _ := event["text"].(string)
-			if strings.Contains(text, "flag:"+opaque+" env:"+opaque+" shape:bearer secret-echo-token-123456") {
+			if strings.Contains(text, opaque) {
+				t.Fatalf("runtime output leaked known launch secret: %#v", event)
+			}
+			if strings.Contains(text, "flag:[REDACTED] env:[REDACTED] shape:bearer secret-echo-token-123456") {
 				sawContent = true
 			}
 		case task.EventKindLifecycle:

@@ -367,14 +367,19 @@ func TestSessionSandboxProjectsWorkingGraphPathsThroughWorkdirMount(t *testing.T
 	if !ok {
 		t.Fatalf("Session sandbox adapter = %T", plan.Adapter)
 	}
+	createEnv, ok := runtime.DockerSandboxCreateEnv(plan.Adapter)
+	if !ok {
+		t.Fatalf("Session sandbox create env unavailable for %T", plan.Adapter)
+	}
 	env := map[string]string{}
 	for index := 0; index < len(args)-1; index++ {
 		if args[index] != "-e" {
 			continue
 		}
-		parts := strings.SplitN(args[index+1], "=", 2)
-		if len(parts) == 2 {
-			env[parts[0]] = parts[1]
+		if key, value, hasValue := strings.Cut(args[index+1], "="); hasValue {
+			env[key] = value
+		} else if value, exists := createEnv[key]; exists {
+			env[key] = value
 		}
 		index++
 	}

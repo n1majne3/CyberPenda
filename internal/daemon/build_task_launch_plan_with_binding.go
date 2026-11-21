@@ -171,6 +171,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault
 	sandboxImage := ""
+	var commandEnv map[string]string
 	if sandbox {
 		sandboxNetwork = sandboxNetworkMode(created.RunControls)
 		sandboxImage = strings.TrimSpace(profile.Fields.SandboxImage)
@@ -221,6 +222,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 		commandProgram = command.Program
 		commandArgs = command.Args
+		commandEnv = command.Env
 		workdir = ""
 	}
 
@@ -275,6 +277,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			ContainerCLI: commandProgram,
 			Image:        sandboxImage,
 			CreateArgs:   commandArgs,
+			CreateEnv:    commandEnv,
 			SecretValues: runtime.EnvSecretValues(processEnv),
 			Log: func(event runtime.DockerSandboxLogEvent) {
 				server.logDockerSandboxEvent(created, event)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"pentest/internal/modelprovider"
@@ -53,8 +54,9 @@ type ConfigProjection struct {
 // Command is a launch command that can be executed later by the harness or an
 // external worker. Building it is intentionally side-effect free.
 type Command struct {
-	Program string   `json:"program"`
-	Args    []string `json:"args"`
+	Program string            `json:"program"`
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"-"`
 }
 
 // SandboxNetworkMode controls the Docker network boundary used by sandbox
@@ -237,9 +239,9 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 	)
 	if taskVolume == "" {
 		for _, relativePath := range request.ReadOnlyTaskFiles {
-			clean := filepath.Clean(relativePath)
-			if clean == "." || filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-				return Command{}, fmt.Errorf("read-only task file must stay under task root: %q", relativePath)
+			clean, err := confinedReadOnlyTaskFile(taskRoot, relativePath)
+			if err != nil {
+				return Command{}, err
 			}
 			source := filepath.Join(taskRoot, clean)
 			target := "/task/" + filepath.ToSlash(clean)
@@ -296,11 +298,22 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 			"--cap-add", "NET_ADMIN",
 		)
 	}
-	for key, value := range request.ProcessEnv {
-		if strings.TrimSpace(key) == "" {
-			continue
+	var commandEnv map[string]string
+	if len(request.ProcessEnv) > 0 {
+		keys := make([]string, 0, len(request.ProcessEnv))
+		for key := range request.ProcessEnv {
+			if strings.TrimSpace(key) != "" {
+				keys = append(keys, key)
+			}
 		}
-		args = append(args, "-e", key+"="+value)
+		sort.Strings(keys)
+		if len(keys) > 0 {
+			commandEnv = make(map[string]string, len(keys))
+			for _, key := range keys {
+				args = append(args, "-e", key)
+				commandEnv[key] = request.ProcessEnv[key]
+			}
+		}
 	}
 	for _, env := range sandboxProviderEnv(request.Provider, providerDir) {
 		args = append(args, "-e", env.Name+"="+env.Value)
@@ -310,7 +323,7 @@ func BuildSandboxCommand(request SandboxCommandRequest) (Command, error) {
 		args = append(args, hostProxyOnlyEntrypoint)
 	}
 	args = append(args, request.RuntimeCommand...)
-	return Command{Program: program, Args: args}, nil
+	return Command{Program: program, Args: args, Env: commandEnv}, nil
 }
 
 func namedVolumeSubpath(volumeRoot, candidate string) (string, bool) {
