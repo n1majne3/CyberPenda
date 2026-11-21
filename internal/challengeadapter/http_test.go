@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -80,5 +81,21 @@ func jsonResponse(body string) *http.Response {
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestHTTPDriverKeepsErrorTextWhenTokenIsEmpty(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusInternalServerError)
+		_, _ = writer.Write([]byte("boom"))
+	}))
+	defer server.Close()
+	driver := challengeadapter.NewHTTPDriver(challengeadapter.HTTPDriverConfig{
+		Manifest: challengeadapter.Manifest{ID: "test", TokenHeader: "Authorization", Operations: map[string]challengeadapter.Operation{"hint": {Method: http.MethodGet, Path: "/hint"}}},
+		BaseURL:  server.URL,
+	})
+	_, err := driver.Hint(context.Background(), "code")
+	if err == nil || !strings.Contains(err.Error(), "HTTP 500: boom") || strings.Contains(err.Error(), "[REDACTED]") {
+		t.Fatalf("error = %v, want unredacted HTTP 500 body", err)
 	}
 }
