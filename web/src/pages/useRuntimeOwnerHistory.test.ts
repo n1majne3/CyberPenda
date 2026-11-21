@@ -9,9 +9,12 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function renderHistory(loadWorkspace: (signal: AbortSignal) => Promise<unknown>) {
+function renderHistory(
+  loadWorkspace: (signal: AbortSignal) => Promise<unknown>,
+  setError = vi.fn(),
+) {
   const ownerAdapter = { loadWorkspace } as unknown as RuntimeOwnerAdapter;
-  return renderHook(() => {
+  const rendered = renderHook(() => {
     const { historyRef, commitHistory } = useOwnerHistoryState();
     return useRuntimeOwnerHistory({
       ownerID: "task-1",
@@ -25,10 +28,11 @@ function renderHistory(loadWorkspace: (signal: AbortSignal) => Promise<unknown>)
       setOwner: vi.fn(),
       setFinishReadiness: vi.fn(),
       setTitleDraft: vi.fn(),
-      setError: vi.fn(),
+      setError,
       setActionError: vi.fn(),
     });
   });
+  return { ...rendered, setError };
 }
 
 describe("useRuntimeOwnerHistory", () => {
@@ -73,5 +77,40 @@ describe("useRuntimeOwnerHistory", () => {
 
     expect(loadWorkspace).toHaveBeenCalledTimes(2);
     expect(signals[0].aborted).toBe(true);
+  });
+
+  it("records a failed poll as pollError without setting the full-page load error", async () => {
+    const loadWorkspace = vi.fn()
+      .mockRejectedValueOnce(new Error("daemon temporarily unavailable"))
+      .mockResolvedValueOnce({
+        owner: { kind: "task", id: "task-1", status: "running" },
+        timeline: [],
+        transcript: [],
+      });
+    const { result, setError } = renderHistory(loadWorkspace);
+
+    await act(async () => { await result.current.loadAll("poll"); });
+
+    expect(setError).not.toHaveBeenCalled();
+    expect(result.current.pollError).toBe("daemon temporarily unavailable");
+
+    await act(async () => { await result.current.loadAll("poll"); });
+
+    expect(result.current.pollError).toBeNull();
+    expect(setError).toHaveBeenLastCalledWith(null);
+  });
+
+  it("sets the full-page load error when an initial load fails and clears stale pollError", async () => {
+    const loadWorkspace = vi.fn()
+      .mockRejectedValueOnce(new Error("poll hiccup"))
+      .mockRejectedValueOnce(new Error("task not found"));
+    const { result, setError } = renderHistory(loadWorkspace);
+
+    await act(async () => { await result.current.loadAll("poll"); });
+    expect(result.current.pollError).toBe("poll hiccup");
+
+    await act(async () => { await result.current.loadAll("initial"); });
+    expect(setError).toHaveBeenCalledWith("task not found");
+    expect(result.current.pollError).toBeNull();
   });
 });

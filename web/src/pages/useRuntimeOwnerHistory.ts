@@ -55,6 +55,7 @@ export function useRuntimeOwnerHistory({
   const activeViewRef = useRef(activeView);
   const timelineAtTailRef = useRef(true);
   const timelineViewport = useRef<HTMLDivElement>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
   useEffect(() => {
     ownerIDRef.current = ownerID;
     activeViewRef.current = activeView;
@@ -70,6 +71,7 @@ export function useRuntimeOwnerHistory({
     const generation = ++loadGeneration.current;
     const requestOwner = ownerID;
     const before = historyRef.current;
+    if (mode === "initial") setPollError(null);
     try {
       const loaded = await ownerAdapter.loadWorkspace(controller.signal, mode, before);
       // A response can merge only when its owner identity and request
@@ -106,11 +108,17 @@ export function useRuntimeOwnerHistory({
         mode === "poll" ? next.transcript.length - latest.transcript.length : 0,
       );
       setError(null);
+      setPollError(null);
     } catch (e) {
       if (controller.signal.aborted || generation !== loadGeneration.current || requestOwner !== ownerIDRef.current) {
         return;
       }
-      setError((e as Error).message);
+      if (mode === "poll") {
+        setPollError((e as Error).message);
+      } else {
+        setError((e as Error).message);
+        setPollError(null);
+      }
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
     }
@@ -257,6 +265,7 @@ export function useRuntimeOwnerHistory({
 
   return {
     abortRef,
+    pollError,
     timelineViewport,
     resetTimelineTail,
     loadAll,

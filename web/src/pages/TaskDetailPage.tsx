@@ -88,6 +88,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
 
   const {
     abortRef,
+    pollError,
     timelineViewport,
     resetTimelineTail,
     loadAll,
@@ -278,7 +279,13 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
         navigate={navigate}
       />
 
-      <RuntimeOwnerNotices owner={owner} focusMode={focusMode} finishReadiness={finishReadiness} />
+      <RuntimeOwnerNotices
+        owner={owner}
+        focusMode={focusMode}
+        finishReadiness={finishReadiness}
+        pollError={pollError}
+        onRetryPoll={() => void loadAll("poll")}
+      />
 
       <RuntimeOwnerViewTabs
         activeView={activeView}
