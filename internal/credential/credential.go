@@ -24,13 +24,10 @@ var (
 	secretLikeEnvPattern = regexp.MustCompile(`(?i)(^sk-|^tp-|bearer\s+|api[_-]?key=|token=|secret=|[=/])`)
 )
 
-// Scope identifies where a binding lives: global or project.
 type Scope string
 
 const (
-	// ScopeGlobal applies to all projects unless overridden.
-	ScopeGlobal Scope = "global"
-	// ScopeProject applies to one project and overrides the global binding.
+	ScopeGlobal  Scope = "global"
 	ScopeProject Scope = "project"
 )
 
@@ -67,7 +64,6 @@ var sourceKinds = map[string]bool{
 // and can be sent back to preserve the current stored value.
 const ConfiguredSourceSentinel = "[configured]"
 
-// Binding maps a credential reference to its source at a given scope.
 type Binding struct {
 	ID            string    `json:"id"`
 	CredentialRef string    `json:"credential_ref"`
@@ -79,33 +75,25 @@ type Binding struct {
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
-// Resolution is the result of resolving a credential reference for a project.
 type Resolution struct {
 	CredentialRef string   `json:"credential_ref"`
 	Binding       *Binding `json:"binding,omitempty"`
 	Source        *Source  `json:"source,omitempty"`
-	// Disabled is true when a project explicitly disabled the binding, which
-	// also blocks fallback to the global binding.
-	Disabled bool `json:"disabled,omitempty"`
-	// Found is false when neither a project nor global binding exists.
-	Found bool `json:"found,omitempty"`
+	Disabled      bool     `json:"disabled,omitempty"`
+	Found         bool     `json:"found,omitempty"`
 }
 
-// ErrNotFound is returned when no binding matches.
 var ErrNotFound = errors.New("credential binding not found")
 
-// Sentinel validation errors.
 var (
 	ErrMissingCredentialRef = errors.New("credential_ref is required")
 	ErrInvalidSourceKind    = errors.New("source kind is not supported")
 )
 
-// Service implements credential binding business rules against SQLite.
 type Service struct {
 	db *store.DB
 }
 
-// NewService returns a Service backed by the given database.
 func NewService(db *store.DB) *Service {
 	return &Service{db: db}
 }
@@ -175,12 +163,10 @@ func (s *Service) Upsert(credentialRef string, scope Scope, scopeID string, sour
 	return s.find(credentialRef, scope, scopeID)
 }
 
-// ListGlobal returns all global bindings.
 func (s *Service) ListGlobal() ([]Binding, error) {
 	return s.list(scopeFilter{scope: ScopeGlobal})
 }
 
-// ListForProject returns all project-scoped bindings for a project.
 func (s *Service) ListForProject(projectID string) ([]Binding, error) {
 	return s.list(scopeFilter{scope: ScopeProject, scopeID: projectID})
 }
@@ -201,9 +187,6 @@ func (s *Service) Delete(id string) error {
 	return nil
 }
 
-// Resolve returns the resolution for a credential reference for a project.
-// Resolution order: project binding (overrides, including disable) → global
-// binding → not found. A disabled project binding blocks global fallback.
 func (s *Service) Resolve(credentialRef string, projectID string) (Resolution, error) {
 	credentialRef = strings.TrimSpace(credentialRef)
 	if credentialRef == "" {
@@ -333,7 +316,6 @@ func validateEnvSourceValue(value string) error {
 	return nil
 }
 
-// SanitizeBinding returns a copy safe for API responses.
 func SanitizeBinding(binding Binding) Binding {
 	if binding.Source.Kind == SourceLiteral && strings.TrimSpace(binding.Source.Value) != "" {
 		binding.Source.Value = ConfiguredSourceSentinel
@@ -341,7 +323,6 @@ func SanitizeBinding(binding Binding) Binding {
 	return binding
 }
 
-// SanitizeBindings returns copies safe for API responses.
 func SanitizeBindings(bindings []Binding) []Binding {
 	if bindings == nil {
 		return nil
@@ -377,11 +358,6 @@ func scanBinding(row scanner) (Binding, error) {
 	if err := decode(sourceJSON, &found.Source); err != nil {
 		return Binding{}, fmt.Errorf("decode source: %w", err)
 	}
-	// Legacy bindings created before the UI sent destination_env have no value
-	// for literal sources, which would make preflight and projection fail.
-	// Backfill the credential_ref as the runtime env var name (the established
-	// convention for *_API_KEY refs). Env sources keep their own fallback to
-	// Value.
 	if found.Source.Kind != SourceEnv && strings.TrimSpace(found.Source.DestinationEnv) == "" {
 		found.Source.DestinationEnv = found.CredentialRef
 	}

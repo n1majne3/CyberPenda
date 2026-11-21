@@ -93,15 +93,9 @@ func TestResolveUsesGlobalBindingByDefault(t *testing.T) {
 	}
 }
 
-// TestLegacyLiteralBindingBackfillsDestinationEnv pins the data-migration
-// behavior for bindings created before the UI sent destination_env: a literal
-// (or file/command) source without a destination_env defaults to its
-// credential_ref on load, so preflight and projection do not break for
-// existing *_API_KEY bindings.
 func TestLegacyLiteralBindingBackfillsDestinationEnv(t *testing.T) {
 	service := newTestService(t)
 
-	// Literal binding with NO destination_env — the pre-fix UI shape.
 	if _, err := service.Upsert("HUB_API_KEY", credential.ScopeGlobal, "", credential.Source{Kind: credential.SourceLiteral, Value: "sk-legacy"}, false); err != nil {
 		t.Fatalf("upsert legacy literal: %v", err)
 	}
@@ -127,10 +121,6 @@ func TestLegacyLiteralBindingBackfillsDestinationEnv(t *testing.T) {
 	}
 }
 
-// TestEnvSourceKeepsValueFallbackDestinationEnv confirms env sources still
-// fall back to their host variable name (Value), not the credential_ref, when
-// resolving the runtime env var name. The backfill in scanBinding only touches
-// literal/file/command sources.
 func TestEnvSourceKeepsValueFallbackDestinationEnv(t *testing.T) {
 	t.Setenv("HOST_VAR", "host-secret")
 	service := newTestService(t)
@@ -151,7 +141,6 @@ func TestEnvSourceKeepsValueFallbackDestinationEnv(t *testing.T) {
 		t.Fatalf("expected env source stored destination_env to stay empty, got %q", globals[0].Source.DestinationEnv)
 	}
 
-	// Resolution must still project under HOST_VAR (the Value fallback).
 	envName, _, err := credential.ResolveSourceEnv(globals[0].Source)
 	if err != nil {
 		t.Fatalf("resolve source env: %v", err)
@@ -179,7 +168,6 @@ func TestResolveProjectOverrideWins(t *testing.T) {
 		t.Fatalf("expected project override to win, got %#v", res.Source)
 	}
 
-	// A different project still falls back to the global binding.
 	resOther, err := service.Resolve("codex-api-key", "project-2")
 	if err != nil {
 		t.Fatalf("resolve other: %v", err)
@@ -329,9 +317,6 @@ func TestDeleteRemovesBinding(t *testing.T) {
 	}
 }
 
-// TestUpsertRejectsCommandAndFileSources pins the source-kind simplification:
-// command (potential host RCE) and file sources are no longer supported kinds
-// and are refused at the upsert boundary.
 func TestUpsertRejectsCommandAndFileSources(t *testing.T) {
 	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "1")
 	service := newTestService(t)

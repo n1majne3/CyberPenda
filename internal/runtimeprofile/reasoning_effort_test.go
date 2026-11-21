@@ -47,7 +47,6 @@ func TestNormalizeReasoningEffortRejectsUnknownValues(t *testing.T) {
 }
 
 func TestResolveRequestedReasoningEffortPrecedence(t *testing.T) {
-	// Precedence: turn selection → launch override → profile default → high.
 	got, err := runtimeprofile.ResolveRequestedReasoningEffort("max", "low", "medium")
 	if err != nil || got != runtimeprofile.ReasoningEffortMax {
 		t.Fatalf("turn selection should win, got %q err=%v", got, err)

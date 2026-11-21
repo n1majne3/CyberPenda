@@ -1,7 +1,5 @@
 import type { EventColor, TimelineItem } from "./types";
 
-// Providers sometimes decorate reasoning text with ANSI SGR color codes (pi
-// stores them verbatim). Strip CSI and OSC sequences for display.
 // eslint-disable-next-line no-control-regex
 const ANSI_PATTERN = /\x1b\[[0-9;:?!]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 

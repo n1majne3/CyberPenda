@@ -15,7 +15,6 @@ import (
 	"pentest/internal/transcript"
 )
 
-// fakeInnerAdapter is a no-op adapter used to isolate the tail decorator.
 type fakeInnerAdapter struct{}
 
 func (fakeInnerAdapter) Name() string { return "pi" }
@@ -111,7 +110,6 @@ func TestPiSessionTailEmitsAppendedLines(t *testing.T) {
 
 	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
 
-	// The session dir + file do not exist yet; create them then append lines.
 	sessionFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_abc.jsonl")
 	writeSessionLine(t, sessionFile, `{"type":"session","version":3}`)
 	writeSessionLine(t, sessionFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}`)
@@ -157,9 +155,6 @@ func TestPiSessionTailProjectsReasoningBlock(t *testing.T) {
 	}
 }
 
-// TestPiSessionTailKeepsReasoningUnredacted pins issue #288: tailed Pi session
-// lines are LLM output and must reach the event store byte-for-byte, even when
-// the text matches a secret shape.
 func TestPiSessionTailKeepsReasoningUnredacted(t *testing.T) {
 	root := t.TempDir()
 	sessionDir := filepath.Join(root, "sessions", "--task-workdir--")
@@ -308,7 +303,6 @@ func TestPiSessionTailFollowsSubagentSessionFiles(t *testing.T) {
 	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
 	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
 
-	// Parent session appears first.
 	parentFile := filepath.Join(sessionDir, "2026-06-19T12-11-46-221Z_parent.jsonl")
 	writeSessionLine(t, parentFile, sessionHeaderLine(t, "sess-parent", ""))
 	writeSessionLine(t, parentFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"parent working"}]}}`)
@@ -393,7 +387,6 @@ func TestPiSessionTailSkipsSubagentSessionFiles(t *testing.T) {
 	writeSessionLine(t, grandchildFile, sessionHeaderLine(t, "sess-grandchild", childFile))
 	writeSessionLine(t, grandchildFile, `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"nested work"}]}}`)
 
-	// Allow several poll intervals; no child lines may ever appear.
 	time.Sleep(400 * time.Millisecond)
 	for _, e := range getEmits() {
 		text, _ := e.payload["text"].(string)
@@ -427,7 +420,6 @@ func TestPiSessionTailRetriesIncompleteHeader(t *testing.T) {
 	emitCalls, getEmits, _ := collectEmits(func(task.EventKind, task.EventPayload) {})
 	go func() { _ = adapter.Run(ctx, "goal", emitCalls) }()
 
-	// Let discovery observe the incomplete file before its first record lands.
 	time.Sleep(250 * time.Millisecond)
 	completeHeader := sessionHeaderLine(t, "sess-parent", "")
 	writeSessionLine(t, sessionFile, strings.TrimPrefix(completeHeader, `{"type":"session"`))
@@ -463,7 +455,6 @@ func TestPiSessionTailDoesNotReopenAliasedSessionFile(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "real"), aliasRoot); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	// Point the tailer at the aliased dir while files live under the real dir.
 	aliasDir := filepath.Join(aliasRoot, "sessions", "--task-workdir--")
 
 	go func() { _ = runtime.NewPiSessionTailAdapter(fakeInnerAdapter{}, aliasDir).Run(ctx, "goal", emitCalls) }()

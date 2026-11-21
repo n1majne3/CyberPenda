@@ -20,8 +20,6 @@ var (
 	ErrInvalidSnapshot        = errors.New("runtime configuration snapshot is invalid")
 )
 
-// LaunchSelection is the mutually exclusive input accepted by Preflight and
-// Runtime Owner creation. ModelOverride is only a legacy request alias.
 type LaunchSelection struct {
 	RuntimeProfileID   string `json:"runtime_profile_id,omitempty"`
 	RuntimePluginID    string `json:"runtime_plugin_id,omitempty"`
@@ -77,7 +75,6 @@ type RuntimeConfigurationSnapshot struct {
 	ConfigProjection   map[string]any         `json:"config_projection,omitempty"`
 }
 
-// Summary is the stable Task/Session API view of the latest Snapshot.
 type Summary struct {
 	RuntimeProfileID   string `json:"runtime_profile_id,omitempty"`
 	RuntimeProfileName string `json:"runtime_profile_name,omitempty"`
@@ -114,7 +111,6 @@ type ResolveRequest struct {
 	ConfigProjection       map[string]any
 }
 
-// Resolve creates a detached Snapshot. It performs no database writes.
 func Resolve(req ResolveRequest) (RuntimeConfigurationSnapshot, error) {
 	selection := normalizeSelection(req.Selection)
 	profileSelected := selection.RuntimeProfileID != ""
@@ -202,10 +198,6 @@ func validate(snapshot RuntimeConfigurationSnapshot) error {
 	if snapshot.SnapshotVersion != SnapshotVersion || strings.TrimSpace(snapshot.RuntimePluginID) == "" {
 		return ErrInvalidSnapshot
 	}
-	// Direct configuration is always a complete structured selection. An
-	// explicit legacy Runtime Profile can instead carry provider-native fields
-	// in Settings; keep that captured state readable without inventing a global
-	// Model Provider identity.
 	if snapshot.RuntimeProfile == nil && strings.TrimSpace(snapshot.TurnSelection.Model) == "" {
 		return ErrInvalidSnapshot
 	}

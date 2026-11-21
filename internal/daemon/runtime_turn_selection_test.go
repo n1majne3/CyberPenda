@@ -24,10 +24,6 @@ import (
 
 var errUnsupportedEffortForTest = errors.New("reasoning effort max is not supported for this model")
 
-// #145 primary seam: real domain services + SQLite + fake provider session.
-// Same-provider model/effort changes stay on the existing Codex session with a
-// complete Runtime Turn Selection and no Runtime Config Version.
-
 func TestCodexNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testing.T) {
 	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "codex-thread-1",
@@ -525,8 +521,6 @@ func TestCodexNativeSteerUnsupportedEffortFailsTurnWithoutDowngrade(t *testing.T
 }
 
 func TestCurrentTurnSelectionUsesCapturedSnapshotNotEmptyProfileFields(t *testing.T) {
-	// Launch-resolved / legacy profiles may leave ModelProviderID empty on the
-	// Profile while the captured Runtime Config snapshot holds the real values.
 	server, err := NewServer(Config{DBPath: filepath.Join(t.TempDir(), "pentest.db"), DisableBuiltinSkills: true})
 	if err != nil {
 		t.Fatal(err)
@@ -781,10 +775,6 @@ func TestQueueSteerProviderChangeCreatesConfigVersionAndKeepsMessage(t *testing.
 		t.Fatalf("expected new config version, before=%d after=%d", len(versionsBefore), len(versionsAfter))
 	}
 }
-
-// #146 primary seam for Claude Code: same fake provider session path as Codex,
-// with a Claude Runtime Profile so acceptance proves shared turn selection
-// reaches the Claude provider-session request boundary.
 
 func TestClaudeNativeSteerSameProviderModelAndEffortUsesExistingSession(t *testing.T) {
 	session := fakeprovider.New(fakeprovider.Config{
@@ -1329,7 +1319,6 @@ func TestPiNativeSteerAcceptsCrossProviderWithoutRestart(t *testing.T) {
 	if _, err := server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
 		t.Fatal(err)
 	}
-	// Capture the projected multi-provider set the way Config Projection does.
 	projected := testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)
 	projected["config_projection"] = map[string]any{"projected_model_provider_ids": []string{primary.ID, alternate.ID}}
 	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, projected); err != nil {
@@ -1498,9 +1487,6 @@ func TestPiNativeSteerRejectsProviderOutsideProjectedSet(t *testing.T) {
 	}
 }
 
-// TestPiNativeSteerFailsClosedWithoutProjectedSet records ADR 0015
-// fixed-at-restart semantics: legacy tasks missing projected_model_provider_ids
-// cannot perform arbitrary native cross-provider selection.
 func TestPiNativeSteerFailsClosedWithoutProjectedSet(t *testing.T) {
 	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "pi-session-legacy",
@@ -1557,7 +1543,6 @@ func TestPiNativeSteerFailsClosedWithoutProjectedSet(t *testing.T) {
 	if _, err := server.tasks.UpdateContinuationStatus(continuation.ID, task.StatusRunning); err != nil {
 		t.Fatal(err)
 	}
-	// Legacy runtime config: no projected_model_provider_ids field.
 	legacyProjection := testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox)
 	if _, err := server.tasks.RecordRuntimeConfig(created.ID, profile.ID, legacyProjection); err != nil {
 		t.Fatal(err)
@@ -1828,7 +1813,6 @@ func TestResumeFullSelectionKeepsXHighOverOlderConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HUB_API_KEY", "sk-test")
-	// Bind env for launch-ready if needed — profile uses explicit model.
 	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		ModelProviderID: provider.ID, ModelOverride: "deepseek-v4-flash",
 		ReasoningEffort: "high", BinaryPath: binary,

@@ -91,7 +91,6 @@ func ValidateInputExtensions(value any) error {
 	return validateUTF8ByteLimits(value, "$", "")
 }
 
-// NewHarness loads and validates the embedded contract manifest.
 func NewHarness() (*Harness, error) {
 	manifestBytes, err := contractFiles.ReadFile("contractdata/manifest.json")
 	if err != nil {
@@ -134,7 +133,6 @@ func (h *Harness) Files() fs.FS {
 	return contractFiles
 }
 
-// OpenAPI returns the frozen OpenAPI 3.1 document for Blackboard HTTP v2.
 func (h *Harness) OpenAPI() ([]byte, error) {
 	raw, err := contractFiles.ReadFile("contractdata/openapi.json")
 	if err != nil {
@@ -319,7 +317,6 @@ func (h *Harness) FixtureNames() []string {
 	return names
 }
 
-// Fixture returns the exact JSON value bytes for a named golden fixture.
 func (h *Harness) Fixture(name string) ([]byte, error) {
 	definition, ok := h.definitions[name]
 	if !ok {
@@ -343,7 +340,6 @@ func compactJSON(raw []byte, name string) ([]byte, error) {
 	return compact.Bytes(), nil
 }
 
-// ValidateFixture validates a named golden fixture through its declared schema.
 func (h *Harness) ValidateFixture(name string) error {
 	definition, ok := h.definitions[name]
 	if !ok {

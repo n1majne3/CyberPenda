@@ -31,7 +31,6 @@ func TestSessionReadOnlyGrantCanReadAndCannotWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE sessions SET blackboard_protocol='legacy' WHERE id=?`, found.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +82,6 @@ func TestSessionBlackboardHTTPUsesOwnerLocalSharedV2Semantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first Session: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE sessions SET blackboard_protocol='legacy' WHERE id=?`, first.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +89,6 @@ func TestSessionBlackboardHTTPUsesOwnerLocalSharedV2Semantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create second Session: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE sessions SET blackboard_protocol='legacy' WHERE id=?`, second.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +96,6 @@ func TestSessionBlackboardHTTPUsesOwnerLocalSharedV2Semantics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, projectOwner.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +145,6 @@ func TestSessionBlackboardHTTPUsesOwnerLocalSharedV2Semantics(t *testing.T) {
 		}
 	}
 
-	// The same readable Blackboard Key is valid in another Session and Project.
 	secondResult := sessionBlackboardRequest(t, server, http.MethodPost,
 		"/api/v2/sessions/"+second.ID+"/blackboard/changes", "operator-secret", "second-seed",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:note","type":"entity","record":{"status":"active","kind":"host","name":"other.example"}}]}`)

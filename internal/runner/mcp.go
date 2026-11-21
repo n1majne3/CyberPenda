@@ -43,7 +43,6 @@ func taskContextFromProjection(req ProjectionRequest, provider runtimeprofile.Pr
 	return ctx
 }
 
-// APIEndpointURL returns the daemon API root reachable by a Runtime process.
 func APIEndpointURL(daemonAddr string, sandbox bool) string {
 	host, port := splitListenHostPort(daemonAddr)
 	if sandbox {
@@ -54,7 +53,6 @@ func APIEndpointURL(daemonAddr string, sandbox bool) string {
 	return fmt.Sprintf("http://%s:%s/api", host, port)
 }
 
-// MCPEndpointURL returns the MCP HTTP endpoint reachable from the runtime process.
 func MCPEndpointURL(daemonAddr string, sandbox bool) string {
 	host, port := splitListenHostPort(daemonAddr)
 	if sandbox {

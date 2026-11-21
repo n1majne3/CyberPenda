@@ -6,7 +6,6 @@ import (
 	"unicode"
 )
 
-// Structured field identifiers used when Custom Args redefine CyberPenda controls.
 const (
 	StructuredFieldModel           = "model"
 	StructuredFieldModelProvider   = "model_provider"
@@ -42,7 +41,6 @@ func (e *CustomArgConflictError) Error() string {
 	)
 }
 
-// ErrCustomArgConflict is a sentinel for errors.Is matching.
 var ErrCustomArgConflict = fmt.Errorf("custom argument redefines a structured field")
 
 func (e *CustomArgConflictError) Is(target error) bool {
@@ -69,15 +67,12 @@ func ValidateCustomArgs(provider Provider, args []string) error {
 		// fails closed without rewriting the stored token.
 		head := firstField(token)
 
-		// Codex -c / --config KEY[=VALUE] forms (two-token or combined).
 		if rules.configFlag(head) {
 			assignment := ""
 			consumedNext := false
 			if eq := strings.Index(head, "="); eq >= 0 {
-				// --config=key=value or -c=key=value
 				assignment = head[eq+1:]
 			} else if fields := strings.Fields(token); len(fields) > 1 {
-				// single token: "-c model_reasoning_effort=high"
 				assignment = fields[1]
 			} else if i+1 < len(args) {
 				assignment = args[i+1]
@@ -96,7 +91,6 @@ func ValidateCustomArgs(provider Provider, args []string) error {
 				}
 			}
 			if consumedNext {
-				// Non-conflicting config assignment still consumed the next token.
 				i++
 			}
 			continue
@@ -159,9 +153,9 @@ func firstField(token string) string {
 }
 
 type customArgRules struct {
-	flags        map[string]string // flag -> structured field
-	configKeys   map[string]string // codex config key -> structured field
-	featureNames map[string]string // Codex --enable/--disable feature -> structured field
+	flags        map[string]string
+	configKeys   map[string]string
+	featureNames map[string]string
 }
 
 func (r customArgRules) configFlag(token string) bool {
@@ -187,10 +181,9 @@ func customArgRulesFor(provider Provider) customArgRules {
 				"-m":      StructuredFieldModel,
 			},
 			configKeys: map[string]string{
-				"model":                  StructuredFieldModel,
-				"model_provider":         StructuredFieldModelProvider,
-				"model_reasoning_effort": StructuredFieldReasoningEffort,
-				// Keys owned by the structured Codex multi-agent control.
+				"model":                                     StructuredFieldModel,
+				"model_provider":                            StructuredFieldModelProvider,
+				"model_reasoning_effort":                    StructuredFieldReasoningEffort,
 				"features.multi_agent":                      StructuredFieldCodexMultiAgent,
 				"features.multi_agent_v2":                   StructuredFieldCodexMultiAgent,
 				"features.multi_agent_v2.enabled":           StructuredFieldCodexMultiAgent,
@@ -204,7 +197,6 @@ func customArgRulesFor(provider Provider) customArgRules {
 			},
 		}
 	case ProviderClaudeCode:
-		// Builtin launch injects --model; Claude Code CLI documents --effort.
 		return customArgRules{
 			flags: map[string]string{
 				"--model":  StructuredFieldModel,
@@ -315,7 +307,6 @@ func redactSensitiveValue(value string) string {
 		strings.HasPrefix(lower, "bearer "):
 		return "[REDACTED]"
 	}
-	// Long opaque tokens that are not short model ids / effort enums.
 	if len(v) >= 24 && mostlyOpaque(v) {
 		return "[REDACTED]"
 	}

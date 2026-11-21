@@ -1,22 +1,5 @@
 //go:build ignore
 
-// verify-go-moves reports whether package directories hold exactly the Go
-// declarations they held at a git base commit. Declarations may move between
-// files of the same package. Imports, file names, positions, comments, and
-// formatting are ignored. Additions, removals, content changes, build tag
-// changes, compiler directive changes, package name changes, and relocated
-// init functions or side-effectful package variables are failures.
-//
-// Usage:
-//
-//	go run ./scripts/verify-go-moves.go -base 71e7052 ./internal/store
-//	go run ./scripts/verify-go-moves.go --self-test
-//
-// Exit codes are 0 for pass, 1 for verification failure, and 2 for a git,
-// read, or parse error. This tool proves declaration moves only. It does not
-// infer equivalence for rewritten declarations. File-name build constraints,
-// legacy build tags, and per-file import alias bindings need separate review.
-// Run package tests in addition to this syntactic check.
 package main
 
 import (
@@ -43,9 +26,6 @@ type decl struct {
 	order bool
 }
 
-// side holds one tree state: the declarations per package name, the compiler
-// directives per package name, the file count per package name, and the
-// cross-file layout of order-sensitive declarations per package name.
 type side struct {
 	groups  map[string][]decl
 	dirs    map[string]map[string]int
@@ -117,9 +97,6 @@ func buildTag(fset *token.FileSet, f *ast.File) string {
 	return ""
 }
 
-// adjacentDirectives maps each non-import declaration index to the directive
-// comment group that ends on the line directly above it. Directive groups
-// next to an import block stay file level, because import blocks are ignored.
 func adjacentDirectives(fset *token.FileSet, f *ast.File) map[int]string {
 	out := map[int]string{}
 	for i, d := range f.Decls {
@@ -191,8 +168,6 @@ func declRecords(fset *token.FileSet, d ast.Decl, tag, dir string) []decl {
 			if len(names) == 0 {
 				return nil
 			}
-			// Grouped and ungrouped forms get different keys, so a change
-			// of grouping or of spec order within a block is a failure.
 			key := n.Tok.String() + " " + strings.Join(names, ",")
 			if n.Lparen.IsValid() {
 				key = n.Tok.String() + "block (" + strings.Join(names, ",") + ")"
@@ -203,9 +178,6 @@ func declRecords(fset *token.FileSet, d ast.Decl, tag, dir string) []decl {
 	return nil
 }
 
-// loadSide parses each file twice. The parse without comments yields clean
-// nodes for hashing, because attached doc comments would enter the printed
-// form. The parse with comments yields build tags and directives.
 func loadSide(files [][2]string) *side {
 	s := newSide()
 	for _, f := range files {
@@ -351,9 +323,6 @@ func compareDirectives(b, c map[string]int) []string {
 	return out
 }
 
-// compareOrder fails when an init function or a side-effectful package var
-// lands in a different file, or changes order within a file. Go runs these
-// in file order across a package, so a relocation is not provable as safe.
 func compareOrder(b, c map[string]string) []string {
 	var out []string
 	for _, f := range unionStrKeys(b, c) {
@@ -369,8 +338,6 @@ func compareOrder(b, c map[string]string) []string {
 	return out
 }
 
-// compareImports checks the package-level import union. A pure move
-// redistributes imports across files but never adds or drops one.
 func compareImports(b, c map[string]bool) []string {
 	var out []string
 	for _, k := range unionBoolKeys(b, c) {
@@ -425,8 +392,6 @@ func gitRun(root string, args ...string) string {
 }
 
 func baseFiles(root, base, dir string) [][2]string {
-	// The path expression <base>:<dir> is the tree of that directory, so
-	// ls-tree lists the blobs inside it. An empty dir selects the root tree.
 	prefix := ""
 	if dir != "" {
 		dir += "/"
@@ -478,10 +443,6 @@ func fileCount(s *side) int {
 	return n
 }
 
-// selfTest runs the comparison over in-memory snippets. It proves that file
-// names, positions, comments, formatting, and per-file import distribution
-// are ignored, while a changed function body, a changed raw SQL literal, and
-// a changed import union are failures.
 func selfTest() bool {
 	ok := true
 	base := [][2]string{{"a.go", "package p\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nvar schemaSQL = `CREATE TABLE t (id INTEGER PRIMARY KEY);`\n\nfunc Greet(n string) string {\n\treturn fmt.Sprintf(\"hi %s\", os.Getenv(\"USER\")+n)\n}\n"}}

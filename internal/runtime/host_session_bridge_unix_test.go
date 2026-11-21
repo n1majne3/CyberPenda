@@ -60,7 +60,6 @@ while true; do sleep 0.1; done
 	if err := bridge.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// After close, no process in the group should remain.
 	deadline = time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := syscall.Kill(-pgid, 0); err != nil {

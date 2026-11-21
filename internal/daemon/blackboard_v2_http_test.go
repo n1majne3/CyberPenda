@@ -42,7 +42,6 @@ func TestBlackboardV2HTTPRoutesServeAllCLICommandsWithTrustedContinuation(t *tes
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +78,6 @@ func TestBlackboardV2HTTPRoutesServeAllCLICommandsWithTrustedContinuation(t *tes
 		t.Fatalf("operator seed result = %s", seeded)
 	}
 
-	// Operator read + history.
 	read := mustV2HTTP(t, http.MethodGet, base+"/blackboard/records/entity:http", operatorToken, "operator", "", "")
 	if !bytes.Contains(read, []byte(`"schema":"blackboard-record/v2"`)) || !bytes.Contains(read, []byte(`"key":"entity:http"`)) {
 		t.Fatalf("operator read = %s", read)
@@ -137,12 +135,10 @@ func TestBlackboardV2HTTPRoutesServeAllCLICommandsWithTrustedContinuation(t *tes
 		t.Fatalf("closed history = %d %s", closedHistory.status, closedHistory.body)
 	}
 
-	// Foreign Project path with owner capability is denied before service access.
 	foreign, err := server.projects.Create("Foreign HTTP", "", project.Scope{}, project.Defaults{})
 	if err != nil {
 		t.Fatalf("create foreign Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, foreign.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -155,13 +151,11 @@ func TestBlackboardV2HTTPRoutesServeAllCLICommandsWithTrustedContinuation(t *tes
 		t.Fatalf("foreign Project capability body = %s", foreignDenied.body)
 	}
 
-	// Snapshot route is registered and operator-reachable.
 	snapshot := mustV2HTTP(t, http.MethodGet, base+"/blackboard/snapshot", operatorToken, "operator", "", "")
 	if !bytes.Contains(snapshot, []byte(`"schema":"runtime-blackboard/v2"`)) {
 		t.Fatalf("snapshot = %s", snapshot)
 	}
 
-	// Semantic health is a live operator/UI read under the same v2 surface.
 	health := mustV2HTTP(t, http.MethodGet, base+"/blackboard/health", operatorToken, "operator", "", "")
 	if !bytes.Contains(health, []byte(`"schema":"blackboard-health/v2"`)) || !bytes.Contains(health, []byte(`"attention"`)) {
 		t.Fatalf("health = %s", health)
@@ -189,7 +183,6 @@ func TestBlackboardV2HTTPHealthIsProjectIsolatedDeterministicAndActionable(t *te
 	if err != nil {
 		t.Fatalf("create alpha: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, alpha.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +190,6 @@ func TestBlackboardV2HTTPHealthIsProjectIsolatedDeterministicAndActionable(t *te
 	if err != nil {
 		t.Fatalf("create beta: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, beta.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +214,6 @@ func TestBlackboardV2HTTPHealthIsProjectIsolatedDeterministicAndActionable(t *te
 	if !bytes.Contains(betaHealth, []byte(`"status":"healthy"`)) || bytes.Contains(betaHealth, []byte("objective:alpha-stranded")) {
 		t.Fatalf("beta health not isolated/healthy: %s", betaHealth)
 	}
-	// Deterministic repeated read + ETag conditional.
 	second := mustV2HTTP(t, http.MethodGet, alphaBase+"/blackboard/health", operatorToken, "operator", "", "")
 	if !bytes.Equal(first, second) {
 		t.Fatalf("health not deterministic\nfirst=%s\nsecond=%s", first, second)
@@ -236,7 +227,6 @@ func TestBlackboardV2HTTPHealthIsProjectIsolatedDeterministicAndActionable(t *te
 	if notModified.status != http.StatusNotModified {
 		t.Fatalf("If-None-Match health = %d %s", notModified.status, notModified.body)
 	}
-	// Foreign Project path with mismatched capability is denied.
 	profile, err := server.profiles.Create("Health Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -278,7 +268,6 @@ func TestBlackboardV2HTTPRejectsQueryCredentialAndMissingIdempotency(t *testing.
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +437,6 @@ func TestBlackboardV2HTTPFinishResultIsClosedTypedDTO(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +514,6 @@ func newV2HTTPFixture(t *testing.T) v2HTTPFixture {
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +521,6 @@ func newV2HTTPFixture(t *testing.T) v2HTTPFixture {
 	if err != nil {
 		t.Fatalf("create foreign Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, foreign.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -646,7 +632,6 @@ func TestBlackboardV2HTTPServiceParityForSuccessReplayConflictValidationAndClosu
 	fixture := newV2HTTPFixture(t)
 	ctx := context.Background()
 
-	// Success + exact replay for change match the semantic service.
 	change := blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "http-parity-entity",
 		Changes: []blackboardv2.Change{{
@@ -654,7 +639,6 @@ func TestBlackboardV2HTTPServiceParityForSuccessReplayConflictValidationAndClosu
 			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Parity host", ScopeStatus: "in_scope"},
 		}},
 	}
-	// First apply through HTTP; second request is exact replay.
 	first := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", change.IdempotencyKey,
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:parity","type":"entity","record":{"status":"active","kind":"host","name":"Parity host","scope_status":"in_scope"}}]}`)
 	serviceReplay, err := fixture.server.blackboardV2.ApplyForContinuation(ctx, fixture.project.ID, fixture.continuation.Continuation.ID, change)
@@ -686,7 +670,6 @@ func TestBlackboardV2HTTPServiceParityForSuccessReplayConflictValidationAndClosu
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:parity","type":"entity","record":{"status":"active","kind":"host","name":"Different","scope_status":"in_scope"}}]}`)
 	assertV2ErrorEnvelope(t, altered.status, altered.body, "idempotency_conflict", http.StatusConflict)
 
-	// Detail and history match the service.
 	serviceDetail, err := fixture.server.blackboardV2.ReadCurrent(ctx, fixture.project.ID, "entity:parity")
 	if err != nil {
 		t.Fatalf("service detail: %v", err)
@@ -721,12 +704,10 @@ func TestBlackboardV2HTTPServiceParityForSuccessReplayConflictValidationAndClosu
 		t.Fatalf("history page two = %s", pageTwo)
 	}
 
-	// Stale version → 409 version_conflict with closed envelope.
 	stale := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "http-stale",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"update","key":"entity:parity","version":1,"type":"entity","record":{"name":"stale"}}]}`)
 	assertV2ErrorEnvelope(t, stale.status, stale.body, "version_conflict", http.StatusConflict)
 
-	// The closed Contract classifies record shape errors before Service validation.
 	invalid := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "http-invalid-entity",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:invalid","type":"entity","record":{"status":"active","kind":"host","name":"","scope_status":"in_scope"}}]}`)
 	invalidError := assertV2ErrorEnvelope(t, invalid.status, invalid.body, "invalid_schema", http.StatusBadRequest)
@@ -734,7 +715,6 @@ func TestBlackboardV2HTTPServiceParityForSuccessReplayConflictValidationAndClosu
 		t.Fatalf("invalid Entity path = %q", invalidError.Path)
 	}
 
-	// Project mismatch → 403 authority_denied without foreign data.
 	foreignBase := fixture.httpServer.URL + "/api/v2/projects/" + fixture.foreign.ID
 	mismatch := doV2HTTP(t, http.MethodGet, foreignBase+"/blackboard/records/entity:parity", fixture.continuation.Token, "", "", "")
 	assertV2ErrorEnvelope(t, mismatch.status, mismatch.body, "authority_denied", http.StatusForbidden)
@@ -753,7 +733,6 @@ func TestBlackboardV2HTTPServiceParityForSuccessReplayConflictValidationAndClosu
 
 func TestBlackboardV2HTTPHistoryDefaultLimitAndOpaqueCursor(t *testing.T) {
 	fixture := newV2HTTPFixture(t)
-	// Create more than the default page size (20) of versions.
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "history-create",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:history","type":"entity","record":{"status":"active","kind":"host","name":"v1","scope_status":"in_scope"}}]}`)
 	for version := 1; version <= 22; version++ {
@@ -783,7 +762,6 @@ func TestBlackboardV2HTTPHistoryDefaultLimitAndOpaqueCursor(t *testing.T) {
 
 func TestBlackboardV2HTTPAuthenticatedErrorCarriesSameProjectSyncOnly(t *testing.T) {
 	fixture := newV2HTTPFixture(t)
-	// Peer is behind; operator mutation advances Project revision for the owner path.
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "sync-external",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:sync-http","type":"entity","record":{"status":"active","kind":"host","name":"Sync","scope_status":"in_scope"}}]}`)
 	// Peer's semantic failure attaches same-Project synchronization only.
@@ -814,11 +792,8 @@ func TestBlackboardV2HTTPAuthenticatedErrorCarriesSameProjectSyncOnly(t *testing
 	}
 }
 
-// Issue #117 — parallel Task notice delivers once on the next trusted response,
-// then later responses stay ordinary delta/detail only.
 func TestBlackboardV2HTTPParallelTaskSyncDeliversOnceThenOrdinaryResponses(t *testing.T) {
 	fixture := newV2HTTPFixture(t)
-	// Owner advances shared Project knowledge; peer Continuation stays behind.
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "parallel-owner-entity",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:parallel-http","type":"entity","record":{"status":"active","kind":"host","name":"Parallel","scope_status":"in_scope"}}]}`)
 	want, err := fixture.server.blackboardV2.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
@@ -871,7 +846,6 @@ func TestBlackboardV2HTTPParallelTaskSyncDeliversOnceThenOrdinaryResponses(t *te
 		t.Fatalf("later peer read = %s", second)
 	}
 
-	// Peer opens work, then another external advance, then checkpoint carries sync once.
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "parallel-peer-open",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"objective:parallel","type":"objective","record":{"status":"open","objective":"Observe parallel sync"}},{"op":"create","key":"attempt:parallel","type":"attempt","record":{"status":"open","summary":"Watching"}},{"op":"relate","from":"attempt:parallel","relation":"tests","to":"objective:parallel"}]}`)
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "parallel-external-again",
@@ -881,7 +855,6 @@ func TestBlackboardV2HTTPParallelTaskSyncDeliversOnceThenOrdinaryResponses(t *te
 	if !bytes.Contains(checkpoint, []byte(`"schema":"semantic-change-result/v2"`)) || !bytes.Contains(checkpoint, []byte(`"sync"`)) || !bytes.Contains(checkpoint, []byte(`another_task_changed_shared_project_knowledge`)) {
 		t.Fatalf("checkpoint while pending must attach sync: %s", checkpoint)
 	}
-	// Exact checkpoint response-loss replay redelivers the same sync attachment.
 	checkpointReplay := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:parallel:checkpoint", fixture.peer.Token, "", "parallel-checkpoint-sync",
 		`{"version":1,"summary":"Checkpoint after external change"}`)
 	if !bytes.Equal(checkpoint, checkpointReplay) {
@@ -895,8 +868,6 @@ func TestBlackboardV2HTTPParallelTaskSyncDeliversOnceThenOrdinaryResponses(t *te
 	}
 }
 
-// Issue #117 P1 — lost authenticated HTTP response must redeliver the exact
-// synchronization attachment on Idempotency-Key retry; later keys must not.
 func TestBlackboardV2HTTPResponseLossRetryRedeliversExactSyncAttachment(t *testing.T) {
 	fixture := newV2HTTPFixture(t)
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "loss-open-work",
@@ -943,11 +914,8 @@ func TestBlackboardV2HTTPResponseLossRetryRedeliversExactSyncAttachment(t *testi
 	}
 }
 
-// Issue #117 — conditional GET must not acknowledge-then-discard a pending sync
-// via 304 empty body. When sync is delivered, the response must carry a body.
 func TestBlackboardV2HTTPConditionalDoesNotDiscardAcknowledgedSyncAttachment(t *testing.T) {
 	fixture := newV2HTTPFixture(t)
-	// External write creates a pending notice for the peer Continuation.
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "cond-sync-external",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:cond-sync","type":"entity","record":{"status":"active","kind":"host","name":"Cond","scope_status":"in_scope"}}]}`)
 	want, err := fixture.server.blackboardV2.ProjectRuntimeSnapshot(context.Background(), fixture.project.ID)
@@ -965,7 +933,6 @@ func TestBlackboardV2HTTPConditionalDoesNotDiscardAcknowledgedSyncAttachment(t *
 	if !bytes.Contains(withSync.body, []byte(`"sync"`)) || !bytes.Contains(withSync.body, []byte(`another_task_changed_shared_project_knowledge`)) {
 		t.Fatalf("pending sync conditional missing attachment: %s", withSync.body)
 	}
-	// After acknowledgement, ordinary matching ETag may 304 with empty body.
 	newETag := withSync.header.Get("ETag")
 	if newETag == "" {
 		t.Fatalf("missing ETag after sync delivery")
@@ -976,8 +943,6 @@ func TestBlackboardV2HTTPConditionalDoesNotDiscardAcknowledgedSyncAttachment(t *
 	}
 }
 
-// Issue #117 — semantic error responses must keep a finalized sync attachment
-// in the body (never ack then strip the only delivery).
 func TestBlackboardV2HTTPErrorDoesNotDiscardAcknowledgedSyncAttachment(t *testing.T) {
 	fixture := newV2HTTPFixture(t)
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "err-sync-open",
@@ -1018,8 +983,6 @@ func TestBlackboardV2HTTPErrorDoesNotDiscardAcknowledgedSyncAttachment(t *testin
 	}
 }
 
-// Issue #117 P1 — initial live Finish carries exact sync when pending; closed
-// exact Finish replay stays byte-stable (including the original attachment).
 func TestBlackboardV2HTTPFinishCarriesSyncWhenPendingAndExactReplayStable(t *testing.T) {
 	fixture := newV2HTTPFixture(t)
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.peer.Token, "", "finish-sync-open",
@@ -1104,10 +1067,8 @@ func TestBlackboardV2HTTPStatusMappingStorageBusyInternalAndAuth(t *testing.T) {
 	}
 
 	fixture := newV2HTTPFixture(t)
-	// Missing Authorization → 401.
 	unauth := doV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/snapshot", "", "", "", "")
 	assertV2ErrorEnvelope(t, unauth.status, unauth.body, "authority_denied", http.StatusUnauthorized)
-	// Query-string credentials rejected even without Authorization.
 	queryOnly, err := http.NewRequest(http.MethodGet, fixture.base+"/blackboard/snapshot?token="+fixture.operator, nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -1258,7 +1219,6 @@ func TestBlackboardV2HTTPEvidenceCheckpointFinishParityAndNoAuthorityLeak(t *tes
 	if !bytes.Contains(checkpoint, []byte(`"schema":"semantic-change-result/v2"`)) {
 		t.Fatalf("checkpoint = %s", checkpoint)
 	}
-	// Exact checkpoint replay.
 	checkpointReplay := mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/attempts/attempt:http-parity:checkpoint", fixture.continuation.Token, "", "http-checkpoint-parity",
 		`{"version":1,"summary":"Proof retained"}`)
 	if !bytes.Equal(checkpoint, checkpointReplay) {
@@ -1283,7 +1243,6 @@ func TestBlackboardV2HTTPEvidenceCheckpointFinishParityAndNoAuthorityLeak(t *tes
 
 func TestBlackboardV2HTTPUnexpectedFailureIsSanitized500(t *testing.T) {
 	fixture := newV2HTTPFixture(t)
-	// Close the store under the daemon to force an unexpected service fault.
 	if err := fixture.server.db.Close(); err != nil {
 		t.Fatalf("close db: %v", err)
 	}
@@ -1336,11 +1295,9 @@ func TestBlackboardV2HTTPInvalidSchemaSyncAttachDistinguishesServiceFromTranspor
 	// Malicious unauthenticated caller cannot obtain sync via parse failures.
 	unauthBody := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", "", "", "unauth-body",
 		`{"schema":"semantic-change-batch/v2","changes":`)
-	// Auth fails first for missing capability (no Continuation token).
 	if unauthBody.status == http.StatusOK || bytes.Contains(unauthBody.body, []byte(`"sync"`)) {
 		t.Fatalf("unauthenticated body-parse path must not attach sync: %d %s", unauthBody.status, unauthBody.body)
 	}
-	// Query-string credentials are transport invalid_schema without sync.
 	queryCred, err := http.NewRequest(http.MethodPost, fixture.base+"/blackboard/changes?token="+fixture.peer.Token,
 		strings.NewReader(`{"schema":"semantic-change-batch/v2","changes":[]}`))
 	if err != nil {
@@ -1424,7 +1381,6 @@ func TestBlackboardV2HTTPExactReplayAfterFinishForChangeRetainCheckpoint(t *test
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"transition","key":"attempt:replay","version":2,"status":"succeeded","summary":"Replay proof retained"}]}`)
 	finishFirst := mustV2HTTP(t, http.MethodPost, fixture.base+"/continuation:finish", fixture.continuation.Token, "", "http-replay-finish", `{}`)
 
-	// All-three mutating exact replays (plus Finish) after Finish: same bytes, no live sync.
 	for _, tc := range []struct {
 		name           string
 		method         string
@@ -1458,11 +1414,9 @@ func TestBlackboardV2HTTPExactReplayAfterFinishForChangeRetainCheckpoint(t *test
 		`{"version":1,"summary":"different checkpoint"}`)
 	assertV2ErrorEnvelope(t, alteredCheckpoint.status, alteredCheckpoint.body, "idempotency_conflict", http.StatusConflict)
 
-	// New writes remain closed_continuation after Finish.
 	newWrite := doV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.continuation.Token, "", "http-replay-new-after-finish",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:after-finish","type":"entity","record":{"status":"active","kind":"host","name":"After finish","scope_status":"in_scope"}}]}`)
 	assertV2ErrorEnvelope(t, newWrite.status, newWrite.body, "closed_continuation", http.StatusGone)
-	// Live read/history authority remains closed.
 	closedRead := doV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/records/entity:replay-exact", fixture.continuation.Token, "", "", "")
 	assertV2ErrorEnvelope(t, closedRead.status, closedRead.body, "closed_continuation", http.StatusGone)
 	closedHistory := doV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/records/entity:replay-exact/history", fixture.continuation.Token, "", "", "")
@@ -1500,7 +1454,6 @@ func TestBlackboardV2HTTPReportAndCTFSolutionConsumers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create pentest Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, pentestProject.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -1508,7 +1461,6 @@ func TestBlackboardV2HTTPReportAndCTFSolutionConsumers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create CTF Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, ctfProject.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -1563,7 +1515,6 @@ func TestBlackboardV2HTTPReportAndCTFSolutionConsumers(t *testing.T) {
 	// CTF Project cannot use Pentest report.
 	wrongKind := doV2HTTP(t, http.MethodGet, ctfBase+"/reports/pentest?format=json", operatorToken, "operator", "", "")
 	if wrongKind.status != http.StatusUnprocessableEntity && wrongKind.status != http.StatusConflict && wrongKind.status != http.StatusBadRequest {
-		// project_kind_mismatch maps through blackboardV2HTTPStatus
 		if !bytes.Contains(wrongKind.body, []byte("project_kind_mismatch")) {
 			t.Fatalf("CTF pentest report error = %d %s", wrongKind.status, wrongKind.body)
 		}
@@ -1592,7 +1543,6 @@ func TestBlackboardV2HTTPReportAndCTFSolutionConsumers(t *testing.T) {
 		t.Fatalf("ctf markdown = %s", ctfMD)
 	}
 
-	// Reverse solved state when no verified flags remain.
 	unsolve := `{"schema":"semantic-change-batch/v2","changes":[` +
 		`{"op":"create","key":"solution:next","type":"solution","record":{"status":"candidate","kind":"flag","summary":"Replacement","value":"FLAG{next}"}},` +
 		`{"op":"supersede","replacement":"solution:next","replacement_version":1,"replaced":"solution:flag","replaced_version":2}` +
@@ -1609,11 +1559,9 @@ func TestBlackboardV2HTTPReportAndCTFSolutionConsumers(t *testing.T) {
 func TestBlackboardV2HTTPReportAndCTFOmitTrustedContinuationSync(t *testing.T) {
 	fixture := newV2HTTPFixture(t)
 
-	// External operator advance creates pending synchronization for peers.
 	mustV2HTTP(t, http.MethodPost, fixture.base+"/blackboard/changes", fixture.operator, "operator", "report-sync-external",
 		`{"schema":"semantic-change-batch/v2","changes":[{"op":"create","key":"entity:report-sync","type":"entity","record":{"status":"active","kind":"host","name":"Sync","scope_status":"in_scope"}}]}`)
 
-	// Control: peer snapshot still attaches sync when pending.
 	snapshot := mustV2HTTP(t, http.MethodGet, fixture.base+"/blackboard/snapshot", fixture.peer.Token, "", "", "")
 	if !bytes.Contains(snapshot, []byte(`"sync"`)) || !bytes.Contains(snapshot, []byte(`another_task_changed_shared_project_knowledge`)) {
 		t.Fatalf("expected pending sync on snapshot control: %s", snapshot)
@@ -1637,7 +1585,6 @@ func TestBlackboardV2HTTPReportAndCTFOmitTrustedContinuationSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create CTF Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := fixture.server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, ctfProject.ID); err != nil {
 		t.Fatal(err)
 	}

@@ -29,7 +29,6 @@ type HostSessionBridgeConfig struct {
 	Starter HostProcessStarter
 }
 
-// HostProcessSpec is the concrete local process request.
 type HostProcessSpec struct {
 	Program string
 	Args    []string
@@ -45,7 +44,6 @@ type HostProcessHandle struct {
 	KillProcessGroup func(context.Context) error
 }
 
-// HostProcessStarter is the process lifecycle seam used by HostSessionBridge.
 type HostProcessStarter interface {
 	Start(context.Context, HostProcessSpec) (HostProcessHandle, error)
 }
@@ -81,7 +79,6 @@ type HostSessionBridge struct {
 	cleanupErr    error
 }
 
-// HostSessionBridgeRegistry owns at most one host bridge per Task.
 type HostSessionBridgeRegistry struct {
 	lifecycle  sync.RWMutex
 	ownerLocks keymutex.Group
@@ -170,7 +167,6 @@ func (r *HostSessionBridgeRegistry) CloseAll(ctx context.Context) error {
 	return cleanupErr
 }
 
-// NewHostSessionBridge creates an idle Task-owned host bridge.
 func NewHostSessionBridge(config HostSessionBridgeConfig) (*HostSessionBridge, error) {
 	if strings.TrimSpace(config.TaskID) == "" {
 		return nil, fmt.Errorf("host bridge TaskID is required")
@@ -401,7 +397,6 @@ func (b *HostSessionBridge) failPending(err error) {
 	}
 }
 
-// Close terminates the host process group exactly once and waits for exit.
 func (b *HostSessionBridge) Close(ctx context.Context) error {
 	b.closeOnce.Do(func() {
 		b.mu.Lock()

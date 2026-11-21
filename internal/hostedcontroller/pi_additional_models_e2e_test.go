@@ -158,7 +158,6 @@ type additionalModelsPiResult struct {
 	secondGatewayCalled bool
 }
 
-// projectedPiProvider is one provider entry in the task-local Pi models.json.
 type projectedPiProvider struct {
 	BaseURL string `json:"baseUrl"`
 	API     string `json:"api"`
@@ -389,7 +388,6 @@ func (starter *additionalModelsPiStarter) callModels(spec runtime.HostProcessSpe
 		if entry.BaseURL == starter.want.secondGateway {
 			starter.secondGateway.ServeHTTP(response, request)
 		} else {
-			// The parent gateway accepts any bearer; record it for the test.
 			starter.modelMutex.Lock()
 			(*starter.modelBearers)[request.Header.Get("Authorization")]++
 			starter.modelMutex.Unlock()

@@ -13,7 +13,6 @@ func TestShouldIgnoreForStorageDropsThinkingTokensAndTaskProgress(t *testing.T) 
 		ignore bool
 	}{
 		{`{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}`, true},
-		// task_progress now projects a Subagent Activity, so it is kept.
 		{`{"type":"system","subtype":"task_progress","task_id":"t1","description":"Exploit"}`, false},
 		{`{"type":"assistant","message":{"content":[{"type":"text","text":"Visible."}]}}`, false},
 		// Reasoning is durable transcript content: thinking-only assistant
@@ -321,9 +320,6 @@ func TestParseRecordCodexAppServerItems(t *testing.T) {
 	if len(reasoningStarted) != 0 {
 		t.Fatalf("started reasoning should stay hidden until completion: %#v", reasoningStarted)
 	}
-	// Raw reasoning content is durable transcript content. It is preferred over
-	// the provider summary because third-party model summaries are not the real
-	// thinking; the summary remains the fallback when no content exists.
 	reasoning := runtimeoutput.ReconcileLifecycle(reasoningCompleted)
 	if len(reasoning) != 1 || reasoning[0].Kind != runtimeoutput.KindReasoning || reasoning[0].Text != "raw chain of thought" {
 		t.Fatalf("reasoning lifecycle = %#v", reasoning)

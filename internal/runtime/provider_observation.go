@@ -50,7 +50,6 @@ type ProviderSessionObservation struct {
 	BlackboardOperation BlackboardOperation
 }
 
-// Validate enforces the closed, kind-specific observation shape.
 func (observation ProviderSessionObservation) Validate() error {
 	for name, value := range map[string]string{
 		"request": observation.RequestID, "session": observation.SessionID,
@@ -111,7 +110,6 @@ func validateCanonicalBlackboardOperation(toolName string, operation BlackboardO
 	return fmt.Errorf("%w: canonical Blackboard operation requires the trusted tool identity", ErrInvalidProviderSessionObservation)
 }
 
-// ProviderSessionObserve receives one validated observation.
 type ProviderSessionObserve func(ProviderSessionObservation)
 
 // ProviderSessionObservationSink is implemented by sessions that expose

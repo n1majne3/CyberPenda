@@ -234,12 +234,10 @@ func TestRunFailsWhenEnvCredentialUnset(t *testing.T) {
 // preflight because the credentials check short-circuited on empty refs.
 func TestRunFailsWhenGlobalEnvBindingUnmaterializable(t *testing.T) {
 	svc := newTestServices(t)
-	// Profile with NO credential_refs — relies entirely on global injection.
 	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
-	// A global binding pointing at an unset host env var → unmaterializable.
 	broken := credential.Source{Kind: credential.SourceEnv, Value: "PENTEST_UNSET_GLOBAL_VAR", DestinationEnv: "GLOBAL_BROKEN_VAR"}
 	if _, err := svc.creds.Upsert("GLOBAL_BROKEN", credential.ScopeGlobal, "", broken, false); err != nil {
 		t.Fatalf("upsert global binding: %v", err)
@@ -319,10 +317,6 @@ func TestRunPassesWhenAllCredentialsMaterialize(t *testing.T) {
 	}
 }
 
-// TestRunPassesWhenLiteralCredentialBackfillsDestinationEnv proves a literal
-// source without destination_env passes preflight after the scan-time backfill:
-// it projects under its credential_ref instead of failing, so legacy bindings
-// (created before the UI sent destination_env) remain launchable.
 func TestRunPassesWhenLiteralCredentialBackfillsDestinationEnv(t *testing.T) {
 	svc := newTestServices(t)
 	profile, err := svc.profiles.Create(
@@ -429,7 +423,6 @@ func TestRunAcceptsSandboxAndHostRunners(t *testing.T) {
 
 func TestRunIncludesExtraRefsFromRequest(t *testing.T) {
 	svc := newTestServices(t)
-	// Profile declares no credential refs; the launch request adds one.
 	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
@@ -543,10 +536,6 @@ func TestRunDisabledModeNeedsNoModeSkill(t *testing.T) {
 	}
 }
 
-// CapturedSkillIDs come from a historical Runtime Configuration Snapshot.
-// Retired builtins must not block a resume: unavailable captured skills are
-// skipped, the skills check still passes, and the skip is visible in the
-// check detail.
 func TestRunSkipsUnavailableCapturedSkills(t *testing.T) {
 	svc := newTestServices(t)
 	skillsRoot := filepath.Join(t.TempDir(), "skills")
@@ -1130,10 +1119,6 @@ func TestRunReportsCatalogAndCacheLimitSourcesWithoutFailing(t *testing.T) {
 	}
 }
 
-// TestRunFailsWhenProtocolPinHasNoCompatibleEndpoint locks the contract that a
-// strict Runtime Profile protocol pin surfaces as a Preflight failure when the
-// provider no longer has a compatible endpoint, rather than silently falling
-// back to another protocol.
 func TestRunFailsWhenProtocolPinHasNoCompatibleEndpoint(t *testing.T) {
 	svc := newTestServices(t)
 	provider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
@@ -1188,8 +1173,6 @@ func checkFailed(result preflight.Result, name string) bool {
 func TestRunRejectsConflictingCustomArgs(t *testing.T) {
 	svc := newTestServices(t)
 
-	// Seed a legacy profile with conflicting Custom Args that bypass domain
-	// validation (profiles stored before structured-field authority).
 	profileID := insertLegacyProfile(t, svc.db, "codex-conflict", "codex", `{"model":"gpt-5","custom_args":["--model","other","--strict"]}`)
 
 	result := svc.preflight.Run(context.Background(), preflight.Request{

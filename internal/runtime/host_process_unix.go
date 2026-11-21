@@ -92,7 +92,6 @@ func (LocalHostProcessStarter) Start(_ context.Context, spec HostProcessSpec) (H
 		return waitErr
 	}
 	killGroup := func(ctx context.Context) error {
-		// Best-effort graceful stop, then force the whole group.
 		_ = syscall.Kill(-pgid, syscall.SIGTERM)
 		done := make(chan struct{})
 		go func() {

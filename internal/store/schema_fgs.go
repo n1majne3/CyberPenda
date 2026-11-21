@@ -1,6 +1,5 @@
 package store
 
-// baselineFGSStatements holds part of the baseline schema.
 var baselineFGSStatements = []string{
 	`CREATE TABLE fgs_boards (
  kind TEXT NOT NULL CHECK(kind IN ('project','session')),

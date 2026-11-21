@@ -24,9 +24,6 @@ func (s contentEmitSession) SendTurn(ctx context.Context, request runtime.Provid
 	return s.Session.SendTurn(ctx, request, emit)
 }
 
-// TestProviderSessionRunAdapterKeepsContentUnredacted pins issue #288: LLM
-// output relayed by the provider-session bridge passes through byte-for-byte,
-// even when it matches a secret shape.
 func TestProviderSessionRunAdapterKeepsContentUnredacted(t *testing.T) {
 	const line = "assistant: bearer secret-bridge-token-123456"
 	closed := make(chan struct{})

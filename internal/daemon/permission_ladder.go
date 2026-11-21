@@ -152,7 +152,6 @@ func readPermissionResponse(response http.ResponseWriter, request *http.Request,
 	return input, permissionID, true
 }
 
-// permissionResponsePending replays prior outcomes before owner lifecycle gates.
 func permissionResponsePending(response http.ResponseWriter, input providerPermissionResponseRequest, permissionID, providerSessionID string, events []timeline.Event) bool {
 	pending, priorOutcome, priorDecision := providerPermissionStatus(events, permissionID, input.RequestID)
 	if priorDecision != "" && priorDecision != input.Decision {

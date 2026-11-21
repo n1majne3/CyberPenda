@@ -292,7 +292,6 @@ describe("ModelProvidersPage", () => {
         provider = {
           ...provider,
           ...body,
-          // The daemon stores endpoint-backed providers canonically and exposes
           // the first endpoint as the compatibility provider-level base URL.
           base_url: body.endpoints[0]?.base_url ?? "",
           updated_at: "2026-06-25T00:00:01Z",
@@ -344,10 +343,7 @@ describe("ModelProvidersPage", () => {
   });
 
   it("derives composed endpoints from a shared base URL in the quick setup flow", async () => {
-    // From scratch: one shared provider base URL should derive protocol-specific
-    // endpoints before save. OpenAI protocols use it as-is; Anthropic Messages
     // drops the final /v1 segment. The saved payload holds composed endpoint
-    // records and no separate shared-base field.
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       if (url.includes("/api/model-providers") && init?.method === "POST") {
@@ -385,7 +381,6 @@ describe("ModelProvidersPage", () => {
 
     renderPage();
 
-    // Empty provider list starts on a blank New provider form.
     await screen.findByText("No model providers yet.");
     expect(screen.getByRole("button", { name: "Create provider" })).toBeDisabled();
 
@@ -393,13 +388,10 @@ describe("ModelProvidersPage", () => {
     await userEvent.type(screen.getByLabelText("Base URL"), "https://hub.example.test/v1");
     await userEvent.type(screen.getByLabelText("API key"), "sk-test");
 
-    // Enable all three protocols from the blank draft form.
     await userEvent.click(screen.getByRole("checkbox", { name: "openai_responses" }));
     await userEvent.click(screen.getByRole("checkbox", { name: "openai_chat_completions" }));
     await userEvent.click(screen.getByRole("checkbox", { name: "anthropic_messages" }));
 
-    // The derived endpoint inputs reflect quick-setup derivation without the
-    // user typing a single per-protocol value.
     expect(screen.getByLabelText("openai_chat_completions endpoint base URL")).toHaveValue("https://hub.example.test/v1");
     expect(screen.getByLabelText("openai_responses endpoint base URL")).toHaveValue("https://hub.example.test/v1");
     expect(screen.getByLabelText("anthropic_messages endpoint base URL")).toHaveValue("https://hub.example.test");
@@ -424,7 +416,6 @@ describe("ModelProvidersPage", () => {
 
     // Saving the provider with an API key must also create the credential
     // binding with destination_env equal to the generated env var name, so the
-    // key projects under the env var the runtime expects.
     await waitFor(() => {
       expect(
         fetchMock.mock.calls.some(([input, init]) => {
@@ -587,13 +578,10 @@ describe("ModelProvidersPage", () => {
 
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: /Delete/i }));
-    // First dialog is the plain delete confirmation; its Delete button is
     // scoped to the dialog because the detail pane has its own Delete button.
     const firstDialog = await screen.findByRole("alertdialog", { name: /Delete model provider MiMo/ });
     await userEvent.click(within(firstDialog).getByRole("button", { name: "Delete" }));
 
-    // The blocked delete surfaces the referencing profiles and offers an
-    // explicit detach delete.
     const dialog = await screen.findByRole("alertdialog", { name: /Delete model provider MiMo/ });
     expect(dialog).toHaveTextContent("Pi Preset");
     expect(
@@ -682,7 +670,6 @@ describe("ModelProvidersPage", () => {
     expect(await screen.findByRole("button", { name: /MiMo/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /OpenAI/i })).toBeInTheDocument();
 
-    // Use host/key needles that do not collide with MiMo's openai_responses protocol label.
     await userEvent.type(screen.getByLabelText("Search model providers"), "api.openai.com");
     expect(screen.queryByRole("button", { name: /MiMo/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /OpenAI/i })).toBeInTheDocument();
@@ -761,7 +748,6 @@ describe("ModelProvidersPage", () => {
       </StrictMode>,
     );
 
-    // The param beats the default first-provider selection.
     expect(await screen.findByRole("button", { name: /OpenAI/i })).toHaveAttribute("aria-current", "true");
     expect(screen.getByRole("button", { name: /MiMo/i })).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("heading", { name: "OpenAI" })).toBeInTheDocument();

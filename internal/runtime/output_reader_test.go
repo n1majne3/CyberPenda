@@ -76,9 +76,6 @@ func TestScanOutputDropsIgnorableProviderNoise(t *testing.T) {
 	}
 }
 
-// TestScanOutputKeepsSecretShapedContent pins issue #288: runtime stdout/stderr
-// lines are LLM output and pass through byte-for-byte, even when a line matches
-// a secret shape.
 func TestScanOutputKeepsSecretShapedContent(t *testing.T) {
 	line := `assistant: flag is triskaidekaphobia@flare-on.com and note bearer secret-scan-token-123456`
 	var emitted []task.EventPayload

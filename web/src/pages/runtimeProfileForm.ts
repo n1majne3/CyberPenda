@@ -2,7 +2,6 @@ import type { ModelProvider, RuntimePlugin, RuntimeProfile } from "@/lib/api";
 
 type RuntimeProfileFields = RuntimeProfile["fields"];
 
-/** Exact Reasoning Effort vocabulary. There is no Auto or Runtime Default value. */
 export const REASONING_EFFORT_VALUES = ["low", "medium", "high", "xhigh", "max"] as const;
 export type ReasoningEffortValue = (typeof REASONING_EFFORT_VALUES)[number];
 

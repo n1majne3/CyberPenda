@@ -238,7 +238,6 @@ func (s *Service) ClaimTrustedSynchronization(ctx context.Context, projectID, ta
 	if status, _, ok, err := s.loadSyncDeliveryReceipt(ctx, continuationID, requestFingerprint); err != nil {
 		return false, err
 	} else if ok {
-		// This fingerprint already owns delivery (open claim or finalized receipt).
 		_ = status
 		return true, nil
 	}
@@ -309,11 +308,9 @@ func (s *Service) ClaimTrustedSynchronization(ctx context.Context, projectID, ta
 	)
 	if err != nil {
 		if isUniqueConstraintError(err) {
-			// Another fingerprint holds the open claim, or a concurrent same-key insert won.
 			if err := tx.Commit(); err != nil {
 				return false, err
 			}
-			// Same fingerprint concurrent insert: treat as claimed owner.
 			if status, _, ok, loadErr := s.loadSyncDeliveryReceipt(ctx, continuationID, requestFingerprint); loadErr != nil {
 				return false, loadErr
 			} else if ok {
@@ -756,9 +753,6 @@ func (s *Service) SynchronizeContinuation(ctx context.Context, projectID, taskID
 	}, nil
 }
 
-// restorePriorWorkingSnapshotFile restores exact prior Working Snapshot file
-// state after a failed publish-before-commit attempt. Errors from restore are
-// ignored so callers can preserve and return the primary failure.
 func restorePriorWorkingSnapshotFile(runtimeRoot, taskID, workingPath string, previousBytes []byte, previousExists bool) {
 	if previousExists {
 		_ = materializeWorkingSnapshot(runtimeRoot, taskID, previousBytes)

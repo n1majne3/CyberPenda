@@ -19,9 +19,7 @@ import {
 } from "@/components/ui";
 
 // Full-page gate for the operator credential. When the daemon cannot authorize
-// this browser (fixed token behind a tunnel, expired cookie), the workspace is
 // replaced by the sign-in form. A successful submit flips the credential state,
-// the workspace remounts, and the one denied GET is retried.
 export function OperatorCredentialGate({ children }: { children: ReactNode }) {
   const needed = useSyncExternalStore(subscribeOperatorCredentialState, operatorCredentialIsNeeded);
   useEffect(() => {

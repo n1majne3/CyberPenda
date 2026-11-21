@@ -21,8 +21,6 @@ import (
 	"pentest/internal/testsupport/fakeprovider"
 )
 
-// TestCodexLaunchSendsResolvedRequestedReasoningEffort is the primary #144
-// acceptance seam: real domain services + SQLite, deterministic fake provider session.
 func TestCodexLaunchSendsResolvedRequestedReasoningEffort(t *testing.T) {
 	session := fakeprovider.New(fakeprovider.Config{
 		SessionID: "effort-session-1",
@@ -352,7 +350,6 @@ func jsonTaskID(t *testing.T, body []byte) string {
 
 func createdTaskIDFromBody(t *testing.T, body []byte) string {
 	t.Helper()
-	// Minimal extract without full decode dependency in helpers.
 	const key = `"id":"`
 	idx := strings.Index(string(body), key)
 	if idx < 0 {

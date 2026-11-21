@@ -3,9 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// The CSS theme is the foundation every primitive and page relies on. Rather
 // than render a component, we assert directly on the token file so the test
-// is fast, deterministic, and documents which variables the design system
 // guarantees.
 const cssPath = resolve(dirname(fileURLToPath(import.meta.url)), "index.css");
 const css = readFileSync(cssPath, "utf8");
@@ -45,7 +43,6 @@ const THEME_TOKENS = [
   "--sidebar-ring",
 ] as const;
 
-// Tokens that are theme-independent (defined once on :root).
 const GLOBAL_TOKENS = [
   "--radius",
   "--font-geist-sans",
@@ -55,7 +52,6 @@ const GLOBAL_TOKENS = [
 ] as const;
 
 function tokenBlock(scope: string): string {
-  // Grab the body of the `:root { ... }` or `.dark { ... }` rule.
   const re = new RegExp(`${scope.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([\\s\\S]*?)\\}`);
   const m = css.match(re);
   return m ? m[1] : "";

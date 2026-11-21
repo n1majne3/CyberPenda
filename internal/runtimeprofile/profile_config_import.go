@@ -24,7 +24,6 @@ type ImportConfigRequest struct {
 	ConfigText string
 }
 
-// ImportConfigKeyError reports one refused key from a Profile Config Import.
 type ImportConfigKeyError struct {
 	Key     string `json:"key"`
 	Field   string `json:"field,omitempty"`
@@ -131,7 +130,6 @@ func scanSecretNodes(node any) error {
 	return nil
 }
 
-// ImportConfigResult reports what one Profile Config Import changed.
 type ImportConfigResult struct {
 	Profile    Profile
 	MappedKeys []string
@@ -216,7 +214,6 @@ func (s *Service) isKnownInstallRef(ref string) bool {
 	return strings.HasSuffix(ref, "@claude-plugins-official")
 }
 
-// importConfigFormat reports the provider-native config format.
 func importConfigFormat(provider Provider) string {
 	switch provider {
 	case ProviderCodex:
@@ -542,7 +539,6 @@ func managedValueUnchanged(baseline map[string]any, path string, value any) bool
 	return valuesMatchBaseline(path, current, value)
 }
 
-// valuesMatchBaseline compares an edited value against its baseline.
 func valuesMatchBaseline(path string, baselineValue, editedValue any) bool {
 	return reflect.DeepEqual(normalizeComparable(baselineValue), normalizeComparable(editedValue))
 }

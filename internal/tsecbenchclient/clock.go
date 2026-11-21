@@ -8,10 +8,8 @@ import (
 	"time"
 )
 
-// ClockFileName is the Challenge Pass Clock file under Runtime Workdir/.pentest.
 const ClockFileName = "challenge-clock.json"
 
-// ClockStore is the file-backed wall clock for one Hosted Evaluation Run.
 type ClockStore struct {
 	Path string
 	Now  func() time.Time
@@ -30,7 +28,6 @@ type clockFile struct {
 	LastAttempt map[string]int        `json:"last_attempt,omitempty"`
 }
 
-// BudgetMinutes is the first-pass wall-clock limit for one difficulty.
 func BudgetMinutes(difficulty any) int {
 	switch strings.ToLower(strings.TrimSpace(stringifyDifficulty(difficulty))) {
 	case "easy":
@@ -94,7 +91,6 @@ func (store ClockStore) save(file clockFile) error {
 	return os.WriteFile(store.Path, append(raw, '\n'), 0o600)
 }
 
-// RecordStart records a first-seen start. attemptN 0 means increment last_attempt.
 func (store ClockStore) RecordStart(code, difficulty string, attemptN int) error {
 	code = strings.TrimSpace(code)
 	if code == "" || strings.TrimSpace(store.Path) == "" {
@@ -140,7 +136,6 @@ func challengeIsActive(challenge Challenge) bool {
 	return status == "available" || status == "pending" || len(challenge.ContainerAddr) > 0
 }
 
-// Annotate projects elapsed_min, budget_min, over_budget, and attempt_n.
 func (store ClockStore) Annotate(challenges []Challenge) []Challenge {
 	if strings.TrimSpace(store.Path) == "" || len(challenges) == 0 {
 		return challenges

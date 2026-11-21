@@ -729,7 +729,6 @@ func TestToolInputSchemaIncludesOnlyTransitiveRootDefs(t *testing.T) {
 				t.Errorf("%s unresolved $ref %q", tool.Name, name)
 			}
 		}
-		// Closed advertisement remains intact.
 		if !bytes.Contains(raw, []byte(`"additionalProperties":false`)) && !bytes.Contains(raw, []byte(`"additionalProperties": false`)) {
 			t.Errorf("%s schema is not closed: %s", tool.Name, raw)
 		}

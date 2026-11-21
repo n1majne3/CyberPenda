@@ -64,10 +64,6 @@ func ScanOutput(reader io.Reader, stream string, maxLineBytes int, emit func(tas
 	ScanOutputWithObserver(reader, stream, maxLineBytes, nil, emit)
 }
 
-// ScanOutputWithObserver reads provider stdout/stderr like ScanOutput, while
-// also exposing every raw line to observe before storage filters drop provider
-// metadata such as Claude Code session init records. Emitted lines are LLM
-// output and pass through byte-for-byte, without redaction (issue #288).
 func ScanOutputWithObserver(reader io.Reader, stream string, maxLineBytes int, observe func(string), emit func(task.EventKind, task.EventPayload)) {
 	if maxLineBytes <= 0 {
 		maxLineBytes = maxRuntimeOutputLineBytes

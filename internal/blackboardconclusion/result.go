@@ -76,7 +76,6 @@ func (detail ValidationDetail) Error() string {
 	return message
 }
 
-// Valid reports whether the detail carries a bounded reason.
 func (detail ValidationDetail) Valid() bool {
 	return detail.Reason != ""
 }

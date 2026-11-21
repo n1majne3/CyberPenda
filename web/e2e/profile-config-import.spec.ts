@@ -1,8 +1,5 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
-// Browser contract: load saved configuration on demand, import, and reopen.
-// Field validation and import errors are covered by component and daemon tests.
-
 const claudeProfile = {
   id: "profile-1",
   name: "Claude Warp",
@@ -44,7 +41,6 @@ async function routeProfileConfigImport(page: Page) {
   const requests: string[] = [];
   const importBodies: string[] = [];
   const projectedSeed = projectedText();
-  // A successful import changes the saved Profile and its configuration.
   let imported = false;
   await page.route("**/api/**", async (route: Route) => {
     const requestURL = new URL(route.request().url());

@@ -22,9 +22,6 @@ import (
 	"pentest/internal/testsupport/fakeprovider"
 )
 
-// #149 primary seam: Host Codex binds one Task-scoped provider session across
-// turns, carries complete Runtime Turn Selection, and cleans up on Stop.
-
 type hostCodexSessionFactory struct {
 	mu       sync.Mutex
 	requests []ProviderSessionLaunchRequest
@@ -106,8 +103,6 @@ func newHostCodexPersistentFixture(t *testing.T, factory ProviderSessionFactory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Host one-shot fallback still needs an executable binary path on disk for
-	// launch plan assembly when the factory is not used.
 	if err := writeExecutable(filepath.Join(root, "codex"), "#!/bin/sh\necho ok\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +163,6 @@ func TestHostCodexLaunchBindsPersistentSessionAcrossTurns(t *testing.T) {
 		t.Fatalf("factory request identity = %#v", req0)
 	}
 
-	// Same-provider second turn reuses the session/thread.
 	body := `{
 		"request_id":"host-turn-2",
 		"message":"continue deeper",
@@ -194,7 +188,6 @@ func TestHostCodexLaunchBindsPersistentSessionAcrossTurns(t *testing.T) {
 	if session.SessionID() != "host-codex-thread-1" {
 		t.Fatalf("thread identity changed to %q", session.SessionID())
 	}
-	// Wait for native steer control to release before Stop.
 	waitForTaskEvent(t, server, created.ID, func(events []task.Event) bool {
 		for _, event := range events {
 			if event.Payload["request_id"] == "host-turn-2" && (event.Payload["phase"] == "steering_applied" || event.Payload["outcome"] == "settled" || event.Kind == task.EventKindConversation) {
@@ -204,7 +197,6 @@ func TestHostCodexLaunchBindsPersistentSessionAcrossTurns(t *testing.T) {
 		return false
 	})
 
-	// Stop closes the bound session and leaves no duplicate ownership.
 	var stopStatus int
 	var stopBody string
 	deadlineStop := time.Now().Add(2 * time.Second)
@@ -302,7 +294,6 @@ func TestHostCodexProviderChangeQueuesMessageAndCreatesConfigVersion(t *testing.
 	if turn["model_provider_id"] != alternate.ID {
 		t.Fatalf("config = %#v", queued.RuntimeConfigVersion.Config)
 	}
-	// First launch used primary provider; no second factory open from queue alone.
 	if factory.openCount() != 1 {
 		t.Fatalf("queue path opened unexpected sessions: %d", factory.openCount())
 	}
@@ -344,7 +335,6 @@ func TestHostCodexMissingNativeMetadataFallsBackToFreshContinuation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Mark task stopped with a continuation that has no native session metadata.
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusStopped); err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +346,6 @@ func TestHostCodexMissingNativeMetadataFallsBackToFreshContinuation(t *testing.T
 		t.Fatal(err)
 	}
 
-	// Resume with a new message should produce a fresh plan (empty native resume id).
 	found, err := server.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)

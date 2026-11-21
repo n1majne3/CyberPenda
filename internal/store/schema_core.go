@@ -1,6 +1,5 @@
 package store
 
-// baselineCoreStatements holds part of the baseline schema.
 var baselineCoreStatements = []string{
 	`CREATE TABLE schema_migrations (
 	version INTEGER PRIMARY KEY,

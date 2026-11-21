@@ -6,12 +6,10 @@ import (
 	"pentest/internal/blackboardv2"
 )
 
-// RenderV2Markdown turns a current semantic Pentest projection into Markdown.
 func RenderV2Markdown(projection blackboardv2.PentestReportProjection) string {
 	return renderV2Markdown(projection)
 }
 
-// RenderCTFV2Markdown turns a current semantic CTF solution projection into Markdown.
 func RenderCTFV2Markdown(projection blackboardv2.CTFSolutionProjection) string {
 	return renderCTFV2Markdown(projection)
 }

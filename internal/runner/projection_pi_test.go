@@ -478,7 +478,6 @@ func TestProjectPiConfigProjectsAllLaunchReadyGlobalProviders(t *testing.T) {
 		t.Fatalf("config preview leaked secrets: %#v", projection.Config)
 	}
 
-	// Initial selection remains the starting provider (PI_PROVIDER_ID).
 	if projection.ResolvedProfile.Fields.Env["PI_PROVIDER_ID"] != primary.ID {
 		t.Fatalf("PI_PROVIDER_ID = %q, want initial %q", projection.ResolvedProfile.Fields.Env["PI_PROVIDER_ID"], primary.ID)
 	}
@@ -488,7 +487,6 @@ func TestProjectPiConfigProjectsAllLaunchReadyGlobalProviders(t *testing.T) {
 
 	projectedIDs, ok := projection.Config["projected_model_provider_ids"].([]string)
 	if !ok {
-		// allow []any from JSON-shaped maps
 		if raw, ok := projection.Config["projected_model_provider_ids"].([]any); ok {
 			for _, v := range raw {
 				projectedIDs = append(projectedIDs, fmt.Sprint(v))
@@ -539,8 +537,6 @@ func TestProjectPiConfigHostModelsIgnoredWhenGlobalProjectionAvailable(t *testin
 	if err != nil {
 		t.Fatalf("prepare layout: %v", err)
 	}
-	// Profile uses legacy fields so single-provider fallback still writes a
-	// CyberPenda-owned models.json without needing a ready global provider.
 	profile := runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderPi,
 		Fields: runtimeprofile.Fields{
@@ -753,13 +749,6 @@ func TestProjectedConfigTextMatchesPiLaunchReadyGlobals(t *testing.T) {
 	}
 }
 
-// TestProjectPiModelsDeclareReasoningCapability locks the Requested Reasoning
-// Effort contract: Pi clamps set_thinking_level to "off" and omits
-// reasoning_effort from provider requests when a models.json entry lacks
-// reasoning metadata. Every projected model entry, in both the Global Model
-// Projection path and the single-provider legacy path, must declare reasoning
-// support and identity-map xhigh/max so the complete CyberPenda effort
-// vocabulary (low, medium, high, xhigh, max) passes through to the provider.
 func TestProjectPiModelsDeclareReasoningCapability(t *testing.T) {
 	assertReasoningEntries := func(t *testing.T, modelsPath, providerID string) {
 		t.Helper()
@@ -1014,7 +1003,6 @@ func TestProjectPiConfigWritesExecuteSubagentType(t *testing.T) {
 		"name: execute",
 		// append mode keeps pi's tool-contract prompt; replace would drop it.
 		"prompt_mode: append",
-		// Stable Execute discipline from the orchestrator dispatch contract.
 		"90 秒",
 		"fact 骨架",
 		"勿再试",
@@ -1143,12 +1131,6 @@ func TestProjectPiSettingsPinDefaultThinkingLevel(t *testing.T) {
 	})
 }
 
-// TestProjectPiSettingsPinsLaunchProviderAndModel proves settings.json carries
-// the launch-resolved provider/model: a pi-subagents spawn without an explicit
-// model falls back to the launch selection instead of a runtime default. The
-// Launch Model Override wins, and a profile without any provider configuration
-// pins no defaultProvider (legacy host models.json fallback keeps its own
-// provider keys).
 func TestProjectPiSettingsPinsLaunchProviderAndModel(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test-key")
 

@@ -15,16 +15,14 @@ func TestValidateCustomArgsRejectsDocumentedAliases(t *testing.T) {
 		name      string
 		provider  runtimeprofile.Provider
 		args      []string
-		wantArg   string // complete offending form (may include value)
-		wantFlag  string // flag or config key
+		wantArg   string
+		wantFlag  string
 		wantField string
 	}{
-		// Codex — model (builtin argv --model; CLI also -m)
 		{name: "codex --model", provider: runtimeprofile.ProviderCodex, args: []string{"--model", "gpt-5"}, wantArg: "--model gpt-5", wantFlag: "--model", wantField: "model"},
 		{name: "codex --model=", provider: runtimeprofile.ProviderCodex, args: []string{"--model=gpt-5"}, wantArg: "--model=gpt-5", wantFlag: "--model", wantField: "model"},
 		{name: "codex -m", provider: runtimeprofile.ProviderCodex, args: []string{"-m", "gpt-5"}, wantArg: "-m gpt-5", wantFlag: "-m", wantField: "model"},
 		{name: "codex -m=", provider: runtimeprofile.ProviderCodex, args: []string{"-m=gpt-5"}, wantArg: "-m=gpt-5", wantFlag: "-m", wantField: "model"},
-		// Codex — -c / --config token shapes for model / model_provider / effort
 		{name: "codex -c model=", provider: runtimeprofile.ProviderCodex, args: []string{"-c", "model=gpt-5"}, wantArg: "-c model=gpt-5", wantFlag: "model", wantField: "model"},
 		{name: "codex --config model=", provider: runtimeprofile.ProviderCodex, args: []string{"--config", "model=gpt-5"}, wantArg: "--config model=gpt-5", wantFlag: "model", wantField: "model"},
 		{name: "codex --config=model=", provider: runtimeprofile.ProviderCodex, args: []string{"--config=model=gpt-5"}, wantArg: "--config=model=gpt-5", wantFlag: "model", wantField: "model"},
@@ -34,7 +32,6 @@ func TestValidateCustomArgsRejectsDocumentedAliases(t *testing.T) {
 		{name: "codex --config model_reasoning_effort=", provider: runtimeprofile.ProviderCodex, args: []string{"--config", "model_reasoning_effort=xhigh"}, wantArg: "--config model_reasoning_effort=xhigh", wantFlag: "model_reasoning_effort", wantField: "reasoning_effort"},
 		{name: "codex --config=model_reasoning_effort=", provider: runtimeprofile.ProviderCodex, args: []string{`--config=model_reasoning_effort="high"`}, wantArg: "--config=model_reasoning_effort=high", wantFlag: "model_reasoning_effort", wantField: "reasoning_effort"},
 		{name: "codex -c=model_reasoning_effort", provider: runtimeprofile.ProviderCodex, args: []string{"-c=model_reasoning_effort=max"}, wantArg: "-c=model_reasoning_effort=max", wantFlag: "model_reasoning_effort", wantField: "reasoning_effort"},
-		// Codex — -c / --config keys owned by the structured multi-agent control
 		{name: "codex -c features.multi_agent=", provider: runtimeprofile.ProviderCodex, args: []string{"-c", "features.multi_agent=true"}, wantArg: "-c features.multi_agent=true", wantFlag: "features.multi_agent", wantField: "codex_multi_agent"},
 		{name: "codex --config agents.enabled=", provider: runtimeprofile.ProviderCodex, args: []string{"--config", "agents.enabled=false"}, wantArg: "--config agents.enabled=false", wantFlag: "agents.enabled", wantField: "codex_multi_agent"},
 		{name: "codex -c agents.max_depth=", provider: runtimeprofile.ProviderCodex, args: []string{"-c", "agents.max_depth=3"}, wantArg: "-c agents.max_depth=3", wantFlag: "agents.max_depth", wantField: "codex_multi_agent"},
@@ -46,13 +43,11 @@ func TestValidateCustomArgsRejectsDocumentedAliases(t *testing.T) {
 		{name: "codex --enable=multi_agent_v2", provider: runtimeprofile.ProviderCodex, args: []string{"--enable=multi_agent_v2"}, wantArg: "--enable=multi_agent_v2", wantFlag: "--enable", wantField: "codex_multi_agent"},
 		{name: "codex pasted --disable multi_agent_v2", provider: runtimeprofile.ProviderCodex, args: []string{"--disable multi_agent_v2"}, wantArg: "--disable multi_agent_v2", wantFlag: "--disable", wantField: "codex_multi_agent"},
 
-		// Claude Code — builtin --model; CLI --effort
 		{name: "claude --model", provider: runtimeprofile.ProviderClaudeCode, args: []string{"--model", "claude-opus"}, wantArg: "--model claude-opus", wantFlag: "--model", wantField: "model"},
 		{name: "claude --model=", provider: runtimeprofile.ProviderClaudeCode, args: []string{"--model=claude-opus"}, wantArg: "--model=claude-opus", wantFlag: "--model", wantField: "model"},
 		{name: "claude --effort", provider: runtimeprofile.ProviderClaudeCode, args: []string{"--effort", "high"}, wantArg: "--effort high", wantFlag: "--effort", wantField: "reasoning_effort"},
 		{name: "claude --effort=", provider: runtimeprofile.ProviderClaudeCode, args: []string{"--effort=max"}, wantArg: "--effort=max", wantFlag: "--effort", wantField: "reasoning_effort"},
 
-		// Pi — builtin --model / --provider; CLI --thinking
 		{name: "pi --provider", provider: runtimeprofile.ProviderPi, args: []string{"--provider", "custom"}, wantArg: "--provider custom", wantFlag: "--provider", wantField: "model_provider"},
 		{name: "pi --provider=", provider: runtimeprofile.ProviderPi, args: []string{"--provider=openai"}, wantArg: "--provider=openai", wantFlag: "--provider", wantField: "model_provider"},
 		{name: "pi --model", provider: runtimeprofile.ProviderPi, args: []string{"--model", "DeepSeek-V4-Pro"}, wantArg: "--model DeepSeek-V4-Pro", wantFlag: "--model", wantField: "model"},
@@ -178,7 +173,6 @@ func TestCreateRejectsConflictingCustomArgs(t *testing.T) {
 	if conflict.Flag != "--model" || conflict.Field != "model" {
 		t.Fatalf("conflict = %+v", conflict)
 	}
-	// Nothing persisted.
 	listed, err := service.List()
 	if err != nil {
 		t.Fatalf("list: %v", err)

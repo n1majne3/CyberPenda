@@ -51,7 +51,7 @@ const (
 // Detail references the owner-authorized endpoint that returns the complete
 // retained entry.
 type Entry struct {
-	Position     int            `json:"position,omitempty"` // Stable position inside independently paged child history.
+	Position     int            `json:"position,omitempty"`
 	ID           string         `json:"id"`
 	Seq          int            `json:"seq"`
 	Continuation int            `json:"continuation"`
@@ -79,10 +79,9 @@ type Event struct {
 	CreatedAt time.Time
 }
 
-// Subject is the minimal owner identity Build needs for its first row.
 type Subject struct {
 	ID        string
-	Title     string // task goal or session title
+	Title     string
 	CreatedAt time.Time
 }
 
@@ -93,7 +92,6 @@ type WindowContext struct {
 	Adapter      string
 }
 
-// Build projects an owner subject and its retained events into transcript entries.
 func Build(subject Subject, events []Event) []Entry {
 	return BuildWindow(subject, events, WindowContext{})
 }
@@ -439,10 +437,6 @@ func turnsToEntries(turns []runtimeoutput.Turn, base Entry) []Entry {
 	return splitTurns(turns, base, nil)
 }
 
-// splitTurns projects normalized turns into main-thread entries. Subagent
-// Activity observations and child-attributed items route into the child-block
-// collector instead; with a nil collector both stay dropped, preserving the
-// legacy behavior of the exported per-record parsers.
 func splitTurns(turns []runtimeoutput.Turn, base Entry, children *childBlocks) []Entry {
 	entries := make([]Entry, 0, len(turns))
 	for _, turn := range runtimeoutput.ReconcileLifecycle(turns) {

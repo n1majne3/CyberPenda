@@ -28,7 +28,6 @@ type endpoint struct {
 	to   string
 }
 
-// Rule defines one relationship's endpoint and policy contract.
 type Rule struct {
 	Relation       string
 	ReasonPolicy   string
@@ -38,13 +37,11 @@ type Rule struct {
 	allowed        map[endpoint]struct{}
 }
 
-// Allows reports whether the directed endpoint pair belongs to the rule.
 func (rule Rule) Allows(fromType, toType string) bool {
 	_, ok := rule.allowed[endpoint{from: fromType, to: toType}]
 	return ok
 }
 
-// Case is one expanded source-type/target-type conformance case.
 type Case struct {
 	Relation       string
 	From           string
@@ -118,7 +115,6 @@ func Rules() []Rule {
 	return append([]Rule(nil), rules...)
 }
 
-// Lookup returns the rule for relation.
 func Lookup(relation string) (Rule, bool) {
 	for _, rule := range rules {
 		if rule.Relation == relation {

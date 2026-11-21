@@ -12,13 +12,10 @@ import (
 	"pentest/internal/runtimeprofile"
 )
 
-// OverlayFormat reports the provider-native format of the projected main
-// config file for a provider, used to parse the Custom Config File.
 func OverlayFormat(provider runtimeprofile.Provider) string {
 	return overlayFormat(provider)
 }
 
-// overlayFormat is the internal table behind OverlayFormat.
 func overlayFormat(provider runtimeprofile.Provider) string {
 	switch provider {
 	case runtimeprofile.ProviderCodex:
@@ -90,7 +87,6 @@ func scanOverlaySecrets(prefix string, doc map[string]any) error {
 				}
 			}
 		case map[string]bool:
-			// BurntSushi/toml renders inline bool maps; keys are plugin ids.
 			for subKey := range typed {
 				if secretEnvKeyPattern.MatchString(subKey) {
 					return fmt.Errorf("custom config file key %q looks like a secret; use the API keys structured field instead", path+"."+subKey)
@@ -257,9 +253,6 @@ func StructuredProjectedConfigTextWith(provider runtimeprofile.Provider, profile
 	}
 }
 
-// claudeStructuredEnv renders the structured env view of a Claude Code
-// profile without resolving credentials: env vars plus endpoint/model
-// fallbacks. Secret-shaped keys are redacted by the caller.
 func claudeStructuredEnv(profile runtimeprofile.Profile) map[string]string {
 	env := map[string]string{}
 	for key, value := range profile.Fields.Env {

@@ -168,18 +168,11 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	assertContains(t, dockerfile, "--no-deps")
 	assertContains(t, dockerfile, `ln -s "$base" "/usr/bin/${base}-static"`)
 	assertContains(t, dockerfile, "missing hosted tool")
-	// Only the async-capable tintinweb subagents extension may be enabled; the
-	// unscoped pi-subagents product registers a conflicting Agent tool and its
-	// detached async children are invisible to the parent-session observer.
 	if strings.Contains(dockerfile, `"npm:pi-subagents"`) {
 		t.Fatal("Hosted Image must enable only the @tintinweb/pi-subagents Pi extension")
 	}
-	// Kali qemu-user ships qemu-x86_64. Do not treat qemu-x86_64-static as that name.
 	assertContains(t, dockerfile, "command -v qemu-x86_64 ||")
 
-	// The offline knowledge baseline is shared with the Sandbox image. The
-	// pinned SHAs, blob-less sparse fetches, marker checks, and cleanup live
-	// in the shared installer so both images carry identical reference data.
 	installerBytes, err := os.ReadFile(filepath.Join(repoRoot(t), "docker", "knowledge-baseline", "install.sh"))
 	if err != nil {
 		t.Fatalf("read knowledge baseline installer: %v", err)
@@ -208,11 +201,6 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 		assertContains(t, installer, required)
 	}
 
-	// The knowledge baseline ships a curated sparse wordlist subset from the
-	// SecLists sources instead of the full seclists package, so "seclists" is
-	// no longer excluded as a raw string. Full-size dictionary content stays
-	// excluded: rockyou-scale files do not fit the delivery size limit. The
-	// guard covers both the Dockerfile and the shared installer.
 	for _, excluded := range []string{
 		"kali-linux-headless", "ghidra", "android-sdk", "rockyou",
 		"docker.io", "docker-ce", "docker-cli", "podman", "openvpn", "wireguard", "tunneling",
@@ -236,14 +224,7 @@ func TestTSecBenchHostedDockerfileStripsNmapFileCapabilities(t *testing.T) {
 	dockerfile := string(contents)
 
 	for _, required := range []string{
-		// Kali's nmap ships /usr/lib/nmap/nmap with file capabilities that are
-		// not all inside Docker's default container capability bounding set;
-		// execve(2) then fails with EPERM (#286).
 		"setcap -r /usr/lib/nmap/nmap",
-		// The guard must execute the real binary: the later command -v checks
-		// only prove the wrapper is on PATH. Build RUN steps use the same
-		// default bounding set, so a future Kali nmap package with out-of-set
-		// file caps fails the build instead of a challenge task.
 		"nmap --version >/dev/null",
 	} {
 		assertContains(t, dockerfile, required)

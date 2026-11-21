@@ -26,7 +26,6 @@ func TestSessionPermissionResponseValidationAndReplay(t *testing.T) {
 	if err := server.BindSessionProviderSession(created.ID, provider); err != nil {
 		t.Fatal(err)
 	}
-	// Completed delivery can be replayed even without a live Continuation.
 	_, err = server.sessions.AppendEvent(created.ID, session.EventKindLifecycle, session.EventPayload{
 		"phase": "provider_permission_response_applied", "mode": "permission_response",
 		"permission_request_id": "perm-1", "request_id": "reply-1",

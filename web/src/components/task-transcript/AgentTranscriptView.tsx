@@ -32,11 +32,7 @@ import {
   stripAnsi,
 } from "./timeline-utils";
 
-// Uniform row-height estimate used by the virtualized window to bound DOM
-// size while older pages accumulate (#202). Rows render with real layout so
-// the window's measured coverage pass sees true heights.
 const TIMELINE_ROW_ESTIMATE = 48;
-// Distance from the tail (in px) below which the operator is "at the tail".
 const TAIL_THRESHOLD = 48;
 
 interface AgentTranscriptViewProps {
@@ -46,15 +42,10 @@ interface AgentTranscriptViewProps {
   isLive?: boolean;
   /** Forwarded scroll container so the page can shift the reading position. */
   scrollRef?: RefObject<HTMLDivElement | null>;
-  /** Reports whether the operator is at the live tail (sort-aware). */
   onAtTailChange?: (atTail: boolean) => void;
-  /** Reports the internal sort direction for anchor-preserving paging. */
   onSortDirectionChange?: (direction: TranscriptSortDirection) => void;
-  /** Unseen live-event count shown as a jump-to-tail pill when away. */
   unseenCount?: number;
-  /** Jumps to the live tail and dismisses the unseen pill. */
   onShowLatest?: () => void;
-  /** Rendered at the older end of the list (paging affordance). */
   footer?: ReactNode;
 }
 
@@ -73,7 +64,6 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
   const [sortDirection, setSortDirection] = useState<TranscriptSortDirection>("newest_first");
   const [filterOpen, setFilterOpen] = useState(false);
   const [scrollContainer, setScrollContainer] = useState<HTMLDivElement | null>(null);
-  // The element wrapping exactly the rendered rows; the virtual window
   // measures it so the rows always cover the viewport (#blank band).
   const [rowsElement, setRowsElement] = useState<HTMLDivElement | null>(null);
   const eventRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -98,8 +88,6 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
     [filteredItems, sortDirection],
   );
 
-  // Virtualized rendering window: DOM size stays bounded while loaded older
-  // pages accumulate in state (#202). The container element is stored in
   // state so the scroll listener attaches once the container mounts.
   const displayWindow = useVirtualWindow({
     itemCount: displayItems.length,

@@ -58,9 +58,6 @@ func (c *countingFinishReconciler) callCount() int {
 	return c.calls
 }
 
-// #153: operator Finish Task + resumable terminal conversations.
-// Seam: daemon Task HTTP + Runtime Activity gate + Continuation close.
-
 type finishSessionFactory struct {
 	mu       sync.Mutex
 	session  runtime.ProviderSession
@@ -393,7 +390,6 @@ func TestFinishTaskCompletesLiveIdleRuntimeAndClosesResources(t *testing.T) {
 	if !sawOperatorFinish {
 		t.Fatal("expected lifecycle completed reason=operator_finish")
 	}
-	// Operator finish is the sole completed lifecycle claim (no harness duplicate).
 	var completedPhases int
 	for _, event := range events {
 		if event.Kind == task.EventKindLifecycle && event.Payload["phase"] == "completed" {
@@ -442,7 +438,6 @@ func TestFinishTaskRejectsWhenContinuationReconciliationFails(t *testing.T) {
 		t.Fatalf("Task left durable active %q after post-runtime finish failure", found.Status)
 	}
 	if found.Status != task.StatusFailed {
-		// Prefer failed; allow already-settled non-active terminals if domain diverged.
 		t.Fatalf("Task status = %q, want failed after recon failure settle", found.Status)
 	}
 
@@ -466,7 +461,6 @@ func TestFinishTaskRejectsWhenContinuationReconciliationFails(t *testing.T) {
 		t.Fatal("expected finish_failed lifecycle diagnostic")
 	}
 
-	// Resume after recon-fail settle: restore reconciler, queue once, HTTP resume.
 	if server.blackboardV2 != nil {
 		server.tasks.SetContinuationReconciler(server.blackboardV2)
 	} else {
@@ -492,7 +486,6 @@ func TestFinishTaskRejectsWhenContinuationReconciliationFails(t *testing.T) {
 		t.Fatalf("queue status = %d body %s", queueResp.Code, queueResp.Body.String())
 	}
 
-	// Fresh session for resume launch.
 	resumeSession, resumeAdapter := newFinishSessionPair("finish-recon-resume")
 	factory.session, factory.adapter = resumeSession, resumeAdapter
 	factory.newSession = func(open int) (runtime.ProviderSession, runtime.Adapter) {
@@ -554,7 +547,6 @@ func TestFinishTaskRejectsBusyRuntime(t *testing.T) {
 		t.Fatal("busy finish must not close the provider session")
 	}
 
-	// Stop remains interruption and leaves stopped/resumable.
 	session.busy = false
 	stopResp := postStop(server, created.ProjectID, created.ID)
 	if stopResp.Code != http.StatusOK {
@@ -727,7 +719,6 @@ func TestCompletedTaskMessageQueuesOnceAndResumesSameTask(t *testing.T) {
 }
 
 func TestFailedTaskHTTPResumeQueuesOnceAndLaunchesFreshRuntime(t *testing.T) {
-	// Real HTTP queue + resume + launch for failed Task without native session.
 	newSession := func(open int) (runtime.ProviderSession, runtime.Adapter) {
 		return newFinishSessionPair(fmt.Sprintf("failed-resume-%d", open))
 	}
@@ -735,7 +726,6 @@ func TestFailedTaskHTTPResumeQueuesOnceAndLaunchesFreshRuntime(t *testing.T) {
 	factory := &finishSessionFactory{session: seed, adapter: seedAdapter, newSession: newSession}
 	server, created, mp := newFinishTaskFixture(t, factory)
 
-	// Durable failed Task + Continuation (no native session → fresh fallback).
 	if _, err := server.tasks.UpdateStatus(created.ID, task.StatusFailed); err != nil {
 		t.Fatal(err)
 	}
@@ -768,7 +758,6 @@ func TestFailedTaskHTTPResumeQueuesOnceAndLaunchesFreshRuntime(t *testing.T) {
 		t.Fatalf("queue status = %d body %s", queueResp.Code, queueResp.Body.String())
 	}
 
-	// Capture prepare plan shape before launch (fresh, no native id).
 	found, err := server.tasks.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -781,7 +770,6 @@ func TestFailedTaskHTTPResumeQueuesOnceAndLaunchesFreshRuntime(t *testing.T) {
 		t.Fatal("resume replaced Task identity")
 	}
 	if !strings.Contains(goal, "recover after failure") && !strings.Contains(goal, created.Goal) {
-		// Resume goal builds from Task goal + steering; steering is consumed at launch.
 		if strings.TrimSpace(goal) == "" {
 			t.Fatal("fresh fallback dropped resume goal/context")
 		}
@@ -938,12 +926,10 @@ func TestOrphanOwnershipResolvedBeforeReplacementLaunch(t *testing.T) {
 	if _, ok := server.providerSessions.get(created.ID); ok {
 		t.Fatal("provider session still bound after ensureRuntimeAbsentBeforeLaunch")
 	}
-	// Second call is safe (proven absence).
 	if err := server.ensureRuntimeAbsentBeforeLaunch(created.ID); err != nil {
 		t.Fatalf("second orphan resolve: %v", err)
 	}
 
-	// Replacement launch succeeds without dual ownership.
 	replacement, repAdapter := newFinishSessionPair("orphan-replacement")
 	factory.session, factory.adapter = replacement, repAdapter
 	// Mark prior cont terminal so CreateContinuation can proceed.
@@ -1178,7 +1164,6 @@ func TestConcurrentResumeSecondConflictsWithoutStoppingFirst(t *testing.T) {
 	if err != nil || latest == nil {
 		t.Fatalf("latest continuation: %v %#v", err, latest)
 	}
-	// At most one new Continuation beyond the finished one.
 	if latest.Number > beforeNumber+1 {
 		t.Fatalf("continuation number jumped from %d to %d after concurrent resumes", beforeNumber, latest.Number)
 	}
@@ -1192,7 +1177,6 @@ func postResume(server *Server, projectID, taskID string) *httptest.ResponseReco
 	return resp
 }
 
-// failingCloseSession fails Close once (Finish abort), then allows cleanup/Stop.
 type failingCloseSession struct {
 	*fakeprovider.Session
 	closed     chan struct{}
@@ -1313,7 +1297,6 @@ func TestFinishTaskClearsIntentWhenProviderCloseFails(t *testing.T) {
 		t.Fatal("finish intent still active after Close failure")
 	}
 
-	// Intent cleared: later Stop settles stopped/failed, not operator completed.
 	session.failClose.Store(false)
 	stopResp := postStop(server, created.ProjectID, created.ID)
 	deadline := time.Now().Add(3 * time.Second)
@@ -1380,7 +1363,6 @@ func (s *hangCloseSession) Close(ctx context.Context) error {
 		}
 	})
 	if s.timedOut.Load() {
-		// After first deadline, allow process exit without permanent hang.
 		err := s.Session.Close(ctx)
 		select {
 		case <-s.closed:
@@ -1394,7 +1376,6 @@ func (s *hangCloseSession) Close(ctx context.Context) error {
 		s.timedOut.Store(true)
 		return ctx.Err()
 	case <-time.After(3 * time.Second):
-		// Safety for Background cleanup paths.
 		s.timedOut.Store(true)
 		return errors.New("hang close safety timeout")
 	}

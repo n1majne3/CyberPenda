@@ -26,7 +26,6 @@ const project = {
   updated_at: "",
 };
 
-// Scope is self-consistent with the backend's readiness rule (ready means at
 // least one named in-scope asset): not ready because every asset count is 0.
 const dashboard = {
   project_id: "project-1",
@@ -143,24 +142,19 @@ describe("ProjectDashboardPage", () => {
 
     expect(await screen.findByRole("heading", { level: 1, name: "Acme External" })).toBeInTheDocument();
     expect(screen.getByTestId("project-page-shell-header").parentElement).toHaveClass("mx-auto", "max-w-6xl", "px-6", "lg:px-8");
-    // Overview now rides the shared chrome: back link plus section tabs live in
-    // the same sticky plane as every other project tab.
     expect(screen.getByRole("link", { name: /All projects/i })).toHaveAttribute("href", "/");
     expect(screen.getByRole("link", { name: /launch task/i })).toHaveClass("rounded-md", "bg-primary");
-    // Pentest projects get the mockup's outline Open report button in the footer.
     expect(screen.getByRole("link", { name: /open report/i })).toHaveClass("border-border", "bg-background");
     expect(screen.getByRole("link", { name: "Blackboard" })).toHaveAttribute(
       "href",
       "/projects/project-1/blackboard",
     );
 
-    // Shared ProjectNav chrome with count badges from the dashboard payload.
     const nav = screen.getByRole("navigation", { name: /project sections/i });
     expect(within(nav).getByRole("link", { name: /tasks/i })).toHaveTextContent("3");
     expect(within(nav).getByRole("link", { name: /evidence/i })).toHaveTextContent("5");
     expect(within(nav).getByRole("link", { name: /findings/i })).toHaveTextContent("1");
 
-    // Scope readiness checklist (scope is incomplete in this fixture).
     const scope = screen.getByRole("region", { name: /scope readiness/i });
     expect(scope).toHaveClass("rounded-lg", "border-warning/30");
     expect(scope).toHaveTextContent("2 / 3 complete");
@@ -172,7 +166,6 @@ describe("ProjectDashboardPage", () => {
       "/projects/project-1/scope",
     );
 
-    // Stat cards link to their sections; the Tasks card carries a running chip.
     const tasksCard = screen.getByRole("link", { name: /view 3 tasks/i });
     expect(tasksCard).toHaveClass("rounded-lg", "border", "bg-card");
     expect(within(tasksCard).getByText("1 running")).toBeInTheDocument();
@@ -182,7 +175,6 @@ describe("ProjectDashboardPage", () => {
     expect(screen.getByRole("link", { name: /view 1 finding/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 5 evidence items/i })).toBeInTheDocument();
 
-    // Recent activity lists recent tasks with status text and relative time.
     const activity = screen.getByText("Recent activity").closest("section");
     expect(activity).not.toBeNull();
     expect(activity!).toHaveClass("min-w-0");
@@ -196,7 +188,6 @@ describe("ProjectDashboardPage", () => {
       "/projects/project-1/tasks",
     );
 
-    // Current work summarizes open work and links into the Blackboard.
     const currentWork = screen.getByText("Current work").closest("section");
     expect(currentWork).not.toBeNull();
     expect(currentWork!).toHaveClass("min-w-0");
@@ -209,7 +200,6 @@ describe("ProjectDashboardPage", () => {
       "/projects/project-1/blackboard",
     );
 
-    // Project kind is a signal Chip with dot beside the title.
     expect(screen.getByText("Pentest Project")).toHaveClass("border-signal/25", "bg-signal/10", "text-signal");
   });
 

@@ -27,7 +27,6 @@ type HTTPDriverConfig struct {
 	Now       func() time.Time
 }
 
-// HTTPDriver executes one Challenge Platform using a declarative Manifest.
 type HTTPDriver struct {
 	manifest Manifest
 	baseURL  string

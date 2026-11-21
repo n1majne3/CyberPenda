@@ -12,9 +12,6 @@ import (
 	"pentest/internal/task"
 )
 
-// Story 18 of issue #226: the imported overlay must be captured into the
-// Task Runtime Configuration at launch so continuations reproduce the same
-// effective config.
 func TestLaunchCapturesCustomConfigFileOverlay(t *testing.T) {
 	factory := &effortProviderSessionFactory{}
 	root := t.TempDir()
@@ -132,7 +129,6 @@ func TestContinuationReproducesCapturedCustomConfigFile(t *testing.T) {
 	}
 }
 
-// Runtime Profile provenance is immutable after Owner creation.
 func TestExplicitProfileSwitchIsLocked(t *testing.T) {
 	factory := &effortProviderSessionFactory{}
 	root := t.TempDir()

@@ -27,7 +27,6 @@ type SessionEntityRecord struct {
 	CredentialRef string `json:"credential_ref,omitempty"`
 }
 
-// SessionEntityPatch is the Session Blackboard Entity update shape.
 type SessionEntityPatch struct {
 	Kind          *string `json:"kind,omitempty"`
 	Name          *string `json:"name,omitempty"`
@@ -45,7 +44,6 @@ type SessionFactRecord struct {
 	Confidence string `json:"confidence"`
 }
 
-// SessionFactPatch is the Session Fact update shape.
 type SessionFactPatch struct {
 	Category *string `json:"category,omitempty"`
 	Summary  *string `json:"summary,omitempty"`
@@ -97,7 +95,6 @@ func (s *Service) ApplyForSessionContinuation(ctx context.Context, sessionID, co
 	return s.applySession(ctx, sessionID, continuationID, nil, batch)
 }
 
-// ReadSessionCurrent reads current Session-owned semantic state by local Key.
 func (s *Service) ReadSessionCurrent(ctx context.Context, sessionID, key string) (CurrentDetail, error) {
 	if err := validateKey(key, "key"); err != nil {
 		return CurrentDetail{}, err
@@ -1031,7 +1028,6 @@ func sessionApplyUpdate(ctx context.Context, tx *sql.Tx, sessionID string, revis
 			return revision, "", 0, false, patchErr
 		}
 		if len(change.Clear) > 0 {
-			// applyEntityPatch owns the closed clear-field vocabulary.
 		}
 		entity, patchErr := applyEntityPatch(existing.record.entityRecord(), patch, change.Clear, path+".clear")
 		if patchErr != nil {

@@ -25,7 +25,6 @@ func sameOriginBrowserRequest(r *http.Request) bool {
 		return false
 	}
 	source := r.Header.Get("Origin")
-	// Browsers omit Fetch Metadata on non-loopback HTTP; same-origin GETs also omit Origin.
 	if source == "" && site == "" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
 		source = r.Referer()
 	}

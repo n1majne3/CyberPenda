@@ -23,19 +23,15 @@ import (
 // that emit one). The spawn linkage joins them: a task_started record carries
 // both ids, so bySpawn resolves either namespace to one child state.
 type childBlocks struct {
-	order []string
-	byID  map[string]*childBlockState
-	// bySpawn maps a spawning tool-call id to the child state key.
-	bySpawn map[string]string
-	// prevEntryID is the id of the last main-thread entry appended before the
-	// event currently being projected; it is the fallback anchor for a child
-	// without spawn linkage.
+	order       []string
+	byID        map[string]*childBlockState
+	bySpawn     map[string]string
 	prevEntryID string
 }
 
 type childBlockState struct {
 	key            string
-	durableID      string // task id, once a lifecycle record supplied it
+	durableID      string
 	spawnToolUseID string
 	label          string
 	subagentType   string
@@ -54,8 +50,6 @@ func newChildBlocks() *childBlocks {
 	return &childBlocks{byID: map[string]*childBlockState{}, bySpawn: map[string]string{}}
 }
 
-// beginEvent records the main-thread position the next observations would
-// follow; it is the fallback anchor for a child without spawn linkage.
 func (c *childBlocks) beginEvent(lastEntryID string) {
 	c.prevEntryID = lastEntryID
 }
@@ -71,7 +65,6 @@ func (c *childBlocks) resolve(key, spawnToolUseID string) *childBlockState {
 			return c.byID[existing]
 		}
 	}
-	// An item key may itself be a spawn id that a lifecycle record registered.
 	if existing, ok := c.bySpawn[key]; ok {
 		return c.byID[existing]
 	}
@@ -189,7 +182,6 @@ func anchorIndexForChild(entries []Entry, child *childBlockState) int {
 			}
 		}
 	}
-	// No known position: after the final entry (or first when empty).
 	return len(entries)
 }
 

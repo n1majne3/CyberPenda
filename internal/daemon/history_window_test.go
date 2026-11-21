@@ -18,13 +18,6 @@ import (
 	"pentest/internal/transcript"
 )
 
-// #202: Runtime Owner Timeline and Transcript reads return a bounded recent
-// Runtime Owner History Window, older content pages back with an owner-local
-// `before` cursor, an oversized item becomes a bounded preview with an explicit
-// detail path, and an explicit `after=0` is a live-tail delta that never resends
-// synthetic seq-0 content.
-
-// historyWindowBody is the shared Timeline/Transcript response shape.
 type historyWindowBody struct {
 	TaskID    string             `json:"task_id"`
 	SessionID string             `json:"session_id"`
@@ -197,9 +190,6 @@ func TestTaskTimelineWindowScansPastInvisibleRecentEventChunk(t *testing.T) {
 	if _, err := server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{"phase": "visible-old-event"}); err != nil {
 		t.Fatal(err)
 	}
-	// thinking_tokens projects to no Timeline item, so a full query-limit chunk
-	// of them stays invisible. (task_progress no longer qualifies: #237 now
-	// projects it as a Subagent Activity.)
 	ignored := `{"type":"system","subtype":"thinking_tokens","estimated_tokens":13}`
 	for index := 0; index < historyEventQueryLimit+1; index++ {
 		if _, err := server.tasks.AppendEvent(taskID, task.EventKindRuntimeOutput, task.EventPayload{"text": ignored}); err != nil {
@@ -354,11 +344,9 @@ func TestTaskHistoryBackwardPagingHasNoGapsOrDuplicates(t *testing.T) {
 			if len(seqs) == 0 {
 				t.Fatalf("%s: backward page before=%d returned nothing with has_older=%v", tc.name, before, older.HasOlder)
 			}
-			// No gaps: the newest seq on this page is exactly before-1.
 			if seqs[len(seqs)-1] != before-1 {
 				t.Fatalf("%s: page before=%d ends at seq %d, want %d", tc.name, before, seqs[len(seqs)-1], before-1)
 			}
-			// No duplicates across pages.
 			for _, seq := range seqs {
 				for _, prior := range seen {
 					if prior == seq {
@@ -418,7 +406,6 @@ func TestHistoryAfterZeroIsAnExplicitDelta(t *testing.T) {
 		t.Fatalf("after=0 timeline = %#v, want no items and cursor 0", emptyDelta)
 	}
 
-	// Later events still arrive through after=0.
 	appendConversationMessages(t, server, taskID, 2, 0)
 	delta := getHistoryURL(t, server, transcriptBase+"?after=0")
 	if len(delta.Entries) != 2 || delta.Cursor != 2 {
@@ -474,8 +461,6 @@ func TestHistoryOversizedItemPreviewAndDetail(t *testing.T) {
 	}
 
 	transcriptPage := getHistoryURL(t, server, transcriptBase)
-	// Goal row, the raw runtime_output fallback entry, and the conversation
-	// message: both payload rows are oversized previews in the window.
 	if len(transcriptPage.Entries) != 3 {
 		t.Fatalf("transcript window = %d entries, want goal row plus two oversized rows", len(transcriptPage.Entries))
 	}
@@ -506,7 +491,6 @@ func TestHistoryConcurrentLiveUpdatesDoNotLeakAcrossPages(t *testing.T) {
 	if len(window.Items) != historyWindowMaxItems || !window.HasOlder {
 		t.Fatalf("window = %d items has_older=%v, want a full bounded window", len(window.Items), window.HasOlder)
 	}
-	// Live events arrive while the operator is reading older history.
 	appendTimelineEvents(t, server, taskID, 5)
 
 	// A backward page from the oldest window Seq must not include the newer
@@ -524,13 +508,11 @@ func TestHistoryConcurrentLiveUpdatesDoNotLeakAcrossPages(t *testing.T) {
 		t.Fatal("backward page has_older=true, want the boundary at seq 1")
 	}
 
-	// The live-tail poll returns exactly the new events, no duplicates.
 	delta := getHistoryURL(t, server, timelineBase+"?after="+strconv.Itoa(window.Cursor))
 	if len(delta.Items) != 5 || delta.Items[0].Seq != 251 || delta.Items[4].Seq != 255 {
 		t.Fatalf("live delta = %#v, want exactly seqs 251..255", delta.Items)
 	}
 
-	// The full walk covers every Seq exactly once.
 	seen := map[int]bool{}
 	for _, page := range [][]timeline.Item{older.Items, window.Items, delta.Items} {
 		for _, item := range page {
@@ -576,7 +558,6 @@ func TestHistoryCursorsAreOwnerLocal(t *testing.T) {
 		}
 	}
 	smallTranscript := getHistoryURL(t, server, "/api/projects/"+otherProject.ID+"/tasks/"+otherTask.ID+"/transcript")
-	// Goal row + three lifecycle continuation rows + three conversation rows.
 	if len(smallTranscript.Entries) != 7 || smallTranscript.HasOlder || smallTranscript.Cursor != 6 {
 		t.Fatalf("small owner transcript = %#v, want 7 entries, cursor 6, no older pages", smallTranscript)
 	}

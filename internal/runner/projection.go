@@ -54,7 +54,6 @@ const (
 	BlackboardProjectionOmitted
 )
 
-// ProjectionRequest supplies task and daemon context for launch projection.
 type ProjectionRequest struct {
 	BlackboardProtocol string
 	Owner              owner.Contract
@@ -78,10 +77,7 @@ type ProjectionRequest struct {
 	ModelSnapshot               *modelprovider.Snapshot
 	LaunchModelOverride         string
 	SkillBundles                []skill.Bundle
-	// BlackboardMode selects the system-owned Mode Skill projected before
-	// ordinary user Skills. Disabled mode has no Mode Skill. Empty is allowed
-	// only for legacy/test projections.
-	BlackboardMode modeskill.Mode
+	BlackboardMode              modeskill.Mode
 	// BlackboardProjectionOmitted keeps ordinary Runtime configuration, Skills,
 	// external MCP servers, credentials, and Task Scope while withholding every
 	// trusted Blackboard interface and its launch context.
@@ -562,7 +558,6 @@ func projectClaudeSettings(layout Layout, profile runtimeprofile.Profile, req Pr
 	if err != nil {
 		return ConfigProjection{}, fmt.Errorf("apply custom config file: %w", err)
 	}
-	// Merge plugin enablement from the overlay into the preview install refs.
 	if overlayPlugins, ok := settings["enabledPlugins"].(map[string]any); ok {
 		previewRefs := make([]string, 0, len(installRefs))
 		previewRefs = append(previewRefs, installRefs...)
@@ -764,12 +759,6 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		return ConfigProjection{}, fmt.Errorf("apply custom config file: %w", err)
 	}
 	modelsPath := filepath.Join(agentDir, "models.json")
-	// ADR 0015: when CyberPenda can list global Model Providers, the projected
-	// set is exclusively those launch-ready globals (plus the single-provider
-	// profile fallback when none are ready). Host ~/.pi/agent files must not
-	// inject non-global / non-launch-ready providers into that runtime.
-	// Host models/auth remain a fallback only when ModelProviders is unavailable
-	// (legacy host-config launches without global projection).
 	globalProjection := piGlobalProjectionAvailable(req)
 	hostModelsFallback := !globalProjection && len(projected) == 0
 	if hostModelsFallback {
@@ -1414,7 +1403,6 @@ func listPiLaunchReadyProviders(profile runtimeprofile.Profile, req ProjectionRe
 		return nil, err
 	}
 	if all == nil {
-		// Global projection not available for this request.
 		return nil, nil
 	}
 	// Stable order by ID so models.json is deterministic across launches.
@@ -1430,10 +1418,6 @@ func listPiLaunchReadyProviders(profile runtimeprofile.Profile, req ProjectionRe
 	return out, nil
 }
 
-// globalModelProvidersForProjection returns the global provider list for Pi
-// projection. Prefer the immutable pre-TX snapshot. List() is only a fallback
-// for unit tests that project outside Store transactions; daemon launch paths
-// must set GlobalModelProviderSnapshot so precommit never touches the Service.
 func globalModelProvidersForProjection(req ProjectionRequest) ([]modelprovider.Provider, error) {
 	if req.GlobalModelProviderSnapshot != nil {
 		// Non-nil snapshot owns the set (may be empty). Copy so callers cannot
@@ -1783,12 +1767,6 @@ func projectPiSettings(agentDir string, profile runtimeprofile.Profile, req Proj
 	return packages, nil
 }
 
-// piLaunchProviderKey returns the models.json provider key for the launch's
-// selected Model Provider, mirroring piProviderArgs: the injected
-// PI_PROVIDER_ID (the Model Provider ID once a snapshot is applied), or the
-// legacy "custom" key when a single-provider profile configures an endpoint or
-// Model Provider directly. Empty when the profile has no provider
-// configuration at all, so a host models.json fallback keeps its own keys.
 func piLaunchProviderKey(profile runtimeprofile.Profile) string {
 	if id := strings.TrimSpace(profile.Fields.Env["PI_PROVIDER_ID"]); id != "" {
 		return id

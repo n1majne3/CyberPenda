@@ -37,8 +37,6 @@ func TestModeSkillsAreExclusiveSystemBundles(t *testing.T) {
 	}
 }
 
-// Disabled Blackboard Mode has no Mode Skill. Issue #248 gives a Disabled
-// launch only the state-file reminder, so Resolve and Project must refuse it.
 func TestDisabledModeHasNoModeSkill(t *testing.T) {
 	if _, err := modeskill.Resolve(modeskill.ModeDisabled); err == nil {
 		t.Fatal("disabled Blackboard Mode unexpectedly resolved a Mode Skill")

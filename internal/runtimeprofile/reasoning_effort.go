@@ -17,7 +17,6 @@ const (
 	ReasoningEffortMax    ReasoningEffort = "max"
 )
 
-// ErrInvalidReasoningEffort reports a value outside the five allowed choices.
 var ErrInvalidReasoningEffort = fmt.Errorf("reasoning effort must be one of low, medium, high, xhigh, max")
 
 var reasoningEfforts = map[ReasoningEffort]bool{

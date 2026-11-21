@@ -1,15 +1,6 @@
 import { useEffect, useId, useRef } from "react";
 import { Button, Card, CardDescription, CardTitle, Input } from "@/components/ui";
 
-/**
- * Application-styled confirm dialog. Replaces native window.confirm so
- * destructive actions stay inside the design system (theming, focus
- * management, keyboard support) instead of falling back to a stock dialog.
- *
- * Rendered as a fixed overlay with role="alertdialog"; Escape and the Cancel
- * button dismiss without confirming. Focus moves to the dialog on open and
- * returns to the previously focused element on close.
- */
 export function ConfirmDialog({
   open,
   title,
@@ -38,7 +29,6 @@ export function ConfirmDialog({
     if (!open) return;
     restoreFocusRef.current = document.activeElement;
     // Land on Cancel so an accidental Enter/Space never confirms a destructive
-    // action; focus returns to the trigger when the dialog closes.
     cancelRef.current?.focus();
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {

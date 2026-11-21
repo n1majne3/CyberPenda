@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
 import { Logo } from "./Logo";
 
-// CyberPenda logo: user-provided transparent PNG in public/.
 describe("Logo", () => {
   it("renders the CyberPenda image", () => {
     const { getByRole } = render(<Logo />);

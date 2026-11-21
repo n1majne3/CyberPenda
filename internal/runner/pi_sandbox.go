@@ -11,9 +11,6 @@ const (
 	piNPMVersionEnv     = "PENTEST_PI_NPM_VERSION"
 )
 
-// WrapSandboxPiCommand wraps a Pi launch argv for sandbox containers that do not
-// yet ship the pi binary. It installs the npm package on first use, then execs pi.
-// Custom images with pi preinstalled skip npm when `command -v pi` succeeds.
 func WrapSandboxPiCommand(runtimeCommand []string, profileEnv map[string]string) ([]string, error) {
 	if len(runtimeCommand) == 0 {
 		return nil, fmt.Errorf("pi runtime command is required")

@@ -23,7 +23,6 @@ import (
 // request may be sent after recovery, while a post-fence request with no
 // durable outcome becomes action_required and is never replayed.
 
-// steeringExecution is the terminal outcome of one accepted steer dispatch.
 type steeringExecution struct {
 	state   owner.SteeringState
 	reason  owner.SteeringFailureReason
@@ -126,8 +125,6 @@ func taskSteeringAdapter(server *Server, taskID string, settlement providerContr
 		}
 		fresh, err := server.createWritableContinuationForLiveSession(found, boundSession)
 		if err != nil {
-			// A Task that never had a Runtime Continuation keeps task-level
-			// events in the legacy degenerate state; the steer still sends.
 			if errors.Is(err, errNoContinuationToContinue) {
 				return "", false, nil
 			}
@@ -277,7 +274,6 @@ func (server *Server) dispatchAcceptedSteering(ctx context.Context, adapter *ste
 			return
 		}
 		if fenced.State != owner.SteeringDispatchStarted {
-			// A concurrent dispatcher already advanced this record; re-read the queue.
 			continue
 		}
 		// Each provider delivery is bounded so a hung steer operation cannot
@@ -426,8 +422,6 @@ func (server *Server) recoverTaskPendingSteering(ctx context.Context, record own
 		if _, bound := server.providerSessions.get(record.OwnerID); bound {
 			server.enqueueAcceptedSteeringDispatch(taskSteeringAdapter(server, record.OwnerID, server.taskConclusionSettlementForID(record.OwnerID)))
 		}
-		// Without a bound session the owner is not yet resumable; the pending
-		// request dispatches when a provider session binds again.
 	case found.Status == task.StatusStopped:
 		server.settleOwnerSteeringRecord(ctx, record, owner.SteeringFailed, owner.SteeringReasonOwnerStopped, "Task was stopped before the accepted steering dispatched")
 	case found.Status == task.StatusFailed:
@@ -451,7 +445,6 @@ func (server *Server) recoverSessionPendingSteering(ctx context.Context, record 
 		if _, bound := server.sessionProviderSessions.get(record.OwnerID); bound {
 			server.enqueueAcceptedSteeringDispatch(sessionSteeringAdapter(server, record.OwnerID, server.sessionConclusionSettlementForID(record.OwnerID)))
 		}
-		// Open but not bound: dispatch triggers when the Session Runtime binds.
 	default:
 		server.settleOwnerSteeringRecord(ctx, record, owner.SteeringFailed, owner.SteeringReasonOwnerArchived, "Session was archived before the accepted steering dispatched")
 	}
@@ -481,7 +474,6 @@ func (server *Server) taskConclusionSettlementForID(taskID string) providerContr
 	}
 }
 
-// sessionConclusionSettlementForID mirrors the Task gate for Session owners.
 func (server *Server) sessionConclusionSettlementForID(sessionID string) providerControlSettlement {
 	return server.sessionWorkingGraphSettlement(sessionID, true)
 }
@@ -511,10 +503,6 @@ type steeringClientSelectionIdentity struct {
 	RequestedReasoningEffort string `json:"requested_reasoning_effort"`
 }
 
-// canonicalSteeringClientSelectionIdentity preserves omitted selection fields
-// as empty values. This is different from the resolved Runtime Turn Selection:
-// idempotency compares exactly what the client controlled, while provider
-// defaults and fallback mode remain server-owned.
 func canonicalSteeringClientSelectionIdentity(modelProviderID, model, requestedReasoningEffort string) string {
 	effort := strings.TrimSpace(requestedReasoningEffort)
 	if effort != "" {
@@ -545,10 +533,6 @@ func steeringReplayIdentityFromAccept(input steering.AcceptRequest) steeringRepl
 	}
 }
 
-// steeringConflictMessage compares a repeated request against the durable
-// client-controlled identity. New records compare the canonical raw selection,
-// including empty fields. Legacy records have no raw identity and retain the
-// former non-empty fallback comparison for upgrade compatibility.
 func steeringConflictMessage(record *owner.SteeringRecord, identity steeringReplayIdentity) string {
 	recordedMessage := record.OperatorMessage
 	if strings.TrimSpace(recordedMessage) == "" {

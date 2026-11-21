@@ -3,8 +3,6 @@ import { act, renderHook } from "@testing-library/react";
 import { useVirtualWindow } from "@/lib/virtualWindow";
 
 // jsdom reports clientHeight 0 on real elements, so each test defines the
-// measurable viewport the hook needs on a detached div and drives its
-// scrollTop directly.
 function fakeViewport(clientHeight: number) {
   const el = document.createElement("div");
   Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true });
@@ -21,9 +19,7 @@ function rect(top: number, bottom: number) {
   return { top, bottom, height, width: 100, left: 0, right: 100, x: 0, y: top, toJSON: () => ({}) };
 }
 
-// Populates the rows wrapper with one row per list index whose measured
 // height and viewport-relative rect follow the given content offsets, so the
-// hook's measurement and DOM-anchor passes see deterministic layout in jsdom.
 function attachRows(wrapper: HTMLElement, viewport: HTMLElement, offsets: number[], heights: number[]) {
   for (let i = 0; i < offsets.length; i += 1) {
     const row = document.createElement("div");

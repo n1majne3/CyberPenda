@@ -460,7 +460,6 @@ describe("blackboard v2 data contracts", () => {
       markdown: "# Report\n\n## Confirmed Findings\n",
     });
     expect(report.markdown).toContain("Confirmed Findings");
-    // Schema permits empty markdown string.
     expect(
       parseReportMarkdown({
         schema: "report-markdown/v2",

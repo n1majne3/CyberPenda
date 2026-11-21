@@ -53,7 +53,6 @@ func TestProviderSwitchRequiresOverlayClearConfirmation(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	// Switching provider without confirmation is refused; the overlay stays.
 	var switchErr *runtimeprofile.ProviderSwitchNeedsOverlayClearError
 	if _, err := service.Update(created.ID, "", runtimeprofile.ProviderCodex, runtimeprofile.Fields{}, false, false); !errors.As(err, &switchErr) {
 		t.Fatalf("expected provider switch overlay confirmation error, got %v", err)
@@ -66,7 +65,6 @@ func TestProviderSwitchRequiresOverlayClearConfirmation(t *testing.T) {
 		t.Fatalf("refused switch must keep provider and overlay, got %q %q", kept.Provider, kept.Fields.CustomConfigFile)
 	}
 
-	// Confirming clears the overlay and switches.
 	switched, err := service.Update(created.ID, "", runtimeprofile.ProviderCodex, runtimeprofile.Fields{}, false, true)
 	if err != nil {
 		t.Fatalf("confirmed switch: %v", err)

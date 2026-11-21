@@ -1,6 +1,5 @@
 package store
 
-// baselineSessionStatements holds part of the baseline schema.
 var baselineSessionStatements = []string{
 	`CREATE TABLE sessions (
 	id TEXT PRIMARY KEY,

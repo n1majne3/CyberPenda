@@ -29,7 +29,6 @@ type DrainResult struct {
 	Blocked  bool      `json:"blocked"`
 }
 
-// Emit publishes a local update. It does not report Blackboard acceptance.
 func Emit(ctx context.Context, c owner.Contract, continuation string, operations []Operation) (Update, error) {
 	return emit(ctx, c, continuation, operations, nil, "")
 }
@@ -144,7 +143,6 @@ func (s *Service) drainFiles(ctx context.Context, c owner.Contract, continuation
 			if err != nil {
 				return result, err
 			}
-			// Apply and its durable receipt commit before file delivery.
 			receipts := filepath.Join("graph", "receipts", continuation)
 			if err = mkdirUnder(root, receipts); err != nil {
 				return result, err
@@ -198,7 +196,6 @@ func openMailbox(c owner.Contract, continuation string) (*os.Root, error) {
 	if !continuationPattern.MatchString(continuation) || !filepath.IsAbs(c.Workdir) {
 		return nil, errors.New("FGS requires an absolute workdir and a safe Continuation id")
 	}
-	// The workdir is a server binding. Internal directories are opened below it.
 	info, err := os.Lstat(c.Workdir)
 	if err != nil {
 		return nil, err

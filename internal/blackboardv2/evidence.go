@@ -15,8 +15,6 @@ type EvidenceConfig struct {
 	Failures     EvidenceFailureInjector
 }
 
-// EvidenceFailurePoint names a durable retention boundary used to verify
-// uncertain-retry recovery.
 type EvidenceFailurePoint string
 
 const (
@@ -44,10 +42,8 @@ type EvidenceFailureInjector interface {
 	FailAfter(EvidenceFailurePoint) error
 }
 
-// EvidenceLink is a closed [relation,target_key] pair.
 type EvidenceLink [2]string
 
-// UnmarshalJSON rejects non-pair and non-string Evidence links.
 func (link *EvidenceLink) UnmarshalJSON(raw []byte) error {
 	var values []string
 	if err := decodeJSON(raw, &values); err != nil {

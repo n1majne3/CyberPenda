@@ -1,16 +1,12 @@
 import { apiGet, ApiError } from "@/lib/api";
 
-/** runtime-blackboard/v2 schema identifier. */
 export const RUNTIME_SNAPSHOT_SCHEMA = "runtime-blackboard/v2" as const;
-/** blackboard-record/v2 schema identifier. */
 export const RECORD_DETAIL_SCHEMA = "blackboard-record/v2" as const;
-/** semantic-history/v2 schema identifier. */
 export const SEMANTIC_HISTORY_SCHEMA = "semantic-history/v2" as const;
 
 export const SNAPSHOT_SEMANTICS =
   "work is active; knowledge is current; history and details are available by key" as const;
 
-/** Closed relationship vocabulary (11 types). */
 export const RELATIONSHIP_TYPES = [
   "about",
   "part_of",
@@ -156,7 +152,6 @@ export interface SnapshotKnowledge {
   evidence?: Record<string, SnapshotEvidence>;
 }
 
-/** Parsed relationship: [from, type, to] or [from, type, to, reason]. */
 export interface RelationshipEdge {
   from: string;
   relation: RelationshipType;
@@ -237,13 +232,9 @@ export interface SemanticHistory {
   next_cursor?: string;
 }
 
-/** blackboard-health/v2 schema identifier. */
 export const HEALTH_SCHEMA = "blackboard-health/v2" as const;
-/** report-markdown/v2 schema identifier. */
 export const REPORT_MARKDOWN_SCHEMA = "report-markdown/v2" as const;
-/** pentest-report/v2 schema identifier. */
 export const PENTEST_REPORT_SCHEMA = "pentest-report/v2" as const;
-/** ctf-solution/v2 schema identifier. */
 export const CTF_SOLUTION_SCHEMA = "ctf-solution/v2" as const;
 
 export type HealthStatus = "healthy" | "attention" | "warning" | "critical";
@@ -278,7 +269,6 @@ export interface SemanticHealth {
   status: HealthStatus;
   attention: HealthAttention;
   anomalies: HealthAnomaly[];
-  // Retained wire field; health no longer proposes executable actions.
   proposals: [];
 }
 

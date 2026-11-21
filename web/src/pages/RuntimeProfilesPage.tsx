@@ -35,9 +35,6 @@ import {
 } from "@/components/settingsLibrary";
 
 const FALLBACK_PROVIDER_IDS = ["codex", "claude_code", "pi", "fake"] as const;
-// HIDDEN_PROVIDER_IDS are real, registered providers that should not be
-// selectable when creating a profile (e.g. the in-process fake harness used
-// for tests). Profiles already using one are still displayed and editable.
 const HIDDEN_PROVIDER_IDS = new Set(["fake"]);
 const RUNNERS = ["sandbox", "host"] as const;
 
@@ -55,7 +52,6 @@ const DEFAULT_API_KEY_ENV: Record<string, string> = {
 };
 
 // The daemon redacts stored API keys to this sentinel in profile payloads;
-// runtimeProfileForm.ts carries the same constant for save-side handling.
 const API_KEY_CONFIGURED = "[configured]";
 
 type RuntimeProfileFields = RuntimeProfile["fields"];
@@ -233,14 +229,12 @@ export function RuntimeProfilesPage() {
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    // Initial load on mount. load() is reused by event handlers.
     load();
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   /* eslint-disable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
   useEffect(() => {
-    // Sync the editor draft to the selected profile (or clear it). This is an
     // intentional synchronous derivation, not a cascading render.
     if (!selected) {
       setDraft(null);
@@ -277,8 +271,6 @@ export function RuntimeProfilesPage() {
     setError(null);
     setSavedNotice(false);
     try {
-      // Custom Args conflicts are rejected by Runtime Profile validation on the
-      // daemon; the UI surfaces that 400 without stripping or rewriting draft values.
       const created = await apiPost<RuntimeProfile>("/api/runtime-profiles", {
         name: form.name,
         provider: form.provider,

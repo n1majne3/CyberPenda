@@ -24,7 +24,6 @@ func KillHostProcessGroup(ctx context.Context, pgid int) error {
 		return nil
 	}
 	if err := proc.Kill(); err != nil {
-		// Process may already have exited.
 		return nil
 	}
 	select {

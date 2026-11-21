@@ -117,8 +117,6 @@ describe("ModelProviderMigrationPanel", () => {
     );
 
     // Each derived endpoint base URL should be reviewable before migrating, so
-    // the Anthropic final-segment adaptation is visible to the user. The
-    // host-level Anthropic value is unique evidence the final-segment drop
     // happened; the shared /v1 value appears for the OpenAI-family protocols.
     expect(await screen.findByText("https://hub.example.test")).toBeInTheDocument();
     expect(screen.getAllByText("https://hub.example.test/v1").length).toBeGreaterThanOrEqual(2);

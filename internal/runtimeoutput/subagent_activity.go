@@ -77,10 +77,6 @@ func parseCodexCollabAgentToolCall(record map[string]any, createdAt time.Time) [
 	return turns
 }
 
-// parseClaudeSubagentActivity projects a Claude Code stream-json system record
-// whose subtype is task_started / task_progress / task_failed (legacy sync
-// Task-tool vocabulary) or task_notification / task_updated (the current
-// async-agent vocabulary) into one Subagent Activity turn keyed by task_id.
 func parseClaudeSubagentActivity(record map[string]any, createdAt time.Time) []Turn {
 	taskID := firstText(record, "task_id", "taskId")
 	if taskID == "" {
@@ -135,10 +131,6 @@ func isClaudeSubagentSystemRecord(record map[string]any) bool {
 	return isClaudeSubagentLifecycleSubtype(firstText(record, "subtype"))
 }
 
-// isClaudeSubagentLifecycleSubtype reports whether a Claude system record
-// subtype carries child-agent lifecycle activity. task_started / task_progress
-// / task_failed are the legacy sync Task-tool vocabulary; task_notification /
-// task_updated are the current async-agent vocabulary.
 func isClaudeSubagentLifecycleSubtype(subtype string) bool {
 	switch strings.ToLower(subtype) {
 	case "task_started", "task_progress", "task_failed", "task_notification", "task_updated":
@@ -162,7 +154,6 @@ func codexSubagentActivityState(kind string) string {
 	}
 }
 
-// codexCollabAgentState maps a CollabAgentStatus onto the coarse shared state.
 func codexCollabAgentState(status string) string {
 	switch strings.ToLower(status) {
 	case "completed":
@@ -172,15 +163,10 @@ func codexCollabAgentState(status string) string {
 	case "interrupted":
 		return SubagentActivityInterrupted
 	default:
-		// pendingInit, running, or unknown: the child is live.
 		return SubagentActivityStarted
 	}
 }
 
-// isClaudeAgentTaskType reports whether a task_type marks a child agent rather
-// than another background task kind (for example a backgrounded shell
-// command). An absent type stays supported for the legacy sync Task-tool
-// vocabulary, which carries no task_type.
 func isClaudeAgentTaskType(taskType string) bool {
 	switch strings.ToLower(strings.TrimSpace(taskType)) {
 	case "local_agent", "subagent":
@@ -190,11 +176,6 @@ func isClaudeAgentTaskType(taskType string) bool {
 	}
 }
 
-// claudeSubagentActivityState maps a task_* subtype or task_notification /
-// task_updated status onto the coarse shared state. Progress keeps the
-// subagent live; task_notification status and task_updated patch statuses are
-// the current terminal vocabulary (completed / failed / stopped). Legacy
-// stream-json emitted task_failed instead; that spelling stays supported.
 func claudeSubagentActivityState(subtype, status string) string {
 	switch subtype {
 	case "task_failed":
@@ -217,7 +198,6 @@ func claudeSubagentActivityState(subtype, status string) string {
 		case "failed", "killed":
 			return SubagentActivityFailed
 		default:
-			// pending, running, paused: the child is live.
 			return SubagentActivityStarted
 		}
 	default:

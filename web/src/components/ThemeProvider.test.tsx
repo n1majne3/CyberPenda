@@ -4,7 +4,6 @@ import userEvent from "@testing-library/user-event";
 import { ThemeProvider, ThemeToggle } from "./ThemeProvider";
 import { useTheme } from "./theme-context";
 
-// Probe hook to read the current theme inside a provider tree.
 function ThemeProbe() {
   const { theme } = useTheme();
   return <div data-testid="theme">{theme}</div>;
@@ -13,7 +12,6 @@ function ThemeProbe() {
 beforeEach(() => {
   localStorage.clear();
   document.documentElement.className = "";
-  // Default to "prefers light" unless a test overrides it.
   definePrefersDark(false);
 });
 
@@ -56,14 +54,13 @@ describe("ThemeProvider", () => {
   });
 
   it("persists an explicit choice to localStorage", () => {
-    definePrefersDark(true); // system dark, but we force light
+    definePrefersDark(true);
     render(
       <ThemeProvider>
         <ThemeProbe />
         <ThemeToggle />
       </ThemeProvider>,
     );
-    // Toggle from dark → light.
     act(() => {
       screen.getByRole("button").click();
     });
@@ -73,7 +70,7 @@ describe("ThemeProvider", () => {
 
   it("respects a stored preference over system preference", () => {
     localStorage.setItem("theme", "dark");
-    definePrefersDark(false); // system light, stored dark wins
+    definePrefersDark(false);
     render(
       <ThemeProvider>
         <ThemeProbe />

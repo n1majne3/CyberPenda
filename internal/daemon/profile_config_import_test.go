@@ -224,7 +224,6 @@ func TestUpdateRuntimeProfileProviderSwitchReturnsConflict(t *testing.T) {
 	server := newImportTestServer(t)
 	id := createProfileForImport(t, server)
 
-	// Seed a non-empty Custom Config File through the import endpoint.
 	importBody := claudeImportBodyFromSeed(t, server, id, func(doc map[string]any) {
 		doc["enabledPlugins"] = map[string]any{"warp@claude-code-warp": true}
 	})
@@ -263,7 +262,6 @@ func TestUpdateRuntimeProfileProviderSwitchConfirmClearsOverlay(t *testing.T) {
 		t.Fatalf("import status %d body %s", rec.Code, rec.Body.String())
 	}
 
-	// With confirmation the switch succeeds and drops the overlay.
 	switchBody := `{"provider":"codex","confirm_provider_switch_clears_overlay":true}`
 	req = httptest.NewRequest(http.MethodPatch, "/api/runtime-profiles/"+id, bytes.NewReader([]byte(switchBody)))
 	rec = httptest.NewRecorder()
@@ -304,7 +302,6 @@ func TestUpdateRuntimeProfileProviderSwitchConfirmClearsOverlayWithFields(t *tes
 	}
 }
 
-// Story 16: the generated config preview shows the final merged result.
 func TestMergedConfigPreviewEndpointCombinesOverlay(t *testing.T) {
 	server := newImportTestServer(t)
 	id := createProfileForImport(t, server)
@@ -340,7 +337,6 @@ func TestMergedConfigPreviewEndpointCombinesOverlay(t *testing.T) {
 		t.Fatalf("merged preview must include the overlay plugin, got %#v", payload.Merged["enabledPlugins"])
 	}
 
-	// Unknown profile id answers 404.
 	req = httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/nope/merged-config-preview", nil)
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, req)
@@ -349,7 +345,6 @@ func TestMergedConfigPreviewEndpointCombinesOverlay(t *testing.T) {
 	}
 }
 
-// Story 2: the editor seed is the provider-native projected config text.
 func TestProjectedConfigEndpointSeedsProviderNativeText(t *testing.T) {
 	server := newImportTestServer(t)
 	id := createProfileForImport(t, server)

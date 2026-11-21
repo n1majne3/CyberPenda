@@ -15,10 +15,6 @@ import (
 	"pentest/internal/task"
 )
 
-// P1 #1: Claude/Pi post-grant projection must not leave an active Continuation,
-// grant, pin, working state, or grant-bearing MCP config when it fails after
-// CreateContinuation would otherwise have committed.
-
 func TestClaudeAndPiV2PostGrantProjectionFailureRollsBackDurableLaunchAndGrantConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -254,7 +250,6 @@ func TestClaudeAndPiV2SandboxArgvAndEnvOmitIdentityAndHostTaskRoots(t *testing.T
 			}
 			taskRoot := filepath.Join(runtimeRoot, createdTask.ID)
 
-			// Process env (-e KEY=VALUE) visible to the Runtime.
 			var envPairs []string
 			for i := 0; i < len(createArgs)-1; i++ {
 				if createArgs[i] == "-e" {
@@ -280,7 +275,6 @@ func TestClaudeAndPiV2SandboxArgvAndEnvOmitIdentityAndHostTaskRoots(t *testing.T
 				}
 			}
 
-			// Runtime command (argv after the image) is what Claude/Pi exec.
 			imageIdx := -1
 			for i, arg := range createArgs {
 				if arg == "pentest-kali:test" {
@@ -304,7 +298,6 @@ func TestClaudeAndPiV2SandboxArgvAndEnvOmitIdentityAndHostTaskRoots(t *testing.T
 			// never host absolute paths.
 			for _, arg := range createArgs[imageIdx+1:] {
 				if strings.HasPrefix(arg, "/") && !strings.HasPrefix(arg, "/task/") && !strings.HasPrefix(arg, "/usr/") && !strings.HasPrefix(arg, "/opt/") {
-					// Allow absolute binary paths under /usr; reject other host paths.
 					if strings.Contains(arg, runtimeRoot) || strings.Contains(arg, taskRoot) {
 						t.Fatalf("sandbox runtime argv used host path %q", arg)
 					}

@@ -9,7 +9,6 @@ import { Card, type CardProps } from "@/components/ui";
  * so the page rewrites stay focused on layout rather than re-deriving these.
  */
 
-/** Consistent page padding + max width wrapper used by every page body. */
 export const PageContainer = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
   ({ className, children, ...props }, ref) => (
     <div ref={ref} className={cn("w-full p-6 lg:p-8", className)} {...props}>
@@ -19,7 +18,6 @@ export const PageContainer = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivEl
 );
 PageContainer.displayName = "PageContainer";
 
-/** The repeated "← Back to …" link that sits above project sub-pages. */
 export function BackLink({ to, children, className }: { to: string; children: ReactNode; className?: string }) {
   return (
     <Link
@@ -35,7 +33,6 @@ export function BackLink({ to, children, className }: { to: string; children: Re
   );
 }
 
-/** The repeated muted "No X yet." placeholder line. */
 export function EmptyState({ className, children, ...props }: HTMLAttributes<HTMLParagraphElement>) {
   return (
     <p className={cn("text-sm text-muted-foreground", className)} {...props}>
@@ -80,7 +77,6 @@ export function SettingsPageHeader({
   );
 }
 
-/** Uppercase tracking-wide section label used for section headers. */
 export function SectionLabel({ className, children, ...props }: HTMLAttributes<HTMLParagraphElement>) {
   return (
     <p className={cn("font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground", className)} {...props}>
@@ -112,7 +108,6 @@ export function SettingsSplitLayout({
   ...props
 }: HTMLAttributes<HTMLDivElement> & {
   variant?: "list-detail" | "management";
-  /** Constrain to parent height and let columns scroll independently (lg+). */
   fill?: boolean;
 }) {
   return (

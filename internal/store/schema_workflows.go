@@ -1,6 +1,5 @@
 package store
 
-// baselineWorkflowStatements holds part of the baseline schema.
 var baselineWorkflowStatements = []string{
 	`CREATE TABLE "assisted_conclusion_retry_keys" (
 	task_id TEXT NOT NULL,

@@ -156,7 +156,6 @@ func (s *Service) Apply(ctx context.Context, c owner.Contract, continuation stri
 		return Receipt{}, err
 	}
 	defer tx.Rollback()
-	// Acquire the SQLite writer before reading versions or checking replay.
 	if _, err = tx.ExecContext(ctx, `INSERT INTO fgs_boards(kind,owner_id) VALUES(?,?) ON CONFLICT(kind,owner_id) DO UPDATE SET revision=revision`, kind, id); err != nil {
 		return Receipt{}, err
 	}

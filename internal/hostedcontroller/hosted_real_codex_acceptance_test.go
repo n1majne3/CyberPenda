@@ -383,13 +383,11 @@ func (model *realCodexControlledModel) serveLead(response http.ResponseWriter, t
 	case strings.Contains(lastOutput, "ACK-MISS"):
 		model.redispatchLead(response, thread, spawned)
 	case strings.Contains(lastOutput, `"agent_id"`), strings.Contains(lastOutput, `"task_name"`):
-		// The spawn result just arrived; block on the child before verifying.
 		writeCodexToolCall(response, "wait_agent", map[string]any{
 			"targets":    codexAgentIDPattern.FindStringSubmatch(lastOutput)[1:],
 			"timeout_ms": 30000,
 		})
 	default:
-		// The wait returned (or timed out); verify the acknowledgement file.
 		writeCodexToolCall(response, "exec_command", map[string]any{
 			"cmd": `test -f "$(pwd -P)/graph/facts/901-ack.md" && echo ACK-OK || echo ACK-MISS`,
 		})

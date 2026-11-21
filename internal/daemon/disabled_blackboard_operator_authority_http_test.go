@@ -195,8 +195,6 @@ func TestDisabledOutputEntersReportsAndDashboardOnlyAfterOperatorReconciliation(
 	created := createDisabledOutputTask(
 		t, fixture, task.BlackboardModeDisabled, "state.txt", []byte(unreviewed+"\n"),
 	)
-	// Setup one legacy/raw Runtime output entry. Report and Dashboard assertions
-	// below use only public responses.
 	if _, err := fixture.server.tasks.AppendEvent(created.ID, task.EventKindRuntimeOutput, task.EventPayload{"text": unreviewed}); err != nil {
 		t.Fatalf("append unreviewed Runtime Transcript output: %v", err)
 	}
@@ -453,7 +451,6 @@ func newDisabledOutputAuthorityFixture(t *testing.T, authToken string) disabledO
 	if err != nil {
 		t.Fatalf("create Project: %v", err)
 	}
-	// This fixture verifies the retained legacy protocol.
 	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
 		t.Fatal(err)
 	}

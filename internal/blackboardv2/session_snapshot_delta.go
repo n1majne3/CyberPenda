@@ -22,7 +22,6 @@ func (s *Service) sessionSnapshotWithChangesTx(ctx context.Context, tx *sql.Tx, 
 	}
 	var snapshot RuntimeSnapshot
 	if errors.Is(err, sql.ErrNoRows) || revision != baseRevision || json.Unmarshal([]byte(raw), &snapshot) != nil || snapshot.Revision != baseRevision || snapshot.Schema != snapshotSchema || snapshot.Semantics != snapshotSemantics {
-		// Legacy or missing projections are rebuilt once from authoritative tables.
 		return s.sessionRuntimeSnapshotTx(ctx, tx, sessionID)
 	}
 	removed := make(map[string]bool)

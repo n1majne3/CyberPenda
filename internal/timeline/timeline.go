@@ -48,7 +48,6 @@ var timelineParseOpts = runtimeoutput.ParseOptions{
 	IncludeErrors:             true,
 }
 
-// Build projects owner events into coalesced timeline items.
 func Build(events []Event) []Item {
 	items := make([]Item, 0, len(events))
 	nextSeq := 1

@@ -54,7 +54,6 @@ type SandboxBridgeRequest struct {
 	Params         json.RawMessage `json:"params,omitempty"`
 }
 
-// SandboxBridgeResponse is a JSON-RPC response correlated by request ID.
 type SandboxBridgeResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      string          `json:"id"`
@@ -352,7 +351,6 @@ func (r *SandboxSessionBridgeRegistry) CloseAll(ctx context.Context) error {
 	return cleanupErr
 }
 
-// NewSandboxSessionBridge creates an idle Task-owned bridge.
 func NewSandboxSessionBridge(docker SandboxBridgeDocker, config SandboxBridgeConfig) (*SandboxSessionBridge, error) {
 	if docker == nil {
 		return nil, fmt.Errorf("sandbox bridge Docker is required")
@@ -429,14 +427,12 @@ func (b *SandboxSessionBridge) Start(ctx context.Context) error {
 	return nil
 }
 
-// ContainerID returns the stable container identity after Start.
 func (b *SandboxSessionBridge) ContainerID() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.containerID
 }
 
-// TaskID returns the immutable Task owner.
 func (b *SandboxSessionBridge) TaskID() string { return b.config.TaskID }
 
 // BindContinuation associates future requests with a new Continuation without
@@ -616,7 +612,6 @@ func (b *SandboxSessionBridge) Close(ctx context.Context) error {
 	return b.cleanupErr
 }
 
-// Closed is closed when explicit cleanup has completed.
 func (b *SandboxSessionBridge) Closed() <-chan struct{} { return b.closed }
 
 // Terminated is closed once when the protocol stream ends unexpectedly. It is

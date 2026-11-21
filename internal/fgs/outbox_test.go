@@ -97,7 +97,6 @@ func TestOutboxPublishesOrderedUpdatesAndRepairsLostReceipt(t *testing.T) {
 
 func TestRejectedHeadCanBeReplacedWithoutEditingPublishedFiles(t *testing.T) {
 	s, c := fixture(t)
-	// The schema is valid, but the Step refers to a Goal that is not accepted.
 	_, err := fgs.Emit(t.Context(), c, "continuation-1", []fgs.Operation{{Op: "step.create", Key: "step:check", Goal: "goal:access", Action: "Check access"}})
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +121,6 @@ func TestRejectedHeadCanBeReplacedWithoutEditingPublishedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This update depends on the earlier queued open -> running transition.
 	if _, err = fgs.Emit(t.Context(), c, "continuation-1", []fgs.Operation{{Op: "step.transition", Key: "step:check", From: "running", To: "blocked", Reason: "Need access"}}); err != nil {
 		t.Fatal(err)
 	}

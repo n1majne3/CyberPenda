@@ -138,7 +138,6 @@ func TestEngineProbeFailuresReprobeEveryLaunch(t *testing.T) {
 		t.Fatalf("failed probes = docker:%d podman:%d, want every launch to re-probe", counter.count("docker"), counter.count("podman"))
 	}
 
-	// A newly started engine is seen on the very next launch.
 	ready = true
 	if result := svc.preflight.Run(context.Background(), request); !result.Pass {
 		t.Fatalf("expected pass once docker is ready, got %#v", result.Checks)

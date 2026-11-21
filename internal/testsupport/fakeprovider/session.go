@@ -13,7 +13,6 @@ import (
 	"pentest/internal/task"
 )
 
-// Config controls deterministic fake provider behavior.
 type Config struct {
 	SessionID         string
 	ActiveTurnID      string
@@ -50,10 +49,8 @@ type Session struct {
 	offline bool
 	// unexpectedOffline is true only for non-Close process death (MarkOffline).
 	// Explicit Close/Stop must not look like unexpected exit.
-	unexpectedOffline bool
-	// healthUnknown forces indeterminate health for activity tests.
-	healthUnknown bool
-	// lastRequests records each operation request for acceptance tests.
+	unexpectedOffline                  bool
+	healthUnknown                      bool
 	lastRequests                       []runtime.ProviderSessionRequest
 	observationSink                    runtime.ProviderSessionObserve
 	attemptResultSink                  runtime.ProviderSessionAttemptResultSink
@@ -64,7 +61,6 @@ type Session struct {
 	providerLineage                    map[string]runtime.ProviderSessionTurnLineage
 }
 
-// New returns an idle or active deterministic session.
 func New(config Config) *Session {
 	id := strings.TrimSpace(config.SessionID)
 	if id == "" {
@@ -232,7 +228,6 @@ func (s *Session) SendTurn(ctx context.Context, request runtime.ProviderSessionR
 	return s.operate(ctx, runtime.ProviderSessionModeSendTurn, runtime.ProviderSessionCapabilitySendTurn, request, emit)
 }
 
-// LastRequests returns a copy of recorded provider control requests.
 func (s *Session) LastRequests() []runtime.ProviderSessionRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -264,7 +259,6 @@ func (s *Session) SteerInTurn(ctx context.Context, request runtime.ProviderSessi
 	return s.operate(ctx, runtime.ProviderSessionModeInTurnSteer, runtime.ProviderSessionCapabilityInTurnSteer, request, emit)
 }
 
-// InTurnSteer is an operation-name alias matching the capability name.
 func (s *Session) InTurnSteer(ctx context.Context, request runtime.ProviderSessionRequest, emit runtime.ProviderSessionEmit) (runtime.ProviderSessionResult, error) {
 	return s.SteerInTurn(ctx, request, emit)
 }
@@ -282,12 +276,10 @@ func (s *Session) Close(context.Context) error {
 	s.closed = true
 	s.activeTurnID = ""
 	s.offline = true
-	// Explicit Close is operator Stop/cleanup, not unexpected exit.
 	s.unexpectedOffline = false
 	return nil
 }
 
-// MarkOffline records confirmed unexpected process/session exit without Close.
 func (s *Session) MarkOffline() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -295,21 +287,18 @@ func (s *Session) MarkOffline() {
 	s.unexpectedOffline = true
 }
 
-// MarkHealthUnknown forces indeterminate health for Runtime Activity tests.
 func (s *Session) MarkHealthUnknown() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.healthUnknown = true
 }
 
-// ControlBusy reports whether a native control operation is in flight.
 func (s *Session) ControlBusy() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.activeCall != ""
 }
 
-// TurnBusy reports whether a fake control call or provider Runtime Turn is active.
 func (s *Session) TurnBusy() bool {
 	return s.TurnState().TurnBusy()
 }
@@ -324,14 +313,12 @@ func (s *Session) TurnState() runtime.ProviderSessionTurnState {
 	}
 }
 
-// SessionClosed reports whether Close has completed on this handle.
 func (s *Session) SessionClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.closed
 }
 
-// SessionOffline reports confirmed offline health from the current process.
 func (s *Session) SessionOffline() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -346,14 +333,12 @@ func (s *Session) SessionUnexpectedOffline() bool {
 	return s.unexpectedOffline
 }
 
-// SessionHealthUnknown reports indeterminate health without inventing failure.
 func (s *Session) SessionHealthUnknown() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.healthUnknown && !s.offline && !s.closed
 }
 
-// Acknowledge releases a manually gated fake provider acknowledgement.
 func (s *Session) Acknowledge(requestID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

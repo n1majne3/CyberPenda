@@ -1,7 +1,5 @@
 import type { TaskTranscriptEntry } from "@/lib/api";
 
-// Transcript rendering helpers. Timeline classification and provider-record
-// summarization live in the daemon (internal/timeline, internal/runtimeoutput);
 // the client only renders what the server already parsed.
 
 export function collapsedTranscriptTitle(entry: TaskTranscriptEntry): string {

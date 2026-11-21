@@ -16,12 +16,6 @@ import (
 	"pentest/internal/runtimeprofile"
 )
 
-// End-to-end journey for the Custom Config File feature (issue #226) through
-// the real daemon graph: real handlers, real store, real service, real
-// Config Projection. Only the filesystem layout is a temp dir, exactly as in
-// production. The warp use case drives it: a non-catalog plugin and an extra
-// env var imported from an edited Claude settings.json must survive round
-// trip storage and reach the projected file.
 func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 	server, err := daemon.NewServer(daemon.Config{
 		Version: "test-version",
@@ -32,7 +26,6 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 		t.Fatalf("NewServer: %v", err)
 	}
 
-	// 1. Create the profile over HTTP.
 	createBody := `{"name":"E2E Claude","provider":"claude_code","fields":{"model":"claude-opus-4-6"}}`
 	rec := httptest.NewRecorder()
 	server.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", strings.NewReader(createBody)))
@@ -45,7 +38,6 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 	}
 	profileID := created.ID
 
-	// 2. The editor seed is a complete provider-native settings.json.
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+profileID+"/projected-config", nil))
 	if rec.Code != http.StatusOK {
@@ -99,7 +91,6 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 		t.Fatalf("parse import response: %v", err)
 	}
 
-	// 4. Structured keys mapped back; the remainder persisted verbatim.
 	if imported.Profile.Fields.Env["EXTRA_TOOL_FLAG"] != "1" {
 		t.Fatalf("env must map into the structured field, got %#v", imported.Profile.Fields.Env)
 	}
@@ -107,7 +98,6 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 		t.Fatalf("plugin remainder must persist on the Custom Config File, got %q", imported.Profile.Fields.CustomConfigFile)
 	}
 
-	// 5. The merged preview shows the final result the runtime receives.
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+profileID+"/merged-config-preview", nil))
 	if rec.Code != http.StatusOK {
@@ -125,7 +115,6 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 		t.Fatalf("merged preview must show structured env plus overlay plugin, got env=%#v plugins=%#v", previewEnv, plugins)
 	}
 
-	// 6. The real Config Projection deep-merges the same overlay onto disk.
 	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-e2e", runtimeprofile.ProviderClaudeCode)
 	if err != nil {
 		t.Fatalf("prepare layout: %v", err)
@@ -144,7 +133,6 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 		t.Fatalf("warp plugin must reach the projected settings.json, got %#v", projectedPlugins)
 	}
 
-	// 7. Re-opening the editor shows the merged file, including the remainder.
 	rec = httptest.NewRecorder()
 	server.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/runtime-profiles/"+profileID+"/projected-config", nil))
 	if rec.Code != http.StatusOK {

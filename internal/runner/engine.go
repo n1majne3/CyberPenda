@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// EngineKind names the container engine behind PENTEST_CONTAINER_CLI.
 type EngineKind string
 
 const (
@@ -20,8 +19,6 @@ const (
 	EngineUnknown EngineKind = "unknown"
 )
 
-// EngineInfo is the probed container engine used for sandbox create flags and
-// preflight. Detection is best-effort and never starts a long-lived container.
 type EngineInfo struct {
 	CLI      string     `json:"cli"`
 	Kind     EngineKind `json:"kind"`
@@ -34,7 +31,6 @@ type EngineInfo struct {
 // uses the real executable on PATH.
 type CommandRunner func(ctx context.Context, name string, args ...string) ([]byte, error)
 
-// DefaultCommandRunner executes name with args and returns combined output.
 func DefaultCommandRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	var buf bytes.Buffer
@@ -44,7 +40,6 @@ func DefaultCommandRunner(ctx context.Context, name string, args ...string) ([]b
 	return buf.Bytes(), err
 }
 
-// NormalizeContainerCLI returns the configured CLI or the product default.
 func NormalizeContainerCLI(cli string) string {
 	cli = strings.TrimSpace(cli)
 	if cli == "" {
@@ -147,7 +142,6 @@ func (info EngineInfo) SupportsVPNTun() (ok bool, detail string) {
 
 func kindFromCLIName(cli string) EngineKind {
 	base := strings.ToLower(filepath.Base(cli))
-	// Windows may append .exe.
 	base = strings.TrimSuffix(base, ".exe")
 	switch {
 	case base == "podman" || strings.HasPrefix(base, "podman-"):

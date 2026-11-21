@@ -28,7 +28,6 @@ const (
 )
 
 const (
-	// MaxCatalogResponseBytes bounds memory used by one Model Catalog Refresh.
 	MaxCatalogResponseBytes = 4 * 1024 * 1024
 	// CatalogRefreshTimeout bounds a production upstream request even when its
 	// caller does not provide an earlier context deadline.

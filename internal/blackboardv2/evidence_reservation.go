@@ -124,9 +124,6 @@ func (s *Service) verifyManagedEvidencePayload(internalPath, digest string, size
 	hash := sha256.New()
 	actualSize, err := io.Copy(hash, file)
 	if evidenceLockViolation(err) {
-		// Another publisher is actively journaling this inode; the read is
-		// temporarily blocked, not an integrity failure. Linux flock never
-		// blocks other handles' I/O, so only Windows reports this.
 		return false, &Error{Code: "evidence_publication_in_progress", Message: "Evidence payload read is blocked by an active publisher", Path: "key", Retryable: true}
 	}
 	if err != nil {

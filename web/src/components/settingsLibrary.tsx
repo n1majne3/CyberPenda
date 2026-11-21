@@ -4,7 +4,6 @@ import { Input, type InputProps } from "@/components/ui";
 import { SettingsPanel } from "@/components/shared";
 import { cn } from "@/lib/utils";
 
-/** Left/right column wrapper for fill-height settings list-detail layouts. */
 export function SettingsListColumn({
   className,
   ...props
@@ -20,7 +19,6 @@ export function SettingsListColumn({
   );
 }
 
-/** Scrollable list body panel used under a toolbar in fill layouts. */
 export function SettingsScrollPanel({
   className,
   ...props
@@ -46,7 +44,6 @@ export type SettingsSearchFieldProps = Omit<
   inputClassName?: string;
 };
 
-/** Search input with leading icon — shared library discovery control. */
 export function SettingsSearchField({
   value,
   onChange,
@@ -85,7 +82,6 @@ export type SettingsSegmentedFilterProps<T extends string = string> = {
   className?: string;
 };
 
-/** Segmented control for All / Active / Disabled style filters. */
 export function SettingsSegmentedFilter<T extends string>({
   value,
   onChange,

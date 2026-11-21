@@ -340,9 +340,6 @@ func (s *providerSessionAdapter) SteerInTurn(ctx context.Context, request Provid
 	// Events keep the original public identity.
 	fallbackRequest := request
 	fallbackRequest.RequestID = request.RequestID + ":interrupt-replace-fallback"
-	// The attempted same-turn steer is Harness control, but its safe fallback
-	// starts a replacement Turn from the operator message. That replacement is
-	// Work under ADR 0018.
 	fallbackRequest.TurnKind = RuntimeTurnKindWork
 	fallbackEmit := func(kind task.EventKind, payload task.EventPayload) {
 		projected := cloneProviderEventPayload(payload)
@@ -358,9 +355,6 @@ func (s *providerSessionAdapter) SteerInTurn(ctx context.Context, request Provid
 	publicFallbackRequest.TurnKind = RuntimeTurnKindWork
 	s.recordProviderSessionTurnKind(request.RequestID, fallback.ProviderTurnID, publicFallbackRequest.TurnKind)
 	s.recordProviderSessionTurnLineage(publicFallbackRequest, fallback.ProviderTurnID)
-	// Replace the cached method-unavailable outcome with the successful fallback
-	// so a direct retry of the same provider request remains idempotent even
-	// after the replacement Turn changes the active provider Turn identity.
 	s.store(request.RequestID, ProviderSessionModeInTurnSteer, fingerprint, fallback, nil)
 	return fallback, nil
 }
@@ -415,14 +409,12 @@ func (s *providerSessionAdapter) Close(ctx context.Context) error {
 	return transport.Close(ctx)
 }
 
-// ControlBusy reports whether a native control operation is in flight.
 func (s *providerSessionAdapter) ControlBusy() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.active
 }
 
-// TurnBusy reports whether a control RPC or provider Runtime Turn is active.
 func (s *providerSessionAdapter) TurnBusy() bool {
 	return s.TurnState().TurnBusy()
 }
@@ -437,7 +429,6 @@ func (s *providerSessionAdapter) TurnState() ProviderSessionTurnState {
 	}
 }
 
-// SessionClosed reports whether Close has completed on this handle.
 func (s *providerSessionAdapter) SessionClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1152,7 +1143,6 @@ func claudeCodeParams(sessionID, turnID string, request ProviderSessionRequest) 
 	return params
 }
 
-// PiProviderSessionConfig configures one long-lived Pi RPC child.
 type PiProviderSessionConfig struct {
 	Transport    ProviderSessionTransport
 	SessionID    string
@@ -1211,7 +1201,6 @@ func piPrepareSendSelection(ctx context.Context, transport ProviderSessionTransp
 		}
 	}
 	if effort != "" {
-		// Do not rewrite or downgrade client vocabulary; Pi rejects unsupported levels.
 		params := map[string]any{
 			"session_id": sessionID,
 			"turn_id":    turnID,

@@ -1,4 +1,3 @@
-// Package runtimeextension owns runtime-native extension manifests.
 package runtimeextension
 
 import (

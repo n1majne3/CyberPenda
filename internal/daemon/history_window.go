@@ -12,12 +12,6 @@ import (
 	"pentest/internal/transcript"
 )
 
-// History window bounds for Runtime Owner Timeline and Transcript projections
-// (#202). The initial read returns the newest recent window instead of the
-// complete history; older content stays reachable through backward paging with
-// an owner-local `before` cursor, and one oversized item cannot defeat the
-// serialized byte bound because it is truncated to a bounded preview with an
-// explicit detail reference.
 const (
 	// historyWindowMaxItems bounds the window and each backward page by item
 	// count.
@@ -34,8 +28,7 @@ const (
 	// truncated preview so a pathological payload cannot grow the preview
 	// without bound.
 	historyPreviewMapEntries = 200
-	// historyPreviewKeyChars caps map keys retained in a truncated preview.
-	historyPreviewKeyChars = 512
+	historyPreviewKeyChars   = 512
 	// historyEventQueryLimit bounds the storage rows read to build one owner
 	// history response. Projection filtering happens in SQL before this limit.
 	historyEventQueryLimit = historyWindowMaxItems * 4
@@ -72,7 +65,6 @@ func parseHistoryRequest(request *http.Request) historyRequest {
 	return req
 }
 
-// historyPage is the shared Timeline/Transcript page result.
 type historyPage[T any] struct {
 	before   int
 	items    []T
@@ -88,10 +80,6 @@ type timelineEventChunk struct {
 	scanCursor int
 }
 
-// collectTimelineItems reads bounded Event chunks until it has enough visible
-// Timeline items. Provider progress records can be valid retained Events that
-// intentionally project to no Timeline item. Such records must not make an
-// initial or backward page appear empty while older visible history exists.
 func collectTimelineItems(req historyRequest, fetch func(historyRequest) (timelineEventChunk, error)) ([]timeline.Item, timelineEventChunk, error) {
 	scanReq := req
 	items := make([]timeline.Item, 0, historyWindowMaxItems)
@@ -281,7 +269,6 @@ func boundedTimelineItem(item timeline.Item, detailBase string) (timeline.Item, 
 	return preview, len(sized)
 }
 
-// boundedTranscriptEntry is the transcript counterpart of boundedTimelineItem.
 func boundedTranscriptEntry(entry transcript.Entry, detailBase string) (transcript.Entry, int) {
 	raw, err := json.Marshal(entry)
 	if err != nil || len(raw) <= historyWindowMaxBytes {

@@ -143,7 +143,6 @@ describe("SessionHomePage", () => {
 
     renderPage();
 
-    // Launch-controls data lands after first paint; anchor on a fetched option.
     await screen.findByRole("option", { name: "MiMo" });
     expect(await screen.findByLabelText("Runtime")).toBeInTheDocument();
     expect(screen.getByLabelText("Model provider")).toBeInTheDocument();
@@ -350,7 +349,6 @@ describe("SessionHomePage", () => {
   });
 
   it("navigates to the created session page after creation", async () => {
-    // Method-aware mock: GET /api/sessions lists nothing, POST /api/sessions
     // returns the created Session so the page can navigate to its detail route.
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -373,7 +371,6 @@ describe("SessionHomePage", () => {
           last_activity_at: "2026-08-04T00:00:00Z",
         });
       }
-      // GET /api/sessions (list) and archived list default to empty.
       return json({ sessions: [] });
     });
     vi.stubGlobal("fetch", fetchMock);

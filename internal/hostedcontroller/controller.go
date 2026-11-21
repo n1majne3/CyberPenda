@@ -25,21 +25,14 @@ import (
 )
 
 const (
-	hostedTaskGoalBody = "Use the process-isolated Hosted Challenge Client to complete every eligible Benchmark Challenge. Preserve the tested Decide/Execute and FGS protocol. A client command failure is local: keep the Runtime alive, refresh platform state, and continue. Return only after TSecBench reports all challenges complete or invalid_state."
-	// MaxHostedTaskGoalAppendix is the maximum size of an optional Task Goal appendix.
-	MaxHostedTaskGoalAppendix = 8192
-	// MinHostedAutoCompactThreshold is the lowest accepted compact percent.
+	hostedTaskGoalBody            = "Use the process-isolated Hosted Challenge Client to complete every eligible Benchmark Challenge. Preserve the tested Decide/Execute and FGS protocol. A client command failure is local: keep the Runtime alive, refresh platform state, and continue. Return only after TSecBench reports all challenges complete or invalid_state."
+	MaxHostedTaskGoalAppendix     = 8192
 	MinHostedAutoCompactThreshold = 1
-	// MaxHostedAutoCompactThreshold is the highest accepted compact percent.
 	MaxHostedAutoCompactThreshold = 100
-	// MaxHostedMaxOutputTokens is the highest accepted completion reservation.
-	MaxHostedMaxOutputTokens = 1048576
-	// ClaudeAutoCompactPctOverride is the Claude Code env name for compact percent.
-	ClaudeAutoCompactPctOverride = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
-	// ClaudeAutoCompactWindow is the Claude Code env name for compact token window.
-	ClaudeAutoCompactWindow = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
-	// ClaudeMaxOutputTokens is the Claude Code env name for max completion tokens.
-	ClaudeMaxOutputTokens = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+	MaxHostedMaxOutputTokens      = 1048576
+	ClaudeAutoCompactPctOverride  = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
+	ClaudeAutoCompactWindow       = "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+	ClaudeMaxOutputTokens         = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 )
 
 // HostedTaskGoal is the required Task Goal for one Hosted Evaluation Run.
@@ -63,7 +56,6 @@ const (
 
 var ErrInvalidConfig = errors.New("hosted configuration is invalid")
 
-// Config is the validated environment contract for one Hosted Evaluation Run.
 type Config struct {
 	BenchmarkBaseURL     string
 	BenchmarkToken       string
@@ -83,7 +75,6 @@ type Config struct {
 	PIAdditionalModels []PIAdditionalModel
 }
 
-// HostedRuntimeBootstrap is the Runtime part of one Hosted bootstrap request.
 type HostedRuntimeBootstrap struct {
 	Provider        string
 	ModelProtocol   string
@@ -131,7 +122,6 @@ type App interface {
 	Wait(context.Context, HostedEvaluationReference, io.Writer, []string) error
 }
 
-// ConfigFromEnv validates the complete hosted environment before bootstrap.
 func ConfigFromEnv(env map[string]string) (Config, error) {
 	config := Config{
 		BenchmarkBaseURL: strings.TrimSpace(env["BENCHMARK_BASE_URL"]),
@@ -289,7 +279,6 @@ func hostedMaskSecrets(config Config) []string {
 	return secrets
 }
 
-// Run starts one loopback daemon and one non-restartable hosted evaluation.
 func Run(ctx context.Context, dataRoot string, env map[string]string, stdout, diagnostics io.Writer) error {
 	if _, err := ConfigFromEnv(env); err != nil {
 		_, _ = fmt.Fprintln(diagnostics, ErrInvalidConfig.Error())

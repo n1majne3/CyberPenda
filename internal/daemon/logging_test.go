@@ -11,9 +11,6 @@ import (
 	"pentest/internal/daemon"
 )
 
-// TestRequestLogMiddlewareLogsEachRequest proves the daemon emits one
-// structured log line per request containing method, path, status, and a
-// duration field. This is the visibility the daemon previously lacked.
 func TestRequestLogMiddlewareLogsEachRequest(t *testing.T) {
 	var captured bytes.Buffer
 	logger := log.New(&captured, "", 0)

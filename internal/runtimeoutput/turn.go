@@ -2,7 +2,6 @@ package runtimeoutput
 
 import "time"
 
-// Kind classifies one normalized runtime output turn.
 type Kind string
 
 const (
@@ -18,7 +17,6 @@ const (
 	KindSubagentActivity Kind = "subagent_activity"
 )
 
-// Coarse Subagent Activity states shared by every provider parser.
 const (
 	SubagentActivityStarted     = "started"
 	SubagentActivityInterrupted = "interrupted"
@@ -31,7 +29,6 @@ const (
 	ReasoningPhaseCompleted = "completed"
 )
 
-// Turn is one normalized fragment from a provider stdout/stderr JSON line.
 type Turn struct {
 	SourceID       string
 	SourceSeq      int
@@ -51,11 +48,10 @@ type Turn struct {
 	Output       string
 	ToolCallID   string
 	Details      map[string]any
-	ContentIndex int // block index within provider content; -1 omits the numeric suffix
+	ContentIndex int
 	CreatedAt    time.Time
 }
 
-// ParseOptions controls which fragments are emitted from a provider record.
 type ParseOptions struct {
 	// AttributeChildStreams is enabled for new child-indexed Transcript Events.
 	// Older stored stream wrappers keep their original projection.

@@ -85,14 +85,8 @@ type Config struct {
 	SkillImporter skill.Importer
 	// DisableBuiltinSkills skips packaged built-in Skill seeding. This is used by
 	// tests that need an empty Skill library; production leaves built-ins on.
-	DisableBuiltinSkills bool
-	// ModelRefreshClient is the HTTP client used to call upstream /v1/models
-	// during Model Catalog Refresh. Nil uses a bounded production client; tests
-	// inject a controlled transport.
-	ModelRefreshClient *http.Client
-	// ProviderSessionFactory is optional. When nil, launches retain the legacy
-	// one-shot Adapter path and native session controls remain unavailable until
-	// a real bridge factory is configured.
+	DisableBuiltinSkills   bool
+	ModelRefreshClient     *http.Client
 	ProviderSessionFactory ProviderSessionFactory
 }
 
@@ -365,10 +359,6 @@ func NewServer(config Config) (*Server, error) {
 		_ = server.Close()
 		return nil, err
 	}
-	// Import baseline uses the same resolved projection as the editor seed
-	// and merged preview (issue #226: client cannot supply the baseline).
-	// The provenance list names the credential-generated paths so import
-	// enforces placeholder integrity without guessing from a sentinel.
 	profiles.SetImportBaselineProvenance(func(profile runtimeprofile.Profile) (string, []string, error) {
 		req := server.previewProjectionRequest(profile)
 		text, err := runner.StructuredProjectedConfigTextWith(profile.Provider, profile, req)
@@ -668,7 +658,6 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	server.logRequest(start, request, recorder.status)
 }
 
-// ListenAddr is the bind address used to project Runtime MCP and API URLs.
 func (server *Server) ListenAddr() string {
 	return server.listenAddr
 }
@@ -855,7 +844,6 @@ func (server *Server) publicPath(request *http.Request) bool {
 	if clean == "/api" || strings.HasPrefix(clean, "/api/") || clean == "/mcp" || strings.HasPrefix(clean, "/mcp/") {
 		return false
 	}
-	// Only the SPA fallback is public; registered service routes still require authentication.
 	_, pattern := server.mux.Handler(request)
 	return pattern == "/"
 }
@@ -920,7 +908,6 @@ func originHost(origin string) string {
 	return parsed.Host
 }
 
-// hostOnly strips an optional port and IPv6 brackets from a host[:port] string.
 func hostOnly(addr string) string {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -1264,7 +1251,6 @@ func (server *Server) handleUpdateProject(response http.ResponseWriter, request 
 	if input.Name != nil {
 		name = *input.Name
 	} else {
-		// Preserve existing name when the field is omitted.
 		existing, err := server.projects.Get(id)
 		if err != nil {
 			if errors.Is(err, project.ErrNotFound) {
@@ -1809,7 +1795,6 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 	server.logPreflightCustomArgConflict(defaulted.runtimeProfileID, result)
 	server.checkHostBrowser(&result, input.HostBrowserEnabled, resolvedConfiguration.Profile.Provider)
 
-	// A preflight result is always 200: the body reports pass/fail per check.
 	writeJSON(response, http.StatusOK, result)
 }
 
@@ -1922,7 +1907,6 @@ func writeCredentialError(response http.ResponseWriter, err error) {
 func (server *Server) registerSPA() {
 	assets, err := fs.Sub(webfs.Dist, "dist")
 	if err != nil {
-		// Should not happen: dist is embedded.
 		return
 	}
 	fileServer := http.FileServer(http.FS(assets))
@@ -1938,13 +1922,11 @@ func (server *Server) registerSPA() {
 			fileServer.ServeHTTP(response, request)
 			return
 		}
-		// Check if the path maps to a real file (favicon, icons, etc.).
 		if f, err := assets.Open(strings.TrimPrefix(clean, "/")); err == nil {
 			f.Close()
 			fileServer.ServeHTTP(response, request)
 			return
 		}
-		// SPA fallback.
 		request.URL.Path = "/"
 		fileServer.ServeHTTP(response, request)
 	})

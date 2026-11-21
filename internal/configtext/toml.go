@@ -8,7 +8,6 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
-// TOMLBlock is one source-preserved root assignment or table section.
 type TOMLBlock struct {
 	Key   string
 	Raw   string
@@ -321,7 +320,6 @@ func semanticTOMLKey(raw string) string {
 	if _, err := toml.Decode(raw+" = true\n", &doc); err == nil {
 		return firstTOMLLeafPath(doc, nil)
 	}
-	// A table header key needs a dummy leaf to parse as a semantic path.
 	doc = nil
 	if _, err := toml.Decode("["+raw+"]\n__value = true\n", &doc); err == nil {
 		path := firstTOMLLeafPath(doc, nil)

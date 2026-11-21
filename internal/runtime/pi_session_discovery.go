@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// DiscoverPiSession returns the newest saved Pi session under providerHome.
-// It is best-effort: when no session exists yet it returns zero values.
 func DiscoverPiSession(providerHome string) (NativeSessionMetadata, error) {
 	sessionsRoot := filepath.Join(providerHome, "agent", "sessions")
 	type candidate struct {

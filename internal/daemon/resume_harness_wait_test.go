@@ -13,9 +13,6 @@ import (
 	"pentest/internal/task"
 )
 
-// holdAdapter keeps the harness IsActive until release is closed.
-// Used to deterministically occupy the terminal+active harness window that
-// handleResumeTask must wait through (not bypass by pre-waiting in fixtures).
 type holdAdapter struct {
 	release <-chan struct{}
 	started chan<- struct{}
@@ -96,8 +93,6 @@ func forceTerminalWithActiveHarness(t *testing.T, server *Server, created task.T
 }
 
 func TestResumeWaitsForTerminalHarnessReleaseThenLaunchesOnce(t *testing.T) {
-	// #154: POST /resume must wait through terminal+IsActive, then accept and
-	// start exactly one replacement Runtime after the old harness exits.
 	newSession := func(open int) (runtime.ProviderSession, runtime.Adapter) {
 		return newFinishSessionPair("resume-wait-ok-" + strconv.Itoa(open))
 	}
@@ -166,7 +161,6 @@ func TestResumeWaitsForTerminalHarnessReleaseThenLaunchesOnce(t *testing.T) {
 }
 
 func TestResumeTimesOutWhenTerminalHarnessStaysActive(t *testing.T) {
-	// #154: short runtimeStopTimeout; stuck harness → stable 409, no Continuation/Runtime.
 	newSession := func(open int) (runtime.ProviderSession, runtime.Adapter) {
 		return newFinishSessionPair("resume-wait-timeout-" + strconv.Itoa(open))
 	}

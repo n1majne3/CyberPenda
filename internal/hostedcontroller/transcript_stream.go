@@ -69,8 +69,6 @@ func (app *HTTPApp) streamInitialTranscript(ctx context.Context, run HostedEvalu
 				return 0, errorsInvalidTranscriptPage("older history did not move backward")
 			}
 			if _, duplicate := seen[entry.ID]; duplicate {
-				// New summaries refer to all indexed child changes. Legacy
-				// slices still contain content that only that page can supply.
 				if entry.Kind != transcript.KindSubagentBlock {
 					continue
 				}

@@ -2,7 +2,6 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach } from "vitest";
 import { cleanup } from "@testing-library/react";
 
-// jsdom 29 under Vitest 4 does not expose localStorage/matchMedia on the
 // global by default. Provide minimal shims so theme and storage tests work.
 const store = new Map<string, string>();
 

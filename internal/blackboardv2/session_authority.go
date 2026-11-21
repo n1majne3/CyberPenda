@@ -49,8 +49,6 @@ func (authority SessionContinuationAuthority) validate() error {
 	return nil
 }
 
-// ApplyForSessionAuthority applies a trusted Session Blackboard batch under a
-// previously resolved owner capability.
 func (s *Service) ApplyForSessionAuthority(ctx context.Context, authority SessionContinuationAuthority, batch ChangeBatch) (ChangeResult, error) {
 	if err := authority.validate(); err != nil {
 		return ChangeResult{}, err

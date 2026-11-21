@@ -8,10 +8,6 @@ import (
 	"testing"
 )
 
-// Issue #117 — publish-before-commit must restore exact prior Working Snapshot
-// file state when materialization or commit fails after the filesystem advances.
-// Existing Continuity/Finish failure injectors cannot force SynchronizeContinuation
-// commit failure, so this pins the restore helper used on those error paths.
 func TestRestorePriorWorkingSnapshotFilePreservesExactBytesAndAbsence(t *testing.T) {
 	root := t.TempDir()
 	taskID := "task-restore-prior"
@@ -30,7 +26,6 @@ func TestRestorePriorWorkingSnapshotFilePreservesExactBytesAndAbsence(t *testing
 		t.Fatalf("captured prior bytes drifted\ngot=%s\nwant=%s", previousBytes, prior)
 	}
 
-	// Filesystem advanced as publish-before-commit does; commit/publication then fails.
 	if err := materializeWorkingSnapshot(root, taskID, advanced); err != nil {
 		t.Fatalf("materialize advanced Working Snapshot: %v", err)
 	}
@@ -48,7 +43,6 @@ func TestRestorePriorWorkingSnapshotFilePreservesExactBytesAndAbsence(t *testing
 		t.Fatalf("restore did not preserve exact prior bytes\ngot=%s\nwant=%s", restored, prior)
 	}
 
-	// Absence path: no prior file means restore removes the advanced publication.
 	if err := materializeWorkingSnapshot(root, taskID, advanced); err != nil {
 		t.Fatalf("materialize advanced again: %v", err)
 	}

@@ -144,7 +144,6 @@ export function ShellLayout() {
 
   useEffect(() => {
     if (!mobileNavOpen || isDesktop) return;
-    // Move focus into the open drawer for keyboard users.
     const firstFocusable = sidebarRef.current?.querySelector<HTMLElement>(
       'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
     );
@@ -244,7 +243,6 @@ function createAppRouter() {
         { path: "/projects/:projectId/tasks/new", element: <TaskLaunchPage /> },
         { path: "/projects/:projectId/tasks/:taskId", element: <TaskDetailPage /> },
         { path: "/projects/:projectId/tasks/:taskId/challenges", element: <ChallengeWorkflowPage /> },
-        // Legacy Facts bookmark → Blackboard Work filtered to ProjectFact.
         { path: "/projects/:projectId/facts", element: <FactsPage /> },
         { path: "/projects/:projectId/blackboard/*", element: <BlackboardPage /> },
         { path: "/projects/:projectId/blackboard", element: <BlackboardPage /> },

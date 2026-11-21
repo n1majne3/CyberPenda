@@ -674,9 +674,6 @@ func TestClaudeProviderSessionMapsInputInterruptAndPermission(t *testing.T) {
 	}
 }
 
-// #146: Claude Code maps the complete Runtime Turn Selection onto claude/input
-// so the long-lived Query can apply model and Requested Reasoning Effort before
-// the turn without recreating the session.
 func TestClaudeProviderSessionMapsModelProviderModelAndEffortOnInput(t *testing.T) {
 	transport := &fakeProviderTransport{responses: map[string]SandboxBridgeResponse{
 		"claude/input": {Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-effort"}`)},
@@ -800,7 +797,7 @@ func TestClaudeProviderSessionInterruptThenReplaceWhenIdleSkipsInterrupt(t *test
 		return SandboxBridgeResponse{}, errors.New("unexpected method " + request.Method)
 	}}
 	session := NewClaudeCodeProviderSession(ClaudeCodeProviderSessionConfig{
-		Transport: transport, SessionID: "claude-1", // no ActiveTurnID → idle
+		Transport: transport, SessionID: "claude-1",
 	})
 
 	result, err := session.InterruptThenReplace(context.Background(), ProviderSessionRequest{
@@ -827,7 +824,6 @@ func TestClaudeProviderSessionClearsActiveTurnOnCompletionThenIdleReplace(t *tes
 		case "claude/input":
 			var params map[string]any
 			_ = json.Unmarshal(request.Params, &params)
-			// First send is the work turn; second is the idle follow-up.
 			if strings.Contains(request.ID, "work") || strings.HasSuffix(request.ID, "work-1") {
 				return SandboxBridgeResponse{Result: json.RawMessage(`{"session_id":"claude-1","turn_id":"work-1"}`)}, nil
 			}
@@ -1629,7 +1625,6 @@ func TestClaudeProviderSessionBatchesThinkingDeltasBeforeVisibleOutput(t *testin
 		t.Fatalf("thinking deltas must batch before a flush: %#v", events)
 	}
 
-	// A normal assistant record barriers reasoning before it passes through.
 	session.HandleEvent(SandboxBridgeEvent{
 		Method: "claude/runtime_output",
 		Params: json.RawMessage(`{"session_id":"claude-1","turn_id":"turn-1","stream":"assistant","text":"{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"ready\"}]}}"}`),

@@ -16,7 +16,6 @@ import {
   SettingsSplitLayout,
 } from "./shared";
 
-// Shared presentational helpers extracted from repeated page patterns.
 function withRouter(node: React.ReactNode) {
   return render(<MemoryRouter>{node}</MemoryRouter>);
 }
@@ -127,7 +126,6 @@ describe("RichEmptyState", () => {
     expect(getByText("No sessions")).toHaveClass("font-medium");
     expect(getByText("Create one to start.")).toHaveClass("text-muted-foreground");
     expect(getByRole("button", { name: "New session" })).toBeInTheDocument();
-    // icon avatar box present
     expect(container.querySelector(".h-10.w-10")).not.toBeNull();
   });
 
@@ -147,7 +145,6 @@ describe("ErrorState", () => {
     expect(alert).toHaveClass("border-destructive/25");
     expect(getByText("Couldn't load sessions")).toHaveClass("font-medium");
     expect(getByText("network down")).toHaveClass("text-muted-foreground");
-    // destructive icon avatar
     expect(container.querySelector(".border-destructive\\/20")).not.toBeNull();
   });
 

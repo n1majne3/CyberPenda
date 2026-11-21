@@ -48,10 +48,6 @@ func TestRetiredSandboxImageDefaultsAreAbsent(t *testing.T) {
 	repoRoot := repoRoot(t)
 	retired := []string{"pentest-sandbox:latest", "gemini_kali-gemini-kali:latest"}
 
-	// Scan only git-tracked files. Walking the working tree instead breaks on
-	// developer machines: task Runtime homes under runs/ hold downloaded
-	// challenge sources and permission-restricted directories that are local
-	// state, never product source.
 	tracked, err := exec.Command("git", "-C", repoRoot, "ls-files").Output()
 	if err != nil {
 		t.Fatalf("list tracked files: %v", err)

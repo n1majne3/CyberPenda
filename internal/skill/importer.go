@@ -26,7 +26,6 @@ func (execRunner) Run(ctx context.Context, dir, name string, args ...string) ([]
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if exitErr, ok := err.(*exec.ExitError); ok {
-		// Attach stderr to the returned bytes for a useful error message.
 		return append(out, exitErr.Stderr...), err
 	}
 	return out, err
@@ -42,9 +41,7 @@ func (execRunner) Run(ctx context.Context, dir, name string, args ...string) ([]
 // (.agents/skills/<name>/) and records source provenance in skills-lock.json;
 // this importer reads both back rather than trusting the request fields.
 type NPXSkillsImporter struct {
-	// Runner runs npx. nil means execRunner (real exec).
 	Runner CommandRunner
-	// Binary is the npx binary path. Empty means "npx".
 	Binary string
 }
 
@@ -62,7 +59,6 @@ func (i NPXSkillsImporter) binary() string {
 	return "npx"
 }
 
-// skillsLock mirrors the subset of skills-lock.json the importer needs.
 type skillsLock struct {
 	Skills map[string]skillsLockEntry `json:"skills"`
 }
@@ -85,7 +81,6 @@ const universalSkillsDir = ".agents/skills"
 // local paths, option-shaped strings, and other argv-hostile input cannot pass.
 var importShorthandPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)*$`)
 
-// importFilterPattern matches the optional @skill filter suffix of a shorthand.
 var importFilterPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
 // validateImportSource reports whether source is a shape the fixed
@@ -123,11 +118,6 @@ func validateImportSource(source string) error {
 	return nil
 }
 
-// ImportSkill resolves and downloads a skill bundle from the request source.
-// It requires a non-empty SourceURL; Package and Ref are ignored. For sources
-// that contain multiple skills, it publishes the first one (use owner/repo@name
-// to target a specific skill); the skills-lock.json is still consulted for
-// provenance of the selected skill.
 func (i NPXSkillsImporter) ImportSkill(ctx context.Context, request ImportRequest) (ImportedBundle, error) {
 	sourceURL := strings.TrimSpace(request.SourceURL)
 	if err := validateImportSource(sourceURL); err != nil {

@@ -28,15 +28,11 @@ import type {
  */
 export type RuntimeOwnerAdapter = {
   readonly kind: RuntimeOwnerKind;
-  /** One endpoint truth per owner: the owner API base every write extends. */
   readonly base: string;
-  /** Loads the bounded workspace page (owner, history window, finish readiness). */
   loadWorkspace(signal: AbortSignal, mode: "initial" | "poll", current: OwnerHistory): Promise<RuntimeWorkspaceLoad>;
   loadOlderTranscript(before: number): Promise<TaskTranscript>;
   loadOlderTimeline(before: number): Promise<TaskTimeline>;
-  /** Sends a fresh message that starts a new continuation. */
   sendMessage(text: string, selection: ConversationSelection, attachments: File[]): Promise<RuntimeOwnerView>;
-  /** Steers the live runtime; native picks the provider-native request shape. */
   steer(input: { text: string; selection: ConversationSelection; requestID: string; native: boolean; forceReplace?: boolean; attachments?: File[] }): Promise<unknown>;
   /** Queues an accepted steering request for the harness to deliver in order. */
   queueSteer(text: string, selection: ConversationSelection, attachments: File[]): Promise<unknown>;
@@ -49,8 +45,6 @@ export type RuntimeOwnerAdapter = {
   remove(): Promise<unknown>;
 };
 
-// The first load reads the initial bounded history window (no cursor); refresh
-// polls always send the committed cursor, including an explicit after=0 after
 // an empty initial read so synthetic seq-0 content is never resent.
 function timelineURL(base: string, mode: "initial" | "poll", cursor: number): string {
   return mode === "initial" ? `${base}/timeline` : `${base}/timeline?after=${cursor}`;

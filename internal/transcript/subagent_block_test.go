@@ -12,9 +12,6 @@ func blockEvent(id, text string, at time.Time) transcript.Event {
 	return transcript.Event{ID: id, Kind: "runtime_output", Payload: map[string]any{"stream": "stdout", "text": text}, CreatedAt: at}
 }
 
-// fleetSubject replays the async Agent-tool path from issue #266: the main
-// thread spawns two children, its turn settles, and both children's marked
-// items keep flowing interleaved with their lifecycle records.
 func fleetEvents(at time.Time) []transcript.Event {
 	second := time.Second
 	return []transcript.Event{
@@ -107,7 +104,6 @@ func TestBuildWindowProjectsAsyncChildBlocks(t *testing.T) {
 	requireBlockAfterSpawn(t, got, "call_spawn_c06", "subagent-call_spawn_c06")
 	requireBlockAfterSpawn(t, got, "call_spawn_c07", "subagent-call_spawn_c07")
 
-	// Main-thread rows stay ordinary rows.
 	var sawSpawn, sawAck bool
 	for _, entry := range got {
 		if entry.Kind == "tool_call" && entry.ToolCallID == "call_spawn_c06" && entry.ToolName == "Agent" {
@@ -126,7 +122,6 @@ func requireBlockAfterSpawn(t *testing.T, entries []transcript.Entry, spawnCallI
 	t.Helper()
 	for index, entry := range entries {
 		if entry.ID == blockID {
-			// Walk backwards over the spawn call and its paired ack result.
 			cursor := index - 1
 			if cursor >= 0 && entries[cursor].Kind == "tool_result" && entries[cursor].ToolCallID == spawnCallID {
 				cursor--
@@ -140,9 +135,6 @@ func requireBlockAfterSpawn(t *testing.T, entries []transcript.Entry, spawnCallI
 	t.Fatalf("block %s not found in entries", blockID)
 }
 
-// Recognized synchronous child shapes switch from dropped to the same
-// collapsed block: Codex subAgentActivity, legacy Claude task records, and Pi
-// subagents:record each render one block keyed by the child identity.
 func TestBuildWindowProjectsSyncChildShapesAsBlocks(t *testing.T) {
 	at := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	subject := transcript.Subject{ID: "task-1", Title: "Do work", CreatedAt: at}
@@ -191,9 +183,6 @@ func TestBuildWindowProjectsSyncChildShapesAsBlocks(t *testing.T) {
 
 func ok(details map[string]any) bool { return details != nil }
 
-// Forward-only: a session stored before the fix (unmarked multiplexed items,
-// no task lifecycle records) replays exactly as the legacy projection — the
-// same rows, same ids, and no Subagent Activity blocks.
 func TestBuildWindowReplaysPreFixSessionUnchanged(t *testing.T) {
 	at := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	subject := transcript.Subject{ID: "task-1", Title: "Solve c-06", CreatedAt: at}
@@ -201,7 +190,6 @@ func TestBuildWindowReplaysPreFixSessionUnchanged(t *testing.T) {
 		{ID: "ev-1", Seq: 1, Kind: "lifecycle", Payload: map[string]any{"phase": "started", "adapter": "claude_code"}, CreatedAt: at},
 		blockEvent("ev-2", `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_01a067a54dba7273b1e0e0d4","name":"Agent","input":{"description":"Exploit c-06 HugeGraph"}}]}}`, at.Add(time.Second)),
 		blockEvent("ev-3", `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_01a067a54dba7273b1e0e0d4","content":"Async agent launched successfully."}]}}`, at.Add(2*time.Second)),
-		// Turn-less unmarked child records, exactly as the pre-fix bridge stored them.
 		blockEvent("ev-4", `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_Eg1oCkgwoKqYB0UgfxW5k948","content":"arthas config dumped"}]}}`, at.Add(3*time.Second)),
 		blockEvent("ev-5", `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"arthas exposed"}]}}`, at.Add(4*time.Second)),
 	}
@@ -246,7 +234,6 @@ func TestBuildWindowBlockIdentityStableAcrossWindows(t *testing.T) {
 
 	subject := transcript.Subject{ID: "task-1", Title: "work", CreatedAt: at}
 	context := transcript.WindowContext{Continuation: 1, Adapter: "claude_code"}
-	// Window A (older page): spawn call, task_started, and the child item.
 	windowA := transcript.BuildWindow(subject, []transcript.Event{spawnCall, taskStarted, item}, context)
 	// Window B (delta): only the settled lifecycle record.
 	windowB := transcript.BuildWindow(subject, []transcript.Event{settled}, context)
@@ -268,7 +255,6 @@ func TestBuildWindowBlockIdentityStableAcrossWindows(t *testing.T) {
 	if !strings.HasPrefix(idA, "subagent-call_spawn_b02") {
 		t.Fatalf("block id = %q, want the spawn-keyed identity", idA)
 	}
-	// Window B's block carries the durable task id and settled state.
 	for _, entry := range windowB {
 		if entry.Kind == "subagent_block" {
 			if entry.Status != "failed" {

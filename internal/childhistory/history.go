@@ -24,7 +24,6 @@ const cursorAtEventSQL = `SELECT COALESCE((SELECT cursor FROM child_history_chan
 const MaxItems = 200
 const MaxBytes = 256 << 10
 
-// Owner identifies one isolated Runtime Owner and its authorized child route.
 type Owner struct{ Kind, ID, Base string }
 
 // Record folds one new source Event into durable child state before commit.
@@ -383,7 +382,6 @@ func Detail(db *sql.DB, owner Owner, child string, cursor int) (transcript.Entry
 	return entry, true, nil
 }
 
-// RawDetail returns one retained patch for streaming export.
 func RawDetail(db *sql.DB, owner Owner, child string, cursor int) (transcript.Entry, bool, error) {
 	var raw string
 	err := db.QueryRow(`SELECT entry_json FROM child_history_changes WHERE owner_kind=? AND owner_id=? AND child_id=? AND cursor=?`, owner.Kind, owner.ID, child, cursor).Scan(&raw)

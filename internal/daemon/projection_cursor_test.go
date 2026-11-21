@@ -15,10 +15,6 @@ import (
 	"pentest/internal/transcript"
 )
 
-// #191: Runtime Owner Workspace projections load incrementally after an
-// ordered cursor instead of re-downloading the complete Timeline and
-// Transcript on every poll.
-
 type projectionCursorBody struct {
 	TaskID    string             `json:"task_id"`
 	SessionID string             `json:"session_id"`
@@ -122,7 +118,6 @@ func TestTaskTranscriptCursorReturnsOnlyNewEntries(t *testing.T) {
 	if len(first.Entries) == 0 || first.Cursor == 0 {
 		t.Fatalf("initial transcript = %#v, want entries and a cursor", first)
 	}
-	// The complete first read includes the synthetic goal row (Seq 0).
 	if first.Entries[0].Seq != 0 || first.Entries[0].Role != "user" || first.Entries[0].Text != "cursor timeline" {
 		t.Fatalf("initial transcript = %#v, want leading goal row", first.Entries)
 	}

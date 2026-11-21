@@ -11,7 +11,6 @@ import (
 // strings, and environment variables, and round-trips without escaping.
 var tokenEncoding = base64.RawURLEncoding
 
-// Project-interface error codes are owned by this module.
 const (
 	// ErrCodeInvalidRequest is a malformed request envelope, unsupported
 	// protocol version, or structural problem rejected at the interface.
@@ -23,7 +22,6 @@ const (
 	// ErrCodeProjectMismatch is a path or declared Project that disagrees with
 	// the grant's bound Project.
 	ErrCodeProjectMismatch = "project_mismatch"
-	// ErrCodeProjectNotFound is a bound Project that does not exist.
 	ErrCodeProjectNotFound = "project_not_found"
 	// ErrCodeGrantNotFound is a missing, unknown, or malformed Continuation
 	// Interface Grant bearer token.
@@ -41,12 +39,10 @@ const (
 	// ErrCodeContinuationContextRequired is a task-only operation lacking a
 	// valid Continuation grant.
 	ErrCodeContinuationContextRequired = "continuation_context_required"
-	// ErrCodeActorForbidden is a bound actor not permitted to request the operation.
-	ErrCodeActorForbidden = "actor_forbidden"
+	ErrCodeActorForbidden              = "actor_forbidden"
 	// ErrCodeStorageBusy is retryable SQLite writer lock exhaustion that
 	// consumes no idempotency key.
-	ErrCodeStorageBusy = "storage_busy"
-	// ErrCodeSourceEventNotFound is a referenced Task Event that does not exist.
+	ErrCodeStorageBusy         = "storage_busy"
 	ErrCodeSourceEventNotFound = "source_event_not_found"
 	// ErrCodeSourceEventMismatch is a Task Event outside the bound Task or
 	// Continuation provenance context.

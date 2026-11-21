@@ -10,13 +10,11 @@ import (
 	"unicode/utf8"
 )
 
-// CTFSolvedState is derived from current verified flag Solutions.
 type CTFSolvedState struct {
 	Solved        bool     `json:"solved"`
 	VerifiedFlags []string `json:"verified_flags"`
 }
 
-// CTFSolvedState derives the reversible solved state without persisting a flag.
 func (s *Service) CTFSolvedState(ctx context.Context, projectID string) (CTFSolvedState, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {

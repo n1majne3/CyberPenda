@@ -6,9 +6,6 @@ import { operatorCredentialIsNeeded, resetOperatorCredentialStateForTests } from
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { ThemeProvider } from "./ThemeProvider";
 
-// jsdom's document.visibilityState is "visible" by default and has no setter;
-// tests that exercise the Page Visibility API override it via defineProperty and
-// dispatch the real event the hook listens to.
 function setDocumentVisibility(value: DocumentVisibilityState) {
   Object.defineProperty(document, "visibilityState", { value, configurable: true });
   document.dispatchEvent(new Event("visibilitychange"));
@@ -24,8 +21,6 @@ const project = (id: string, name: string, updatedAt: string) => ({
   updated_at: updatedAt,
 });
 
-// navigationSummary builds one row of GET /api/workspace/navigation (#193):
-// a Project with its inlined Tasks and a last_activity_at. The daemon computes
 // last_activity_at server-side; tests pass it explicitly to drive ordering.
 function navigationSummary(id: string, name: string, updatedAt: string, tasks: object[] = [], lastActivityAt?: string) {
   return {
@@ -151,7 +146,6 @@ describe("WorkspaceSidebar", () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith("/api/sessions/session-archived", expect.anything()));
     // Wait until the sessions data has rendered, so the negative assertion
     // below passes because the archived Session is excluded, not because the
-    // list has not loaded yet.
     const nonProject = await screen.findByRole("region", { name: /non-project/i });
     await within(nonProject).findByText(/no open sessions/i);
     expect(screen.queryByRole("link", { name: /archived session/i })).not.toBeInTheDocument();
@@ -205,14 +199,10 @@ describe("WorkspaceSidebar", () => {
       "href",
       "/projects/project-active",
     );
-    // The first navigation request carries the selected Task context (#201).
     expect(vi.mocked(fetch).mock.calls[0][0]).toContain("selected_task=task-current");
 
     const projectRegion = screen.getByRole("region", { name: /active project/i });
-    // The current Project renders its daemon-bounded inlined Tasks as-is (#201):
     // the busy Task first, then the five ordinary recent Tasks, then the old
-    // selected Task — all seven stay visible even though the selected Task is
-    // older than the recent summary.
     const taskLinks = await within(projectRegion).findAllByRole("link", { name: /task conversation/i });
     expect(taskLinks.map((link) => link.textContent?.trim())).toEqual([
       "Busy task task conversation",
@@ -225,7 +215,6 @@ describe("WorkspaceSidebar", () => {
     ]);
     const currentTaskLink = within(projectRegion).getByRole("link", { name: /current task/i });
     expect(currentTaskLink).toHaveAttribute("aria-current", "page");
-    // Nested Task routes still match the Project path as a prefix; the Project
     // row must not share the active wash with the Task or the two boxes merge.
     const projectLink = screen.getByRole("link", { name: /active project project dashboard/i });
     // NavLink may still emit aria-current="false"; the Project must not claim page.
@@ -302,8 +291,6 @@ describe("WorkspaceSidebar", () => {
     );
 
     const nonProject = screen.getByRole("region", { name: /non-project/i });
-    // The Non-project header mirrors Projects: a nav link plus an inline
-    // "+ New session" action, with no section-level collapse control.
     expect(within(nonProject).queryByRole("button", { name: /collapse non-project/i })).toBeNull();
     expect(within(nonProject).getByRole("link", { name: /non-project/i })).toHaveAttribute("href", "/sessions");
     expect(within(nonProject).getByRole("link", { name: /new session/i })).toHaveAttribute(
@@ -395,8 +382,6 @@ describe("WorkspaceSidebar", () => {
 
     const nonProject = await screen.findByRole("region", { name: /non-project/i });
     const sessionLinks = await within(nonProject).findAllByRole("link", { name: /session conversation/i });
-    // Rows are two-line now (title + "time · state"): assert the title order,
-    // which is what this test is about, without pinning the relative-time text.
     expect(sessionLinks.map((link) => link.textContent ?? "")).toEqual([
       expect.stringContaining("Busy session"),
       expect.stringContaining("Idle session 1"),
@@ -415,7 +400,6 @@ describe("WorkspaceSidebar", () => {
         if (url === "/api/workspace/navigation") {
           return response({
             projects: [
-              // The older Project has the more recent activity (folded from its
               // Task), so it must rank first even though it was created earlier.
               navigationSummary("project-old", "Older project", "2026-07-01T00:00:00Z", [], "2026-08-01T00:00:00Z"),
               navigationSummary("project-new", "Newer project", "2026-07-31T00:00:00Z", [], "2026-07-31T00:00:00Z"),
@@ -470,11 +454,8 @@ describe("WorkspaceSidebar", () => {
   });
 
   // Polling-gated behavior. These are the only tests in this file that use fake
-  // timers: the gated poll is the feature under test, and advancing the clock is
-  // the clearest way to assert "no fetch happens while idle/hidden". They are
   // isolated to the `it` scope so the rest of the suite keeps using real timers.
   // We avoid waitFor here because it polls on real timers, which under fake
-  // timers lets wall-clock time leak and fire the very intervals under test.
   it("slowly backs off when no work is active and resumes fast polling when work starts", async () => {
     vi.useFakeTimers();
     try {
@@ -505,8 +486,6 @@ describe("WorkspaceSidebar", () => {
       expect(screen.getByRole("region", { name: /project one/i })).toBeInTheDocument();
       const callsAfterMount = fetchMock.mock.calls.length;
 
-      // Everything is idle (completed task, no busy runtime) → no poll should
-      // land inside the fast 2s window.
       await act(async () => {
         vi.advanceTimersByTimeAsync(2500);
       });
@@ -522,9 +501,7 @@ describe("WorkspaceSidebar", () => {
     }
   });
 
-  // #268: the fast-poll heuristic must count owners with an active durable
   // continuation, not only rows already rendered busy, so a turn that starts on
-  // a live idle owner surfaces within about 3 seconds.
   it("polls fast while an owner has an active continuation even when no row is busy", async () => {
     vi.useFakeTimers();
     try {
@@ -560,7 +537,6 @@ describe("WorkspaceSidebar", () => {
 
       // The turn is idle, so no row renders busy — but the running
       // continuation must keep the fast cadence (a poll inside the 2s window,
-      // well under the ~3s budget), not the 30s backoff.
       await act(async () => {
         vi.advanceTimersByTimeAsync(2500);
       });
@@ -580,7 +556,6 @@ describe("WorkspaceSidebar", () => {
             projects: [
               navigationSummary("project-1", "Project one", "2026-08-01T00:00:00Z", [
                 // A busy task would normally drive fast polling; the only thing
-                // that should gate it here is tab visibility.
                 task("task-busy", "Busy task", "2026-08-01T00:00:00Z", { liveness: "live", turn_activity: "busy" }),
               ]),
             ],
@@ -610,7 +585,6 @@ describe("WorkspaceSidebar", () => {
         await Promise.resolve();
       });
 
-      // No matter how much time passes while hidden, no poll fires — even though
       // work is active (which would otherwise poll every 2s).
       await act(async () => {
         vi.advanceTimersByTimeAsync(60000);
@@ -627,12 +601,6 @@ describe("WorkspaceSidebar", () => {
     }
   });
 
-  // #193: the Sidebar must not fan out one Task-list request per Project. A
-  // 123-Project workspace makes a constant number of requests on mount and on
-  // each refresh. This is the issue's "browser performance test" delivered as a
-  // Vitest volume test (no new toolchain): it seeds 123 Projects with mixed
-  // Task states and asserts no /api/projects/{id}/tasks URL is ever requested
-  // during initial load or a poll, and that rendered inactive rows are bounded.
   it("does not fan out per project at 123-project scale", async () => {
     vi.useFakeTimers();
     try {

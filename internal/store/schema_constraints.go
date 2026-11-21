@@ -1,6 +1,5 @@
 package store
 
-// baselineConstraintStatements holds part of the baseline schema.
 var baselineConstraintStatements = []string{
 	`CREATE INDEX idx_blackboard_continuation_grants_continuation
 	ON blackboard_continuation_grants (continuation_id)`,

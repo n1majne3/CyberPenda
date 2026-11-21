@@ -80,7 +80,6 @@ func (a *piSessionTailAdapter) Run(ctx context.Context, goal string, emit func(t
 	return err
 }
 
-// piSessionTailFile tracks the read position of one tailed session file.
 type piSessionTailFile struct {
 	file   *os.File
 	reader *bufio.Reader
@@ -148,9 +147,6 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 			tailed[key] = &piSessionTailFile{file: f, reader: bufio.NewReader(f), path: path}
 		}
 
-		// Drain every tailed file in identity-key order so emission is
-		// deterministic. Each tail state retains the on-disk path used to open
-		// it because a Windows file identity is not itself an openable path.
 		keys := make([]string, 0, len(tailed))
 		for key := range tailed {
 			keys = append(keys, key)
@@ -169,8 +165,6 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 						if runtimeoutput.ShouldIgnoreForStorage(trimmed) {
 							continue
 						}
-						// Tailed session lines are LLM output: they are
-						// forwarded byte-for-byte, without redaction (#288).
 						emit(task.EventKindRuntimeOutput, task.EventPayload{
 							"stream": "pi_session",
 							"text":   trimmed,
@@ -195,7 +189,6 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 			}
 		}
 
-		// A final drain pass has now emitted the last available lines; stop.
 		if stopping {
 			return
 		}

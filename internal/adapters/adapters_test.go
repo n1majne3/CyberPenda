@@ -9,9 +9,6 @@ import (
 	"pentest/internal/runtimeprofile"
 )
 
-// TestBuildCodexLaunchArgsFromRuntimeConfig proves the Slice 9 acceptance:
-// adapters build launch args from task runtime configuration. The args must
-// reflect binary path, model, and projected config without leaking secrets.
 func TestBuildCodexLaunchArgsFromRuntimeConfig(t *testing.T) {
 	profile := runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderCodex,
@@ -34,11 +31,9 @@ func TestBuildCodexLaunchArgsFromRuntimeConfig(t *testing.T) {
 	}
 
 	joined := strings.Join(args, " ")
-	// Binary path leads the command.
 	if args[0] != "/usr/local/bin/codex" {
 		t.Fatalf("expected binary path first, got %q", args[0])
 	}
-	// Model is passed through.
 	if !strings.Contains(joined, "gpt-5") {
 		t.Fatalf("expected model in args, got %q", joined)
 	}
@@ -46,11 +41,9 @@ func TestBuildCodexLaunchArgsFromRuntimeConfig(t *testing.T) {
 	if strings.Contains(joined, "--config") {
 		t.Fatalf("codex launch args must not include --config file path, got %q", joined)
 	}
-	// Goal is supplied.
 	if !strings.Contains(joined, "enumerate example.com") {
 		t.Fatalf("expected goal in args, got %q", joined)
 	}
-	// Custom args pass through.
 	if !strings.Contains(joined, "--json") {
 		t.Fatalf("expected custom args in args, got %q", joined)
 	}
@@ -257,7 +250,6 @@ func TestBuildNativeResumeArgsUsesPiRuntimePluginContract(t *testing.T) {
 	}
 }
 
-// TestBuildClaudeCodeLaunchArgs proves the same contract for Claude Code.
 func TestBuildClaudeCodeLaunchArgs(t *testing.T) {
 	profile := runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderClaudeCode,
@@ -450,9 +442,6 @@ func TestBuildPiLaunchArgsUsesPIProviderIDForStructuredProvider(t *testing.T) {
 }
 
 func TestBuildPiLaunchArgsDoesNotDoubleInjectWhenLegacyProviderCustomArgPresent(t *testing.T) {
-	// Defensive only: legacy/invalid profiles that somehow still carry
-	// --provider in Custom Args must not get a second injected --provider.
-	// Domain validation rejects this at Create/Update/Preflight.
 	args, err := adapters.BuildLaunchArgs(adapters.LaunchArgsRequest{
 		Provider: runtimeprofile.ProviderPi,
 		Profile: runtimeprofile.Profile{
@@ -525,13 +514,8 @@ func TestRedactSecretsFromEventPayload(t *testing.T) {
 	}
 }
 
-// TestRedactorMasksKnownSecretWithoutRecognizedPrefix pins issue #161: the
-// shape-based patterns only catch tokens with a recognized prefix/shape
-// (sk-, bearer, NAME_KEY=...). A Redactor seeded with the resolved secret values
-// also masks them by exact match, so an opaque custom token that lacks any
-// recognized shape never reaches task events.
 func TestRedactorMasksKnownSecretWithoutRecognizedPrefix(t *testing.T) {
-	const opaque = "correct-horse-battery-staple-42" // no sk-/bearer/=_KEY shape
+	const opaque = "correct-horse-battery-staple-42"
 	payload := map[string]any{
 		"text": "the token is " + opaque + " right now",
 		"args": []string{"--token", opaque},

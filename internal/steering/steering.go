@@ -21,7 +21,6 @@ import (
 	"pentest/internal/store"
 )
 
-// ErrNotFound reports a missing Accepted Steering record.
 var ErrNotFound = errors.New("accepted steering not found")
 
 // ErrDuplicateRequest reports a second durable record for one request identity.
@@ -35,12 +34,7 @@ var ErrInvalidReason = errors.New("invalid accepted steering reason")
 // AcceptRequest is the owner-neutral durable payload of one accepted steer.
 // Raw provider text never enters this record.
 type AcceptRequest struct {
-	RequestID string
-	// OperatorMessage is the canonical Conversation text used for idempotency.
-	// Message may additionally contain provider-only attachment path context.
-	// ClientSelectionIdentity is the canonical identity of the raw
-	// client-controlled Model Provider, model, and Requested Reasoning Effort.
-	// Empty means a legacy record whose raw selection identity is unknown.
+	RequestID                string
 	ClientSelectionIdentity  string
 	OperatorMessage          string
 	Message                  string
@@ -162,7 +156,6 @@ func (s *Service) Accept(ctx context.Context, kind owner.Kind, ownerID string, i
 	return record, nil
 }
 
-// ByRequestID returns the durable record for one owner and request identity.
 func (s *Service) ByRequestID(kind owner.Kind, ownerID, requestID string) (*owner.SteeringRecord, error) {
 	record, err := scanSteeringRecord(s.db.QueryRow(`SELECT `+steeringRecordColumns+`
 		FROM accepted_steering WHERE owner_kind=? AND owner_id=? AND request_id=?`,
@@ -282,7 +275,6 @@ func (s *Service) MarkApplied(ctx context.Context, id string, mode owner.Steerin
 	return record, err
 }
 
-// MarkFailed records a terminal failure with a closed vocabulary reason.
 func (s *Service) MarkFailed(ctx context.Context, id string, reason owner.SteeringFailureReason, message string) (*owner.SteeringRecord, error) {
 	return s.markSettled(ctx, id, owner.SteeringFailed, reason, message)
 }
@@ -402,7 +394,6 @@ func (s *Service) transition(ctx context.Context, id string, apply steeringTrans
 	return record, nil
 }
 
-// steeringScan is the raw row shape of the accepted_steering table.
 type steeringScan struct {
 	id, ownerKind, ownerID, requestID, clientSelectionIdentity               string
 	operatorMessage, message, mode, modelProviderID, model                   string

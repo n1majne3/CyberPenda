@@ -2,7 +2,6 @@ package runtimeoutput
 
 import "strings"
 
-// CoalesceStreaming merges adjacent reasoning or text turns split by flush timing.
 func CoalesceStreaming(turns []Turn) []Turn {
 	if len(turns) == 0 {
 		return turns

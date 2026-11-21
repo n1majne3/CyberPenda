@@ -24,12 +24,6 @@ import (
 	"pentest/internal/store"
 )
 
-// The subagent model-selection regression runs the actual
-// @tintinweb/pi-subagents model resolver used by the TSecBench Hosted Image
-// against registry/auth inputs derived from the real CyberPenda projection.
-// The plugin's bare-model fallback ignores case and treats dots and dashes as
-// equal, so only exact "providerID/modelID" selectors discovered from the
-// projected registry are guaranteed to select the intended model.
 const (
 	piSubagentsPackage    = "@tintinweb/pi-subagents"
 	piSubagentsVersion    = "0.19.0"

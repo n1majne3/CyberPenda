@@ -2,8 +2,6 @@ import { describe, it, expect } from "vitest";
 import config from "./tailwind.config";
 
 // The Tailwind config wires CSS tokens to utility classes. Assert the keys so
-// primitives and pages can rely on neutral surfaces, state colors, tight radii,
-// and Geist font variables.
 const colors = config.theme.extend.colors as Record<string, unknown>;
 const colorKey = (name: string) =>
   typeof colors[name] === "object"

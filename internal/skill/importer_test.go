@@ -16,9 +16,9 @@ import (
 // mimicking what `npx skills add` would write. Tests configure install to
 // describe what gets "installed"; no network is involved.
 type fakeRunner struct {
-	install  func(dir string) error // writes .agents/skills/<name>/ + skills-lock.json
-	exitErr  error                  // when set, Run returns this error and skips install
-	recorded []string               // captured argv per Run
+	install  func(dir string) error
+	exitErr  error
+	recorded []string
 }
 
 func (f *fakeRunner) Run(ctx context.Context, dir, name string, args ...string) ([]byte, error) {
@@ -141,7 +141,6 @@ func TestImportRunsSkillsAddAndPublishesBundle(t *testing.T) {
 }
 
 func TestImportSelectsSkillViaAtFilter(t *testing.T) {
-	// Multi-skill source: install two skills, request the second via @filter.
 	runner := &fakeRunner{
 		install: func(dir string) error {
 			installBundle(t, dir, "recon",
@@ -150,7 +149,6 @@ func TestImportSelectsSkillViaAtFilter(t *testing.T) {
 			installBundle(t, dir, "web-tool",
 				"mattpocock/skills@web-tool", "github",
 				map[string]string{"SKILL.md": "---\nname: web-tool\ndescription: web skill.\n---\n# web\n"})
-			// Overwrite the lock with both entries.
 			lock := `{"version":1,"skills":{` +
 				`"recon":{"source":"mattpocock/skills","sourceUrl":"mattpocock/skills","sourceType":"github","skillPath":"skills/recon/SKILL.md"},` +
 				`"web-tool":{"source":"mattpocock/skills","sourceUrl":"mattpocock/skills","sourceType":"github","skillPath":"skills/web-tool/SKILL.md"}}}`
@@ -188,7 +186,6 @@ func TestImportSurfacesNpxFailure(t *testing.T) {
 }
 
 func TestImportRejectsMissingLockFile(t *testing.T) {
-	// install() writes the bundle but no skills-lock.json.
 	runner := &fakeRunner{
 		install: func(dir string) error {
 			bundleDir := filepath.Join(dir, ".agents", "skills", "x")
@@ -231,15 +228,15 @@ func TestImportRejectsSymlinkInBundle(t *testing.T) {
 
 func TestImportRejectsUnsafeSourcesWithoutExecutingNpx(t *testing.T) {
 	for _, source := range []string{
-		"file:///etc/passwd",         // local file exfiltration
-		"http://plain.example/skill", // non-TLS fetch
-		"/etc/passwd",                // absolute local path
-		"../outside",                 // relative path escape shape
-		"-c",                         // option injection into the fixed npx command
-		"--skill",                    // option injection, long form
-		"git@evil:host/repo",         // unsupported remote syntax
-		"owner/repo;rm -rf",          // garbage charset must not reach argv
-		"owner//repo",                // empty path segment
+		"file:///etc/passwd",
+		"http://plain.example/skill",
+		"/etc/passwd",
+		"../outside",
+		"-c",
+		"--skill",
+		"git@evil:host/repo",
+		"owner/repo;rm -rf", // garbage charset must not reach argv
+		"owner//repo",
 	} {
 		runner := &fakeRunner{}
 		imp := skill.NPXSkillsImporter{Runner: runner}

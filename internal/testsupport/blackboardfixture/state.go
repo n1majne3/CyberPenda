@@ -8,9 +8,6 @@ import (
 
 const SentinelSummary = "v1 sentinel must stay invisible to blackboard_v2"
 
-// SeedLegacyState places recognizable v1 rows under a v2 epoch. Production
-// v2 boundaries must neither expose nor mutate them; they exist only to make
-// accidental fallback observable in tests.
 func SeedLegacyState(t testing.TB, db *store.DB, projectID, taskID string) {
 	t.Helper()
 	for _, table := range []string{"project_facts", "findings", "evidence_artifacts", "task_summary_versions"} {
@@ -24,9 +21,6 @@ func SeedLegacyState(t testing.TB, db *store.DB, projectID, taskID string) {
 	}
 }
 
-// LegacyState captures every retained v1 Blackboard table count plus the
-// global epoch row. Boundary tests compare it before and after public calls to
-// prove that a refusal did not partially mutate legacy state.
 type LegacyState struct {
 	Epoch  store.BlackboardStoreState
 	Tables map[string]int

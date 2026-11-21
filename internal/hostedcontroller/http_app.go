@@ -34,7 +34,6 @@ type HTTPApp struct {
 	diagnostics   io.Writer
 }
 
-// HTTPAppConfig describes the loopback daemon used by the hosted process.
 type HTTPAppConfig struct {
 	BaseURL       string
 	Client        *http.Client
@@ -131,7 +130,6 @@ func (app *HTTPApp) Start(ctx context.Context, evaluation HostedEvaluationBootst
 	}
 
 	fields := map[string]any{
-		// The parent group is the first plan group by contract.
 		"model_provider_id": providers[0].ID, "model_provider_protocol": evaluation.Runtime.ModelProtocol,
 		"model_override": evaluation.Runtime.Model, "env": evaluation.Runtime.Env,
 		"credential_refs": []string{"BENCHMARK_TOKEN"},

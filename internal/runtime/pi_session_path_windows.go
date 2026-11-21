@@ -45,7 +45,6 @@ func canonicalPathForCompare(path string) string {
 	return filepath.Clean(long)
 }
 
-// longPathName returns the Windows long (non-8.3) form of path.
 func longPathName(path string) (string, error) {
 	utf16, err := windows.UTF16FromString(path)
 	if err != nil {

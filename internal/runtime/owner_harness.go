@@ -107,7 +107,6 @@ func (h *OwnerHarness) Launch(ctx context.Context, req OwnerLaunchRequest) (laun
 		}
 		defer unregisterOutputFlush()
 		defer func() {
-			// Preserve persistence failures even on Finish and shutdown return paths.
 			launchErr = errors.Join(launchErr, outputBatch.Close(), outputBatch.Err())
 		}()
 	}
@@ -147,8 +146,6 @@ func (h *OwnerHarness) Launch(ctx context.Context, req OwnerLaunchRequest) (laun
 	runErr := req.Adapter.Run(ctx, req.Goal, emit)
 	if outputBatch != nil {
 		if err := outputBatch.Close(); err != nil {
-			// A failed output append must not leave the Continuation permanently
-			// running. Remove its barrier before best-effort failure finalization.
 			unregisterOutputFlush()
 			var eventErr, finalizeErr error
 			if h.config.AppendEvent != nil {
