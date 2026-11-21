@@ -221,19 +221,6 @@ func plannedEvidenceTempPath(internalPath, continuationID, key, requestHash stri
 	return path, nil
 }
 
-func filesystemSafeEvidencePath(path string) bool {
-	clean := pathpkg.Clean(path)
-	if clean != path || clean == "." || clean == ".." || pathpkg.IsAbs(clean) || strings.HasPrefix(clean, "../") {
-		return false
-	}
-	for _, component := range strings.Split(clean, "/") {
-		if component == "" || component == "." || component == ".." || len(component) > 255 {
-			return false
-		}
-	}
-	return true
-}
-
 func semanticEvidencePath(projectID, internalPath, digest string) (string, error) {
 	planned, err := plannedEvidenceInternalPath(projectID, digest, filepath.Base(internalPath))
 	if err != nil {

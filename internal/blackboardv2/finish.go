@@ -182,7 +182,7 @@ func (s *Service) FinishContinuation(ctx context.Context, projectID, continuatio
 		return FinishContinuationResult{}, fmt.Errorf("project current Runtime Snapshot for Finish: %w", err)
 	}
 	workingBytes := projection.Bytes
-	result, err := s.closeProjectFinishContinuationTx(ctx, tx, projectID, continuationID, status, request.IdempotencyKey, requestHash, func() error {
+	result, err := s.closeProjectFinishContinuationTx(ctx, tx, projectID, continuationID, status, request.IdempotencyKey, requestHash, projection, func() error {
 		if s.finishFail != nil {
 			return s.finishFail(FinishFailureBeforeCommit)
 		}
@@ -267,11 +267,7 @@ func finishRequestHash(request FinishContinuationRequest) string {
 // Continuation completed. It does not commit; the caller owns the transaction.
 // The preClose hook runs after the receipt is stored but before the
 // Continuation status update, so an interactive crash-injector can fail there.
-func (s *Service) closeProjectFinishContinuationTx(ctx context.Context, tx *sql.Tx, projectID, continuationID, status, idempotencyKey, requestHash string, preClose func() error) (FinishContinuationResult, error) {
-	projection, err := s.ProjectRuntimeSnapshotTx(ctx, tx, projectID)
-	if err != nil {
-		return FinishContinuationResult{}, fmt.Errorf("project current Runtime Snapshot for Finish: %w", err)
-	}
+func (s *Service) closeProjectFinishContinuationTx(ctx context.Context, tx *sql.Tx, projectID, continuationID, status, idempotencyKey, requestHash string, projection RuntimeSnapshotProjection, preClose func() error) (FinishContinuationResult, error) {
 	revision := projection.Snapshot.Revision
 	workingBytes := projection.Bytes
 	if _, err := tx.ExecContext(ctx, `

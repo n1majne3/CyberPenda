@@ -75,7 +75,7 @@ func projectRuntimeSnapshot(snapshot RuntimeSnapshot) (RuntimeSnapshotProjection
 	measurement := MeasureRuntimeSnapshot(data)
 	return RuntimeSnapshotProjection{
 		Snapshot:        snapshot,
-		Bytes:           append([]byte(nil), data...),
+		Bytes:           data,
 		ByteCount:       measurement.Bytes,
 		EstimatedTokens: measurement.EstimatedTokens,
 		AttentionState:  measurement.State,

@@ -128,6 +128,11 @@ func (s *Service) RetainEvidenceForContinuation(ctx context.Context, projectID, 
 		if replay, found, err := s.readRetainedEvidenceSemanticReplay(ctx, projectID, continuationID, request.IdempotencyKey, requestHash); err != nil {
 			return ChangeResult{}, err
 		} else if found {
+			if _, operatorRequest := operatorAuthorityFromContext(ctx); !operatorRequest {
+				if err := s.rematerializeContinuationWorkingSnapshot(ctx, continuationID); err != nil {
+					return ChangeResult{}, fmt.Errorf("recover retained Evidence Working Snapshot: %w", err)
+				}
+			}
 			resultJSON, err := json.Marshal(replay)
 			if err != nil {
 				return ChangeResult{}, fmt.Errorf("encode recovered Evidence result: %w", err)
@@ -282,6 +287,7 @@ func (s *Service) resolveRetainedEvidenceRedirects(ctx context.Context, projectI
 }
 
 func resolveRetainedEvidenceRedirectsTx(ctx context.Context, tx *sql.Tx, projectID string, request RetainEvidenceRequest) (RetainEvidenceRequest, error) {
+	request.Links = append([]EvidenceLink(nil), request.Links...)
 	var err error
 	request.Key, _, err = resolveKeyRedirect(ctx, tx, projectID, request.Key)
 	if err != nil {

@@ -41,7 +41,8 @@ func (s *Service) reserveEvidenceRequest(ctx context.Context, projectID, continu
 	if err != nil {
 		return evidenceRequestRow{}, false, err
 	}
-	if !continuationCanWrite(status) {
+	_, operatorRequest := operatorAuthorityFromContext(ctx)
+	if !operatorRequest && !continuationCanWrite(status) {
 		return evidenceRequestRow{}, false, semanticError("closed_continuation", "trusted Continuation is closed for new Blackboard writes", "", nil)
 	}
 	currentOwner, pinned, err := continuationOwnsCurrentWorkingPath(ctx, tx, continuationID)
