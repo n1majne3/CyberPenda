@@ -162,6 +162,13 @@ func compileDetailedToolSchema(source *googlejsonschema.Schema) (*detailedjsonsc
 }
 
 func validateDetailedToolArgs(schema *detailedjsonschema.Schema, raw json.RawMessage) (any, *blackboardv2.Error) {
+	if err := rejectDuplicateJSONFields(raw); err != nil {
+		details := map[string]any{"reason": "invalid_json"}
+		if syntaxErr, ok := err.(*json.SyntaxError); ok {
+			details["byte_offset"] = syntaxErr.Offset
+		}
+		return nil, invalidToolSchemaError("arguments", details)
+	}
 	var instance any
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
