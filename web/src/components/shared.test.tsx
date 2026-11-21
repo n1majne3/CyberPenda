@@ -3,14 +3,12 @@ import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import {
   BackLink,
-  EmptyState,
   ErrorState,
   LoadingState,
   PageContainer,
   RichEmptyState,
   SectionHeading,
   SettingsAlert,
-  SettingsListPanel,
   SettingsPageHeader,
   SettingsPanel,
   SettingsSplitLayout,
@@ -31,18 +29,6 @@ describe("BackLink", () => {
   it("includes a left-pointing arrow icon", () => {
     const { container } = withRouter(<BackLink to="/x">Back</BackLink>);
     expect(container.querySelector("svg")).not.toBeNull();
-  });
-});
-
-describe("EmptyState", () => {
-  it("renders the message text", () => {
-    const { getByText } = render(<EmptyState>No projects yet.</EmptyState>);
-    expect(getByText("No projects yet.")).toBeInTheDocument();
-  });
-
-  it("uses muted styling", () => {
-    const { container } = render(<EmptyState>x</EmptyState>);
-    expect(container.firstChild).toHaveClass("text-muted-foreground");
   });
 });
 
@@ -87,7 +73,6 @@ describe("settings helpers", () => {
   it("uses Geist split layouts and neutral settings panels", () => {
     const { getByTestId } = render(
       <SettingsSplitLayout data-testid="layout">
-        <SettingsListPanel data-testid="list">profiles</SettingsListPanel>
         <SettingsPanel data-testid="detail">details</SettingsPanel>
       </SettingsSplitLayout>,
     );
@@ -97,7 +82,6 @@ describe("settings helpers", () => {
       "min-w-0",
       "lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
     );
-    expect(getByTestId("list")).toHaveClass("rounded-lg", "border", "bg-card", "p-3");
     expect(getByTestId("detail")).toHaveClass("rounded-lg", "border", "bg-card", "p-4");
   });
 
