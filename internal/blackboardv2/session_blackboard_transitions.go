@@ -242,10 +242,37 @@ func sessionValidateFinalTerminalAttempts(ctx context.Context, tx *sql.Tx, sessi
 			} else if !errors.Is(err, sql.ErrNoRows) {
 				return err
 			}
+			replacement, err := sessionProducedOutcomeHasCurrentReplacement(ctx, tx, sessionID, outcome)
+			if err != nil {
+				return err
+			}
+			if replacement {
+				found = true
+				break
+			}
 		}
 		if !found {
 			return semanticError("semantic_validation", "succeeded Attempt requires a current produced outcome", validation.path, map[string]any{"key": key})
 		}
 	}
 	return nil
+}
+
+func sessionProducedOutcomeHasCurrentReplacement(ctx context.Context, tx *sql.Tx, sessionID, outcome string) (bool, error) {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM blackboard_v2_session_relationship_history AS supersession
+			JOIN blackboard_v2_session_records AS replacement
+			  ON replacement.session_id = supersession.session_id AND replacement.key = supersession.from_key
+			JOIN blackboard_v2_session_record_history AS replaced
+			  ON replaced.session_id = supersession.session_id AND replaced.key = supersession.to_key
+			WHERE supersession.session_id = ? AND supersession.relation = 'supersedes' AND supersession.to_key = ?
+			  AND replacement.type = replaced.type
+		)`, sessionID, outcome,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check Session produced outcome replacement: %w", err)
+	}
+	return exists != 0, nil
 }
