@@ -25,9 +25,14 @@ func (d DockerCLISandboxBridgeDocker) cli() string {
 }
 
 func (d DockerCLISandboxBridgeDocker) Create(ctx context.Context, args []string) (string, error) {
-	cmd := exec.CommandContext(ctx, d.cli(), args...)
-	if len(d.CreateEnv) > 0 {
-		cmd.Env = mergeProcessEnv(os.Environ(), d.CreateEnv)
+	createArgs, createEnv, cleanupCreateEnv, err := prepareDockerCreateCommand(os.Environ(), args, d.CreateEnv)
+	if err != nil {
+		return "", err
+	}
+	defer cleanupCreateEnv()
+	cmd := exec.CommandContext(ctx, d.cli(), createArgs...)
+	if len(createEnv) > 0 {
+		cmd.Env = createEnv
 	}
 	out, err := cmd.Output()
 	if err != nil {

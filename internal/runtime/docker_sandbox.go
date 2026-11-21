@@ -179,9 +179,14 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 		return err
 	}
 
-	create := exec.CommandContext(ctx, cli, a.config.CreateArgs...)
-	if len(a.config.CreateEnv) > 0 {
-		create.Env = mergeProcessEnv(os.Environ(), a.config.CreateEnv)
+	createArgs, createEnv, cleanupCreateEnv, err := prepareDockerCreateCommand(os.Environ(), a.config.CreateArgs, a.config.CreateEnv)
+	if err != nil {
+		return err
+	}
+	defer cleanupCreateEnv()
+	create := exec.CommandContext(ctx, cli, createArgs...)
+	if len(createEnv) > 0 {
+		create.Env = createEnv
 	}
 	var createStdout, createStderr bytes.Buffer
 	create.Stdout = &createStdout

@@ -103,6 +103,72 @@ func TestDockerCLISandboxBridgeDockerPassesCreateEnvWithoutArgvLeak(t *testing.T
 	}
 }
 
+func TestDockerCreateDoesNotOverrideHostDockerHostFromCreateEnv(t *testing.T) {
+	t.Setenv("DOCKER_HOST", "unix:///var/run/host-daemon.sock")
+	dir := t.TempDir()
+	outFile := filepath.Join(dir, "captured.txt")
+	envFilePathOut := filepath.Join(dir, "envfile-path.txt")
+	envFileContentsOut := filepath.Join(dir, "envfile-contents.txt")
+	fakeDocker := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\n" +
+		"printf 'ARGS:%s\\nHOST_DOCKER_HOST:%s\\nAPI_KEY:%s\\n' \"$*\" \"$DOCKER_HOST\" \"$OPENAI_API_KEY\" > \"" + outFile + "\"\n" +
+		"prev=\"\"\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"--env-file\" ]; then\n" +
+		"    printf '%s' \"$arg\" > \"" + envFilePathOut + "\"\n" +
+		"    cat \"$arg\" > \"" + envFileContentsOut + "\"\n" +
+		"  fi\n" +
+		"  prev=\"$arg\"\n" +
+		"done\n" +
+		"echo container-safe-host\n"
+	if err := os.WriteFile(fakeDocker, []byte(script), 0o700); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+
+	transport := DockerCLISandboxBridgeDocker{
+		ContainerCLI: fakeDocker,
+		CreateEnv: map[string]string{
+			"DOCKER_HOST":    "tcp://sandbox-override:2375",
+			"OPENAI_API_KEY": "sk-safe-env",
+		},
+	}
+	id, err := transport.Create(context.Background(), []string{"create", "-e", "DOCKER_HOST", "-e", "OPENAI_API_KEY", "img"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if id != "container-safe-host" {
+		t.Fatalf("container id = %q, want container-safe-host", id)
+	}
+	gotRaw, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("read capture: %v", err)
+	}
+	got := string(gotRaw)
+	if !strings.Contains(got, "HOST_DOCKER_HOST:unix:///var/run/host-daemon.sock\n") {
+		t.Fatalf("CreateEnv hijacked host DOCKER_HOST: %q", got)
+	}
+	if !strings.Contains(got, "API_KEY:sk-safe-env\n") {
+		t.Fatalf("missing non-reserved env var: %q", got)
+	}
+	if strings.Contains(got, "tcp://sandbox-override:2375") {
+		t.Fatalf("sandbox DOCKER_HOST leaked in argv or host env: %q", got)
+	}
+	envFileContents, err := os.ReadFile(envFileContentsOut)
+	if err != nil {
+		t.Fatalf("read envfile contents: %v", err)
+	}
+	if strings.TrimSpace(string(envFileContents)) != "DOCKER_HOST=tcp://sandbox-override:2375" {
+		t.Fatalf("unexpected env-file contents: %q", string(envFileContents))
+	}
+	envFilePath, err := os.ReadFile(envFilePathOut)
+	if err != nil {
+		t.Fatalf("read envfile path: %v", err)
+	}
+	if _, statErr := os.Stat(strings.TrimSpace(string(envFilePath))); !os.IsNotExist(statErr) {
+		t.Fatalf("expected temp env-file %q to be removed, stat err = %v", string(envFilePath), statErr)
+	}
+}
+
 func TestCommandAdapterRedactsStdoutAndStderrSecrets(t *testing.T) {
 	opaqueSecret := "opaque-grant-secret-9f8e7d6c5b"
 	adapter := NewCommandAdapter(CommandAdapterConfig{
