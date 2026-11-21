@@ -26,6 +26,8 @@ type CheckStatus string
 const (
 	CheckPass CheckStatus = "pass"
 	CheckFail CheckStatus = "fail"
+
+	minPiContextWindow = 16384
 )
 
 type Check struct {
@@ -339,6 +341,21 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 				MaxOutputTokensSource: snapshot.MaxOutputTokensSource,
 			}
 			result.add(Check{Name: "model_provider", Status: CheckPass, Detail: fmt.Sprintf("%s via %s", snapshot.Model, snapshot.APIKeyEnv)})
+			if profile.Provider == runtimeprofile.ProviderPi && snapshot.ContextWindow > 0 {
+				if snapshot.ContextWindow < minPiContextWindow {
+					result.add(Check{
+						Name:   "model_context_window",
+						Status: CheckFail,
+						Detail: fmt.Sprintf("model %s context window (%d tokens) is below the minimum required for Pi (%d tokens); increase the model context window", snapshot.Model, snapshot.ContextWindow, minPiContextWindow),
+					})
+				} else {
+					result.add(Check{
+						Name:   "model_context_window",
+						Status: CheckPass,
+						Detail: fmt.Sprintf("%d tokens", snapshot.ContextWindow),
+					})
+				}
+			}
 		}
 	}
 

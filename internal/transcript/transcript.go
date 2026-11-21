@@ -22,6 +22,7 @@ const (
 	KindToolResult    = "tool_result"
 	KindRuntimeOutput = "runtime_output"
 	KindContinuation  = "continuation"
+	KindError         = "error"
 	// KindSubagentBlock is the one collapsed, attributed conversation block a
 	// child agent projects as, anchored at the spawning tool-call row.
 	KindSubagentBlock = "subagent_block"
@@ -265,6 +266,17 @@ func lifecycleEntry(event Event, continuation int) (Entry, bool) {
 		entry.Status = "failed"
 		entry.Details = compactPayload(event.Payload, "phase")
 		return entry, true
+	case "provider_turn_failed":
+		entry.ID = event.ID + "-error"
+		entry.Kind = KindError
+		entry.Role = RoleRuntime
+		entry.Status = "failed"
+		entry.Text = firstText(event.Payload, "error", "error_message", "message")
+		if entry.Text == "" {
+			entry.Text = "Provider turn failed"
+		}
+		entry.Details = compactPayload(event.Payload, "phase", "error")
+		return entry, true
 	default:
 		entry.Text = "Runtime lifecycle: " + phase
 		entry.Status = StatusCollapsed
@@ -399,7 +411,7 @@ func parseRuntimeOutput(event Event, continuation int, adapter, text string, chi
 	}
 	turns := runtimeoutput.ParseRecordWithMeta(record, runtimeoutput.RecordMeta{
 		ProviderEvent: stringValue(event.Payload, "provider_event"),
-	}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true, AttributeChildStreams: event.Payload["child_history_v1"] == true}, base.CreatedAt)
+	}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true, IncludeErrors: true, AttributeChildStreams: event.Payload["child_history_v1"] == true}, base.CreatedAt)
 	if len(turns) == 0 {
 		return nil, false
 	}
@@ -429,7 +441,7 @@ func ParserForAdapter(adapter string, registry *runtimeplugin.Registry) string {
 // derived entries inherit. It is exported so runtime tails can reuse the same
 // parsing as the post-hoc transcript builder.
 func ParseRecord(record map[string]any, base Entry) []Entry {
-	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true}, base.CreatedAt)
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true, IncludeErrors: true}, base.CreatedAt)
 	return turnsToEntries(turns, base)
 }
 
@@ -477,6 +489,18 @@ func entryFromTurn(turn runtimeoutput.Turn, base Entry) (Entry, bool) {
 		return toolCallEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-call")), true
 	case runtimeoutput.KindToolResult:
 		return toolResultEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-result")), true
+	case runtimeoutput.KindError:
+		return Entry{
+			ID:           entryID(base.ID, "-error", turn.ContentIndex),
+			Seq:          base.Seq,
+			Continuation: base.Continuation,
+			Kind:         KindError,
+			Role:         RoleRuntime,
+			Text:         turn.Text,
+			Status:       "failed",
+			Stream:       base.Stream,
+			CreatedAt:    base.CreatedAt,
+		}, true
 	default:
 		return Entry{}, false
 	}

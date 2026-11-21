@@ -153,7 +153,7 @@ func (server *Server) persistSessionProviderSessionEvent(sessionID string, kind 
 
 func sessionProviderEventPayload(kind task.EventKind, payload task.EventPayload, continuationID string) (session.EventKind, session.EventPayload) {
 	filtered := session.EventPayload{}
-	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "provider_item_id", "mode", "outcome", "permission_request_id", "permission_decision", "error_code", "phase"} {
+	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "provider_item_id", "mode", "outcome", "permission_request_id", "permission_decision", "error_code", "error", "phase"} {
 		if value, ok := payload[key]; ok {
 			filtered[key] = value
 		}
@@ -201,7 +201,7 @@ func (server *Server) persistSessionProviderEventForContinuation(sessionID, cont
 
 func (server *Server) persistProviderSessionEvent(taskID string, kind task.EventKind, payload task.EventPayload) {
 	filtered := task.EventPayload{}
-	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "provider_item_id", "mode", "outcome", "permission_request_id", "phase"} {
+	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "provider_item_id", "mode", "outcome", "permission_request_id", "error_code", "error", "phase"} {
 		if value, ok := payload[key]; ok {
 			filtered[key] = value
 		}
