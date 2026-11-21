@@ -1,10 +1,43 @@
 package blackboardconclusion
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
 )
+
+func validateSuppliedVersions(fields map[string]json.RawMessage, result RuntimeAttemptResult) error {
+	if rawAttempt, present := fields["attempt"]; present {
+		if err := validateSuppliedVersion(rawAttempt, result.Attempt.ExpectedVersion, "attempt"); err != nil {
+			return err
+		}
+	}
+	if rawTargets, present := fields["tested_targets"]; present {
+		var targets []json.RawMessage
+		if err := json.Unmarshal(rawTargets, &targets); err != nil {
+			return err
+		}
+		for index, target := range targets {
+			if err := validateSuppliedVersion(target, result.TestedTargets[index].ExpectedVersion, fmt.Sprintf("tested_targets[%d]", index)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateSuppliedVersion(raw json.RawMessage, version int, path string) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+	if _, present := fields["expected_version"]; present && version < 1 {
+		return validationDetailError(fmt.Sprintf("%s.expected_version must be positive", path),
+			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path + ".expected_version", Expected: "a positive integer"})
+	}
+	return nil
+}
 
 func validateResult(result RuntimeAttemptResult) error {
 	if result.Schema != runtimeAttemptResultSchema {

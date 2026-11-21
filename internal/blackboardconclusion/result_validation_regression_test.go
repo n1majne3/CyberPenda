@@ -32,3 +32,31 @@ func TestDecodeRequiresProducedTargets(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeRejectsNonPositiveSuppliedVersions(t *testing.T) {
+	createdAttempt := strings.Replace(validFailedResult, `"expected_version":1`, `"create":true`, 1)
+	createdObjective := strings.Replace(createdAttempt, `"expected_version":1`, `"create_objective":{"objective":"Test the search endpoint."}`, 1)
+	for _, valid := range []string{validFailedResult, createdAttempt, createdObjective} {
+		if _, err := blackboardconclusion.Decode([]byte(valid)); err != nil {
+			t.Fatalf("Decode() rejected valid create or version intent: %v", err)
+		}
+	}
+	for _, version := range []string{"0", "0.0", "0e0", "-1"} {
+		for _, test := range []struct {
+			name string
+			raw  string
+		}{
+			{name: "Attempt create", raw: strings.Replace(createdAttempt, `"create":true`, `"create":true,"expected_version":`+version, 1)},
+			{name: "Attempt update", raw: strings.Replace(validFailedResult, `"expected_version":1`, `"expected_version":`+version, 1)},
+			{name: "Objective create", raw: strings.Replace(createdObjective, `"create_objective":`, `"expected_version":`+version+`,"create_objective":`, 1)},
+			{name: "tested target update", raw: strings.Replace(createdAttempt, `"expected_version":1`, `"expected_version":`+version, 1)},
+			{name: "produced target", raw: strings.Replace(strings.Replace(validFailedResult, `"outcome":"failed"`, `"outcome":"succeeded"`, 1), `"produced_targets":[]`, `"produced_targets":[{"key":"fact:search","expected_version":`+version+`}]`, 1)},
+		} {
+			t.Run(test.name+"/"+version, func(t *testing.T) {
+				if _, err := blackboardconclusion.Decode([]byte(test.raw)); err == nil {
+					t.Fatal("Decode() accepted a non-positive supplied expected_version")
+				}
+			})
+		}
+	}
+}

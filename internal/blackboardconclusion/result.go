@@ -255,6 +255,9 @@ func Decode(raw []byte) (ValidatedResult, error) {
 		return ValidatedResult{}, validationDetailError("produced_targets is required",
 			ValidationDetail{Reason: ValidationReasonMissingField, FieldPath: "produced_targets", Expected: "produced_targets must be present"})
 	}
+	if err := validateSuppliedVersions(topLevel, result); err != nil {
+		return ValidatedResult{}, err
+	}
 	if err := validateResult(result); err != nil {
 		return ValidatedResult{}, err
 	}
