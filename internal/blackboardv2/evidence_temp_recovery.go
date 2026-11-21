@@ -112,7 +112,7 @@ func sweepEvidenceRecoveryTemps(root *os.Root, destination func() (*os.File, err
 					return false, targetErr
 				}
 				if target != nil {
-					if err := target.Truncate(0); err == nil {
+					if err = target.Truncate(0); err == nil {
 						_, err = target.Seek(0, io.SeekStart)
 					}
 					if err == nil {
