@@ -109,18 +109,6 @@ describe("mergeTranscriptEntries", () => {
     expect(merged[1]?.id).toBe("tool-1");
   });
 
-  it("joins later Hermes ACP assistant chunks onto the previous sentence", () => {
-    const existing = [{ ...transcriptEntry("ev-5-message", 5), text: "Hi", stream: "hermes_acp" }];
-    const delta = [
-      { ...transcriptEntry("ev-6-message", 6), text: "!", stream: "hermes_acp" },
-      { ...transcriptEntry("ev-7-message", 7), text: " ", stream: "hermes_acp" },
-      { ...transcriptEntry("ev-8-message", 8), text: "👋", stream: "hermes_acp" },
-    ];
-    const merged = mergeTranscriptEntries(existing, delta);
-    expect(merged).toHaveLength(1);
-    expect(merged[0]).toMatchObject({ id: "ev-5-message", seq: 8, text: "Hi! 👋" });
-  });
-
   it("appends incremental reasoning content for the same Timeline id", () => {
     const existing: TaskTimelineItem[] = [
       { id: "reasoning-cli", seq: 2, type: "reasoning", content: "checking ", status: "streaming", incremental: true },

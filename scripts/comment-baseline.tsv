@@ -409,7 +409,7 @@ internal/timeline/subagent_async_test.go	6
 internal/timeline/timeline.go	13
 internal/transcript/subagent_block.go	40
 internal/transcript/subagent_block_test.go	13
-internal/transcript/transcript.go	45
-internal/transcript/transcript_test.go	9
+internal/transcript/transcript.go	37
+internal/transcript/transcript_test.go	5
 internal/tsecbenchclient/client.go	2
 internal/tsecbenchclient/clock.go	1
