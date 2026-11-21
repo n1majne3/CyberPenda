@@ -204,11 +204,6 @@ func (server *Server) currentTurnSelection(found task.Task) (runtime.ProviderSes
 	return configSelection, nil
 }
 
-func (server *Server) selectionFromCapturedRuntimeConfig(found task.Task) (runtime.ProviderSessionRequest, error) {
-	selection, _, err := server.selectionFromCapturedRuntimeConfigTimed(found)
-	return selection, err
-}
-
 func (server *Server) selectionFromCapturedRuntimeConfigTimed(found task.Task) (runtime.ProviderSessionRequest, time.Time, error) {
 	latestVersion, err := server.tasks.LatestRuntimeConfig(found.ID)
 	if err != nil {
@@ -269,22 +264,6 @@ func (server *Server) precedingConversationTurnSelectionTimed(taskID string) (ru
 		}, event.CreatedAt, true
 	}
 	return runtime.ProviderSessionRequest{}, time.Time{}, false
-}
-
-func configString(config map[string]any, key string) string {
-	if config == nil {
-		return ""
-	}
-	value, ok := config[key]
-	if !ok || value == nil {
-		return ""
-	}
-	switch typed := value.(type) {
-	case string:
-		return strings.TrimSpace(typed)
-	default:
-		return strings.TrimSpace(fmt.Sprint(typed))
-	}
 }
 
 func (server *Server) resolveTaskContinuationRuntimeProfile(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (runtimeprofile.Profile, bool) {

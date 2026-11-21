@@ -147,21 +147,27 @@ type Server struct {
 }
 
 func NewServer(config Config) (*Server, error) {
+	return newServer(config, store.Open)
+}
+
+func newServer(config Config, openStore func(string) (*store.DB, error)) (*Server, error) {
 	runtimeRoot, taskVolumeRoot, err := resolveRuntimeStorage(config)
 	if err != nil {
 		return nil, err
 	}
-	db, err := store.Open(config.DBPath)
+	db, err := openStore(config.DBPath)
 	if err != nil {
 		return nil, err
 	}
 
 	runtimePlugins, err := runtimePluginRegistry(config.RuntimePluginDirs)
 	if err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	runtimeExtensions, err := runtimeExtensionRegistry(config.RuntimeExtensionDirs)
 	if err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	profiles := runtimeprofile.NewService(db, runtimeProfileProviders(runtimePlugins))

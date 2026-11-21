@@ -16,28 +16,9 @@ import (
 	"pentest/internal/task"
 )
 
-// enqueueProviderTaskControl waits behind the existing per-Task owner without
-// losing durable Harness work. Registration is synchronized with Close so the
-// shutdown wait group cannot race a newly started coordinator goroutine.
-func (server *Server) enqueueProviderTaskControl(taskID string, operation func(context.Context)) bool {
-	return server.enqueueProviderTaskControlWithContext(taskID, false, operation)
-}
-
-// enqueueExistingProviderTaskControl queues provider callbacks only while the
-// originating provider operation still owns a live Task context. Stop removes
-// and cancels that context before provider interruption can be observed.
-func (server *Server) enqueueExistingProviderTaskControl(taskID string, operation func(context.Context)) bool {
-	return server.enqueueProviderTaskControlWithContext(taskID, true, operation)
-}
-
-func (server *Server) enqueueProviderTaskControlWithContext(taskID string, requireExisting bool, operation func(context.Context)) bool {
-	return server.enqueueProviderTaskControlWithSettlement(taskID, requireExisting, nil, operation)
-}
-
 // providerControlSettlement is evaluated before and after a provider-control
-// owner is acquired. The first pass may wait while a durable assisted
-// conclusion settles; the second pass must be non-blocking so a pending
-// conclusion can yield the control boundary to its own coordinator.
+// owner is acquired. The first pass may wait for Working Graph settlement;
+// the second pass must not block while the control boundary is held.
 type providerControlSettlement func(context.Context, bool) (bool, error)
 
 func (server *Server) enqueueProviderTaskControlAfterSettlement(ownerID string, settlement providerControlSettlement, operation func(context.Context)) bool {
@@ -255,9 +236,9 @@ func (server *Server) prepareNativeResumeContinuation(found task.Task, resumedMe
 		resumedMessage, steeringEventIDs, err = server.taskResumeContextWithoutBlackboard(found)
 	} else if server.canonicalStore == store.CanonicalStoreBlackboardV2 && server.isBlackboardV2Task(found) {
 		resumedMessage, steeringEventIDs, err = server.blackboardV2ResumeContext(found)
-		if err != nil {
-			return task.Task{}, "", taskLaunchPlan{}, err
-		}
+	}
+	if err != nil {
+		return task.Task{}, "", taskLaunchPlan{}, err
 	}
 	modelOverride, reasoningEffort := server.resumeTurnSelectionOverrides(found)
 	plan, err := server.buildTaskLaunchPlan(found, resumedMessage, modelOverride, nativeResume.NativeSessionID, reasoningEffort)
