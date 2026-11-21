@@ -422,7 +422,6 @@ func TestSandboxSessionBridgeProtocolExitSignalsTerminatedWithoutClosing(t *test
 		t.Fatalf("unexpected cleanup on protocol exit: create %d start %d stop %d remove %d", creates, starts, stops, removes)
 	}
 
-	// Explicit Close still performs cleanup and is distinct from Terminated.
 	if err := bridge.Close(context.Background()); err != nil {
 		t.Fatalf("close: %v", err)
 	}
@@ -466,7 +465,6 @@ func TestSandboxSessionBridgeTerminatedIsOneShot(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Terminated did not fire")
 	}
-	// Re-reading Terminated remains closed (one-shot channel).
 	select {
 	case <-bridge.Terminated():
 	default:
@@ -491,9 +489,6 @@ func TestFirstSignalFiresOnEitherClosedOrTerminated(t *testing.T) {
 	}
 }
 
-// TestDockerCLISandboxBridgeCreateSurfacesStderr proves a failed docker create
-// no longer collapses to a bare "exit status 1": the captured stderr is
-// appended to the returned error while the *exec.ExitError stays unwrappable.
 func TestDockerCLISandboxBridgeCreateSurfacesStderr(t *testing.T) {
 	skipUnlessPOSIXProcessDoubles(t)
 	dir := t.TempDir()

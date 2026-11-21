@@ -204,11 +204,6 @@ func TestLegacyProviderBackfillsEndpointsFromBaseURLAndProtocols(t *testing.T) {
 	}
 }
 
-// TestLegacyProviderBackfillEndpointMatrix locks the endpoint-backfill
-// contract across the URL shapes called out for migration: /v1, /v2,
-// host-only, and deeper path prefixes. Non-Anthropic protocols copy the
-// normalized legacy base URL; anthropic_messages removes only the final
-// non-empty path segment with no other semantic URL repair.
 func TestLegacyProviderBackfillEndpointMatrix(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -392,10 +387,6 @@ func TestRefreshModelsUnavailableForAnthropicOnlyProvider(t *testing.T) {
 	}
 }
 
-// TestRefreshModelsFailurePreservesCatalogOnUpstreamError locks the
-// contract that a temporary provider error during refresh does not erase
-// the existing Model Catalog. The previous manual and refreshed model
-// choices must survive an upstream HTTP failure.
 func TestRefreshModelsFailurePreservesCatalogOnUpstreamError(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -637,7 +628,6 @@ func TestDeleteDetachingClearsRuntimeProfileReferences(t *testing.T) {
 	if detached.Fields.ModelProviderProtocol != "" {
 		t.Fatalf("model_provider_protocol = %q, want cleared", detached.Fields.ModelProviderProtocol)
 	}
-	// Unrelated model settings survive the detach.
 	if detached.Fields.ModelOverride != "mimo-2" {
 		t.Fatalf("model_override = %q, want preserved", detached.Fields.ModelOverride)
 	}
@@ -660,9 +650,6 @@ func newStore(t *testing.T) *store.DB {
 	return db
 }
 
-// seedLegacyProvider inserts an old-shape provider row carrying only the
-// provider-level base URL and protocols, without endpoints, so tests can
-// assert compatibility-backfill behavior during the transition.
 func seedLegacyProvider(db *store.DB, id, baseURL string, protocols []modelprovider.Protocol, catalog modelprovider.Catalog) error {
 	protocolsJSON, err := json.Marshal(protocols)
 	if err != nil {

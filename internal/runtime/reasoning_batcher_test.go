@@ -29,7 +29,6 @@ func TestReasoningDeltaBatcherAccumulatesWithinWindow(t *testing.T) {
 		t.Fatalf("expected one scheduled flush, got %d", len(fired))
 	}
 
-	// The window callback flushes the cumulative text once.
 	fired[0]()
 	if len(flushed) != 1 || flushed[0] != "alpha beta" {
 		t.Fatalf("window flush = %#v", flushed)
@@ -78,10 +77,6 @@ func TestReasoningDeltaBatcherIgnoresStaleTimerFromCompletedSegment(t *testing.T
 	}
 }
 
-// TestReasoningEmitterKeepsRawContentUnredacted pins issue #288: LLM output
-// is operator-visible execution trace. Secret-shaped or secret-matching text
-// inside a Runtime Reasoning Entry must persist byte-for-byte; redaction stays
-// on non-content surfaces only.
 func TestReasoningEmitterKeepsRawContentUnredacted(t *testing.T) {
 	adapter := newProviderSessionAdapter("claude_code", &fakeProviderTransport{}, "session-1", "turn-1", runtimeplugin.Capabilities{}, providerWireMethods{})
 	var payload task.EventPayload
@@ -118,11 +113,11 @@ func TestReasoningDeltaBatcherBarrierFlushesBeforeOtherEvents(t *testing.T) {
 	if len(order) != 2 || order[1] != "reasoning:next" {
 		t.Fatalf("barrier flush = %#v", order)
 	}
-	batcher.Barrier() // Empty barrier is a no-op.
+	batcher.Barrier()
 	if len(order) != 2 {
 		t.Fatalf("empty barrier emitted: %#v", order)
 	}
-	batcher.Flush() // Flush on an empty batcher is a no-op.
+	batcher.Flush()
 	if len(order) != 2 {
 		t.Fatalf("empty flush emitted: %#v", order)
 	}

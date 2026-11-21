@@ -137,8 +137,6 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 		defer emitMu.Unlock()
 		emit(kind, redactor.Redact(payload))
 	}
-	// contentEmit forwards container stdout/stderr (LLM output) byte-for-byte,
-	// without redaction (issue #288).
 	contentEmit := func(kind task.EventKind, payload task.EventPayload) {
 		emitMu.Lock()
 		defer emitMu.Unlock()
@@ -427,7 +425,6 @@ func ensureDockerNetwork(ctx context.Context, cli string, requirement *DockerNet
 	}
 	args = append(args, name)
 	if output, err := exec.CommandContext(ctx, cli, args...).CombinedOutput(); err != nil {
-		// Another task may have created the network between inspect and create.
 		exists, actualDriver, actualInternal = inspectDockerNetwork(ctx, cli, name)
 		if exists {
 			return validateDockerNetwork(name, driver, requirement.Internal, actualDriver, actualInternal)

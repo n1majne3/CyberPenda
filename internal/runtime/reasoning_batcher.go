@@ -24,9 +24,6 @@ type reasoningRuntimeOutput struct {
 	Text          string
 }
 
-// emitReasoningRuntimeOutput is the single provider-session boundary for a
-// Runtime Reasoning Entry. Reasoning text is LLM output: it is forwarded
-// byte-for-byte, without redaction (issue #288).
 func (s *providerSessionAdapter) emitReasoningRuntimeOutput(emit ProviderSessionEmit, output reasoningRuntimeOutput) {
 	if s == nil || output.Text == "" {
 		return

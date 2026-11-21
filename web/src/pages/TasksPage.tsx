@@ -24,12 +24,9 @@ const STATUS_META: Record<
   interrupted: { variant: "warning", icon: AlertTriangle },
 };
 
-// Lifecycle states that still drive runtime progress. Mirrors the ACTIVE set in
 // TaskDetailPage so this list polls with the same gating as the detail view.
 const ACTIVE_STATUS = new Set(["running", "paused"]);
 
-// A task needs watching while it is in an active lifecycle state or while its
-// runtime is still live (a live runtime can turn busy at any moment).
 function isTaskActive(task: Task) {
   return ACTIVE_STATUS.has(task.status) || task.runtime_activity?.liveness === "live";
 }
@@ -43,12 +40,10 @@ export function TasksPage() {
   const hasActive = tasks.some(isTaskActive);
 
   // Ref-backed loader so the poll effect can drive refreshes without re-running
-  // the projectId-scoped loader (which would re-fire its eager mount load).
   const loadTasksRef = useRef<(() => void) | null>(null);
 
   // Eager load + abort/generation bookkeeping, scoped to projectId only. Fires
   // once on mount / project switch regardless of visibility so the page is never
-  // left empty behind a hidden tab.
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;

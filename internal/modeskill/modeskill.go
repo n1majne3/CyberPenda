@@ -54,7 +54,6 @@ var domainModes = map[Mode]bool{
 	ModeDisabled:     true,
 }
 
-// Valid reports whether mode is a Blackboard Mode value.
 func Valid(mode Mode) bool {
 	return domainModes[mode]
 }

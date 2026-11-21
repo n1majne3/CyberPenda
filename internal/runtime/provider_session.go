@@ -40,16 +40,12 @@ var (
 	// ErrProviderSessionControlConflict reports a different control operation
 	// already in progress for this owner-bound session.
 	ErrProviderSessionControlConflict = errors.New("provider session control conflict")
-	// ErrProviderSessionClosed reports an operation against a closed session.
-	ErrProviderSessionClosed = errors.New("provider session is closed")
-	// ErrInvalidProviderSessionRequest reports missing stable request identity.
-	ErrInvalidProviderSessionRequest = errors.New("invalid provider session request")
+	ErrProviderSessionClosed          = errors.New("provider session is closed")
+	ErrInvalidProviderSessionRequest  = errors.New("invalid provider session request")
 	// ErrProviderTurnUnavailable reports an in-turn operation without a live
 	// provider Runtime Turn to target.
 	ErrProviderTurnUnavailable = errors.New("provider Runtime Turn is unavailable")
-	// ErrProviderTurnChanged reports an in-turn operation whose expected Turn
-	// is no longer the provider session's active Turn.
-	ErrProviderTurnChanged = errors.New("provider Runtime Turn changed")
+	ErrProviderTurnChanged     = errors.New("provider Runtime Turn changed")
 	// ErrProviderTurnNotSteerable reports an active provider Turn whose kind
 	// explicitly rejects same-turn operator input, such as review or compact.
 	ErrProviderTurnNotSteerable = errors.New("active provider Runtime Turn is not steerable")
@@ -187,7 +183,6 @@ type ProviderSessionTurnState struct {
 	ControlBusy    bool
 }
 
-// TurnBusy reports whether a control RPC or provider Runtime Turn is active.
 func (state ProviderSessionTurnState) TurnBusy() bool {
 	return state.ControlBusy || strings.TrimSpace(state.ActiveTurnID) != ""
 }

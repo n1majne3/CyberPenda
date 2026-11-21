@@ -28,11 +28,6 @@ func (s *Service) acquireEvidencePublisher(ctx context.Context, root *os.Root, p
 	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("inspect journaled Evidence temp: %w", err)
 	}
-	// The publisher handle carries the payload write path on every platform
-	// (a second handle would collide with the exclusive byte-range lock on
-	// Windows, and the write path now goes through the locked handle
-	// everywhere). A stale temp from an interrupted publisher may still be
-	// immutable (0400); clear that before opening, matching the write path.
 	if info, err := root.Lstat(tempName); err == nil && info.Mode().Perm()&0o200 == 0 {
 		if err := root.Chmod(tempName, 0o600); err != nil {
 			return nil, fmt.Errorf("unlock immutable journaled Evidence temp: %w", err)

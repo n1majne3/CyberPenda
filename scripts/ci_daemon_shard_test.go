@@ -10,7 +10,6 @@ import (
 	"testing"
 )
 
-// Every daemon test must land in exactly one shard, whatever the weights say.
 func TestDaemonShardsPartitionAllTests(t *testing.T) {
 	root := repoRoot(t)
 	dir := t.TempDir()
@@ -22,7 +21,6 @@ func TestDaemonShardsPartitionAllTests(t *testing.T) {
 	if err := os.WriteFile(listFile, []byte(strings.Join(names, "\n")+"\nBenchmarkIgnored\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// One very slow test plus some unknown (default-weight) tests.
 	timesFile := filepath.Join(dir, "times.tsv")
 	if err := os.WriteFile(timesFile, []byte("# header\nTestCase00\t100\nTestCase01\t30\nTestCase02\t30\nTestGone\t50\n"), 0o644); err != nil {
 		t.Fatal(err)

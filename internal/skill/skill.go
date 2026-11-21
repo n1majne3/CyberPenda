@@ -1,4 +1,3 @@
-// Package skill owns global, runtime-agnostic Skill bundles.
 package skill
 
 import (

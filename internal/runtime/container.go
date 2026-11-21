@@ -14,7 +14,6 @@ import (
 // adapter process has returned.
 type StopConfirmation func(timeout time.Duration) error
 
-// ReadContainerIDFile reads a Docker cidfile written by the sandbox runner.
 func ReadContainerIDFile(path string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -23,9 +22,6 @@ func ReadContainerIDFile(path string) (string, error) {
 	return strings.TrimSpace(string(raw)), nil
 }
 
-// DockerContainerStopConfirmation returns a confirmation hook that waits until
-// the cidfile container is no longer running. A missing cidfile means docker
-// exited before creating a container.
 func DockerContainerStopConfirmation(containerCLI, cidFile string) StopConfirmation {
 	return func(timeout time.Duration) error {
 		return ConfirmDockerContainerExited(containerCLI, cidFile, timeout)

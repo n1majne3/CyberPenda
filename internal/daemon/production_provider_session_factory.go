@@ -132,7 +132,6 @@ func (s *productionBoundSession) SessionUnexpectedOffline() bool {
 	return false
 }
 
-// productionBridgeTransport is the shared protocol surface for sandbox and host bridges.
 type productionBridgeTransport interface {
 	runtime.ProviderSessionTransport
 	Closed() <-chan struct{}
@@ -165,7 +164,6 @@ func NewProductionProviderSessionFactory(config ProductionProviderSessionFactory
 	return factory
 }
 
-// assemblerFor resolves the per-family assembler for one launch.
 func (f *ProductionProviderSessionFactory) assemblerFor(provider runtimeprofile.Provider) (providerSessionAssembler, error) {
 	assembler, ok := f.assemblers[provider]
 	if !ok {

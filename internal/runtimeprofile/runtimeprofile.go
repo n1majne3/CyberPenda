@@ -17,24 +17,16 @@ import (
 	"pentest/internal/store"
 )
 
-// Provider names the runtime CLI or assistant process family.
 type Provider string
 
 const (
-	// ProviderFake is the fake runtime used to exercise the harness and project
-	// interfaces before real adapters exist.
-	ProviderFake Provider = "fake"
-	// ProviderCodex is the Codex runtime.
-	ProviderCodex Provider = "codex"
-	// ProviderClaudeCode is the Claude Code runtime.
+	ProviderFake       Provider = "fake"
+	ProviderCodex      Provider = "codex"
 	ProviderClaudeCode Provider = "claude_code"
-	// ProviderPi is the Pi runtime.
-	ProviderPi Provider = "pi"
-	// ProviderHermes identifies retained history from the retired Hermes Runtime.
-	ProviderHermes Provider = "hermes"
+	ProviderPi         Provider = "pi"
+	ProviderHermes     Provider = "hermes"
 )
 
-// providers is the set of providers the product knows about.
 var providers = map[Provider]bool{
 	ProviderFake:       true,
 	ProviderCodex:      true,
@@ -70,10 +62,6 @@ type RuntimeExtensionRef struct {
 	Config  map[string]string `json:"config,omitempty"`
 }
 
-// Fields are the structured runtime profile fields. They are the source of
-// truth for the generated config preview. Inline APIKeys are stored per profile
-// and redacted in API responses; legacy CredentialRefs still resolve through
-// global credential bindings when present.
 type Fields struct {
 	BinaryPath            string `json:"binary_path,omitempty"`
 	Model                 string `json:"model,omitempty"`
@@ -105,7 +93,6 @@ type Fields struct {
 	CustomConfigFile string `json:"custom_config_file,omitempty"`
 }
 
-// Profile is a global runtime profile reusable across projects.
 type Profile struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -115,7 +102,6 @@ type Profile struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// ErrNotFound is returned when no profile matches the requested id.
 var ErrNotFound = errors.New("runtime profile not found")
 
 // ErrProviderSwitchNeedsOverlayClear reports a provider switch on a profile
@@ -136,14 +122,12 @@ func (e *ProviderSwitchNeedsOverlayClearError) Error() string {
 	)
 }
 
-// Sentinel validation errors.
 var (
 	ErrMissingName     = errors.New("runtime profile name is required")
 	ErrMissingProvider = errors.New("runtime profile provider is required")
 	ErrUnknownProvider = errors.New("runtime profile provider is not supported")
 )
 
-// Service implements runtime profile business rules against SQLite.
 type Service struct {
 	db                       *store.DB
 	providers                map[Provider]bool
@@ -153,7 +137,6 @@ type Service struct {
 	knownInstallRefs         func() []string
 }
 
-// NewService returns a Service backed by the given database.
 func NewService(db *store.DB, supportedProviders ...[]Provider) *Service {
 	svc := &Service{db: db, providers: defaultProviderSet()}
 	if len(supportedProviders) > 0 {
@@ -162,7 +145,6 @@ func NewService(db *store.DB, supportedProviders ...[]Provider) *Service {
 	return svc
 }
 
-// Create stores a new user-authored runtime profile preset and returns it.
 func (s *Service) Create(name string, provider Provider, fields Fields) (Profile, error) {
 	return s.create(name, provider, fields)
 }
@@ -230,7 +212,6 @@ func (s *Service) prepareCreate(name string, provider Provider, fields Fields) (
 	return created, string(fieldsJSON), nil
 }
 
-// Get loads a single profile by id.
 func (s *Service) Get(id string) (Profile, error) {
 	return scanProfile(s.db.QueryRow(
 		`SELECT id, name, provider, fields_json, created_at, updated_at FROM runtime_profiles WHERE id = ?`,
@@ -273,7 +254,6 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 		return Profile{}, err
 	}
 
-	// Name: empty string means "leave unchanged".
 	if strings.TrimSpace(name) != "" {
 		existing.Name = strings.TrimSpace(name)
 	}
@@ -296,7 +276,6 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 		}
 		existing.Provider = provider
 	} else if err := s.validate(existing.Name, existing.Provider); err != nil {
-		// Should not happen for a stored profile, but guard anyway.
 		return Profile{}, err
 	}
 	if providerChanged && existing.Provider != ProviderCodex {
@@ -340,9 +319,6 @@ func (s *Service) Update(id, name string, provider Provider, fields Fields, fiel
 	return existing, nil
 }
 
-// ReplaceFields replaces the structured fields on a profile without merging
-// inline API keys. Management flows such as model-provider migration use this
-// to clear legacy model-service fields explicitly.
 func (s *Service) ReplaceFields(id string, fields Fields) (Profile, error) {
 	existing, err := s.Get(id)
 	if err != nil {

@@ -6,7 +6,6 @@ import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Button, Card, CardTitle, CardHeader, Input, Label, Textarea, Badge, Select } from "@/components/ui";
 import { ErrorState, LoadingState } from "@/components/shared";
 
-// Each list field is edited as newline-separated text.
 type ScopeDraft = {
   capabilities: string;
   domains: string;

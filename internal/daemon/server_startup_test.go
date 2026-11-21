@@ -24,7 +24,6 @@ import (
 func TestNewServerReconcilesGhostTasksOnRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "pentest.db")
 
-	// First instance: create a project + profile + task, leave it running.
 	first, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath})
 	if err != nil {
 		t.Fatalf("first NewServer: %v", err)
@@ -49,7 +48,6 @@ func TestNewServerReconcilesGhostTasksOnRestart(t *testing.T) {
 		t.Fatalf("close first: %v", err)
 	}
 
-	// Second instance reopens the same DB; reconcile should interrupt the task.
 	second, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath})
 	if err != nil {
 		t.Fatalf("second NewServer: %v", err)

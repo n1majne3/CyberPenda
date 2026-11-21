@@ -92,7 +92,6 @@ func containsGeneratedBlackboardInstructions(raw []byte) bool {
 	if bytes.Contains(raw, []byte("# Blackboard workflow\n\n")) {
 		return true
 	}
-	// Legacy layouts written before the pentestctl CLI migration.
 	if bytes.Contains(raw, []byte("Trusted MCP is pre-configured")) &&
 		bytes.Contains(raw, []byte("## Required workflow")) &&
 		bytes.Contains(raw, []byte("blackboard_finish")) &&
@@ -143,9 +142,6 @@ func containsTrustedCodexConfig(raw []byte, trustedNames map[string]struct{}) (b
 
 func omittedProjectionTrustedMCPNames(profile runtimeprofile.Profile) map[string]struct{} {
 	_ = profile
-	// The daemon no longer injects a built-in Blackboard MCP server. Every
-	// configured MCP entry is user-owned external configuration and is not a
-	// stale Blackboard projection merely because Blackboard Mode is disabled.
 	return map[string]struct{}{}
 }
 

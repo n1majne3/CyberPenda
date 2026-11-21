@@ -106,9 +106,6 @@ func PrepareBlackboardV2TaskLayout(rootDir, taskID string, provider runtimeprofi
 	return layout, nil
 }
 
-// ProjectBlackboardV2RuntimeConfig projects provider config for a Blackboard v2
-// Continuation without legacy identity context files. Claude and Pi retain the
-// trusted MCP grant URL; Codex remains networkless for Project Interface writes.
 func ProjectBlackboardV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
 	var projection ConfigProjection
 	var err error

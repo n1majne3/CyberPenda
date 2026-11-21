@@ -21,7 +21,6 @@ func errInvalidCodexMultiAgent(detail string) error {
 // projects the off keys. It never creates a Harness-owned subagent
 // scheduling surface.
 type CodexMultiAgent struct {
-	// Enabled carries the explicit on or off choice. Nil means inherit.
 	Enabled *bool `json:"enabled,omitempty"`
 	// MaxConcurrentThreadsPerSession caps concurrently open spawned agent
 	// threads per session. Zero keeps the Codex default.

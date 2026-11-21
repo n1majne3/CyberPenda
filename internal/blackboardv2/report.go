@@ -43,7 +43,6 @@ type CTFSolutionProjection struct {
 	Evidence       []ReportEvidence `json:"evidence"`
 }
 
-// ReportSolution is the report-safe current Solution allowlist.
 type ReportSolution struct {
 	Key                 string `json:"key"`
 	Kind                string `json:"kind"`
@@ -53,13 +52,11 @@ type ReportSolution struct {
 	VerificationSummary string `json:"verification_summary,omitempty"`
 }
 
-// ReportMarkdown is the operator markdown deliverable body (format=markdown).
 type ReportMarkdown struct {
 	Schema   string `json:"schema"`
 	Markdown string `json:"markdown"`
 }
 
-// NewReportMarkdown wraps deterministic report Markdown in the closed v2 schema.
 func NewReportMarkdown(markdown string) ReportMarkdown {
 	return ReportMarkdown{Schema: reportMarkdownSchema, Markdown: markdown}
 }
@@ -162,9 +159,7 @@ func (s *Service) ProjectPentestReport(ctx context.Context, projectID string) (P
 	}
 	findings := make(map[string]*reportFindingState)
 	confirmedFacts := make(map[string]FactRecord)
-	// confirmed supporting facts per finding key (fact key set)
 	supportingConfirmed := make(map[string]map[string]struct{})
-	// evidence keyed by the target they evidence (finding or fact key)
 	evidenceByTarget := make(map[string][]ReportEvidence)
 	evidenceSeenByTarget := make(map[string]map[string]struct{})
 
@@ -345,7 +340,6 @@ func (s *Service) CTFSolution(ctx context.Context, projectID string) (CTFSolutio
 	return projection, err
 }
 
-// ProjectCTFSolution is the operator/HTTP seam for the CTF solution deliverable.
 func (s *Service) ProjectCTFSolution(ctx context.Context, projectID string) (CTFSolutionProjection, int, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -379,7 +373,6 @@ func (s *Service) ProjectCTFSolution(ctx context.Context, projectID string) (CTF
 		ConfirmedFacts: []ReportFact{}, TentativeFacts: []ReportFact{},
 		Evidence: []ReportEvidence{},
 	}
-	// Targets that may carry report Evidence: relevant Solutions and confirmed Facts.
 	evidenceTargets := make(map[string]struct{})
 	evidenceByKey := make(map[string]ReportEvidence)
 

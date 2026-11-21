@@ -19,17 +19,6 @@ import (
 	"pentest/internal/testsupport/fakeprovider"
 )
 
-// #193: the Workspace Sidebar loads one bounded navigation projection instead
-// of one Task-list request per Project. These tests pin the
-// GET /api/workspace/navigation contract: every Project is returned, each with
-// a bounded set of recent/busy Tasks inlined and runtime_activity attached the
-// same way as the per-Project Task list, plus Project.last_activity_at.
-//
-// #201: the projection bounds query work and response size independently of
-// total Task history, keeps the selected Task and every live busy Task visible
-// outside the recent summary, and answers an unchanged refresh with an empty
-// result instead of reserializing the projection.
-
 func getWorkspaceNavigation(t *testing.T, server *daemon.Server) []map[string]any {
 	t.Helper()
 	_, _, projects, _ := getWorkspaceNavigationResponse(t, server, "")
@@ -418,9 +407,6 @@ func TestWorkspaceNavigationScalesToOneRequestForManyProjects(t *testing.T) {
 		}
 	}
 
-	// #201: an unchanged refresh at 123-Project scale must not reserialize the
-	// projection. The response carries the same revision, an empty project
-	// list, and a transfer far smaller than the full projection.
 	_, changed, projects, unchangedBody := getWorkspaceNavigationResponse(t, server, "?revision="+revision)
 	if changed {
 		t.Fatalf("unchanged refresh reported changed=true")
@@ -477,7 +463,6 @@ func TestWorkspaceNavigationIncludesBusyTaskOutsideRecentSummary(t *testing.T) {
 		t.Fatalf("ordinary summary changed after busy flip: before=%v after=%v", ordinary, ids[1:])
 	}
 
-	// A busy Task that is also the selected Task is inlined once, not twice.
 	_, _, projects, _ = getWorkspaceNavigationResponse(t, server, "?selected_task="+outside)
 	ids = navigationTaskIDs(projects[0])
 	if len(ids) != 6 {
@@ -487,7 +472,6 @@ func TestWorkspaceNavigationIncludesBusyTaskOutsideRecentSummary(t *testing.T) {
 		t.Fatalf("busy selected Task not promoted first: %v", ids)
 	}
 
-	// Busy Tasks appear with a live/busy runtime_activity, not a status guess.
 	for _, entry := range projects[0]["tasks"].([]any) {
 		taskMap := entry.(map[string]any)
 		if taskMap["id"] != outside {
@@ -566,7 +550,6 @@ func TestWorkspaceNavigationSelectedTaskWithinRecentSummary(t *testing.T) {
 
 	_, _, projects, _ := getWorkspaceNavigationResponse(t, server, "")
 	ordinary := navigationTaskIDs(projects[0])
-	// The most recent Task is inside the ordinary summary.
 	recent := ordinary[0]
 
 	// A Task included by recency keeps its recency slot: the ordinary five are
@@ -636,7 +619,6 @@ func TestWorkspaceNavigationUnchangedRefreshAndRevisionAdvance(t *testing.T) {
 		t.Fatalf("unchanged refresh reserialized the projection: unchanged=%d full=%d", len(unchangedBody), len(fullBody))
 	}
 
-	// A stale or unknown revision is a full resend.
 	_, changed, projects, _ = getWorkspaceNavigationResponse(t, server, "?revision=stale")
 	if !changed || len(projects) != 1 {
 		t.Fatalf("stale revision changed=%v projects=%d, want full resend", changed, len(projects))

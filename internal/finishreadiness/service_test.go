@@ -86,7 +86,6 @@ func fixtureWithBlackboardMode(t *testing.T, mode task.BlackboardMode) (*store.D
 
 func TestRetiredChallengeHistoryDoesNotBlockDisabledFinish(t *testing.T) {
 	db, _, tasks, proj, created, _ := fixtureWithBlackboardMode(t, task.BlackboardModeDisabled)
-	// Retired records keep their original state and do not block Task Finish.
 	if _, err := db.Exec(`INSERT INTO challenge_attempts (
 		project_id,task_id,platform,external_attempt_id,challenge_id,attempt_key,objective_key,
 		status,last_progress_at,created_at,updated_at

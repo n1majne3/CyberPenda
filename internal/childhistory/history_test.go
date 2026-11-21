@@ -39,7 +39,6 @@ func TestChildHistorySurvivesHoursPagingAndRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The child continues inside the retained Runtime context for hours.
 	record(`{"type":"system","subtype":"task_started","task_id":"child","tool_use_id":"spawn","description":"Child","task_type":"local_agent"}`)
 	for i := 0; i < 430; i++ {
 		record(fmt.Sprintf(`{"type":"assistant","parent_tool_use_id":"spawn","message":{"role":"assistant","content":[{"type":"text","text":"item %d"}]}}`, i))

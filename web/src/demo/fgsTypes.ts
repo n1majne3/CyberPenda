@@ -1,5 +1,3 @@
-// Types for the accepted Goal · Step · Fact (FGS) Blackboard demo fixtures.
-// These mirror the shapes used by web/src/pages/FGSPage.tsx and FGSReport.tsx.
 
 export type FGSNode = {
   key: string;

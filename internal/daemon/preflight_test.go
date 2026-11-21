@@ -490,7 +490,6 @@ func TestPreflightPreviewsCodexMultiAgentTools(t *testing.T) {
 		t.Fatalf("codex multi-agent preview = %#v", result.CodexMultiAgent)
 	}
 
-	// A profile without the control previews the inherit state.
 	inheritProfileID := createRuntimeProfile(t, server, `{
 		"name":"Codex Inherit",
 		"provider":"codex",

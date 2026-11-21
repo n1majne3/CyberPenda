@@ -5,7 +5,6 @@ package owner
 
 import "errors"
 
-// Kind identifies the durable aggregate that owns Runtime and semantic state.
 type Kind string
 
 const (
@@ -22,7 +21,6 @@ const (
 	BlackboardSession BlackboardKind = "session"
 )
 
-// Capabilities are the owner-specific authorities consumed by later kernels.
 type Capabilities struct {
 	ProjectScope      bool           `json:"project_scope"`
 	ProjectArtifacts  bool           `json:"project_artifacts"`
@@ -44,7 +42,6 @@ type Contract struct {
 	Capabilities Capabilities `json:"capabilities"`
 }
 
-// NewTaskContract creates the Project-capable owner contract for one Task.
 func NewTaskContract(taskID, projectID, workdir string) Contract {
 	return Contract{
 		Kind: KindTask, ID: taskID, ProjectID: projectID, TaskID: taskID, Workdir: workdir,

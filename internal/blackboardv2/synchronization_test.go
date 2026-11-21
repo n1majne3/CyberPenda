@@ -15,10 +15,6 @@ import (
 	"pentest/internal/task"
 )
 
-// Issue #117 — parallel Task synchronization through trusted responses.
-// These tests pin the service-level notice, delivery, acknowledgement, and
-// isolation contracts that HTTP/MCP/CLI adapters reuse.
-
 func TestPeerWriteCreatesCoalescedPendingNoticeWithoutTaskIdentityOrContent(t *testing.T) {
 	fixture := newContinuityFixture(t)
 	t.Cleanup(func() { _ = fixture.db.Close() })
@@ -75,7 +71,6 @@ func TestPeerWriteCreatesCoalescedPendingNoticeWithoutTaskIdentityOrContent(t *t
 		}
 	}
 
-	// No asynchronous graph injection into Working Snapshot or model-visible file.
 	ownerWorkingAfter, err := fixture.continuity.ReadWorkingSnapshot(context.Background(), owner.Continuation.ID)
 	if err != nil {
 		t.Fatalf("read owner working after: %v", err)
@@ -159,7 +154,6 @@ func TestOwnWriteAndForeignProjectDoNotCreatePendingNotice(t *testing.T) {
 	if ownerAfterForeign.Pending || ownerAfterForeign.Revision != ownerSync.Revision {
 		t.Fatalf("foreign Project mutated owner sync state: before=%#v after=%#v", ownerSync, ownerAfterForeign)
 	}
-	// Owner of the foreign Project is unaffected by same-repo other Project activity.
 	foreignSync, err := fixture.board.InspectContinuationSynchronization(context.Background(), foreignProject.ID, foreignTask.ID, foreignLaunch.Continuation.ID)
 	if err != nil {
 		t.Fatalf("inspect foreign after own write: %v", err)
@@ -189,7 +183,6 @@ func TestExternalWritesCoalesceIntoOnePendingNotice(t *testing.T) {
 		if err != nil {
 			t.Fatalf("inspect after write %d: %v", i, err)
 		}
-		// At most one pending notice; from stays at last acknowledged, current advances.
 		if !sync.Pending || sync.FromRevision != from || sync.Revision <= from {
 			t.Fatalf("coalesced notice after write %d = %#v, want from=%d pending", i, sync, from)
 		}
@@ -326,7 +319,6 @@ func TestCaptureTrustedSynchronizationRedeliversExactFingerprintAndNotLaterReque
 	if err != nil || !bytes.Equal(firstJSON, retryJSON) {
 		t.Fatalf("fingerprint retry drifted\nfirst=%s\nretry=%s err=%v", firstJSON, retryJSON, err)
 	}
-	// Ordinary later request (different fingerprint, no Pending) stays clean.
 	later, err := fixture.board.CaptureTrustedSynchronization(context.Background(), fixture.project.ID, owner.Continuation.TaskID, owner.Continuation.ID, cleared, true, blackboardv2.SynchronizationDeliveryFingerprint("checkpoint", "other-key"))
 	if err != nil {
 		t.Fatalf("later capture: %v", err)
@@ -360,7 +352,6 @@ func TestSyncDeliveryCrashBetweenClaimActionFinalizeRecoversOnExactRetry(t *test
 	if err != nil || !reclaimed {
 		t.Fatalf("reclaim after crash: claimed=%v err=%v", reclaimed, err)
 	}
-	// Pending may still be true (no finalize yet).
 	stillPending, err := fixture.board.InspectContinuationSynchronization(context.Background(), fixture.project.ID, owner.Continuation.TaskID, owner.Continuation.ID)
 	if err != nil {
 		t.Fatalf("inspect after claim-only crash: %v", err)
@@ -396,7 +387,6 @@ func TestSyncDeliveryCrashBetweenClaimActionFinalizeRecoversOnExactRetry(t *test
 	}
 }
 
-// Two concurrent different fingerprints: exactly one claims and receives sync.
 func TestSyncDeliveryConcurrentDifferentFingerprintsOnlyOneReceives(t *testing.T) {
 	fixture := newContinuityFixture(t)
 	t.Cleanup(func() { _ = fixture.db.Close() })
@@ -460,7 +450,6 @@ func TestSyncDeliveryConcurrentDifferentFingerprintsOnlyOneReceives(t *testing.T
 	}
 }
 
-// Older fingerprint replay survives a later sync delivery on a different key.
 func TestSyncDeliveryOldFingerprintReplayAfterLaterDelivery(t *testing.T) {
 	fixture := newContinuityFixture(t)
 	t.Cleanup(func() { _ = fixture.db.Close() })
@@ -485,7 +474,6 @@ func TestSyncDeliveryOldFingerprintReplayAfterLaterDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal first: %v", err)
 	}
-	// Later peer write creates a new pending notice; a different fingerprint delivers it.
 	seedCurrentEntity(t, fixture.board, fixture.project.ID, "entity:old-fp-2", "Old fingerprint second")
 	pending2, err := fixture.board.InspectContinuationSynchronization(context.Background(), fixture.project.ID, owner.Continuation.TaskID, owner.Continuation.ID)
 	if err != nil || !pending2.Pending {
@@ -502,7 +490,6 @@ func TestSyncDeliveryOldFingerprintReplayAfterLaterDelivery(t *testing.T) {
 	if second.Revision <= first.Revision {
 		t.Fatalf("second delivery did not advance: first=%d second=%d", first.Revision, second.Revision)
 	}
-	// Exact replay of the older fingerprint still returns the original attachment.
 	cleared, err := fixture.board.InspectContinuationSynchronization(context.Background(), fixture.project.ID, owner.Continuation.TaskID, owner.Continuation.ID)
 	if err != nil || cleared.Pending {
 		t.Fatalf("pending after second delivery: %#v, %v", cleared, err)
@@ -582,7 +569,6 @@ func TestSyncDeliveryFinishCrashBeforeFinalizeRecoversOnExactRetry(t *testing.T)
 	if attachment.Revision != finished.Revision {
 		t.Fatalf("finish sync revision=%d want %d", attachment.Revision, finished.Revision)
 	}
-	// Second exact Capture redelivers identical attachment.
 	again, err := fixture.board.CaptureTrustedSynchronization(context.Background(), fixture.project.ID, owner.Continuation.TaskID, owner.Continuation.ID, pending, false, fingerprint)
 	if err != nil || again == nil {
 		t.Fatalf("second finish sync replay: %#v, %v", again, err)
@@ -659,7 +645,6 @@ func TestSynchronizeContinuationRacesWithOwnWriteFinishAndIsolation(t *testing.T
 		t.Fatalf("materialize peer Working Snapshot: %v", err)
 	}
 
-	// External advance leaves owner pending.
 	if _, err := fixture.board.ApplyForContinuation(context.Background(), fixture.project.ID, peer.Continuation.ID, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "race-peer-write",
 		Changes: []blackboardv2.Change{{
@@ -693,13 +678,11 @@ func TestSynchronizeContinuationRacesWithOwnWriteFinishAndIsolation(t *testing.T
 		t.Fatalf("owner working after absorb = %#v, %v", ownerWorking, err)
 	}
 
-	// Peer remains pending for owner's write (external to peer).
 	peerSync, err := fixture.board.InspectContinuationSynchronization(context.Background(), fixture.project.ID, peer.Continuation.TaskID, peer.Continuation.ID)
 	if err != nil || !peerSync.Pending {
 		t.Fatalf("peer should still be pending after owner write: %#v, %v", peerSync, err)
 	}
 
-	// Finish while pending applies current Project Snapshot and closes without leaving live pending.
 	if _, err := fixture.tasks.UpdateContinuationStatus(peer.Continuation.ID, task.StatusRunning); err != nil {
 		t.Fatalf("start peer: %v", err)
 	}
@@ -710,7 +693,6 @@ func TestSynchronizeContinuationRacesWithOwnWriteFinishAndIsolation(t *testing.T
 	if finished.Revision != want.Snapshot.Revision {
 		t.Fatalf("Finish revision = %d, want %d", finished.Revision, want.Snapshot.Revision)
 	}
-	// Closed Continuations lose live synchronization authority.
 	if _, err := fixture.board.SynchronizeContinuation(context.Background(), fixture.project.ID, peer.Continuation.TaskID, peer.Continuation.ID, peerSync.FromRevision); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("SynchronizeContinuation on finished Continuation = %v", err)
 	}
@@ -722,7 +704,6 @@ func TestSynchronizeContinuationRacesWithOwnWriteFinishAndIsolation(t *testing.T
 		t.Fatalf("closed peer retained live pending sync: %#v", authority)
 	}
 
-	// Resume pins fresh current state and starts with no pending notice.
 	resumed, err := fixture.continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
 		ProjectID: fixture.project.ID, TaskID: peer.Continuation.TaskID, RuntimeProfileID: fixture.profile.ID,
 		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,

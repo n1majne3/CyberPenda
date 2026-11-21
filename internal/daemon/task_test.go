@@ -15,10 +15,6 @@ import (
 	"pentest/internal/runtimeprofile"
 )
 
-// TestLaunchTaskRunsFakeRuntimeAndStreamsEvents proves the Slice 3 tracer bullet
-// through HTTP: launching a fake-runtime task from a project captures the goal,
-// runtime profile, runner, and scope snapshot, and the task emits events that
-// can be read back.
 func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{
@@ -87,7 +83,6 @@ func TestLaunchTaskRunsFakeRuntimeAndStreamsEvents(t *testing.T) {
 	if created.LatestContinuation.Runner != "sandbox" {
 		t.Fatalf("expected continuation runner sandbox, got %q", created.LatestContinuation.Runner)
 	}
-	// Scope snapshot is captured at launch.
 	if got := created.ScopeSnapshot.Domains; len(got) != 1 || got[0] != "example.com" {
 		t.Fatalf("expected scope snapshot domain, got %#v", got)
 	}
@@ -192,9 +187,6 @@ func TestGetTaskIncludesLatestContinuation(t *testing.T) {
 	}
 }
 
-// #205: A Task whose latest Task Runtime Configuration references a deleted
-// Runtime Profile must remain readable. The captured configuration is
-// self-contained and does not reload the deleted Profile.
 func TestGetTaskSurvivesDeletedLatestRuntimeProfile(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
@@ -292,7 +284,6 @@ func TestGetTaskKeepsSnapshotWhenRuntimeProfileIsDeleted(t *testing.T) {
 		t.Fatalf("expected latest continuation from the fake runtime, got %#v", found.LatestContinuation)
 	}
 
-	// The steer boundary also uses the captured Snapshot.
 	steer := httptest.NewRecorder()
 	steerReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer", bytes.NewReader([]byte(`{
 		"directive":"continue",
@@ -1178,12 +1169,10 @@ func TestFreshResumeRejectsCrossProjectTaskWithoutEffect(t *testing.T) {
 	}
 }
 
-// getTaskEvents reads the task timeline as a list of generic maps.
 func getTaskEvents(t *testing.T, server interface {
 	ServeHTTP(http.ResponseWriter, *http.Request)
 }, projectID, taskID string) []map[string]any {
 	t.Helper()
-	// server is *daemon.Server; use a type assertion-free path via httptest.
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks/"+taskID+"/events", nil)
 	server.ServeHTTP(resp, req)

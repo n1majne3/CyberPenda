@@ -21,7 +21,6 @@ import (
 // events, and support the best available steering mode. The fake adapter
 // exercises the same contract without a real runtime.
 type Adapter interface {
-	// Name identifies the runtime provider.
 	Name() string
 	// Run executes the runtime for one continuation, emitting normalized events
 	// through emit. It returns when the continuation completes, is interrupted
@@ -33,7 +32,6 @@ type metadataRecordingAdapter interface {
 	SetMetadataRecorder(func(NativeSessionMetadata) error)
 }
 
-// LaunchRequest describes a harness launch for one task continuation.
 type LaunchRequest struct {
 	TaskID           string
 	Goal             string
@@ -43,7 +41,6 @@ type LaunchRequest struct {
 	StopConfirmation StopConfirmation
 }
 
-// Harness adapts the shared owner-neutral Runtime Harness to the Task service.
 type Harness struct {
 	tasks *task.Service
 	core  *OwnerHarness
@@ -128,7 +125,6 @@ func (f *fakeAdapter) Name() string { return "fake" }
 
 func (f *fakeAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
 	emit(task.EventKindRuntimeOutput, task.EventPayload{"text": "planning task", "goal": goal})
-	// Cooperate with cancellation.
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -161,10 +157,6 @@ func NewCommandAdapter(config CommandAdapterConfig) Adapter {
 	return &commandAdapter{config: config}
 }
 
-// EnvSecretValues returns the secret values from a resolved runtime env map so a
-// Redactor can mask them by exact match. Keys are ignored: only the resolved
-// values are sensitive. Used to seed redaction of launch and diagnostic events
-// (non-content surfaces); LLM output is never redacted (issue #288).
 func EnvSecretValues(env map[string]string) []string {
 	if len(env) == 0 {
 		return nil
@@ -240,8 +232,6 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 		defer emitMu.Unlock()
 		emit(kind, redactor.Redact(payload))
 	}
-	// contentEmit forwards runtime stdout/stderr (LLM output) byte-for-byte,
-	// without redaction (issue #288).
 	contentEmit := func(kind task.EventKind, payload task.EventPayload) {
 		emitMu.Lock()
 		defer emitMu.Unlock()

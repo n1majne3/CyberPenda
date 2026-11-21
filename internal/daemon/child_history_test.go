@@ -198,7 +198,6 @@ func TestMixedChildHistoryDetailRetainsLargeLegacyItem(t *testing.T) {
 	if _, err := server.tasks.AppendEvent(taskID, task.EventKindRuntimeOutput, task.EventPayload{"text": string(raw)}); err != nil {
 		t.Fatal(err)
 	}
-	// These derived rows were created by this fixture. Keep the source as legacy.
 	for _, table := range []string{"child_history_changes", "child_history_items", "child_history_observations", "child_history_aliases", "child_history_blocks"} {
 		if _, err := server.db.Exec("DELETE FROM " + table); err != nil {
 			t.Fatal(err)

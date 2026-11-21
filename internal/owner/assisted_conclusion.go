@@ -122,8 +122,6 @@ const (
 	ConclusionRecoveryAcceptanceAmbiguous ConclusionRecoveryReason = "acceptance_ambiguous"
 	// ConclusionRecoveryDispatchFailed means the active dispatch could not be
 	// delivered and no safe replay exists.
-	ConclusionRecoveryDispatchFailed ConclusionRecoveryReason = "dispatch_failed"
-	// ConclusionRecoveryLegacyCorrelationUnproven means a legacy receipt's
-	// source correlation cannot be proven and no ownership probe may run.
+	ConclusionRecoveryDispatchFailed            ConclusionRecoveryReason = "dispatch_failed"
 	ConclusionRecoveryLegacyCorrelationUnproven ConclusionRecoveryReason = "legacy_correlation_unproven"
 )

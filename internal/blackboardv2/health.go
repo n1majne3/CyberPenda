@@ -12,7 +12,6 @@ import (
 
 const healthSchema = "blackboard-health/v2"
 
-// HealthStatus is the maximum anomaly severity for one Project.
 type HealthStatus string
 
 const (
@@ -22,7 +21,6 @@ const (
 	HealthStatusCritical  HealthStatus = "critical"
 )
 
-// HealthSeverity ranks one actionable anomaly.
 type HealthSeverity string
 
 const (
@@ -59,7 +57,6 @@ type HealthAttention struct {
 	ConsolidationRequired bool                 `json:"consolidation_required"`
 }
 
-// HealthAnomaly is one concise, actionable semantic health finding.
 type HealthAnomaly struct {
 	Code        string         `json:"code"`
 	Severity    HealthSeverity `json:"severity"`
@@ -328,7 +325,6 @@ func relationshipIntegrityAnomalies(stored []persistedRelationship, typeByKey ma
 			})
 			continue
 		}
-		// Prefer live type map over join metadata when present.
 		if fromType == "" {
 			fromType = relationship.fromType
 		}
@@ -441,7 +437,6 @@ func snapshotSemanticAnomalies(snapshot RuntimeSnapshot) []HealthAnomaly {
 		statusByKey[key] = row.Status
 	}
 
-	// Index relationships by Blackboard Key for stranded / satisfaction checks.
 	testsFromAttempt := map[string][]string{}
 	testsToObjective := map[string][]string{}
 	satisfiesToObjective := map[string][]string{}
@@ -453,7 +448,6 @@ func snapshotSemanticAnomalies(snapshot RuntimeSnapshot) []HealthAnomaly {
 		if !ok {
 			continue
 		}
-		// Endpoint presence + closed grammar integrity on current Snapshot edges.
 		fromType, fromOK := typeByKey[from]
 		toType, toOK := typeByKey[to]
 		if !fromOK || !toOK {
@@ -462,7 +456,6 @@ func snapshotSemanticAnomalies(snapshot RuntimeSnapshot) []HealthAnomaly {
 			continue
 		}
 		if rule, known := blackboardv2grammar.Lookup(rel); !known || !rule.Allows(fromType, toType) {
-			// Invalid grammar is reported by relationshipIntegrityAnomalies.
 			continue
 		}
 		// Reason violations (oversized/required) still surface as invalid.
@@ -497,7 +490,6 @@ func snapshotSemanticAnomalies(snapshot RuntimeSnapshot) []HealthAnomaly {
 		}
 	}
 
-	// Stranded open work.
 	for _, key := range sortedKeys(snapshot.Work.Objectives) {
 		if len(testsToObjective[key]) == 0 {
 			anomalies = append(anomalies, HealthAnomaly{
@@ -530,7 +522,6 @@ func snapshotSemanticAnomalies(snapshot RuntimeSnapshot) []HealthAnomaly {
 		}
 	}
 
-	// Missing Evidence, escalated when it supports a confirmed/verified conclusion.
 	for _, key := range sortedKeys(snapshot.Knowledge.Evidence) {
 		row := snapshot.Knowledge.Evidence[key]
 		if row.Status != "missing" {
@@ -568,7 +559,6 @@ func snapshotSemanticAnomalies(snapshot RuntimeSnapshot) []HealthAnomaly {
 		})
 	}
 
-	// Unresolved contradictions among live conclusions.
 	seenContradiction := map[string]bool{}
 	for _, pair := range contradicts {
 		from, to := pair[0], pair[1]
@@ -627,7 +617,6 @@ func (s *Service) evidenceIntegrityAnomalies(projectID string, evidenceRecords [
 
 	anomalies := make([]HealthAnomaly, 0)
 	for _, item := range evidenceRecords {
-		// Status-marked missing is reported separately as missing_evidence.
 		if item.record.Status != "available" {
 			continue
 		}

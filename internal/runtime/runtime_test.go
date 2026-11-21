@@ -223,14 +223,10 @@ func TestCommandRuntimeAdapterExecutesProviderProcessAndStreamsOutput(t *testing
 	}
 }
 
-// TestCommandRuntimeOutputKeepsSecretShapedContent pins issue #288: runtime
-// stdout/stderr is LLM output and passes through byte-for-byte, even when it
-// contains an exact launch-env secret value. The same secret stays redacted on
-// the non-content process_started lifecycle event.
 func TestCommandRuntimeOutputKeepsSecretShapedContent(t *testing.T) {
 	skipUnlessPOSIXProcessDoubles(t)
 
-	const opaque = "opaque-launch-secret-value-42" // no sk-/bearer/=_KEY shape
+	const opaque = "opaque-launch-secret-value-42"
 	binary := filepath.Join(t.TempDir(), "content-test")
 	script := "#!/bin/sh\necho \"flag:$1 env:$FLAG_VALUE shape:bearer secret-echo-token-123456\"\n"
 	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
@@ -458,13 +454,11 @@ func TestHarnessStopEndsActiveRun(t *testing.T) {
 		})
 	}()
 
-	// Give the goroutine time to register the active run.
 	waitForActive(t, harness, created.ID)
 	harness.Stop(created.ID)
 
 	select {
 	case err := <-done:
-		// A stopped run reports the context cancellation as its error.
 		if err == nil {
 			t.Fatal("expected stopped run to report a cancellation error")
 		}
@@ -618,7 +612,6 @@ func TestHarnessFinishIntentDoesNotWriteTerminalStatus(t *testing.T) {
 	}
 }
 
-// After ClearFinishIntent, cancel settles through normal stop path.
 func TestHarnessClearFinishIntentThenCancelSettlesStopped(t *testing.T) {
 	harness, tasks, projects := newServices(t)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})

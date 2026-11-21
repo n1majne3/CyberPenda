@@ -66,7 +66,6 @@ func (server *Server) computeRuntimeActivityWithExpectation(found task.Task, exp
 		return task.RuntimeActivity{Liveness: runtimeLivenessOffline}
 	}
 
-	// One-shot path: harness ownership is the process health authority.
 	if harnessActive {
 		return task.RuntimeActivity{Liveness: runtimeLivenessLive, TurnActivity: runtimeTurnIdle}
 	}
@@ -83,7 +82,6 @@ func (server *Server) taskExpectsProviderSession(found task.Task) bool {
 	if server.providerSessionFactory == nil {
 		return false
 	}
-	// If this Task currently has a bound session, it is on the persistent path.
 	if _, bound := server.providerSessions.get(found.ID); bound {
 		return true
 	}
@@ -248,7 +246,6 @@ func (server *Server) waitHarnessInactive(taskID string, timeout time.Duration) 
 		return true
 	}
 	deadline := time.Now().Add(timeout)
-	// Poll frequently enough that short test timeouts (tens of ms) still observe release.
 	interval := 5 * time.Millisecond
 	if timeout < interval {
 		interval = timeout / 2
@@ -306,7 +303,6 @@ func (server *Server) attachRuntimeActivities(tasks []task.Task) []task.Task {
 	}
 	configs, err := server.tasks.LatestRuntimeConfigs(ids)
 	if err != nil {
-		// Preserve the existing best-effort activity behavior on a database error.
 		for index := range tasks {
 			tasks[index] = server.attachRuntimeActivity(tasks[index])
 		}

@@ -41,7 +41,6 @@ type Operation struct {
 	Result string            `json:"result,omitempty"`
 }
 
-// SearchDirs returns overlay directories first, then baked defaults.
 func SearchDirs(dirs ...string) []string {
 	out := make([]string, 0, len(dirs))
 	for _, dir := range dirs {
@@ -62,7 +61,6 @@ func DefaultSearchDirs() []string {
 	)
 }
 
-// Load reads adapterID.json from the first matching search directory, else builtin.
 func Load(adapterID string, searchDirs []string) (Manifest, error) {
 	id := strings.TrimSpace(adapterID)
 	if id == "" {

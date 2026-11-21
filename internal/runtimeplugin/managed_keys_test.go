@@ -67,7 +67,6 @@ func TestCodexPluginDeclaresMultiAgentManagedKeysAndField(t *testing.T) {
 		t.Fatalf("codex plugin schema lacks the codex_multi_agent profile field")
 	}
 
-	// The multi-agent control is Codex-specific: no other plugin exposes it.
 	for _, id := range []string{"claude_code", "pi", "fake"} {
 		other, ok := registry.Get(id)
 		if !ok {

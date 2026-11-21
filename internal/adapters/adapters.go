@@ -1,13 +1,3 @@
-// Package adapters holds provider-specific runtime logic that can be tested
-// without a real runtime binary: launch argument construction and secret
-// redaction. Real Run execution (smoke tasks) requires the binary to be present
-// and is exercised out-of-band; the pure logic here is unit-tested.
-//
-// The package deliberately keeps these as pure functions rather than embedding
-// them in runtime.Adapter implementations, so the Slice 9 acceptance checks
-// (event parsing, launch argument construction, secret redaction, steering
-// mode behavior, restart/resume prompt construction) can run in CI without
-// real runtimes.
 package adapters
 
 import (
@@ -20,15 +10,13 @@ import (
 	"pentest/internal/runtimeprofile"
 )
 
-// LaunchArgsRequest is the input to BuildLaunchArgs.
 type LaunchArgsRequest struct {
 	Provider      runtimeprofile.Provider
 	Profile       runtimeprofile.Profile
 	Goal          string
 	ConfigPath    string
 	MCPConfigPath string
-	// Sandbox is true when the task runs inside the container runner.
-	Sandbox bool
+	Sandbox       bool
 }
 
 type NativeResumeArgsRequest struct {
@@ -213,28 +201,15 @@ var ErrSecretRedacted = errors.New("secret value redacted")
 // task events. Patterns are deliberately conservative: they redact anything that
 // looks like a long opaque token, while leaving short identifiers intact.
 var secretPatterns = []*regexp.Regexp{
-	// API keys: sk-..., key-..., ghp_..., glpat-..., xoxb-..., AKIA...
 	regexp.MustCompile(`(?i)(sk|key|ghp|glpat|xoxb|AKIA|AIza)[-_]?[A-Za-z0-9]{12,}`),
-	// Bearer tokens.
 	regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9._\-]{8,}`),
-	// Generic long hex/base64 blobs (40+ chars) that follow '=' or ': '.
 	regexp.MustCompile(`(?i)(=|:\s*)[A-Fa-f0-9]{40,}`),
 	// High-entropy secrets in env-style assignments: NAME=value where value is long.
 	regexp.MustCompile(`(?i)([A-Z0-9_]{4,}_KEY|_TOKEN|_SECRET|_PASSWORD)=([A-Za-z0-9/+=\-_.]{12,})`),
 }
 
-// minRedactableSecretLen is the shortest known secret value a Redactor will mask
-// by exact match. Very short values are ignored so ordinary text (e.g. a single
-// letter that happens to equal a credential) is not mangled.
 const minRedactableSecretLen = 8
 
-// Redactor masks secret values on non-content surfaces: launch and lifecycle
-// diagnostics, configuration previews, and error text. It never applies to LLM
-// output (assistant messages, reasoning, tool-call content, runtime
-// stdout/stderr): those events are persisted byte-for-byte (issue #288). It
-// always applies the shape-based secretPatterns; when seeded with known secret
-// values it also masks those values by exact match, closing the gap for opaque
-// tokens that lack a recognized prefix/shape (issue #161).
 type Redactor struct {
 	secrets []string
 }
@@ -335,11 +310,9 @@ func Redact(payload map[string]any) map[string]any {
 // redactMatch keeps human-readable prefixes (env var names, the word 'bearer')
 // and replaces only the opaque secret portion.
 func redactMatch(match string) string {
-	// Env-style: NAME=value
 	if idx := strings.Index(match, "="); idx > 0 {
 		return match[:idx+1] + "[REDACTED]"
 	}
-	// Bearer <token>
 	if strings.HasPrefix(strings.ToLower(match), "bearer ") {
 		return "bearer [REDACTED]"
 	}
@@ -349,6 +322,5 @@ func redactMatch(match string) string {
 			return prefix + "[REDACTED]"
 		}
 	}
-	// Bare blob after =/: already handled above; fallback full redaction.
 	return "[REDACTED]"
 }

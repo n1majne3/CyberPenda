@@ -196,7 +196,6 @@ func TestClaudeAndPiV2LaunchHeaderChecklistAndExactSharedSnapshotBytes(t *testin
 		t.Fatalf("Claude and Pi Working Snapshot bytes must be identical shared copies")
 	}
 
-	// Daemon restart rematerializes every active v2 provider pin.
 	if err := server.Close(); err != nil {
 		t.Fatalf("close daemon: %v", err)
 	}

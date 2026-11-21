@@ -101,7 +101,6 @@ func TestImportProfileConfigRefusesManagedKeysPerKey(t *testing.T) {
 		t.Fatalf("expected approval_policy and sandbox_mode refusals, got %#v", refusal.Errors)
 	}
 
-	// Nothing persisted: the profile is untouched.
 	kept, err := service.Get(created.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -296,8 +295,6 @@ func TestImportProfileConfigIgnoresClientBaselineForManagedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// A client can no longer submit a baseline at all: the request shape has
-	// no such field, and the service derives it from the injected projector.
 	_, err = service.ImportConfig(created.ID, runtimeprofile.ImportConfigRequest{
 		ConfigText: "approval_policy = \"on-request\"\n",
 	})
@@ -463,7 +460,6 @@ func TestImportProfileConfigRefusesExtraPermissionsAllow(t *testing.T) {
 	}
 }
 
-// Story 6: deleting the whole env section clears the structured env field.
 func TestImportProfileConfigEnvSectionDeletionClearsStructuredEnv(t *testing.T) {
 	service := newTestService(t)
 	created, err := service.Create("Claude Env Section", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{

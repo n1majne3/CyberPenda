@@ -465,7 +465,6 @@ describe("knowledge and reporting views", () => {
     expect(
       await screen.findByRole("heading", { name: /Flag CTF/i }),
     ).toBeInTheDocument();
-    // Solved state is rendered as a Badge next to the project title.
     expect(screen.getByText("Solved")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Parser accepts reversed hex/i })).toHaveAttribute(
       "href",

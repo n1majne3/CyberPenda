@@ -7,7 +7,6 @@ import App, { ShellErrorBoundary, ShellLayout } from "./App";
 import { mockApi } from "@/test/mockApi";
 import { ThemeProvider } from "@/components/ThemeProvider";
 
-/** Desktop: sidebar always in a11y tree. Mobile (default setup): closed drawer is inert. */
 function mockViewport(mode: "desktop" | "mobile") {
   const matchMedia = (query: string): MediaQueryList => {
     const isMdUp =
@@ -80,7 +79,6 @@ describe("App", () => {
       link.getAttribute("href") === "/sessions#new-session",
     );
     expect(newSessionLink).toHaveClass("focus-visible:ring-2");
-    // Sidebar nav links expose a visible focus ring.
     expect(screen.getByRole("link", { name: /non-project/i })).toHaveClass("focus-visible:ring-2");
   });
 
@@ -109,8 +107,6 @@ describe("App", () => {
 
     const skillsLink = screen.getByRole("link", { name: /skills/i });
     expect(skillsLink).toHaveAttribute("aria-current", "page");
-    // Active state is distinguished by a soft signal wash + weight + the
-    // signal indicator bar — not a per-item outline that reads as a black box.
     expect(skillsLink).toHaveClass("bg-signal/5", "font-semibold");
     expect(skillsLink.querySelector('[data-nav-indicator="active"]')).not.toBeNull();
     expect(skillsLink).toHaveClass("focus-visible:ring-inset");
@@ -140,8 +136,6 @@ describe("App", () => {
     expect(screen.getByRole("link", { name: /credentials/i })).toHaveAttribute("href", "/credentials");
     expect(screen.getByRole("link", { name: /skills/i })).toHaveAttribute("href", "/skills");
 
-    // The Non-project section mirrors the Projects header: a nav link plus an
-    // inline "+ New session" action, with no section-level collapse control.
     expect(screen.queryByRole("button", { name: /collapse non-project/i })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /non-project/i })).toHaveAttribute("href", "/sessions");
     expect(screen.getByRole("link", { name: /new session/i })).toHaveAttribute("href", "/sessions#new-session");
@@ -216,7 +210,6 @@ describe("App", () => {
       </StrictMode>,
     );
 
-    // Closed mobile drawer is aria-hidden; still present in the DOM for layout classes.
     const sidebar = document.getElementById("workspace-sidebar");
     expect(sidebar).not.toBeNull();
     // Off-canvas below md so main can use the full 390px viewport; desktop keeps w-72 in flow.
@@ -229,7 +222,6 @@ describe("App", () => {
     expect(main).not.toBeNull();
     expect(main).toHaveClass("min-w-0", "flex-1", "overflow-x-hidden");
 
-    // Mobile entry point for the same primary nav (desktop layout unchanged).
     expect(screen.getByRole("button", { name: /open navigation/i })).toHaveClass("md:hidden");
   });
 

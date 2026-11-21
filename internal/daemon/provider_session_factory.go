@@ -49,10 +49,7 @@ type ProviderSessionLaunchRequest struct {
 	LaunchGoal    string
 	RuntimeConfig map[string]any
 	LegacyAdapter runtime.Adapter
-	// Facts are the structured launch inputs. The one-shot LegacyAdapter
-	// still carries projected env, workdir, and sandbox create args; family
-	// assemblers must not parse its rendered argv.
-	Facts ProviderSessionLaunchFacts
+	Facts         ProviderSessionLaunchFacts
 }
 
 func providerSessionOwnerID(request ProviderSessionLaunchRequest) string {
@@ -73,10 +70,6 @@ func validateProviderSessionLaunchRequest(request ProviderSessionLaunchRequest) 
 	return nil
 }
 
-// ProviderSessionBinding contains the provider session and the long-running
-// Adapter that drives its initial turn. A session without an Adapter would be
-// bound in the daemon while the legacy one-shot process still ran, which is an
-// unsafe split-brain launch and therefore rejected.
 type ProviderSessionBinding struct {
 	Session runtime.ProviderSession
 	Adapter runtime.Adapter
@@ -128,9 +121,6 @@ func supportedProviderSessionFactoryProvider(provider runtimeprofile.Provider) b
 	}
 }
 
-// supportsPersistentProviderSession reports whether the runner/provider pair
-// uses owner-scoped provider-session assembly. Host supports Codex, Claude Code,
-// and Pi; unsupported plugins retain the legacy one-shot path.
 func supportsPersistentProviderSession(runner task.Runner, provider runtimeprofile.Provider) bool {
 	switch runner {
 	case task.RunnerSandbox:

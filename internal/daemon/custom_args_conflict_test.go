@@ -50,7 +50,6 @@ func TestCreateRuntimeProfileRejectsConflictingCustomArgsAndLogs(t *testing.T) {
 		t.Fatalf("API error must not leak secret model value: %q", payload.Error)
 	}
 
-	// Nothing persisted under list.
 	listReq := httptest.NewRequest(http.MethodGet, "/api/runtime-profiles", nil)
 	listRec := httptest.NewRecorder()
 	server.ServeHTTP(listRec, listReq)
@@ -124,8 +123,6 @@ func TestPreflightRejectsLegacyConflictingCustomArgsAndLogs(t *testing.T) {
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Pi Legacy","provider":"pi","fields":{"model":"m","custom_args":["--debug"]}}`)
 
-	// Simulate a legacy profile that stored conflicting Custom Args before
-	// structured-field validation existed.
 	forceProfileCustomArgs(t, dbPath, profileID, `{"model":"m","custom_args":["--thinking","medium","OPENAI_API_KEY=sk-abcdefghijklmnopqrstuv"]}`)
 
 	body := `{"runtime_profile_id":"` + profileID + `","runner":"sandbox"}`
@@ -190,7 +187,6 @@ func TestTaskLaunchRejectsConflictingCustomArgsBeforeLaunch(t *testing.T) {
 
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Codex Launch","provider":"codex","fields":{"model":"gpt-test","custom_args":["--json"],"api_keys":{"OPENAI_API_KEY":"sk-test"}}}`)
-	// Legacy conflict stored under the profile.
 	forceProfileCustomArgs(t, dbPath, profileID, `{"model":"gpt-test","custom_args":["-c","model_reasoning_effort=high","--json"],"api_keys":{"OPENAI_API_KEY":"sk-test"}}`)
 
 	body := `{"type":"pentest","goal":"inspect example.com","runtime_profile_id":"` + profileID + `","runner":"sandbox"}`
@@ -207,7 +203,6 @@ func TestTaskLaunchRejectsConflictingCustomArgsBeforeLaunch(t *testing.T) {
 		t.Fatalf("launch error must name effort conflict: %s", rec.Body.String())
 	}
 
-	// No task persisted.
 	listReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/tasks", nil)
 	listRec := httptest.NewRecorder()
 	server.ServeHTTP(listRec, listReq)

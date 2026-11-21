@@ -9,7 +9,6 @@ import (
 	"pentest/internal/timeline"
 )
 
-// event builds a timeline.Event in the compact form used by both owner kinds.
 func event(kind, text string, at time.Time) timeline.Event {
 	return timeline.Event{Kind: kind, Payload: map[string]any{"text": text}, CreatedAt: at}
 }
@@ -152,8 +151,6 @@ func TestBuildDropsTaskProgressAndThinkingTokens(t *testing.T) {
 
 	got := timeline.Build(events)
 
-	// thinking_tokens stays noise; task_progress now projects a subagent
-	// activity entry ahead of the visible assistant text.
 	if len(got) != 2 || got[0].Type != "subagent_activity" || got[1].Type != "text" || got[1].Content != "Visible." {
 		t.Fatalf("expected subagent activity then visible text, got %#v", got)
 	}

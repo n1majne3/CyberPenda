@@ -1,4 +1,3 @@
-/** @type {import('tailwindcss').Config} */
 export default {
   darkMode: ["class"],
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
@@ -78,14 +77,12 @@ export default {
         mono: ["var(--font-geist-mono)", "monospace"],
       },
       boxShadow: {
-        // Geist layered elevation, theme-aware via CSS tokens (see index.css).
         sm: "var(--shadow-card)",
         md: "var(--shadow-md)",
         lg: "var(--shadow-lg)",
         popover: "var(--shadow-popover)",
       },
       transitionTimingFunction: {
-        // Short, physical easing Geist uses for state changes and reveals.
         geist: "cubic-bezier(0.175, 0.885, 0.32, 1.1)",
       },
     },

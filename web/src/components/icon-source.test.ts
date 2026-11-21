@@ -4,22 +4,20 @@ import { join, relative } from "node:path";
 
 const srcRoot = join(process.cwd(), "src");
 
-// Build the emoji character class from code points. Composing it from literals
-// (e.g. /[\u2705\u274C...]/) trips eslint's no-misleading-character-class rule
 // because some emoji carry combining marks; String.fromCodePoint avoids that.
 const emojiPattern = new RegExp(
   "[" + String.fromCodePoint(
-    0x1f9ea, // 🧪 test tube
-    0x1f4cb, // 📋 clipboard
-    0x1f50e, // 🔎 magnifying glass
-    0x2705,  // ✅ check mark button
-    0x274c,  // ❌ cross mark
-    0x26a0,  // ⚠ warning sign
-    0x1f680, // 🚀 rocket
-    0x1f510, // 🔐 lock with key
-    0x1f6e1, // 🛡️ shield
-    0x1f4c1, // 📁 folder
-    0x1f4c4, // 📄 page facing up
+    0x1f9ea,
+    0x1f4cb,
+    0x1f50e,
+    0x2705,
+    0x274c,
+    0x26a0,
+    0x1f680,
+    0x1f510,
+    0x1f6e1,
+    0x1f4c1,
+    0x1f4c4,
   ) + "]",
   "u",
 );
@@ -41,8 +39,6 @@ describe("icon source policy", () => {
 
       const source = readFileSync(file, "utf8");
       const found = [];
-      // FGS draws data relationships with SVG paths. This is a graph, not an
-      // icon; normal page controls still use the shared icon library.
       const graphSource = rel === "pages/FGSPage.tsx";
       if (/<svg\b/.test(source) && !graphSource) found.push("inline svg");
       if (/<img\b/.test(source)) found.push("image icon");

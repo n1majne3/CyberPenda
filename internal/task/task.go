@@ -32,7 +32,6 @@ const (
 	RunnerHost    Runner = "host"
 )
 
-// Status is the lifecycle state of a task.
 type Status string
 
 const (
@@ -86,7 +85,6 @@ func (controls RunControls) validate() error {
 	return nil
 }
 
-// NormalizeContainerCLIChoice accepts empty (daemon default), docker, or podman.
 func NormalizeContainerCLIChoice(cli string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(cli)) {
 	case "":
@@ -100,7 +98,6 @@ func NormalizeContainerCLIChoice(cli string) (string, error) {
 	}
 }
 
-// ResolveContainerCLI prefers a Task Run Control choice, then the daemon default.
 func ResolveContainerCLI(taskChoice, daemonDefault string) string {
 	if normalized, err := NormalizeContainerCLIChoice(taskChoice); err == nil && normalized != "" {
 		return normalized
@@ -108,8 +105,6 @@ func ResolveContainerCLI(taskChoice, daemonDefault string) string {
 	return strings.TrimSpace(daemonDefault)
 }
 
-// TaskPolicy retains limits from the retired Challenge Workflow for history.
-// Values describe historical limits; the daemon no longer enforces them.
 type TaskPolicy struct {
 	MaxAttempts            int `json:"max_attempts,omitempty"`
 	MaxWrongSubmissions    int `json:"max_wrong_submissions,omitempty"`
@@ -128,7 +123,6 @@ func (policy TaskPolicy) validate() error {
 	return nil
 }
 
-// BlackboardMode is the Runtime Owner's immutable Blackboard Mode.
 type BlackboardMode string
 
 const (
@@ -230,7 +224,6 @@ const (
 // EventPayload is the structured payload of a task event. Keep it compact.
 type EventPayload map[string]any
 
-// Event is one structured timeline entry for a task.
 type Event struct {
 	ID             string       `json:"id"`
 	TaskID         string       `json:"task_id"`
@@ -281,7 +274,6 @@ const (
 	ConclusionDirectiveKindVersionRegeneration = owner.ConclusionDirectiveKindVersionRegeneration
 )
 
-// ConclusionDispatchState is the delivery lifecycle of one immutable dispatch.
 type ConclusionDispatchState = owner.ConclusionDispatchState
 
 const (
@@ -294,7 +286,6 @@ const (
 	ConclusionDispatchLateTerminal   = owner.ConclusionDispatchLateTerminal
 )
 
-// ConclusionRecoveryReason is the closed operator-visible fail-closed reason.
 type ConclusionRecoveryReason = owner.ConclusionRecoveryReason
 
 const (
@@ -414,15 +405,12 @@ type ReconcileInterruptedResult struct {
 // health and terminal notifications, not from stored session identity, Task
 // Events, or elapsed time.
 type RuntimeActivity struct {
-	// Liveness is one of live, offline, orphaned, or unknown.
 	Liveness string `json:"liveness"`
 	// TurnActivity is busy or idle while Liveness is live; empty otherwise.
 	TurnActivity string `json:"turn_activity,omitempty"`
-	// Warning explains unknown liveness without mutating Task lifecycle.
-	Warning string `json:"warning,omitempty"`
+	Warning      string `json:"warning,omitempty"`
 }
 
-// Task is a single user-goal-driven run within a project.
 type Task struct {
 	// ChallengeHistoryAvailable is a read-only projection, not stored Task state.
 	ChallengeHistoryAvailable bool                   `json:"challenge_history_available,omitempty"`
@@ -438,13 +426,12 @@ type Task struct {
 	ScopeSnapshot             ScopeSnapshot          `json:"scope_snapshot"`
 	RuntimeControls           RuntimeControls        `json:"runtime_controls"`
 	RuntimeConfiguration      *runtimeconfig.Summary `json:"runtime_configuration,omitempty"`
-	// RuntimeActivity is current process/session health, not Task status.
-	RuntimeActivity      RuntimeActivity      `json:"runtime_activity"`
-	BlackboardConclusion BlackboardConclusion `json:"blackboard_conclusion"`
-	ActiveContinuation   *TaskContinuation    `json:"active_continuation,omitempty"`
-	LatestContinuation   *TaskContinuation    `json:"latest_continuation,omitempty"`
-	CreatedAt            time.Time            `json:"created_at"`
-	UpdatedAt            time.Time            `json:"updated_at"`
+	RuntimeActivity           RuntimeActivity        `json:"runtime_activity"`
+	BlackboardConclusion      BlackboardConclusion   `json:"blackboard_conclusion"`
+	ActiveContinuation        *TaskContinuation      `json:"active_continuation,omitempty"`
+	LatestContinuation        *TaskContinuation      `json:"latest_continuation,omitempty"`
+	CreatedAt                 time.Time              `json:"created_at"`
+	UpdatedAt                 time.Time              `json:"updated_at"`
 }
 
 // OwnerContract exposes the explicit Project-capable owner binding consumed by
@@ -454,7 +441,6 @@ func (t Task) OwnerContract(workdir string) owner.Contract {
 	return owner.NewTaskContract(t.ID, t.ProjectID, workdir)
 }
 
-// CreateRequest is the input to Service.Create.
 type CreateRequest struct {
 	ProjectID        string
 	Type             Type
@@ -467,10 +453,8 @@ type CreateRequest struct {
 	RuntimeConfig map[string]any
 }
 
-// ErrNotFound is returned when no task matches the requested id.
 var ErrNotFound = errors.New("task not found")
 
-// ErrMissingGoal is returned when a task has no non-empty goal.
 var ErrMissingGoal = errors.New("task goal is required")
 
 // ErrProjectNotFound is returned when the project referenced by a task does not
@@ -481,10 +465,8 @@ var ErrProjectNotFound = errors.New("project not found")
 // launch or continue runtime work.
 var ErrActiveTask = errors.New("active task cannot be deleted")
 
-// ErrUnsupportedRunner is returned when the runner is neither sandbox nor host.
 var ErrUnsupportedRunner = errors.New("runner must be sandbox or host")
 
-// Type is the immutable Task semantic classification captured at Task Launch.
 type Type string
 
 const (
@@ -504,7 +486,6 @@ var ErrInvalidTaskPolicy = errors.New("Task Policy limits must be zero or positi
 // with the host_proxy_only network shape.
 var ErrSandboxVPNTunHostProxyConflict = errors.New("sandbox VPN TUN cannot combine with host_proxy_only network")
 
-// ErrInvalidContainerCLI reports an unsupported Task-level container CLI choice.
 var ErrInvalidContainerCLI = errors.New("container CLI must be docker or podman")
 
 // ErrContinuationStatusConflict prevents a late lifecycle observer from
@@ -519,7 +500,6 @@ var ErrActiveContinuation = errors.New("task already has an active continuation"
 // durable interruption reconciliation owned by the prior Continuation.
 var ErrContinuationReconciliationIncomplete = errors.New("prior continuation reconciliation is incomplete")
 
-// ErrSteeringSelectionConflict reports a stale or foreign steering selection.
 var ErrSteeringSelectionConflict = errors.New("Harness Steering selection is stale or invalid")
 
 // Service implements task business rules against SQLite. It depends on the
@@ -536,7 +516,6 @@ type ContinuationReconciler interface {
 	ReconcileTerminalContinuation(context.Context, string, string) error
 }
 
-// Service owns durable Task state.
 type Service struct {
 	db             *store.DB
 	projects       *project.Service
@@ -557,9 +536,6 @@ func NewService(db *store.DB, projects ...*project.Service) *Service {
 	return svc
 }
 
-// SetProjectService wires the project service used to read launch scope. This
-// keeps the constructor simple while allowing the daemon to assemble services
-// in any order.
 func (s *Service) SetProjectService(projects *project.Service) {
 	s.projects = projects
 }
@@ -685,7 +661,6 @@ func (s *Service) Create(req CreateRequest) (Task, error) {
 	return created, nil
 }
 
-// Get loads a single task by id.
 func (s *Service) Get(id string) (Task, error) {
 	return scanTask(s.db.QueryRow(
 		`SELECT id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at, (SELECT blackboard_protocol FROM projects WHERE projects.id=tasks.project_id) FROM tasks WHERE id = ? AND deleted_at = ''`,
@@ -723,11 +698,6 @@ func (s *Service) ListForProject(projectID string) ([]Task, error) {
 // Keep it in sync with the table columns used by scanTask.
 const taskSelectColumns = `id, project_id, task_type, goal, status, runner, runtime_profile_id, run_controls_json, scope_snapshot_json, created_at, updated_at, (SELECT blackboard_protocol FROM projects WHERE projects.id=tasks.project_id)`
 
-// recentPerProjectSQL builds the bounded per-Project recent Task query. The
-// exclusion placeholders keep busy Tasks out of the ordinary summary; the
-// navigation index idx_tasks_project_activity serves both the filter and the
-// ordering, so a Project's history beyond the fixed summary is never read
-// (#201).
 func recentPerProjectSQL(limit, excludeCount int) string {
 	query := `SELECT ` + taskSelectColumns + ` FROM tasks WHERE project_id = ? AND deleted_at = ''`
 	if excludeCount > 0 {
@@ -736,15 +706,6 @@ func recentPerProjectSQL(limit, excludeCount int) string {
 	return query + ` ORDER BY updated_at DESC, created_at DESC LIMIT ?`
 }
 
-// ListRecentPerProject returns, for each requested Project, the `limit` most
-// recently updated non-deleted Tasks, excluding the given Task ids. The
-// navigation projection passes the live busy Task ids so the ordinary summary
-// stays exactly `limit` entries; the selected Task stays inside the query and
-// is deduplicated by the caller when recency already included it (#201).
-//
-// Ordering is updated_at DESC then created_at DESC. Each Project is one
-// bounded indexed query with LIMIT, so query work and returned rows never grow
-// with a Project's total historical Task count.
 func (s *Service) ListRecentPerProject(projectIDs []string, limit int, excludeIDs ...string) (map[string][]Task, error) {
 	if limit <= 0 {
 		limit = 1
@@ -782,11 +743,6 @@ func (s *Service) ListRecentPerProject(projectIDs []string, limit int, excludeID
 	return byProject, nil
 }
 
-// LatestUpdate returns the newest updated_at across every Task row, including
-// soft-deleted rows so a deletion advances the navigation epoch. The Project
-// Navigation Projection folds it into its opaque revision so an unchanged
-// refresh can be answered without serializing the projection (#201). The
-// idx_tasks_updated_at index answers the MAX in one indexed read.
 func (s *Service) LatestUpdate() (time.Time, error) {
 	var value string
 	if err := s.db.QueryRow(`SELECT COALESCE(MAX(updated_at), '') FROM tasks`).Scan(&value); err != nil {
@@ -802,10 +758,6 @@ func (s *Service) LatestUpdate() (time.Time, error) {
 	return parsed, nil
 }
 
-// Delete removes a terminal task from normal Task surfaces while retaining its
-// durable row for Blackboard provenance and historical joins. The row's
-// updated_at advances with the deletion so the navigation revision changes and
-// a cached Sidebar projection cannot keep showing a deleted Task (#201).
 func (s *Service) Delete(id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := s.db.Exec(
@@ -1163,8 +1115,6 @@ func (s *Service) readTranscriptContextBefore(taskID string, seq int, window *Ev
 			return fmt.Errorf("read Task Transcript Continuation pin: %w", err)
 		}
 	}
-	// Legacy lifecycle Events can predate durable Continuation pins. Preserve
-	// their historical numbering with the old count only on that fallback path.
 	if err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM task_events
 		WHERE task_id=? AND seq<? AND kind='lifecycle'
@@ -1625,7 +1575,6 @@ func (s *Service) LatestContinuation(taskID string) (*TaskContinuation, error) {
 	return &found, nil
 }
 
-// Continuation returns one Runtime Continuation by immutable ID.
 func (s *Service) Continuation(continuationID string) (TaskContinuation, error) {
 	return scanContinuation(s.db.QueryRow(
 		`SELECT `+continuationSelectColumns+` FROM task_continuations WHERE id = ?`,
@@ -1764,8 +1713,6 @@ func (s *Service) notifyTerminalContinuation(found TaskContinuation, reason stri
 	return found, nil
 }
 
-// UpdateContinuationRuntimeMetadata stores best-effort runtime ownership data
-// discovered for a continuation, such as container and native session ids.
 func (s *Service) UpdateContinuationRuntimeMetadata(continuationID, containerID, nativeSessionID, nativeSessionPath string) (TaskContinuation, error) {
 	found, err := scanContinuation(s.db.QueryRow(
 		`SELECT `+continuationSelectColumns+`

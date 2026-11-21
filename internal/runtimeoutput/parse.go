@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-// ParseLine normalizes one runtime stdout/stderr line into turns. The bool is
-// true when the line is treated as plain-text fallback rather than structured JSON.
 func ParseLine(text string, createdAt time.Time, opts ParseOptions) ([]Turn, bool) {
 	return ParseLineWithMeta(text, RecordMeta{}, createdAt, opts)
 }
@@ -33,7 +31,6 @@ func ParseLineWithMeta(text string, meta RecordMeta, createdAt time.Time, opts P
 	return turns, false
 }
 
-// ParseRecord projects one provider JSON object into normalized turns.
 func ParseRecord(record map[string]any, opts ParseOptions, createdAt time.Time) []Turn {
 	return ParseRecordWithMeta(record, RecordMeta{}, opts, createdAt)
 }

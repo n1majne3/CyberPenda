@@ -11,12 +11,6 @@ import (
 	"pentest/internal/store"
 )
 
-// Datastore regression for the bounded Project Navigation Projection (#201).
-// An HTTP response-shape test cannot prove that historical Task rows were not
-// scanned, so these tests run the exact query the navigation projection uses
-// and require the query plan to be served by the navigation index rather than
-// a full history scan.
-
 func openNavigationStore(t *testing.T) (*store.DB, *Service) {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "pentest.db"))
@@ -143,7 +137,6 @@ func TestListRecentPerProjectReturnsBoundedRows(t *testing.T) {
 	if got := len(recent[deep.ID]); got != 5 {
 		t.Fatalf("deep recent tasks = %d, want bounded at 5", got)
 	}
-	// Newest first, newest of the deep history is the last seeded row.
 	if got := recent[deep.ID][0].ID; got != fmt.Sprintf("task-%s-%08d", deep.ID, 4999) {
 		t.Fatalf("most recent deep task = %q, want the last seeded row", got)
 	}

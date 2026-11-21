@@ -1,5 +1,3 @@
-// Package workinggraph prepares the protected filesystem layout used by FGS.
-// Legacy Intent publication, compilation, and settlement are retired.
 package workinggraph
 
 import (

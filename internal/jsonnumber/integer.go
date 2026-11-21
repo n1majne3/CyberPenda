@@ -1,4 +1,3 @@
-// Package jsonnumber provides exact JSON number conversion helpers.
 package jsonnumber
 
 import (

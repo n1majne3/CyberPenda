@@ -20,9 +20,6 @@ import (
 	"pentest/internal/testsupport/fakeprovider"
 )
 
-// #150 primary seam: daemon Task HTTP exposes Runtime Activity from current
-// process/session health, with lifecycle side effects and no activity audits.
-
 type activitySessionFactory struct {
 	mu       sync.Mutex
 	session  runtime.ProviderSession
@@ -291,7 +288,6 @@ func TestRuntimeActivityHostCodexHealthTransitions(t *testing.T) {
 }
 
 func TestRuntimeActivityHostClaudeHealthTransitions(t *testing.T) {
-	// #151: Host Claude uses the same truthful Runtime Activity contract as Host Codex.
 	testRuntimeActivityHostHealthTransitions(t, runtimeprofile.ProviderClaudeCode)
 }
 
@@ -333,7 +329,6 @@ func testRuntimeActivityHostHealthTransitions(t *testing.T, provider runtimeprof
 		t.Fatalf("host turn activity = %q", body.RuntimeActivity.TurnActivity)
 	}
 
-	// Unexpected exit: terminal done signal + offline session health.
 	session.MarkOffline()
 	close(closed)
 
@@ -460,7 +455,6 @@ func TestRuntimeActivityExplicitStopIsNotUnexpectedOffline(t *testing.T) {
 	// Operator Stop closes the session explicitly; must not append runtime_offline failure.
 	stopReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/stop", nil)
 	stopResp := httptest.NewRecorder()
-	// Close the adapter done channel as production Close would via bridge.Closed.
 	go func() {
 		time.Sleep(20 * time.Millisecond)
 		close(closed)
@@ -575,10 +569,8 @@ func TestRuntimeActivityOrphanCleanupBeforeReplacementLaunch(t *testing.T) {
 	if cont, err := server.tasks.ActiveContinuation(created.ID); err == nil && cont != nil {
 		_, _ = server.tasks.UpdateContinuationStatus(cont.ID, task.StatusStopped)
 	}
-	// Leave session bound and harness stopped to force orphan cleanup path.
 	server.harness.StopAndWait(created.ID, 2*time.Second)
 
-	// Replacement launch via resume.
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+created.ProjectID+"/tasks/"+created.ID+"/resume", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()

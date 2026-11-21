@@ -29,8 +29,6 @@ import (
 
 const disabledBlackboardStateFileReminder = "You may use a state file to keep a lightweight work trace."
 
-// #250 primary acceptance seam: public Task and Session HTTP owner surfaces,
-// projected launch files, and a deterministic fake ProviderSession boundary.
 func TestDisabledBlackboardModeInitialOwnerLaunchesOmitBlackboardAuthority(t *testing.T) {
 	t.Run("Project Task", func(t *testing.T) {
 		server, projectID, profileID, factory := newDisabledBlackboardHTTPFixture(t)
@@ -179,8 +177,6 @@ func TestBlackboardModeHTTPDefaultsAndValidationApplyToBothOwnerTypes(t *testing
 	}
 }
 
-// #251 primary acceptance seam: a stopped Disabled Task resumes through the
-// public HTTP API with a replacement Runtime that keeps Blackboard omitted.
 func TestDisabledTaskHTTPResumePreservesOmittedBlackboardProjection(t *testing.T) {
 	server, projectID, profileID, factory := newDisabledBlackboardHTTPFixture(t)
 	create := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", bytes.NewBufferString(`{
@@ -399,7 +395,6 @@ func TestDisabledSessionHTTPSteerCreatesOrdinaryContinuationWithoutBlackboard(t 
 		t.Fatal(err)
 	}
 
-	// The accepted create response precedes durable Runtime startup.
 	initial := waitForDisabledSessionPublicContinuation(t, server, created.ID, 1)
 	assertDisabledSessionPublicContinuation(t, initial, 1, session.RuntimeStatusRunning)
 

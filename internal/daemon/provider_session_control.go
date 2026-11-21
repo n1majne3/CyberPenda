@@ -151,9 +151,6 @@ func (server *Server) persistSessionProviderSessionEvent(sessionID string, kind 
 	_, _ = server.sessions.AppendProviderEvent(sessionID, mappedKind, filtered)
 }
 
-// sessionProviderEventPayload copies the fixed correlation allowlist into the
-// Session event. LLM output text is carried byte-for-byte, without redaction
-// (issue #288).
 func sessionProviderEventPayload(kind task.EventKind, payload task.EventPayload, continuationID string) (session.EventKind, session.EventPayload) {
 	filtered := session.EventPayload{}
 	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "provider_item_id", "mode", "outcome", "permission_request_id", "permission_decision", "error_code", "phase"} {
@@ -202,11 +199,6 @@ func (server *Server) persistSessionProviderEventForContinuation(sessionID, cont
 	_, _ = server.sessions.AppendEvent(sessionID, mappedKind, filtered)
 }
 
-// persistProviderSessionEvent is the only daemon entry point for unsolicited
-// provider notifications. It copies a fixed correlation allowlist and chooses
-// the current Continuation at receipt time, so raw protocol payload cannot be
-// persisted or leak into the Task Conversation. LLM output text is persisted
-// byte-for-byte, without redaction (issue #288).
 func (server *Server) persistProviderSessionEvent(taskID string, kind task.EventKind, payload task.EventPayload) {
 	filtered := task.EventPayload{}
 	for _, key := range []string{"provider", "provider_event", "request_id", "session_id", "provider_turn_id", "provider_item_id", "mode", "outcome", "permission_request_id", "phase"} {

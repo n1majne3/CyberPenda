@@ -22,7 +22,6 @@ import { Button, buttonVariants, Card, CardDescription, CardTitle, Chip } from "
 import { formatRelativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-/** Lifecycle states whose Task is still open work. Mirrors TasksPage's ACTIVE set plus pending. */
 const OPEN_TASK_STATUSES: Record<string, true> = { pending: true, running: true, paused: true };
 
 export function ProjectDashboardPage() {
@@ -499,7 +498,6 @@ function activityStatusText(task: Task): string {
       return "Stopped";
   }
 }
-
 
 function countLabel(label: string, count: number) {
   if (label === "Evidence") return count === 1 ? "evidence item" : "evidence items";

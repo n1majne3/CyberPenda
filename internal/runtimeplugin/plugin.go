@@ -1,4 +1,3 @@
-// Package runtimeplugin owns declarative runtime provider manifests.
 package runtimeplugin
 
 import (

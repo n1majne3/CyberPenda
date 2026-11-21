@@ -431,7 +431,6 @@ func TestProductionProviderSessionFactoryOpensHostCodexAppServer(t *testing.T) {
 		t.Fatalf("structured model/goal leaked into app-server args: %q", joined)
 	}
 
-	// Same Task reuses the bound session without starting another process.
 	rebound, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-task-1", "project-test", ""), Continuation: owner.Continuation{ID: "host-continuation-2", OwnerID: "host-task-1"},
 		Provider: runtimeprofile.ProviderCodex, Runner: task.RunnerHost, LegacyAdapter: legacy,
@@ -636,7 +635,6 @@ func TestProductionProviderSessionFactoryOpensHostClaudeSDKBridge(t *testing.T) 
 	}
 
 	spec := starter.lastSpec()
-	// Explicit packaged bridge command — not the Claude CLI and not repo Node sources.
 	if spec.Program != "/opt/pentest/pentest-claude-sdk-bridge" {
 		t.Fatalf("host Claude program = %q, want packaged SDK bridge", spec.Program)
 	}
@@ -668,7 +666,6 @@ func TestProductionProviderSessionFactoryOpensHostClaudeSDKBridge(t *testing.T) 
 		t.Fatalf("projected env not preserved: %#v", spec.Env)
 	}
 
-	// Same Task reuses one Query process.
 	rebound, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-claude-1", "project-test", ""), Continuation: owner.Continuation{ID: "c2", OwnerID: "host-claude-1"},
 		Provider: runtimeprofile.ProviderClaudeCode, Runner: task.RunnerHost, LegacyAdapter: legacy,
@@ -898,7 +895,6 @@ func TestProductionProviderSessionFactoryOpensHostPiRPCViaWireBridge(t *testing.
 		t.Fatalf("launch-ready credentials not preserved: %#v", spec.Env)
 	}
 
-	// Same Task reuses the bound RPC session without starting another process.
 	rebound, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("host-pi-task", "project-test", ""), Continuation: owner.Continuation{ID: "host-pi-cont-2", OwnerID: "host-pi-task"},
 		Provider: runtimeprofile.ProviderPi, Runner: task.RunnerHost, LegacyAdapter: legacy,
@@ -1018,7 +1014,6 @@ func TestProductionProviderSessionFactoryHostPiCloseCleansProcessGroupAndArtifac
 }
 
 func TestProductionProviderSessionFactoryHostPiFailsWhenBridgeUnavailable(t *testing.T) {
-	// No HostStarter: production path validates the explicit bridge executable.
 	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{
 		HostBridgeCommand: filepath.Join(t.TempDir(), "missing-bridge"),
 	})
@@ -1045,7 +1040,7 @@ func TestProductionProviderSessionFactoryHostPiFailsWhenProjectedEnvMissing(t *t
 	})
 	legacy := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
 		Name: "pi", Program: "pi", Args: []string{"goal"}, Workdir: "/work",
-		Env: map[string]string{}, // missing projected Pi dirs
+		Env: map[string]string{},
 	})
 	_, err := factory.Open(context.Background(), ProviderSessionLaunchRequest{
 		Owner: owner.NewTaskContract("t", "project-test", ""), Continuation: owner.Continuation{ID: "c", OwnerID: "t"},
@@ -1057,8 +1052,6 @@ func TestProductionProviderSessionFactoryHostPiFailsWhenProjectedEnvMissing(t *t
 }
 
 func TestHostCodexReservedConfigOverridesStayRejectedByValidateCustomArgs(t *testing.T) {
-	// Assembly must not reimplement #148. Reserved model/provider/effort config
-	// forms remain fail-closed at the existing validation seam.
 	reserved := [][]string{
 		{"-c", "model=gpt-5"},
 		{"-c", "model_provider=custom"},
@@ -1075,15 +1068,11 @@ func TestHostCodexReservedConfigOverridesStayRejectedByValidateCustomArgs(t *tes
 			t.Fatalf("ValidateCustomArgs(%v) = %T %v, want CustomArgConflictError", args, err, err)
 		}
 	}
-	// Non-conflicting -c is accepted by the same seam.
 	if err := runtimeprofile.ValidateCustomArgs(runtimeprofile.ProviderCodex, []string{"-c", "foo=bar", "--json"}); err != nil {
 		t.Fatalf("ValidateCustomArgs must allow non-conflicting -c foo=bar: %v", err)
 	}
 }
 
-// TestProductionProviderSessionFactoryUsesLegacyAdapterContainerCLI proves the
-// sandbox bridge invokes the launch-selected container CLI (podman) rather than
-// the daemon default "docker" on the factory transport.
 func TestProductionProviderSessionFactoryUsesLegacyAdapterContainerCLI(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "cli.log")

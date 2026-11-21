@@ -15,10 +15,7 @@ import {
   Select,
 } from "./ui";
 
-// Geist primitive contracts. These assert the visual classes that distinguish
-// the shared foundation (neutral surfaces, tight radii, restrained shadows,
 // and Vercel-style focus rings) so a future refactor cannot silently regress
-// them.
 
 describe("Card", () => {
   it("uses a neutral bordered surface with restrained shadow", () => {

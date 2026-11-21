@@ -35,7 +35,6 @@ func TestTaskFGSSettlementPreservesLegacyOutboxAtLifecycleBoundary(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Model a retained pre-upgrade snapshot without changing new-input rules.
 	if _, err := server.db.Exec(`UPDATE tasks SET run_controls_json='{"blackboard_mode":"interactive"}' WHERE id=?`, created.ID); err != nil {
 		t.Fatal(err)
 	}

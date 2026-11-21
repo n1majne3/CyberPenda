@@ -15,11 +15,8 @@ import (
 	"pentest/internal/task"
 )
 
-// Attachment upload limits for the launch request. Files spill to temporary
-// storage during multipart parsing, so these caps bound both memory pressure
-// and the amount of operator-supplied data written into a task workdir.
 const (
-	maxAttachmentFileBytes = 100 << 20 // 100 MiB per file
+	maxAttachmentFileBytes = 100 << 20
 	maxAttachmentCount     = 25
 	// maxTotalUploadBytes bounds the whole multipart request so a client cannot
 	// stream unbounded data before per-file checks run.
@@ -139,7 +136,6 @@ func sanitizeAttachmentFilename(name string) string {
 	if trimmed == "" {
 		return ""
 	}
-	// Clients may send Windows or POSIX separators; collapse both to a base.
 	trimmed = strings.ReplaceAll(trimmed, "\\", "/")
 	base := filepath.Base(path.Base(trimmed))
 	base = strings.TrimSpace(base)

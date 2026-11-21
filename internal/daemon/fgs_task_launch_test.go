@@ -71,7 +71,6 @@ func TestFGSTaskBoundLaunchKeepsInstructionsAndSchema(t *testing.T) {
 			if !strings.Contains(strings.Join(args, "\n"), "PENTEST_BLACKBOARD_PROTOCOL=fgs") {
 				t.Fatal("missing FGS process protocol")
 			}
-			// Repeat the projection used on subsequent launch preparation.
 			if _, err := server.buildTaskLaunchPlan(found, "Continue", "", "", "high"); err != nil {
 				t.Fatalf("repeated projection: %v", err)
 			}

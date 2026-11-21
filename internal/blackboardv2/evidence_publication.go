@@ -32,9 +32,6 @@ func (s *Service) verifyJournaledEvidenceTemp(tempPath, digest string, size int6
 	hash := sha256.New()
 	actualSize, err := io.Copy(hash, file)
 	if evidenceLockViolation(err) {
-		// Another publisher is actively journaling this inode; the read is
-		// temporarily blocked, not an integrity failure. Linux flock never
-		// blocks other handles' I/O, so only Windows reports this.
 		return false, &Error{Code: "evidence_publication_in_progress", Message: "journaled Evidence temp is blocked by an active publisher", Path: "source_path", Retryable: true}
 	}
 	if err != nil {
@@ -344,11 +341,6 @@ func (s *Service) ensureEvidencePublished(ctx context.Context, projectID, contin
 	if err := syncEvidenceDirectory(stagingRoot); err != nil {
 		return err
 	}
-	// Release the exclusive publisher lock now that the temp has been renamed
-	// to its managed path. The byte-range lock follows the file across the
-	// rename on Windows, so the fresh verification handle below would collide
-	// with the still-locked range; the DB publisher claim guards the rest of
-	// the publication checkpoint.
 	unlockAndCloseEvidencePublisher(publisher.file)
 	publisher.file = nil
 	if err := s.failEvidence(EvidenceFailureBeforePublishStore); err != nil {

@@ -45,7 +45,6 @@ export function resolveConversationAction(
 
   if (owner.kind === "session") {
     // Sessions cannot switch a live provider session; the restart path is
-    // stop → message on the fresh continuation.
     if (switchingProvider) {
       return {
         run: async (message, selection, adapter, attachments) => {
@@ -75,7 +74,6 @@ export function resolveConversationAction(
     };
   }
 
-  // Task branch.
   if (switchingProvider) {
     if (!state.queueSteerAvailable) {
       throw new Error("Model provider switching is unavailable for this Task");
@@ -124,7 +122,6 @@ export function resolveConversationAction(
   throw new Error("Task conversation is unavailable for this runtime state");
 }
 
-/** Reports which composer send mode the runtime controls admit. */
 export function resolveConversationSendMode(input: {
   running: boolean;
   nativeSteerAvailable: boolean;
@@ -209,8 +206,6 @@ export function canPiNativeCrossProvider(input: {
   return projected.includes(target);
 }
 
-/** steerPendingState reports whether an accepted native steer is still waiting
- * for the Runtime to apply or reject it (#194). */
 export function steerPendingState(state: string | undefined): boolean {
   return (
     state === "pending" ||

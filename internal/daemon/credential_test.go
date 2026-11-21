@@ -145,7 +145,6 @@ func TestProjectNestedCredentialBindingOverrideIsScoped(t *testing.T) {
 		"source": {"kind": "literal", "value": "project-secret", "destination_env": "CODEX_API_KEY"}
 	}`)
 
-	// Project-scoped list shows the override.
 	listReq := httptest.NewRequest(http.MethodGet, "/api/projects/"+projectID+"/credential-bindings", nil)
 	listResp := httptest.NewRecorder()
 	server.ServeHTTP(listResp, listReq)
@@ -246,7 +245,6 @@ func TestDeleteCredentialBindingRemovesIt(t *testing.T) {
 		t.Fatalf("expected delete status 204, got %d with body %s", delResp.Code, delResp.Body.String())
 	}
 
-	// Listing must no longer include the deleted binding.
 	listReq := httptest.NewRequest(http.MethodGet, "/api/credential-bindings", nil)
 	listResp := httptest.NewRecorder()
 	server.ServeHTTP(listResp, listReq)

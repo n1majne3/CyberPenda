@@ -1,4 +1,3 @@
-// Package keymutex serializes operations for one key without blocking other keys.
 package keymutex
 
 import "sync"

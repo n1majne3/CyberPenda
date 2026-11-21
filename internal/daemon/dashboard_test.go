@@ -62,7 +62,6 @@ func TestDashboardReturnsScopeStatusAndCounts(t *testing.T) {
 	if body.Name != "Acme" {
 		t.Fatalf("expected name Acme, got %q", body.Name)
 	}
-	// Scope status reflects the configured assets.
 	if body.Scope.Domains != 2 {
 		t.Fatalf("expected 2 domains, got %d", body.Scope.Domains)
 	}
@@ -75,7 +74,6 @@ func TestDashboardReturnsScopeStatusAndCounts(t *testing.T) {
 	if !body.Scope.HasNotes {
 		t.Fatal("expected has_notes true")
 	}
-	// A project with named assets is launch-ready.
 	if !body.Scope.Ready {
 		t.Fatal("expected scope ready (has at least one named asset)")
 	}

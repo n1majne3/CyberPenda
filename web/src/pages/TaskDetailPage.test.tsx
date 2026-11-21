@@ -590,8 +590,6 @@ describe("TaskDetailPage", () => {
     expect(childText).not.toBeVisible();
     await userEvent.click(screen.getByText("Subagent general-purpose · completed"));
     expect(screen.getByText("hugegraph exploited")).toBeVisible();
-    // The child's tool call renders with the same collapsed tool-row treatment
-    // as the main thread: one collapsed row pairing the call with its result,
     // with only the summary preview visible until expanded.
     const toolRow = within(row).getByTestId("transcript-tool-row");
     expect(toolRow).not.toHaveAttribute("open");
@@ -666,8 +664,6 @@ describe("TaskDetailPage", () => {
     renderPage();
 
     const rows = await screen.findAllByTestId("transcript-row");
-    // The call/result pair is one compressed row. New user turns get breathing
-    // room; every row inside the Runtime turn stays tight.
     expect(rows).toHaveLength(5);
     expect(rows[0]).not.toHaveClass("mt-1");
     expect(rows[0]).not.toHaveClass("mt-4");
@@ -784,8 +780,6 @@ describe("TaskDetailPage", () => {
 
       await user.click(screen.getByRole("button", { name: /scroll to latest/i }));
 
-      // The click settles synchronously on the pre-render layout; flipping
-      // auto-follow re-renders with the end-anchored window, and the settle
       // effect must run again so the view lands on the real bottom.
       await waitFor(() => {
         expect(scrollTo.mock.calls.length).toBeGreaterThan(callsBeforeClick + 1);
@@ -1144,13 +1138,11 @@ describe("TaskDetailPage", () => {
       model: "mimo-v2-pro",
       reasoning_effort: "xhigh",
     });
-    // Composer retains the submitted selection for the next turn.
     expect(screen.getByRole("combobox", { name: "Continuation model provider" })).toHaveValue("mimo");
     expect(screen.getByRole("combobox", { name: "Continuation model" })).toHaveValue("mimo-v2-pro");
     expect(screen.getByRole("combobox", { name: "Continuation reasoning effort" })).toHaveValue("xhigh");
   });
 
-  // #146: Claude Code shares the same Task Conversation turn-selection contract.
   it("keeps Claude same-provider model and effort changes on the native steer route", async () => {
     const { fetchMock } = stubTaskDetailApi({
       status: "running",
@@ -1344,7 +1336,6 @@ describe("TaskDetailPage", () => {
 
   it("uses native steer for Pi when switching to a projected model provider", async () => {
     // ADR 0015: Pi already projected launch-ready providers; cross-provider
-    // turns stay on /steer without stop/resume when the target is in the set.
     const { fetchMock } = stubTaskDetailApi({
       status: "running",
       runtime_controls: {
@@ -1396,7 +1387,6 @@ describe("TaskDetailPage", () => {
   });
 
   it("restarts Pi provider switch when projected_model_provider_ids is missing (legacy)", async () => {
-    // Fail closed: legacy tasks without projected set metadata must not send
     // native cross-provider and surface 409 — use queue/stop/resume instead.
     const { fetchMock } = stubTaskDetailApi({
       status: "running",
@@ -1489,7 +1479,6 @@ describe("TaskDetailPage", () => {
 
   it("restarts when introducing a Model Provider from an empty preceding selection", async () => {
     // Empty preceding provider + any selected provider must use Config Projection
-    // restart, not native steer that would 409 after the fact.
     const { fetchMock } = stubTaskDetailApi({
       status: "running",
       runtime_controls: {
@@ -1543,7 +1532,6 @@ describe("TaskDetailPage", () => {
     expect(confirm).not.toHaveBeenCalled();
     const stopDialog = screen.getByRole("alertdialog", { name: /Stop task/i });
     expect(stopDialog).toBeInTheDocument();
-    // Long Task Goals belong in the body, not the short dialog title.
     expect(within(stopDialog).getByText(/Inspect task view/i)).toBeInTheDocument();
     expect(
       fetchMock.mock.calls.some(([input, init]) =>
@@ -1743,7 +1731,6 @@ describe("TaskDetailPage", () => {
         "/api/projects/project-1/tasks/task-1/steer/queue",
         "/api/projects/project-1/tasks/task-1/resume",
       ]);
-      // Exactly one queue — no second message invent on resume.
       expect(postPaths.filter((path) => path.endsWith("/steer/queue"))).toHaveLength(1);
     },
   );
@@ -1816,7 +1803,6 @@ describe("TaskDetailPage", () => {
       return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
 
-    // StrictMode double-mounts: first load is aborted when the second starts.
     renderPage();
     await waitFor(() => expect(parked.length).toBeGreaterThanOrEqual(1));
 
@@ -1839,9 +1825,6 @@ describe("TaskDetailPage", () => {
   });
 
   it("suspends polling while the tab is hidden and resumes when it returns", async () => {
-    // Pure fake timers (no shouldAdvanceTime): the running-task poll is the
-    // feature under test, and real-timer leakage via waitFor could fire it
-    // nondeterministically. Flush the initial multi-endpoint load via microtasks.
     vi.useFakeTimers();
     try {
       const { fetchMock } = stubTaskDetailApi({
@@ -1862,7 +1845,6 @@ describe("TaskDetailPage", () => {
       });
 
       renderPage();
-      // The task detail page fires several loads on mount; flush them with
       // microtask ticks until the runtime-activity badge renders.
       await act(async () => {
         await Promise.resolve();
@@ -1871,7 +1853,6 @@ describe("TaskDetailPage", () => {
       expect(screen.getByTestId("runtime-activity")).toBeInTheDocument();
       const callsAfterMount = fetchMock.mock.calls.length;
 
-      // While visible + running, polls land on the 1s cadence.
       await act(async () => {
         vi.advanceTimersByTimeAsync(1500);
       });
@@ -1885,7 +1866,6 @@ describe("TaskDetailPage", () => {
       });
       expect(fetchMock.mock.calls.length).toBe(callsAfterVisiblePoll);
 
-      // Visible again: polling resumes within the 1s cadence.
       act(() => setDocumentVisibility("visible"));
       await act(async () => {
         vi.advanceTimersByTimeAsync(1500);
@@ -1950,7 +1930,6 @@ describe("TaskDetailPage", () => {
       expect(pollURLs.some((url) => url.includes("/timeline?after=1"))).toBe(true);
       expect(pollURLs.some((url) => url.includes("/transcript?after=1"))).toBe(true);
 
-      // New events arrive; the daemon answers the next poll from cursor 1.
       timelineBody.items = [
         { seq: 1, type: "text", content: "Timeline opened first", created_at: "2026-01-01T00:00:00Z" },
         { seq: 2, type: "text", content: "Timeline item two", created_at: "2026-01-01T00:00:01Z" },
@@ -1985,7 +1964,6 @@ describe("TaskDetailPage", () => {
       expect(deltaURLs.some((url) => url.includes("/timeline?after=2"))).toBe(true);
       expect(deltaURLs.some((url) => url.includes("/transcript?after=2"))).toBe(true);
       expect(screen.getByText("Fresh transcript row")).toBeInTheDocument();
-      // The merge kernel deduplicates by stable identity: no repeated rows.
       expect(screen.getAllByText("Conversation should be hidden by default")).toHaveLength(1);
     } finally {
       vi.useRealTimers();
@@ -2026,7 +2004,6 @@ describe("TaskDetailPage", () => {
         vi.advanceTimersByTimeAsync(1500);
       });
 
-      // Idle daemon: empty delta, cursor unchanged.
       timelineBody.items = [];
       transcriptBody.entries = [];
 
@@ -2724,7 +2701,6 @@ describe("TaskDetailPage Runtime Owner History Window (#202)", () => {
     expect(screen.queryByTestId("load-older-timeline")).not.toBeInTheDocument();
   });
 });
-
 
 describe("Challenge Workflow entry", () => {
   afterEach(() => {

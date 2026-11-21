@@ -29,7 +29,6 @@ type recordedHostedCatalogLimits struct {
 	MaxOutputTokens int `json:"max_output_tokens"`
 }
 
-// recordedHostedProvider captures one POST /api/model-providers body.
 type recordedHostedProvider struct {
 	Name      string                   `json:"name"`
 	Endpoints []recordedHostedEndpoint `json:"endpoints"`
@@ -44,7 +43,7 @@ type hostedBootstrapRecorder struct {
 	bindingRequests  []map[string]any
 	taskCreates      int
 	requestCount     int
-	failProviderAt   int // 1-based ordinal of provider creation to fail
+	failProviderAt   int
 	failBindings     bool
 }
 
@@ -119,7 +118,7 @@ func TestHTTPAppStartProjectsAdditionalModelGroups(t *testing.T) {
 		name        string
 		env         map[string]string
 		wantGroups  []recordedHostedProvider
-		wantBinding map[string]string // credential_ref -> literal value
+		wantBinding map[string]string
 	}{
 		{
 			name: "inherited slot joins the parent provider catalog",
@@ -248,7 +247,6 @@ func TestHTTPAppStartProjectsAdditionalModelGroups(t *testing.T) {
 					t.Fatalf("provider %d default = %q, want %q", index, got.Catalog.DefaultModel, want.Catalog.DefaultModel)
 				}
 			}
-			// The parent stays selected: profile pins provider 1 and the parent model.
 			fields, _ := recorder.profileRequest["fields"].(map[string]any)
 			if fields["model_provider_id"] != "hosted-provider-1" || fields["model_override"] != "parent-model" ||
 				fields["model_provider_protocol"] != "openai_chat_completions" {

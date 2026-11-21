@@ -21,10 +21,6 @@ import (
 	"pentest/internal/testsupport/fakeprovider"
 )
 
-// #151 primary seam: Host Claude binds one Task-scoped Query session across
-// turns, applies Runtime Turn Selection without replacing Query when the
-// provider is unchanged, and cleans up process groups on Stop.
-
 type hostClaudeSessionFactory struct {
 	mu       sync.Mutex
 	requests []ProviderSessionLaunchRequest
@@ -101,8 +97,6 @@ func newHostClaudePersistentFixture(t *testing.T, factory ProviderSessionFactory
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Legacy launch plan still needs a binary path on disk for projection assembly
-	// even when the provider-session factory supplies the persistent adapter.
 	if err := writeExecutable(filepath.Join(root, "claude"), "#!/bin/sh\necho ok\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +152,6 @@ func TestHostClaudeLaunchBindsPersistentQueryAcrossTurns(t *testing.T) {
 		t.Fatalf("factory request identity = %#v", req0)
 	}
 
-	// Same-provider second turn reuses the Query session without factory re-open.
 	body := `{
 		"request_id":"host-claude-turn-2",
 		"message":"continue deeper",
@@ -193,7 +186,6 @@ func TestHostClaudeLaunchBindsPersistentQueryAcrossTurns(t *testing.T) {
 		return false
 	})
 
-	// Stop closes the bound session and leaves no duplicate ownership.
 	var stopStatus int
 	var stopBody string
 	deadlineStop := time.Now().Add(2 * time.Second)
@@ -361,8 +353,6 @@ func TestHostClaudeMissingNativeMetadataFallsBackToFreshContinuation(t *testing.
 }
 
 func TestHostClaudeBridgeSetupFailureDoesNotOneShotFallback(t *testing.T) {
-	// Once the persistent path is selected, a missing packaged bridge must fail
-	// the launch with a clear factory error and must not run the legacy CLI adapter.
 	factory := &hostClaudeSessionFactory{failOpen: errString("Claude SDK bridge unavailable at /opt/missing-bridge: executable file not found")}
 	server, created, _, _ := newHostClaudePersistentFixture(t, factory)
 

@@ -42,10 +42,6 @@ func TestOpenBootstrapsSchemaIdempotently(t *testing.T) {
 	}
 }
 
-// TestOpenRestrictsDatabaseFilePermissions pins issue #160: the database stores
-// plaintext "literal" credential secrets in credential_bindings.source_json, so
-// the main file and its WAL/SHM sidecars must be owner-only (0600) rather than
-// the umask default (typically 0644) that other local OS users could read.
 func TestOpenRestrictsDatabaseFilePermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX owner-only permission bits (0600) do not exist on Windows")
@@ -63,7 +59,7 @@ func TestOpenRestrictsDatabaseFilePermissions(t *testing.T) {
 		info, err := os.Stat(candidate)
 		if err != nil {
 			if os.IsNotExist(err) && suffix != "" {
-				continue // sidecar not present; nothing to assert
+				continue
 			}
 			t.Fatalf("stat %s: %v", candidate, err)
 		}
@@ -203,7 +199,6 @@ func TestTransactionConnectionReportsRequiredPragmas(t *testing.T) {
 	if err := tx.QueryRow(`PRAGMA synchronous`).Scan(&synchronous); err != nil {
 		t.Fatalf("synchronous: %v", err)
 	}
-	// FULL == 2
 	if synchronous != 2 {
 		t.Fatalf("synchronous: got %d want 2 (FULL)", synchronous)
 	}
@@ -245,7 +240,6 @@ func TestTransactionConnectionReportsRequiredPragmas(t *testing.T) {
 			t.Fatal("expected second IMMEDIATE begin to block/fail while first transaction holds write lock")
 		}
 	case <-time.After(2 * time.Second):
-		// Blocked past timeout is also proof of immediate locking.
 	}
 }
 

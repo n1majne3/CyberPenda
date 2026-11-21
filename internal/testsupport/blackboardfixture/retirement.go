@@ -6,7 +6,6 @@ import (
 	"pentest/internal/store"
 )
 
-// InstallLegacyWriteGuards prepares the frozen-table state produced by M05.
 func InstallLegacyWriteGuards(t testing.TB, db *store.DB) {
 	t.Helper()
 	for _, table := range []string{

@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// baselineSchemaVersion identifies the schema created by this binary.
 const baselineSchemaVersion = 1
 
 const baselineSchemaName = "baseline_blackboard_v2"

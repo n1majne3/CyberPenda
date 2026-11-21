@@ -29,7 +29,6 @@ export function ModelProviderMigrationPanel({ profileId, profileUpdatedAt, onMig
     let cancelled = false;
     void (async () => {
       // Clear the stale preview before refetching, but after the first await so
-      // the setState is not synchronous within the effect body.
       await Promise.resolve();
       if (cancelled) return;
       setPreview(null);

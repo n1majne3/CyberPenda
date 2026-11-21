@@ -21,7 +21,6 @@ func TestSemanticHealthIsDeterministicActionableAndNeverBlocksLaunch(t *testing.
 	fixture := newHealthFixture(t, project.KindPentest)
 	ctx := context.Background()
 
-	// Empty Project: healthy, complete, launchable, no audit noise.
 	empty, err := fixture.service.ProjectSemanticHealth(ctx, fixture.projectID)
 	if err != nil {
 		t.Fatalf("empty health: %v", err)
@@ -52,7 +51,6 @@ func TestSemanticHealthIsDeterministicActionableAndNeverBlocksLaunch(t *testing.
 		t.Fatalf("seed owned attempt: %v", err)
 	}
 
-	// Missing Evidence plus confirmed Finding that relies on it.
 	if err := os.WriteFile(filepath.Join(fixture.workdir, "proof.txt"), []byte("proof\n"), 0o600); err != nil {
 		t.Fatalf("write evidence source: %v", err)
 	}
@@ -105,7 +103,6 @@ func TestSemanticHealthIsDeterministicActionableAndNeverBlocksLaunch(t *testing.
 		t.Fatalf("confirm finding: %v", err)
 	}
 
-	// Invalid relationship semantics: open objective already satisfied; contradiction between confirmed conclusions.
 	if _, err := fixture.service.Apply(ctx, fixture.projectID, blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "seed-relation-anomalies",
 		Changes: []blackboardv2.Change{
@@ -173,9 +170,7 @@ func TestSemanticHealthIsDeterministicActionableAndNeverBlocksLaunch(t *testing.
 		"objective_satisfied_but_open",
 		"unresolved_contradiction",
 	})
-	// Valid redirects are not anomalies.
 	assertNoAnomalyCode(t, first, "redirect_integrity")
-	// Missing Evidence that evidences a confirmed Finding is critical.
 	missing := anomalyByCode(t, first, "missing_evidence")
 	if missing.Severity != "critical" || missing.SubjectKey != "evidence:missing" {
 		t.Fatalf("missing evidence anomaly = %#v", missing)
@@ -184,7 +179,6 @@ func TestSemanticHealthIsDeterministicActionableAndNeverBlocksLaunch(t *testing.
 		t.Fatalf("missing evidence related keys = %#v", missing.RelatedKeys)
 	}
 	if first.Status != "critical" && first.Status != "warning" {
-		// critical missing evidence should drive overall status to critical
 		if missing.Severity == "critical" && first.Status != "critical" {
 			t.Fatalf("status = %q with critical anomaly", first.Status)
 		}
@@ -193,7 +187,6 @@ func TestSemanticHealthIsDeterministicActionableAndNeverBlocksLaunch(t *testing.
 		t.Fatalf("status = %q, want critical from missing Evidence on confirmed Finding", first.Status)
 	}
 
-	// Deterministic after reopen.
 	firstBytes := mustHealthJSON(t, first)
 	if err := fixture.db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
@@ -214,7 +207,6 @@ func TestSemanticHealthIsDeterministicActionableAndNeverBlocksLaunch(t *testing.
 	if !bytes.Equal(firstBytes, secondBytes) {
 		t.Fatalf("health drifted after reopen\nfirst=%s\nsecond=%s", firstBytes, secondBytes)
 	}
-	// Repeated reads are byte-identical.
 	third, err := reopenedService.ProjectSemanticHealth(ctx, fixture.projectID)
 	if err != nil {
 		t.Fatalf("third health: %v", err)
@@ -300,7 +292,6 @@ func TestSemanticHealthAttentionThresholdsOfferConsolidationWithoutBlocking(t *t
 					t.Fatalf("retired Reason Task proposals remain: %#v", health.Proposals)
 				}
 			}
-			// Exact Snapshot measurement parity.
 			projection, err := fixture.service.ProjectRuntimeSnapshot(context.Background(), fixture.projectID)
 			if err != nil {
 				t.Fatalf("projection: %v", err)
@@ -308,7 +299,6 @@ func TestSemanticHealthAttentionThresholdsOfferConsolidationWithoutBlocking(t *t
 			if health.Attention.Bytes != projection.ByteCount || health.Attention.EstimatedTokens != projection.EstimatedTokens || health.Attention.State != projection.AttentionState {
 				t.Fatalf("health attention diverged from Snapshot measurement: health=%#v projection bytes=%d tokens=%d state=%s", health.Attention, projection.ByteCount, projection.EstimatedTokens, projection.AttentionState)
 			}
-			// All records remain present (no truncation/filtering).
 			if len(projection.Snapshot.Knowledge.Facts) != test.factCount {
 				t.Fatalf("health path filtered Snapshot facts: got %d want %d", len(projection.Snapshot.Knowledge.Facts), test.factCount)
 			}
@@ -375,7 +365,6 @@ func TestSemanticHealthIsProjectIsolatedAndDetectsRedirectIntegrity(t *testing.T
 		t.Fatalf("beta status = %s, want healthy", betaHealth.Status)
 	}
 
-	// Broken redirect integrity within one Project (storage corruption that is still project-local).
 	if _, err := db.Exec(`INSERT INTO blackboard_v2_key_redirects(project_id,source_key,canonical_key,created_at) VALUES(?,?,?,?)`,
 		alpha.ID, "entity:broken-source", "entity:missing-canonical", "2026-07-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert broken redirect: %v", err)
@@ -388,7 +377,6 @@ func TestSemanticHealthIsProjectIsolatedAndDetectsRedirectIntegrity(t *testing.T
 	if redirect.Severity != "critical" || redirect.SubjectKey != "entity:broken-source" {
 		t.Fatalf("redirect integrity anomaly = %#v", redirect)
 	}
-	// Beta remains unaffected.
 	betaAfter, err := service.ProjectSemanticHealth(ctx, beta.ID)
 	if err != nil {
 		t.Fatalf("beta after broken alpha redirect: %v", err)
@@ -412,7 +400,6 @@ func TestSemanticHealthDetectsDanglingRelationships(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed entities: %v", err)
 	}
-	// Force a dangling relationship by deleting one endpoint without retiring the edge.
 	if _, err := fixture.db.Exec(`DELETE FROM blackboard_v2_records WHERE project_id=? AND key=?`, fixture.projectID, "entity:b"); err != nil {
 		t.Fatalf("delete endpoint: %v", err)
 	}
@@ -431,14 +418,12 @@ func TestSemanticHealthDetectsDanglingRelationships(t *testing.T) {
 	if !containsKey(anomaly.RelatedKeys, "entity:b") {
 		t.Fatalf("dangling related keys missing deleted endpoint: %#v", anomaly)
 	}
-	// Canonical Runtime Snapshot is unavailable; do not claim exact complete measurement.
 	if health.Attention.Complete {
 		t.Fatalf("attention claimed complete despite corrupted relationships: %#v", health.Attention)
 	}
 	if !health.Attention.Launchable {
 		t.Fatalf("health blocked launch under corruption: %#v", health.Attention)
 	}
-	// Diagnostic attention still measures all persisted record/relationship material.
 	if health.Attention.Bytes <= 0 || health.Attention.EstimatedTokens <= 0 {
 		t.Fatalf("diagnostic attention measurement empty: %#v", health.Attention)
 	}
@@ -508,7 +493,6 @@ func TestSemanticHealthToleratesInvalidGrammarAndCyclesWithout422(t *testing.T) 
 			}
 			// Canonical Snapshot rejects the corruption — health must not.
 			if _, err := fixture.service.ProjectRuntimeSnapshot(ctx, fixture.projectID); err == nil {
-				// Before injecting corruption Snapshot may work; inject next.
 			}
 			testCase.persist(t, fixture)
 			if _, err := fixture.service.ProjectRuntimeSnapshot(ctx, fixture.projectID); err == nil {
@@ -575,7 +559,6 @@ func TestSemanticHealthDetectsEvidencePayloadIntegrityFailureWhileAvailable(t *t
 	}); err != nil {
 		t.Fatalf("confirm finding: %v", err)
 	}
-	// Status remains available; destroy the managed payload bytes.
 	managed := retainedEvidenceFiles(t, fixture.runtimeRoot)
 	if len(managed) == 0 {
 		t.Fatal("expected managed Evidence payload files")
@@ -617,7 +600,6 @@ func TestSemanticHealthDetectsRedirectSourceStillCurrent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	// Corrupt redirect: source key still has a current record (merge always removes source).
 	if _, err := fixture.db.Exec(`INSERT INTO blackboard_v2_key_redirects(project_id,source_key,canonical_key,created_at) VALUES(?,?,?,?)`,
 		fixture.projectID, "entity:still-here", "entity:canonical-ok", "2026-07-18T00:00:00Z"); err != nil {
 		t.Fatalf("insert corrupt redirect: %v", err)
@@ -668,7 +650,6 @@ func TestSemanticHealthReportsConsolidationWithoutSchedulingWork(t *testing.T) {
 	}
 	assertContractJSON(t, mustHarness(t), "semanticHealth", health)
 
-	// Empty health has no proposals.
 	emptyFixture := newHealthFixture(t, project.KindPentest)
 	empty, err := emptyFixture.service.ProjectSemanticHealth(context.Background(), emptyFixture.projectID)
 	if err != nil {

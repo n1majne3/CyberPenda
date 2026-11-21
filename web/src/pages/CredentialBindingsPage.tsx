@@ -72,7 +72,6 @@ export function CredentialBindingsPage() {
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    // Initial load on mount. load() is reused by event handlers.
     load();
   }, []);
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -119,8 +118,6 @@ export function CredentialBindingsPage() {
     try {
       await apiPut("/api/credential-bindings", {
         credential_ref: editing.credential_ref,
-        // Preserve the disabled state: an edit changes the source, not whether
-        // the binding resolves.
         disabled: editing.disabled ?? false,
         source: { kind: form.kind, value, destination_env: destinationEnv },
       });
@@ -135,8 +132,6 @@ export function CredentialBindingsPage() {
   }
 
   async function create() {
-    // destination_env is the runtime env var name. For env sources it defaults
-    // to the host variable name (value); for literal/file/command it is
     // required, otherwise projection silently fails at launch.
     const destinationEnv =
       form.kind === "env"

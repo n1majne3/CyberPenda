@@ -204,10 +204,6 @@ func TestResolveModelProviderAcceptsGeneratedCredentialBinding(t *testing.T) {
 	}
 }
 
-// TestResolveModelProviderBackfillsLegacyProviderRow verifies that an old
-// provider record carrying only provider-level base_url and protocols still
-// resolves as an endpoint-backed provider during the transition, with the
-// Anthropic final-segment adaptation applied to the resolved endpoint.
 func TestResolveModelProviderBackfillsLegacyProviderRow(t *testing.T) {
 	db := newStore(t)
 	if err := seedLegacyProvider(db, "legacy", "https://hub.example.test/v1/",
@@ -236,8 +232,6 @@ func TestResolveModelProviderBackfillsLegacyProviderRow(t *testing.T) {
 		t.Fatalf("anthropic snapshot = %#v", snapshot)
 	}
 
-	// Codex resolves through the OpenAI Responses endpoint, which must copy
-	// the normalized legacy base URL unchanged.
 	snapshot, err = modelprovider.Resolve(modelprovider.ResolveRequest{
 		Profile: runtimeprofile.Profile{
 			Provider: runtimeprofile.ProviderCodex,
@@ -335,10 +329,6 @@ func TestResolveModelProviderSelectsEndpointByRuntimePluginPreferenceForAuto(t *
 	}
 }
 
-// TestResolveModelProviderStrictProtocolPinFailsWhenEndpointRemoved locks the
-// contract that a strict Runtime Profile protocol pin does not silently fall
-// back to another protocol when the provider no longer has a compatible
-// endpoint, even when the runtime plugin could otherwise support alternatives.
 func TestResolveModelProviderStrictProtocolPinFailsWhenEndpointRemoved(t *testing.T) {
 	svc := modelprovider.NewService(newStore(t))
 	provider, err := svc.Create(modelprovider.CreateRequest{
@@ -353,9 +343,6 @@ func TestResolveModelProviderStrictProtocolPinFailsWhenEndpointRemoved(t *testin
 	}
 	t.Setenv(provider.APIKeyEnv, "sk-test")
 
-	// Pi supports openai_chat_completions/openai_responses/anthropic_messages,
-	// but the pinned openai_responses endpoint was removed. Resolution must fail
-	// rather than silently selecting the available anthropic_messages endpoint.
 	_, err = modelprovider.Resolve(modelprovider.ResolveRequest{
 		Profile: runtimeprofile.Profile{
 			Provider: runtimeprofile.ProviderPi,

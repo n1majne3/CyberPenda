@@ -1,4 +1,3 @@
-// Package challengeworkflow provides read-only history for the retired workflow.
 package challengeworkflow
 
 import (

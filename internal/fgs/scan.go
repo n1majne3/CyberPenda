@@ -149,7 +149,6 @@ func (scan *mailboxScan) close() {
 	}
 }
 
-// CloseScans releases directory handles when the receiver shuts down.
 func (s *Service) CloseScans() {
 	s.scanMu.Lock()
 	defer s.scanMu.Unlock()

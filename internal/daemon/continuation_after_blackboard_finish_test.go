@@ -15,10 +15,6 @@ import (
 	"pentest/internal/task"
 )
 
-// #190: after Blackboard Finish closes the current Continuation, new operator
-// work on the same live Runtime must start with a fresh writable Continuation
-// instead of reusing the closed grant authority.
-
 func TestNewUserMessageAfterBlackboardFinishCreatesWritableContinuation(t *testing.T) {
 	session, adapter := newFinishSessionPair("post-finish-work")
 	factory := &finishSessionFactory{session: session, adapter: adapter}
@@ -89,7 +85,6 @@ func TestNewUserMessageAfterBlackboardFinishCreatesWritableContinuation(t *testi
 		t.Fatalf("timeline boundary events missing: priorCompleted=%v freshStarted=%v", sawPriorCompleted, sawFreshStarted)
 	}
 
-	// A Blackboard write in the new Turn succeeds with the new authority.
 	batch := blackboardv2.ChangeBatch{
 		Schema: "semantic-change-batch/v2", IdempotencyKey: "post-finish-write-1",
 		Changes: []blackboardv2.Change{{
@@ -160,8 +155,6 @@ func TestPostFinishSteerFailsExplicitlyWhenSessionCannotBindFreshContinuation(t 
 	}
 }
 
-// unbindableFinishSession refuses Continuation rebinding so the explicit
-// fallback path can be tested.
 type unbindableFinishSession struct {
 	runtime.ProviderSession
 }

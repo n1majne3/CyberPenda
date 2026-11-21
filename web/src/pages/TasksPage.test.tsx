@@ -107,11 +107,9 @@ describe("TasksPage", () => {
 
   it("backs off while idle, suspends while hidden, and resumes fast polling when work is active", async () => {
     // Pure fake timers (no shouldAdvanceTime): waitFor polls on real timers, so
-    // under fake timers wall-clock leakage could fire the very poll under test.
     // We flush the eager mount load via microtasks instead.
     vi.useFakeTimers();
     try {
-      // All terminal → idle. The page should poll slowly (not at 2s).
       const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
         const url = typeof input === "string" ? input : input.toString();
         if (url.includes("/api/projects/project-1/tasks")) {
@@ -131,21 +129,17 @@ describe("TasksPage", () => {
       expect(screen.getByText("Done")).toBeInTheDocument();
       const callsAfterMount = fetchMock.mock.calls.length;
 
-      // Idle: no poll inside the fast 2s window.
       await act(async () => {
         vi.advanceTimersByTimeAsync(2500);
       });
       expect(fetchMock.mock.calls.length).toBe(callsAfterMount);
 
-      // Hidden: even past the slow backoff interval, no poll lands.
       act(() => setDocumentVisibility("hidden"));
       await act(async () => {
         vi.advanceTimersByTimeAsync(60000);
       });
       expect(fetchMock.mock.calls.length).toBe(callsAfterMount);
 
-      // Visible + an active task: returning to a visible tab eagerly refreshes,
-      // and polling resumes. The backing data now reports a running task; after
       // the refresh lands the page is active, so polls use the fast 2s cadence.
       fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
         const url = typeof input === "string" ? input : input.toString();
@@ -159,13 +153,11 @@ describe("TasksPage", () => {
       });
       act(() => setDocumentVisibility("visible"));
       // Let the eager refresh settle so hasActive flips and the fast interval is
-      // in place before measuring the poll window. Flush microtasks (fake timers
       // are active, so waitFor's real-timer polling would hang).
       await act(async () => {
         vi.advanceTimersByTimeAsync(0);
       });
       const callsAfterRefresh = fetchMock.mock.calls.length;
-      // Active work → fast polling takes over within 2s.
       await act(async () => {
         vi.advanceTimersByTimeAsync(2500);
       });

@@ -21,7 +21,6 @@ func FormatContainerHostPath(path string) string {
 	if looksLikeWindowsAbsPath(path) {
 		return windowsContainerHostPath(path)
 	}
-	// Native Windows builds also report a volume name via filepath.
 	if vol := filepath.VolumeName(path); vol != "" {
 		return windowsContainerHostPath(path)
 	}
@@ -47,7 +46,6 @@ func looksLikeWindowsAbsPath(path string) bool {
 			return sep == '\\' || sep == '/'
 		}
 	}
-	// UNC paths shared into Desktop (\\server\share or //server/share).
 	if strings.HasPrefix(path, `\\`) || strings.HasPrefix(path, "//") {
 		return true
 	}

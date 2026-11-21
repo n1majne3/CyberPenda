@@ -45,7 +45,6 @@ func TestBuildSandboxCommandUsesBindMountNotShortVolumeFlag(t *testing.T) {
 	}
 	joined := strings.Join(command.Args, " ")
 	if strings.Contains(joined, " -v ") || strings.HasPrefix(joined, "-v ") {
-		// Also catch leading -v as first arg after create.
 		for i, arg := range command.Args {
 			if arg == "-v" {
 				t.Fatalf("expected --mount bind form, found -v at index %d in %v", i, command.Args)

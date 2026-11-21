@@ -26,9 +26,6 @@ func SkillsWorkdirRelPath(provider runtimeprofile.Provider) string {
 	}
 }
 
-// PrepareSandboxSkills exposes skills at the task workdir and provider home
-// discovery paths so Claude/Codex/Pi can find them. Without an explicit target it
-// preserves the legacy image-baked skills path used by sandbox images.
 func PrepareSandboxSkills(layout Layout, provider runtimeprofile.Provider, targets ...string) error {
 	target := sandboxSkillsImagePath
 	if len(targets) > 0 && targets[0] != "" {

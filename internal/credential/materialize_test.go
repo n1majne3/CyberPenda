@@ -36,8 +36,6 @@ func TestMaterializeRejectsFileSource(t *testing.T) {
 	}
 }
 
-// TestMaterializeRejectsCommandSource pins the source-kind simplification: a
-// command source (potential host RCE) is no longer a supported kind at all.
 func TestMaterializeRejectsCommandSource(t *testing.T) {
 	t.Setenv("PENTEST_ALLOW_COMMAND_CREDENTIALS", "1")
 

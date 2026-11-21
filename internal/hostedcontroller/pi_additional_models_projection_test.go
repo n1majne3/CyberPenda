@@ -125,9 +125,6 @@ func TestHostedPIAdditionalModelsReachTheProjectedPiRegistry(t *testing.T) {
 		capturedProfile.Fields.Model = capturedProfile.Fields.ModelOverride
 	}
 
-	// Mirror the daemon launch sequence: the real Project Credential Bindings
-	// feed the pre-transaction materialized snapshot, which then drives Config
-	// Projection. No environment-variable fallbacks are involved.
 	capturedProfile.Fields.CredentialRefs = nil
 	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-additional-models", capturedProfile.Provider)
 	if err != nil {
@@ -208,7 +205,6 @@ func TestHostedPIAdditionalModelsReachTheProjectedPiRegistry(t *testing.T) {
 		}
 	}{{"parent", parentEntry.Models}, {"additional", secondEntry.Models}} {
 		for _, model := range entry.models {
-			// Explicit Hosted limits beat the Model Capability Cache entry.
 			if model.ContextWindow != 1048576 || model.MaxTokens != 393216 {
 				t.Fatalf("%s model %s limits = %d/%d, want 1048576/393216", entry.name, model.ID, model.ContextWindow, model.MaxTokens)
 			}
@@ -254,7 +250,6 @@ func TestHostedPIAdditionalModelsReachTheProjectedPiRegistry(t *testing.T) {
 	}
 }
 
-// containsAll reports whether got contains every wanted value.
 func containsAll(got []string, wanted ...string) bool {
 	set := make(map[string]bool, len(got))
 	for _, value := range got {

@@ -377,9 +377,6 @@ func TestModelProviderAPIRefreshUnavailableForAnthropicOnlyProvider(t *testing.T
 	}
 }
 
-// TestModelProviderAPIRefreshPreservesCatalogOnUpstreamError locks the
-// daemon contract that a temporary upstream failure during Model Catalog
-// Refresh preserves the previous catalog and surfaces the error.
 func TestModelProviderAPIRefreshPreservesCatalogOnUpstreamError(t *testing.T) {
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		return &http.Response{
@@ -501,7 +498,6 @@ func TestDeleteModelProviderInUseListsProfilesUntilDetached(t *testing.T) {
 		t.Fatalf("decode profile: %v", err)
 	}
 
-	// Plain delete stays blocked and names the referencing profiles.
 	blocked := httptest.NewRequest(http.MethodDelete, "/api/model-providers/"+providerID, nil)
 	blockedResp := httptest.NewRecorder()
 	server.ServeHTTP(blockedResp, blocked)
@@ -519,7 +515,6 @@ func TestDeleteModelProviderInUseListsProfilesUntilDetached(t *testing.T) {
 		t.Fatalf("conflict profiles = %#v, want [Pi Preset]", conflict.Profiles)
 	}
 
-	// Explicit detach delete clears the reference and removes the provider.
 	detach := httptest.NewRequest(http.MethodDelete, "/api/model-providers/"+providerID+"?detach=true", nil)
 	detachResp := httptest.NewRecorder()
 	server.ServeHTTP(detachResp, detach)

@@ -51,7 +51,6 @@ func (server *Server) registerBlackboardV2Routes() {
 	// final segment and validate/remove that exact suffix in the handler.
 	server.mux.HandleFunc("POST /api/v2/projects/{id}/blackboard/attempts/{attempt_action}", server.handleBlackboardV2Checkpoint)
 	server.mux.HandleFunc("POST /api/v2/projects/{id}/continuation:finish", server.handleBlackboardV2Finish)
-	// Operator report/CTF consumers (#120): semantic DTOs only, no v1 envelopes.
 	server.mux.HandleFunc("GET /api/v2/projects/{id}/reports/pentest", server.handleBlackboardV2PentestReport)
 	server.mux.HandleFunc("GET /api/v2/projects/{id}/reports/ctf-solution", server.handleBlackboardV2CTFSolution)
 	server.mux.HandleFunc("POST /api/v2/sessions/{id}/blackboard/changes", server.handleSessionBlackboardV2Change)
@@ -245,7 +244,6 @@ func (server *Server) handleBlackboardV2EvidenceRetain(response http.ResponseWri
 		return
 	}
 	var req blackboardv2.RetainEvidenceRequest
-	// Exact Evidence retain replay remains available after Finish/supersession.
 	server.serveBlackboardV2(response, request, principal, false, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
 		if contractErr := blackboardv2input.DecodeContractInput("retainEvidenceRequest", false, contractRaw, &req); contractErr != nil {
 			return nil, contractErr
@@ -353,7 +351,6 @@ func (server *Server) handleBlackboardV2Checkpoint(response http.ResponseWriter,
 		return
 	}
 	var req blackboardv2.CheckpointAttemptRequest
-	// Exact checkpoint replay remains available after Finish/supersession.
 	server.serveBlackboardV2(response, request, principal, false, true, func(ctx context.Context, live blackboardv2.ContinuationAuthority) (any, error) {
 		if contractErr := blackboardv2input.DecodeContractInput("checkpointAttemptRequest", false, contractRaw, &req); contractErr != nil {
 			return nil, contractErr

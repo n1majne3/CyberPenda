@@ -20,11 +20,6 @@ import (
 	"pentest/internal/testsupport/fakeprovider"
 )
 
-// #152 primary seam: Host Pi binds one Task-scoped RPC session across turns via
-// the piWire translation boundary (pentest-provider-bridge), applies projected
-// provider/model/effort natively, and cleans process groups + session files +
-// credentials on Stop without falling back to one-shot.
-
 type hostPiSessionFactory struct {
 	mu       sync.Mutex
 	requests []ProviderSessionLaunchRequest
@@ -213,7 +208,6 @@ func TestHostPiLaunchBindsPersistentRPCSessionAcrossTurns(t *testing.T) {
 		t.Fatalf("factory opens = %d, want 1", factory.openCount())
 	}
 
-	// Projected provider/model/effort switch is native — no Runtime restart.
 	body := `{
 		"request_id":"host-pi-turn-2",
 		"message":"switch projected provider",
@@ -249,7 +243,6 @@ func TestHostPiLaunchBindsPersistentRPCSessionAcrossTurns(t *testing.T) {
 		return false
 	})
 
-	// Explicit Stop closes the bound session and leaves no duplicate ownership.
 	var stopStatus int
 	var stopBody string
 	deadlineStop := time.Now().Add(2 * time.Second)
@@ -367,7 +360,6 @@ func TestHostPiFactoryFailureDoesNotFallBackToOneShot(t *testing.T) {
 	if _, ok := server.providerSessions.get(created.ID); ok {
 		t.Fatal("failed launch must not bind a session")
 	}
-	// Harness must not run the legacy one-shot adapter after persistent selection.
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if server.harness.IsActive(created.ID) {

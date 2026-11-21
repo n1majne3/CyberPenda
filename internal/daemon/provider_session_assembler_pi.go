@@ -21,8 +21,7 @@ type piAssembler struct {
 	plugins *runtimeplugin.Registry
 	// sandboxBridge is the sandbox-local provider-bridge path used inside
 	// container create argv.
-	sandboxBridge string
-	// resolveHostBridge returns the validated host piWire bridge path.
+	sandboxBridge     string
 	resolveHostBridge func() (string, error)
 }
 
@@ -34,7 +33,6 @@ func (a piAssembler) HostCommand(assembly providerSessionAssembly) (string, []st
 	if err != nil {
 		return "", nil, err
 	}
-	// Program is the explicit host bridge executable; Pi is the child after "--".
 	program, err := a.resolveHostBridge()
 	if err != nil {
 		return "", nil, err
@@ -85,7 +83,6 @@ func (a piAssembler) Setup(ctx context.Context, bridge productionBridgeTransport
 		SessionPath string `json:"session_path"`
 	}
 	if err := json.Unmarshal(setupResponse.Result, &state); err == nil {
-		// ok
 	}
 	sessionID, sessionPath := strings.TrimSpace(state.SessionID), strings.TrimSpace(state.SessionPath)
 	if durable := strings.TrimSpace(assembly.request.Continuation.NativeSessionID); durable != "" && sessionID != "" && durable != sessionID {

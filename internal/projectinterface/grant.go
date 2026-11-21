@@ -31,21 +31,16 @@ type Clock interface {
 	Now() time.Time
 }
 
-// SystemClock is the production Clock implementation.
 type SystemClock struct{}
 
-// Now returns the current UTC time.
 func (SystemClock) Now() time.Time { return time.Now().UTC() }
 
-// IDSource is the injected immutable-ID source for grant IDs (slices §2.1).
 type IDSource interface {
 	NextID() string
 }
 
-// RandomIDSource is the production IDSource implementation using crypto/rand.
 type RandomIDSource struct{}
 
-// NextID returns a fresh opaque 16-byte hex ID.
 func (RandomIDSource) NextID() string { return newID() }
 
 // TokenSource generates cryptographically random bearer tokens. The plaintext
@@ -60,7 +55,6 @@ type TokenSource interface {
 // header, a query string, or an environment variable.
 type RandomTokenSource struct{}
 
-// NewToken returns a fresh opaque bearer token.
 func (RandomTokenSource) NewToken() (string, error) { return newToken() }
 
 func newID() string {
@@ -99,14 +93,12 @@ const (
 	// GrantStatusFinished is set by the Finish capability (I04) or a grant-level
 	// close: new writes are rejected but exact replay and reads remain.
 	GrantStatusFinished GrantStatus = "finished"
-	// GrantStatusRevoked is set by explicit operator revocation or Task deletion.
-	GrantStatusRevoked GrantStatus = "revoked"
+	GrantStatusRevoked  GrantStatus = "revoked"
 	// GrantStatusTerminal is set when the bound Continuation becomes terminal
 	// without Finish; the system reconciler owns later semantic changes.
 	GrantStatusTerminal GrantStatus = "terminal"
 )
 
-// IsWriteable reports whether a grant in this state admits new mutations.
 func (s GrantStatus) IsWriteable() bool { return s == GrantStatusOpen }
 
 // IsReadable reports whether a grant in this state admits reads and exact
@@ -148,7 +140,6 @@ type Grant struct {
 // Session rather than a Project Task.
 func (g Grant) IsSession() bool { return g.Owner.IsSession() }
 
-// Status derives the grant lifecycle state from its timestamps.
 func (g Grant) Status() GrantStatus {
 	switch {
 	case g.RevokedAt != "":
@@ -572,9 +563,6 @@ func validateSessionIssueRequest(req IssueSessionGrantRequest) error {
 	return nil
 }
 
-// validateBoundRows verifies the durable Task and Continuation rows agree with
-// the requested bound context so a grant never binds provenance the daemon no
-// longer trusts.
 func validateBoundRows(tx *sql.Tx, req IssueGrantRequest) error {
 	var taskProjectID string
 	if err := tx.QueryRow(`SELECT project_id FROM tasks WHERE id=?`, req.TaskID).Scan(&taskProjectID); err != nil {
@@ -627,7 +615,6 @@ func validateSessionBoundRows(tx *sql.Tx, req IssueSessionGrantRequest) error {
 	return nil
 }
 
-// runtimeActorID derives the stable Runtime actor identifier.
 func runtimeActorID(pluginID, continuationID string) string {
 	return "runtime:" + pluginID + ":" + continuationID
 }
@@ -670,7 +657,6 @@ func scanGrant(row scanner) (Grant, error) {
 	return g, nil
 }
 
-// Sentinel grant errors let transports map failures without reclassification.
 var (
 	ErrGrantNotFound        = ValidationError(ErrCodeGrantNotFound, "continuation grant is missing or invalid", "authorization")
 	ErrGrantAlreadyFinished = ValidationError(ErrCodeContinuationClosed, "continuation grant is already finished", "authorization")

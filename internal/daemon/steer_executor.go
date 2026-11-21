@@ -47,9 +47,7 @@ type steerEmitProtocolSpec struct {
 	advanceOnSettled bool
 	// persistEvent stores one event bound to the given Continuation id. The
 	// empty id means the owner has no Continuation.
-	persistEvent func(continuationID string, kind task.EventKind, payload task.EventPayload)
-	// persistOwnerEvent stores one owner-level event when no Continuation is
-	// bound (legacy owners without continuation authority).
+	persistEvent      func(continuationID string, kind task.EventKind, payload task.EventPayload)
 	persistOwnerEvent func(kind task.EventKind, payload task.EventPayload)
 	// advance settles the old Continuation and returns the replacement id.
 	advance func(currentID string) (string, error)

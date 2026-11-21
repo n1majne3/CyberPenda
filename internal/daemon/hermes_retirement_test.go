@@ -22,7 +22,6 @@ func TestRetiredHermesProfileRemainsReadableButCannotLaunch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Seed a retained row from before Runtime retirement.
 	_, err = db.Exec(`INSERT INTO runtime_profiles (id, name, provider, fields_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, "legacy-hermes", "Retained Hermes", "hermes", `{"custom_config_file":"skills:\n  autoload: false\n"}`, "2026-09-01T00:00:00Z", "2026-09-01T00:00:00Z")
 	if err != nil {
 		t.Fatal(err)

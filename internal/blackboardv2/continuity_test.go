@@ -407,8 +407,6 @@ func TestRecoveryMaterializesPersistedWorkingSnapshotNotLaunchPin(t *testing.T) 
 	}
 }
 
-// Issue #117 — restart after trusted synchronization must restore the exact
-// acknowledged Working Snapshot bytes, never the stale Launch Pin.
 func TestRecoveryAfterSynchronizationRestoresExactWorkingSnapshotBytes(t *testing.T) {
 	fixture := newContinuityFixture(t)
 	t.Cleanup(func() { _ = fixture.db.Close() })

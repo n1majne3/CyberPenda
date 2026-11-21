@@ -40,7 +40,6 @@ func TestParseRecordStampsAsyncAgentIdentityOnMessageTurns(t *testing.T) {
 		}
 	}
 
-	// A per-item agentId, when a runtime emits one, wins over parent linkage.
 	agentIDTurns := runtimeoutput.ParseRecord(map[string]any{
 		"type":               "assistant",
 		"agentId":            "accf5809249284700",
@@ -92,7 +91,6 @@ func TestParseRecordStampsAsyncAgentIdentityOnMessageTurns(t *testing.T) {
 		t.Fatalf("plain turns = %#v", plain)
 	}
 
-	// Top-level tool records from a child carry the same attribution.
 	toolTurns := runtimeoutput.ParseRecord(map[string]any{
 		"type":               "tool_use",
 		"parent_tool_use_id": "call_01a06c1712a57ca080ba25d8",
@@ -105,9 +103,6 @@ func TestParseRecordStampsAsyncAgentIdentityOnMessageTurns(t *testing.T) {
 	}
 }
 
-// The current Claude stream vocabulary settles children through
-// task_notification (status completed/failed/stopped), not the legacy
-// task_failed subtype.
 func TestParseRecordClaudeTaskNotificationSettlesChild(t *testing.T) {
 	at := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	turns := runtimeoutput.ParseRecord(map[string]any{
@@ -189,7 +184,6 @@ func TestParseRecordClaudeTaskStartedCarriesSpawnLinkage(t *testing.T) {
 	}
 }
 
-// task_updated patch statuses advance the coarse child state in place.
 func TestParseRecordClaudeTaskUpdatedAdvancesState(t *testing.T) {
 	at := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	turns := runtimeoutput.ParseRecord(map[string]any{

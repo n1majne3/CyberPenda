@@ -132,7 +132,6 @@ func TestFindingConfirmationAndPentestReportEndToEnd(t *testing.T) {
 	if !strings.Contains(first, "Key:** finding:login") {
 		t.Fatalf("report Markdown omitted Blackboard Key for navigation:\n%s", first)
 	}
-	// Markdown escapes hyphens in keys (fact:confirmed\-support).
 	if !strings.Contains(first, "fact:confirmed\\-support") || !strings.Contains(first, "fact:tentative\\-context") {
 		t.Fatalf("report Markdown omitted Fact Blackboard Keys for navigation:\n%s", first)
 	}
@@ -518,7 +517,6 @@ func TestCTFSolutionProjectionDerivesSolvedStateAndOmitsAuditSurfaces(t *testing
 	if !strings.Contains(first, "Key:** solution:flag") {
 		t.Fatalf("CTF markdown omitted Blackboard Key for navigation:\n%s", first)
 	}
-	// Markdown escapes hyphens in keys (fact:confirmed\-clue).
 	if !strings.Contains(first, "fact:confirmed\\-clue") || !strings.Contains(first, "fact:tentative\\-clue") {
 		t.Fatalf("CTF markdown omitted Fact Blackboard Keys for navigation:\n%s", first)
 	}
@@ -569,7 +567,6 @@ func TestReportAndCTFEvidenceIsRelationshipDerived(t *testing.T) {
 
 	seedPentest := func() {
 		t.Helper()
-		// Operator creates confirmed conclusions; Continuation owns the Attempt for Evidence retain.
 		_, err = service.Apply(ctx, pentestProject.ID, blackboardv2.ChangeBatch{
 			Schema: "semantic-change-batch/v2", IdempotencyKey: "evidence-selection-seed",
 			Changes: []blackboardv2.Change{

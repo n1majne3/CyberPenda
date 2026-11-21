@@ -18,7 +18,6 @@ func TestEmbeddedUIBuildUsesFreshAssets(t *testing.T) {
 	assertContains(t, gitignore, "internal/daemon/webfs/dist/**")
 	assertContains(t, gitignore, "!internal/daemon/webfs/dist/.gitkeep")
 
-	// Dockerfile always injects a fresh web build; it must not rely on git dist.
 	dockerfile, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentestd", "Dockerfile"))
 	if err != nil {
 		t.Fatalf("read Dockerfile: %v", err)

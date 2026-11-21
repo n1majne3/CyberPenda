@@ -1129,7 +1129,6 @@ func TestNativeSteerReplacementCarriesBlackboardGrant(t *testing.T) {
 		t.Fatalf("post-steer write result = %s", writeResult.body)
 	}
 
-	// Reads and history with the original token also resolve to the replacement.
 	readResult := doV2HTTP(t, http.MethodGet, base+"/blackboard/records/objective:steer", launch.Token, "", "", "")
 	if readResult.status != http.StatusOK || !bytes.Contains(readResult.body, []byte(`"key":"objective:steer"`)) {
 		t.Fatalf("post-steer read = %d %s", readResult.status, readResult.body)

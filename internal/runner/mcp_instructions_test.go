@@ -35,9 +35,9 @@ func TestRuntimeSmokeInstructionsDescribeCLIBlackboardInterface(t *testing.T) {
 		{
 			name: "task",
 			ctx: RuntimeOwnerContext{
-				Owner:     owner.NewTaskContract("task-1", "project-1", "/task/workdir"),
-				Provider:  runtimeprofile.ProviderClaudeCode,
-				Sandbox:   true,
+				Owner:    owner.NewTaskContract("task-1", "project-1", "/task/workdir"),
+				Provider: runtimeprofile.ProviderClaudeCode,
+				Sandbox:  true,
 				ScopeSnapshot: project.Scope{
 					Domains: []string{"example.test"},
 				},

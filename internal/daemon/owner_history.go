@@ -120,10 +120,6 @@ func (h ownerHistory) TimelinePage(req historyRequest) (historyPage[timeline.Ite
 	return page, nil
 }
 
-// TimelineItem returns one complete retained Timeline item by stable item ID
-// or legacy numeric Seq. The lookup resolves the reference to its source Event
-// and reads one bounded window ending at that Seq; it never rebuilds the full
-// owner Event history.
 func (h ownerHistory) TimelineItem(ref string) (timeline.Item, bool, error) {
 	if ref == "" {
 		return timeline.Item{}, false, nil
@@ -190,8 +186,6 @@ func (h ownerHistory) TranscriptPage(req historyRequest) (historyPage[transcript
 	return page, nil
 }
 
-// transcriptWindowEntries keeps page previews and full details on the same
-// forward-only projection, including legacy items in a mixed window.
 func (h ownerHistory) transcriptWindowEntries(window ownerHistoryEventWindow) ([]transcript.Entry, error) {
 	events := ownerTranscriptEvents(window.Events)
 	if h.childDB != nil {
@@ -268,8 +262,6 @@ func (h ownerHistory) TranscriptEntry(ref string) (transcript.Entry, bool, error
 	return transcript.Entry{}, false, nil
 }
 
-// resolveRefSeq maps a numeric legacy reference to its Seq and any other
-// reference to the source Event Seq resolved by the store adapter.
 func (h ownerHistory) resolveRefSeq(ref string) (int, bool, error) {
 	if seq, err := strconv.Atoi(ref); err == nil && seq > 0 {
 		return seq, true, nil
@@ -414,7 +406,6 @@ func sessionOwnerEvents(events []session.Event) []ownerEvent {
 	return converted
 }
 
-// taskOwnerHistory builds the owner history read model for one Task.
 func (server *Server) taskOwnerHistory(found task.Task) ownerHistory {
 	return ownerHistory{
 		store:   taskOwnerHistoryStore{tasks: server.tasks, taskID: found.ID},
@@ -442,8 +433,6 @@ func (server *Server) sessionOwnerHistory(found session.Session) ownerHistory {
 	}
 }
 
-// Old-only windows retain their inline projection. A mixed window uses the
-// index for new content and retains only its genuinely legacy child items.
 func indexedChildBlock(entry transcript.Entry, events []transcript.Event) bool {
 	for _, event := range events {
 		if event.Seq == entry.Seq {

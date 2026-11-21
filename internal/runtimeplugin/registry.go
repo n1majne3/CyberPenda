@@ -32,7 +32,6 @@ var builtinRegistry = sync.OnceValues(func() (*Registry, error) {
 	return NewRegistry(BuiltinPlugins())
 })
 
-// BuiltinRegistry returns the immutable, process-wide built-in registry.
 func BuiltinRegistry() (*Registry, error) {
 	return builtinRegistry()
 }

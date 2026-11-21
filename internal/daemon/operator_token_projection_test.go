@@ -60,8 +60,6 @@ func TestLegacyLaunchPlanNeverProjectsOperatorToken(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// A nil binding forces the legacy non-v2 projection branch, the one path
-			// that historically read the daemon operator token.
 			plan, err := server.buildTaskLaunchPlanWithBinding(created, "inspect boundary", "", "", "", nil, nil)
 			if err != nil {
 				t.Fatal(err)

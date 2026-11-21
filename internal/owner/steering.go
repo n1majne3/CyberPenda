@@ -15,8 +15,7 @@ const (
 	// immediately before provider control. A request in this state with no
 	// terminal outcome is delivery-ambiguous and is never replayed.
 	SteeringDispatchStarted SteeringState = "dispatch_started"
-	// SteeringApplied is the terminal delivered outcome.
-	SteeringApplied SteeringState = "applied"
+	SteeringApplied         SteeringState = "applied"
 	// SteeringFailed is a terminal outcome with a stable reason; the request
 	// was never delivered or the provider rejected it deterministically.
 	SteeringFailed SteeringState = "failed"
@@ -26,12 +25,10 @@ const (
 	SteeringActionRequired SteeringState = "action_required"
 )
 
-// Terminal reports whether the state is a durable terminal outcome.
 func (state SteeringState) Terminal() bool {
 	return state == SteeringApplied || state == SteeringFailed || state == SteeringActionRequired
 }
 
-// SteeringMode is the provider-native steer operation chosen at acceptance.
 type SteeringMode string
 
 const (

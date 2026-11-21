@@ -38,7 +38,6 @@ const (
 	workingPath        = ".pentest/blackboard.json"
 )
 
-// Service applies and reads Blackboard v2 semantic state for one Project.
 type Service struct {
 	db              *store.DB
 	evidenceConfig  EvidenceConfig
@@ -59,7 +58,6 @@ func (s *Service) SetSnapshotPublicationInjector(injector SnapshotPublicationInj
 	s.publicationFail = injector
 }
 
-// NewService returns a Blackboard v2 semantic service backed by the Store.
 func NewService(db *store.DB) *Service {
 	return &Service{db: db}
 }
@@ -70,7 +68,6 @@ func NewServiceWithEvidence(db *store.DB, config EvidenceConfig) *Service {
 	return &Service{db: db, evidenceConfig: config, runtimeRoot: config.RuntimeRoot}
 }
 
-// ChangeBatch is the semantic-change-batch/v2 envelope.
 type ChangeBatch struct {
 	Schema         string   `json:"schema"`
 	IdempotencyKey string   `json:"idempotency_key"`
@@ -120,7 +117,6 @@ func (batch *ChangeBatch) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// Change is the closed semantic operation union for a ChangeBatch.
 type Change struct {
 	Op                  string   `json:"op"`
 	Key                 string   `json:"key,omitempty"`
@@ -232,7 +228,6 @@ func (change *Change) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// EntityRecord is the complete semantic Entity DTO.
 type EntityRecord struct {
 	Status        string `json:"status"`
 	Kind          string `json:"kind"`
@@ -243,7 +238,6 @@ type EntityRecord struct {
 	CredentialRef string `json:"credential_ref,omitempty"`
 }
 
-// EntityPatch is the closed partial update shape for Entities.
 type EntityPatch struct {
 	Kind          *string `json:"kind,omitempty"`
 	Name          *string `json:"name,omitempty"`
@@ -253,30 +247,25 @@ type EntityPatch struct {
 	CredentialRef *string `json:"credential_ref,omitempty"`
 }
 
-// ObjectiveRecord is the complete semantic Exploration Objective DTO.
 type ObjectiveRecord struct {
 	Status            string `json:"status"`
 	Objective         string `json:"objective"`
 	ResolutionSummary string `json:"resolution_summary,omitempty"`
 }
 
-// ObjectivePatch is the closed partial update shape for open Objectives.
 type ObjectivePatch struct {
 	Objective *string `json:"objective,omitempty"`
 }
 
-// AttemptRecord is the complete semantic Attempt DTO.
 type AttemptRecord struct {
 	Status  string `json:"status"`
 	Summary string `json:"summary"`
 }
 
-// AttemptPatch is the closed partial update shape for open Attempts.
 type AttemptPatch struct {
 	Summary *string `json:"summary,omitempty"`
 }
 
-// FactRecord is the complete semantic Project Fact DTO.
 type FactRecord struct {
 	Category    string `json:"category"`
 	Summary     string `json:"summary"`
@@ -285,7 +274,6 @@ type FactRecord struct {
 	ScopeStatus string `json:"scope_status"`
 }
 
-// FactPatch is the closed partial update shape for Project Facts.
 type FactPatch struct {
 	Category    *string `json:"category,omitempty"`
 	Summary     *string `json:"summary,omitempty"`
@@ -321,7 +309,6 @@ type FindingPatch struct {
 	CVSSVector     *string `json:"cvss_vector,omitempty"`
 }
 
-// SolutionRecord is the complete semantic CTF Solution DTO.
 type SolutionRecord struct {
 	Status              string `json:"status"`
 	Kind                string `json:"kind"`
@@ -330,7 +317,6 @@ type SolutionRecord struct {
 	VerificationSummary string `json:"verification_summary,omitempty"`
 }
 
-// SolutionPatch is the closed partial update shape for current Solutions.
 type SolutionPatch struct {
 	Kind                *string `json:"kind,omitempty"`
 	Summary             *string `json:"summary,omitempty"`
@@ -412,7 +398,6 @@ func (record Record) MarshalJSON() ([]byte, error) {
 	return json.Marshal(recordJSON(record))
 }
 
-// ChangeResult is semantic-change-result/v2.
 type ChangeResult struct {
 	Schema          string                 `json:"schema"`
 	Revision        int                    `json:"revision"`
@@ -421,7 +406,6 @@ type ChangeResult struct {
 	WorkingSnapshot WorkingSnapshot        `json:"working_snapshot"`
 }
 
-// RecordVersionTuple serializes as [key, version].
 type RecordVersionTuple [2]any
 
 // UnmarshalJSON keeps replayed idempotency receipts structurally stable.
@@ -445,7 +429,6 @@ func (tuple *RecordVersionTuple) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// RelationVersionTuple serializes as [from, relation, to, version].
 type RelationVersionTuple [4]any
 
 // UnmarshalJSON keeps replayed relationship tuples structurally stable.
@@ -475,13 +458,11 @@ func (tuple *RelationVersionTuple) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
-// WorkingSnapshot points to the Runtime's working Blackboard snapshot.
 type WorkingSnapshot struct {
 	Path     string `json:"path"`
 	Revision int    `json:"revision"`
 }
 
-// CurrentDetail is blackboard-record/v2 for one current semantic record.
 type CurrentDetail struct {
 	Schema        string              `json:"schema"`
 	Revision      int                 `json:"revision"`
@@ -492,16 +473,13 @@ type CurrentDetail struct {
 	Relationships []RelationshipTuple `json:"relationships"`
 }
 
-// RelationshipTuple serializes as a v2 relationship tuple.
 type RelationshipTuple []any
 
-// HistoryOptions controls explicit Semantic History pagination.
 type HistoryOptions struct {
 	Cursor string
 	Limit  int
 }
 
-// SemanticHistory is semantic-history/v2.
 type SemanticHistory struct {
 	Schema     string        `json:"schema"`
 	Revision   int           `json:"revision"`
@@ -510,7 +488,6 @@ type SemanticHistory struct {
 	NextCursor string        `json:"next_cursor,omitempty"`
 }
 
-// HistoryItem is a record Semantic History item.
 type HistoryItem struct {
 	Kind     string  `json:"kind"`
 	Key      string  `json:"key,omitempty"`
@@ -523,7 +500,6 @@ type HistoryItem struct {
 	Reason   string  `json:"reason,omitempty"`
 }
 
-// RuntimeSnapshot is runtime-blackboard/v2.
 type RuntimeSnapshot struct {
 	Schema    string              `json:"schema"`
 	Semantics string              `json:"semantics"`
@@ -533,27 +509,23 @@ type RuntimeSnapshot struct {
 	Relations []RelationshipTuple `json:"relations"`
 }
 
-// SnapshotWork groups open Current Work records.
 type SnapshotWork struct {
 	Objectives map[string]SnapshotObjective `json:"objectives,omitempty"`
 	Attempts   map[string]SnapshotAttempt   `json:"attempts,omitempty"`
 }
 
-// SnapshotObjective is the runtime allowlist for open Objectives.
 type SnapshotObjective struct {
 	Version   int    `json:"version"`
 	Status    string `json:"status"`
 	Objective string `json:"objective"`
 }
 
-// SnapshotAttempt is the runtime allowlist for open Attempts.
 type SnapshotAttempt struct {
 	Version int    `json:"version"`
 	Status  string `json:"status"`
 	Summary string `json:"summary"`
 }
 
-// SnapshotKnowledge groups current Project Knowledge records.
 type SnapshotKnowledge struct {
 	Entities  map[string]SnapshotEntity   `json:"entities,omitempty"`
 	Facts     map[string]SnapshotFact     `json:"facts,omitempty"`
@@ -562,7 +534,6 @@ type SnapshotKnowledge struct {
 	Evidence  map[string]SnapshotEvidence `json:"evidence,omitempty"`
 }
 
-// SnapshotSolution is the Runtime Snapshot allowlist for current Solutions.
 type SnapshotSolution struct {
 	Version             int    `json:"version"`
 	Status              string `json:"status"`
@@ -572,7 +543,6 @@ type SnapshotSolution struct {
 	VerificationSummary string `json:"verification_summary,omitempty"`
 }
 
-// SnapshotEntity is the runtime allowlist for Entities.
 type SnapshotEntity struct {
 	Version       int    `json:"version"`
 	Status        string `json:"status"`
@@ -584,7 +554,6 @@ type SnapshotEntity struct {
 	CredentialRef string `json:"credential_ref,omitempty"`
 }
 
-// SnapshotFact is the runtime allowlist for Project Facts.
 type SnapshotFact struct {
 	Version     int    `json:"version"`
 	Category    string `json:"category"`
@@ -593,7 +562,6 @@ type SnapshotFact struct {
 	ScopeStatus string `json:"scope_status,omitempty"`
 }
 
-// SnapshotFinding is the Runtime Snapshot allowlist for current Findings.
 type SnapshotFinding struct {
 	Version     int    `json:"version"`
 	Status      string `json:"status"`
@@ -604,7 +572,6 @@ type SnapshotFinding struct {
 	CVSSPending bool   `json:"cvss_pending"`
 }
 
-// SnapshotEvidence is the Runtime Snapshot allowlist for Evidence.
 type SnapshotEvidence struct {
 	Version      int    `json:"version"`
 	Status       string `json:"status"`
@@ -614,7 +581,6 @@ type SnapshotEvidence struct {
 	CapturedAt   string `json:"captured_at,omitempty"`
 }
 
-// Error is the stable semantic error envelope body surfaced by adapters.
 type Error struct {
 	Code      string         `json:"code"`
 	Message   string         `json:"message"`
@@ -1215,7 +1181,6 @@ func continuationOwnsCurrentWorkingPath(ctx context.Context, tx *sql.Tx, continu
 	return newer == 0, pinned, nil
 }
 
-// ReadCurrent reads one current semantic record by Blackboard Key.
 func (s *Service) ReadCurrent(ctx context.Context, projectID, key string) (CurrentDetail, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -1251,7 +1216,6 @@ func (s *Service) ReadCurrent(ctx context.Context, projectID, key string) (Curre
 	}, nil
 }
 
-// ReadHistory reads prior semantic versions by key with cursor pagination.
 func (s *Service) ReadHistory(ctx context.Context, projectID, key string, options HistoryOptions) (SemanticHistory, error) {
 	if err := validateKey(key, "key"); err != nil {
 		return SemanticHistory{}, err
@@ -1425,7 +1389,6 @@ func countSemanticHistoryItems(ctx context.Context, tx *sql.Tx, projectID, key s
 	return total, nil
 }
 
-// RuntimeSnapshot returns the complete current runtime-blackboard/v2 snapshot.
 func (s *Service) RuntimeSnapshot(ctx context.Context, projectID string) (RuntimeSnapshot, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -2286,11 +2249,6 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 				return revision, "", 0, false, semanticError("semantic_validation", "resolved Objective requires a current incoming satisfies relationship", path+".status", nil)
 			}
 		}
-		// Abandonment has no relationship proof guard in this slice. The v2
-		// grammar has no edge that means "invalidation basis", and the spec
-		// explicitly permits meaningless invalidations without manufacturing a
-		// Fact. Its only canonical meaning is the terminal resolution_summary
-		// retained in Semantic History.
 		terminal := existing.record.objectiveRecord()
 		terminal.Status = change.Status
 		terminal.ResolutionSummary = change.ResolutionSummary

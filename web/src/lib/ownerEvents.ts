@@ -1,19 +1,14 @@
-// Shared Runtime Owner Workspace event kernel (#191). Task and Session views
 // load the complete Timeline and Transcript once, then refresh only the
 // events after the last committed cursor. These pure reducers keep both
 // projections ordered and deduplicated across retry, reconnect, and daemon
-// restart; the caller's monotonic generation guard rejects stale responses.
 import type { TaskTimelineItem, TaskTranscriptEntry } from "./api";
 
-/** CursorLoad is the delta a projection refresh returns. */
 export interface ProjectionDelta<T> {
-  /** New items strictly after the committed cursor (empty when idle). */
   items: T[];
   /** Maximum Seq of the full server projection; never regresses. */
   cursor: number;
 }
 
-/** mergeTimelineItems appends new items and updates growing stable items in place. */
 export function mergeTimelineItems(existing: TaskTimelineItem[], delta: TaskTimelineItem[]): TaskTimelineItem[] {
   if (existing.length === 0) return delta;
   if (delta.length === 0) return existing;
@@ -30,7 +25,6 @@ export function mergeTimelineItems(existing: TaskTimelineItem[], delta: TaskTime
     if (existingIndex !== undefined) {
       if (item.seq > updated[existingIndex]!.seq) {
         // Keep the item at its first visible position while replacing its
-        // cumulative reasoning text and latest Seq.
         const previous = updated[existingIndex]!;
         updated[existingIndex] = {
           ...item,

@@ -6,13 +6,6 @@ import (
 	"testing"
 )
 
-// TestServeHTTPRejectsForeignOrigin pins the DNS-rebinding mitigation for issue
-// #158. A malicious web page rebinds its own domain to 127.0.0.1 and then sends
-// same-origin-looking requests to the unauthenticated loopback daemon, but the
-// browser still stamps those requests with the page's real foreign Origin. Any
-// request carrying a non-loopback Origin must be refused before routing, which
-// breaks the credential-binding + model-refresh remote-code-execution chain at
-// its first mutating request.
 func TestServeHTTPRejectsForeignOrigin(t *testing.T) {
 	server := newDaemon(t)
 
@@ -46,11 +39,11 @@ func TestServeHTTPAcceptsLocalAndSandboxOrigins(t *testing.T) {
 	server := newDaemon(t)
 
 	allowed := []string{
-		"", // no Origin header
+		"",
 		"http://127.0.0.1:8787",
 		"http://localhost:8787",
 		"http://[::1]:8787",
-		"http://host.docker.internal:8787", // sandbox runtime gateway
+		"http://host.docker.internal:8787",
 	}
 	for _, origin := range allowed {
 		req := httptest.NewRequest(http.MethodGet, "/health", nil)

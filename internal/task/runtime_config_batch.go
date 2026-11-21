@@ -6,8 +6,6 @@ import (
 	"strings"
 )
 
-// LatestRuntimeConfigs loads one saved configuration per requested Task. Missing
-// configurations remain absent, so callers can keep their existing fallback.
 func (s *Service) LatestRuntimeConfigs(taskIDs []string) (map[string]map[string]any, error) {
 	configs := make(map[string]map[string]any)
 	// Bound placeholders for large Task lists and avoid repeated owner lookups.

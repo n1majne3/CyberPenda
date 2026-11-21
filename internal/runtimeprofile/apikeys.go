@@ -5,7 +5,6 @@ import "strings"
 // ConfiguredAPIKeySentinel is returned by the API instead of secret values.
 const ConfiguredAPIKeySentinel = "[configured]"
 
-// DefaultAPIKeyEnv returns the primary env var name for inline API keys per provider.
 func DefaultAPIKeyEnv(provider Provider) string {
 	switch provider {
 	case ProviderClaudeCode:
@@ -93,7 +92,6 @@ func MaterializedAPIKeys(profile Profile) map[string]string {
 	return out
 }
 
-// HasInlineAPIKeys reports whether the profile stores at least one inline key.
 func HasInlineAPIKeys(profile Profile) bool {
 	return len(MaterializedAPIKeys(profile)) > 0
 }

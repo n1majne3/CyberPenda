@@ -88,7 +88,6 @@ func TestRuntimeProfileHTTPRejectsInvalidReasoningEffort(t *testing.T) {
 }
 
 func TestRuntimeProfileMissingReasoningEffortResolvesToHighOnLaunchCapture(t *testing.T) {
-	// Storage stays empty; resolution yields high for the initial request.
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
 	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"fake","fields":{"model":"gpt-test"}}`)
@@ -103,7 +102,6 @@ func TestRuntimeProfileMissingReasoningEffortResolvesToHighOnLaunchCapture(t *te
 		t.Fatalf("missing stored effort must stay omitted, body %s", getResp.Body.String())
 	}
 
-	// Fake provider launch still captures requested_reasoning_effort=high.
 	body := []byte(`{
 		"type":"pentest","goal":"inspect example.com",
 		"runtime_profile_id":` + quoteJSON(profileID) + `,

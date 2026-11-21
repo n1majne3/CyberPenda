@@ -5,10 +5,6 @@ import (
 	"testing"
 )
 
-// #192: semantic-debt accounting recognizes a trusted Blackboard v2 operation
-// by its canonical Project Interface identity, never by a provider-visible
-// display name. Only the exact registered mcp__pentest__<operation> tool
-// identity is trusted.
 func TestClassifyTrustedBlackboardToolOnlyTrustsRegisteredProjectInterfaceIdentity(t *testing.T) {
 	trusted := []struct {
 		name string
@@ -30,10 +26,8 @@ func TestClassifyTrustedBlackboardToolOnlyTrustsRegisteredProjectInterfaceIdenti
 	}
 
 	for _, name := range []string{
-		// Bare display names are not registered identities.
 		"blackboard_change", "blackboard_record_attempt_result", "blackboard_read", "blackboard_history",
 		"blackboard_retain_evidence", "blackboard_checkpoint_attempt", "blackboard_finish",
-		// Similar names from any other server, near matches, and garbage.
 		"mcp__evil__blackboard_change", "mcp__pentest__blackboard_changes",
 		"mcp__pentest__blackboard_attempt", "mcp__PENTEST__blackboard_change",
 		"mcp__pentest", "mcp__pentest__", "mcp__", "shell", "",

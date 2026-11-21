@@ -15,7 +15,6 @@ func TestOutputBarrierCleanupCannotRemoveReplacementRun(t *testing.T) {
 	oldCleanup := service.RegisterRuntimeOutputFlush("owner", func() error { oldCalled++; return nil })
 	newCleanup := service.RegisterRuntimeOutputFlush("owner", func() error {
 		newCalled++
-		// Callback runs without the registry lock.
 		otherCleanup := service.RegisterRuntimeOutputFlush("other", func() error { return nil })
 		otherCleanup()
 		return nil

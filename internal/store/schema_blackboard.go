@@ -1,6 +1,5 @@
 package store
 
-// baselineBlackboardStatements holds part of the baseline schema.
 var baselineBlackboardStatements = []string{
 	`CREATE TABLE blackboard_store_state (
 	id INTEGER PRIMARY KEY CHECK (id = 1),

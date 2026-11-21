@@ -233,10 +233,6 @@ func codexCompletedReasoningRuntimeOutput(params map[string]any, itemID, content
 func codexReasoningRuntimeOutput(params, item map[string]any) string {
 	content, hasContent := item["content"]
 	summary, hasSummary := item["summary"]
-	// Raw reasoning content is durable transcript content. Third-party model
-	// summaries are not the real thinking, so content is kept and preferred;
-	// the summary stays as the fallback. Shape-based redaction still applies
-	// when the event is stored.
 	hasText := (hasContent && strings.TrimSpace(providerReasoningText(content)) != "") ||
 		(hasSummary && strings.TrimSpace(providerReasoningText(summary)) != "")
 	if !hasText {

@@ -24,10 +24,7 @@ import { cn } from "@/lib/utils";
 import { FGSBoard } from "./FGSPage";
 import { emptyHistory, type ConversationSendMode, type OwnerHistory, type RuntimeOwnerKind, type RuntimeOwnerView } from "@/lib/runtimeOwner/types";
 
-// Uniform row-height estimates used by the virtualized Runtime Owner history
-// lists. The virtual window bounds DOM size, and its measured coverage pass
 // needs real row layout, so rows carry no content-visibility size hints that
-// would report phantom heights for offscreen rows.
 const TRANSCRIPT_ROW_ESTIMATE = 72;
 const TIMELINE_ROW_ESTIMATE = 48;
 
@@ -78,21 +75,17 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const loadGeneration = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   // Owner identity at request time; a response can merge only when its owner
-  // identity and request generation still match (#202).
   const ownerIDRef = useRef(ownerID);
   const activeViewRef = useRef(activeView);
   const timelineAtTailRef = useRef(true);
   // Mirror render values into refs after each render so poll and paging
-  // closures read the latest values without stale captures.
   useEffect(() => {
     ownerIDRef.current = ownerID;
     activeViewRef.current = activeView;
   });
 
-  // Owner-local Runtime Owner History Window state (#202). The whole record is
   // replaced atomically when the selected owner changes so Timeline and
   // Transcript content from the prior owner can never merge into the new
-  // route; the ref mirror lets poll closures read the latest cursors.
   const historyRef = useRef<OwnerHistory>(emptyHistory());
   const [history, setHistoryState] = useState<OwnerHistory>(emptyHistory());
   const commitHistory = (next: OwnerHistory) => {
@@ -104,7 +97,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     programmaticAutoFollow.current = false;
   }, []);
 
-  // Virtual-window replacement can change scrollHeight after the first jump.
   // Keep programmatic follow distinct from operator scrolling. Later scroll
   // events repin until explicit operator input ends programmatic follow.
   const settleConversationBottom = useCallback((container: HTMLDivElement) => {
@@ -1194,7 +1186,6 @@ function isNearScrollBottom(container: HTMLElement, threshold = 160) {
   return container.scrollHeight - (container.scrollTop + container.clientHeight) <= threshold;
 }
 
-
 function FloatingScrollControls({
   autoFollow,
   onTop,
@@ -1963,7 +1954,6 @@ function ToolCallDetails({ entry }: { entry: TaskTranscriptEntry }) {
     </dl>
   );
 }
-
 
 function collapsedBody(entry: TaskTranscriptEntry) {
   if (entry.kind === "tool_result") return entry.text || "(empty)";

@@ -83,12 +83,10 @@ describe("CredentialBindingsPage", () => {
     const newBindingButtons = await screen.findAllByRole("button", { name: /New binding/i });
     await userEvent.click(newBindingButtons[0]!);
 
-    // Default kind is now "literal"; the source value field is "Secret value".
     expect(screen.getByLabelText("Credential reference")).toHaveAttribute("name", "credential_ref");
     expect(screen.getByLabelText("Source kind")).toHaveAttribute("name", "source_kind");
     expect(screen.getByLabelText("Secret value")).toHaveAttribute("name", "source_value");
     expect(screen.getByLabelText("Secret value")).toHaveAttribute("autocomplete", "off");
-    // destination_env is the dedicated runtime env var name field.
     expect(screen.getByLabelText("Runtime environment variable name")).toHaveAttribute("name", "destination_env");
   });
 
@@ -177,10 +175,8 @@ describe("CredentialBindingsPage", () => {
     expect(await screen.findByTestId("credential-row-binding-1")).toBeInTheDocument();
     expect(screen.getByTestId("credential-row-binding-2")).toBeInTheDocument();
     expect(screen.getByText("Codex Default")).toBeInTheDocument();
-    // OPENAI_API_KEY matches a Model Provider's api_key_env → provider key.
     expect(screen.getByText(/Provider key · OpenAI/i)).toBeInTheDocument();
     expect(screen.getByText("legacy-token")).toBeInTheDocument();
-    // legacy-token matches no provider → global env var classification.
     expect(screen.getByText("Global env var")).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: /disabled/i }));
@@ -220,7 +216,6 @@ describe("CredentialBindingsPage", () => {
 
   // Regression: a literal binding created through the form MUST carry
   // destination_env, otherwise projection silently fails at launch (the root
-  // cause of NSSCTF_AGENT_TOKEN not reaching the runtime).
   it("sends destination_env when creating a literal binding", async () => {
     const fetchMock = mockApi({
       "/api/credential-bindings": { bindings: [] },
@@ -272,7 +267,6 @@ describe("CredentialBindingsPage", () => {
     await userEvent.click(await screen.findByRole("button", { name: /Edit NSSCTF_AGENT_TOKEN binding/i }));
 
     expect(screen.getByRole("heading", { name: "Edit binding" })).toBeInTheDocument();
-    // The reference is immutable; it renders disabled.
     expect(screen.getByLabelText("Credential reference")).toBeDisabled();
     expect((screen.getByLabelText("Secret value") as HTMLInputElement).value).toBe("");
     expect((screen.getByLabelText("Runtime environment variable name") as HTMLInputElement).value).toBe(

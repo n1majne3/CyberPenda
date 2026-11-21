@@ -10,7 +10,6 @@ import type {
   TaskTranscriptEntry,
 } from "@/lib/api";
 
-/** Runtime Owner kinds sharing one workspace: a Project Task and a Non-Project Session. */
 export type RuntimeOwnerKind = "task" | "session";
 
 export type RuntimeOwnerCapabilities = {
@@ -24,7 +23,6 @@ export type RuntimeOwnerCapabilities = {
   attachments: boolean;
 };
 
-/** The owner-neutral workspace view both owner kinds project into. */
 export type RuntimeOwnerView = {
   kind: RuntimeOwnerKind;
   id: string;
@@ -57,7 +55,6 @@ export type RuntimeOwnerContinuation = {
   nativeSessionID?: string;
 };
 
-/** The complete resolved Runtime Turn Selection sent with every write. */
 export type ConversationSelection = {
   model_provider_id?: string;
   model?: string;
@@ -65,7 +62,6 @@ export type ConversationSelection = {
   reasoning_effort: string;
 };
 
-/** OwnerHistory is the owner-local Runtime Owner History Window state (#202). */
 export type OwnerHistory = {
   timeline: TaskTimelineItem[];
   transcript: TaskTranscriptEntry[];

@@ -106,8 +106,6 @@ func blackboardV2ObsoleteInstructionFiles(provider runtimeprofile.Provider) []st
 	return []string{"CLAUDE.md"}
 }
 
-// CodexV2ProcessEnv removes legacy project-interface identity and network
-// credentials while retaining runtime/model credentials required by Codex.
 func CodexV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) map[string]string {
 	return BlackboardV2ProcessEnv(env, layout, sandbox)
 }
@@ -198,9 +196,6 @@ func writeRootFileAtomically(root *os.Root, name string, data []byte) error {
 		return err
 	}
 	defer directory.Close()
-	// Windows cannot fsync a directory handle: FlushFileBuffers(ERROR_ACCESS_DENIED)
-	// (golang/go#47366). The rename above already made the file visible, so the
-	// durability sync is a Linux/macOS-only ordering guarantee.
 	if runtime.GOOS == "windows" {
 		return nil
 	}

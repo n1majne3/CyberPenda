@@ -84,7 +84,6 @@ func TestClaudeSettingsDeepMergesCustomConfigFileOverlay(t *testing.T) {
 	if len(deny) == 0 || deny[0] != "Bash(rm -rf *)" {
 		t.Fatalf("overlay permissions.deny missing: %#v", settings["permissions"])
 	}
-	// Preview reflects the merged result.
 	previewPlugins, ok := projection.Config["enabled_plugins"].([]string)
 	if !ok || len(previewPlugins) == 0 {
 		t.Fatalf("preview enabled_plugins = %#v", projection.Config["enabled_plugins"])
@@ -151,7 +150,6 @@ func TestCodexConfigTOMLOverlayMergesExtraSections(t *testing.T) {
 }
 
 func TestPiModelsJSONOverlayMergesCustomModels(t *testing.T) {
-	// Without Global Model Projection the host ~/.pi/agent/models.json is copied.
 	isolatePiHostHome(t)
 	layout, _ := projectForTest(t, runtimeprofile.ProviderPi)
 	profile := runtimeprofile.Profile{

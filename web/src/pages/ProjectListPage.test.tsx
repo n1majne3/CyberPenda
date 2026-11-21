@@ -5,9 +5,6 @@ import { MemoryRouter } from "react-router-dom";
 import { ProjectListPage } from "./ProjectListPage";
 import { mockApi } from "@/test/mockApi";
 
-// Smoke tests: mount the page with a mocked daemon and confirm key elements
-// render without throwing. The pages are presentational; these guard against
-// the restyle breaking data flow.
 function renderPage() {
   return render(
     <MemoryRouter>
@@ -38,7 +35,6 @@ describe("ProjectListPage", () => {
     mockApi({ "/api/projects": { projects: [] } });
     const { findByText } = renderPage();
     expect(screen.getByRole("heading", { level: 1, name: "Projects" })).toBeInTheDocument();
-    // Empty state renders after fetch resolves.
     expect(await findByText("No projects")).toBeInTheDocument();
   });
 

@@ -198,7 +198,6 @@ func TestHostSessionBridgeProtocolExitSignalsTerminatedWithoutClosing(t *testing
 		t.Fatal(err)
 	}
 
-	// Unexpected protocol stream end (process death) without explicit Close.
 	_ = starter.stdout.Close()
 
 	select {

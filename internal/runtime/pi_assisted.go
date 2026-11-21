@@ -136,10 +136,6 @@ func (s *PiProviderSession) projectPiTerminalLifecycle(event SandboxBridgeEvent,
 	}
 }
 
-// emitPiSubagentRecord forwards an entry_appended subagents:record frame as a
-// runtime_output event so the Timeline projects the settled subagent. Frames
-// without a subagents:record entry are ignored (other entry types keep their
-// existing handling).
 func (s *PiProviderSession) emitPiSubagentRecord(event SandboxBridgeEvent, params map[string]any, emit ProviderSessionEmit) {
 	entry, ok := params["entry"].(map[string]any)
 	if !ok {
@@ -200,8 +196,6 @@ func (s *PiProviderSession) emitPiSubagentOutput(params map[string]any, emit Pro
 	if emit == nil {
 		return
 	}
-	// The line is LLM output: it is forwarded byte-for-byte, without redaction
-	// (issue #288).
 	emit(task.EventKindRuntimeOutput, task.EventPayload{
 		"provider": "pi", "provider_event": "pi/subagent_output",
 		"session_id": s.SessionID(),

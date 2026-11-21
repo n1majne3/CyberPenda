@@ -3,7 +3,6 @@ import { displayReasoningEffort, selectableModelProviders } from "@/pages/runtim
 
 export const LAUNCH_RUNTIME_IDS = ["codex", "claude_code", "pi"] as const;
 
-// The default Runtime for a direct launch when the operator has not chosen one.
 export const DEFAULT_LAUNCH_RUNTIME_ID = "pi";
 
 export type LaunchForm = {
@@ -52,7 +51,6 @@ export function launchSelectionFromProfile(profile: RuntimeProfile): Partial<Lau
     runtime: profile.provider,
     modelProviderId: profile.fields.model_provider_id?.trim() ?? "",
     modelOverride: profile.fields.model_override?.trim() ?? "",
-    // Inheritance: missing profile storage displays as high outside any sixth option.
     reasoningEffort: displayReasoningEffort(profile.fields.reasoning_effort),
     runner: profile.fields.default_runner?.trim() || "sandbox",
   };
@@ -64,10 +62,6 @@ type DefaultLaunchFormInput = {
   projectRunner?: string;
 };
 
-// The Launch Profile Selector lists every Runtime Profile whose Runtime the
-// launch surface can start; it does not filter by the current Runtime
-// selection. Choosing a Profile switches the launch Runtime to the Profile's
-// Runtime (see formFromPreset).
 export function launchableProfiles(profiles: RuntimeProfile[]): RuntimeProfile[] {
   const allowed = new Set<string>(LAUNCH_RUNTIME_IDS);
   return profiles.filter((profile) => allowed.has(profile.provider));

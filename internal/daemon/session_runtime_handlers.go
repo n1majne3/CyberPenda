@@ -1066,8 +1066,6 @@ func (server *Server) handleSessionTimeline(response http.ResponseWriter, reques
 	})
 }
 
-// handleSessionTimelineItem returns one complete retained timeline item by
-// stable item ID. A numeric Seq remains valid for retained legacy detail links.
 func (server *Server) handleSessionTimelineItem(response http.ResponseWriter, request *http.Request) {
 	found, err := server.sessions.Get(request.PathValue("id"))
 	if err != nil {

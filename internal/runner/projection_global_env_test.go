@@ -214,7 +214,6 @@ func TestGlobalEnvInjectedIntoClaudePath(t *testing.T) {
 // resolution, the profile-scoped value wins.
 func TestProfileCredentialRefOverridesGlobalEnv(t *testing.T) {
 	creds := newGlobalEnvTestService(t)
-	// Global default for the var.
 	if _, err := creds.Upsert("SHARED_VAR", credential.ScopeGlobal, "", credential.Source{
 		Kind:           credential.SourceLiteral,
 		Value:          "global-value",

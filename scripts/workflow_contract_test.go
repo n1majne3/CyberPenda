@@ -37,8 +37,6 @@ func readWorkflowContract(t *testing.T, name string) workflowContract {
 	return workflow
 }
 
-// Select a job structurally so unrelated job order and YAML formatting are free
-// to change. Existing contract assertions can inspect this normalized job.
 func workflowJobText(t *testing.T, source, name string) string {
 	t.Helper()
 	var workflow struct {
@@ -63,14 +61,11 @@ func TestCIReplacesOlderRunsForTheSameRef(t *testing.T) {
 	if !strings.Contains(w.Concurrency.Group, "github.ref") || !strings.Contains(w.Concurrency.Group, "github.workflow") {
 		t.Fatal("CI must scope concurrency to the same workflow and ref")
 	}
-	// GitHub keeps only one pending run per group, so a shared main group would
-	// drop older main commits. main must get a per-commit group.
 	want := "github.ref == 'refs/heads/main' && github.sha || github.ref"
 	if !strings.Contains(w.Concurrency.Group, want) {
 		t.Fatalf("CI concurrency group must be per-sha on main (%q): got %q", want, w.Concurrency.Group)
 	}
 	cancel := fmt.Sprint(w.Concurrency.Cancel)
-	// PRs cancel superseded runs; main must not, so every main commit is fully validated.
 	if cancel == "true" {
 		t.Fatal("CI must not cancel-in-progress unconditionally; main commits must run to completion")
 	}
@@ -122,8 +117,6 @@ func TestRuntimeSmokeRequiresCredentialsBeforeAnyBuild(t *testing.T) {
 	}
 }
 
-// ci-result is the single gate for branch protection; every CI job must feed it
-// so a skipped or failed job can never be silently ignored.
 func TestCIResultGateCoversEveryJob(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", "ci.yml"))
 	if err != nil {

@@ -59,7 +59,6 @@ func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 
 	for _, tool := range []string{
 		"nmap", "sqlmap", "nuclei", "subfinder", "naabu", "ffuf", "dirsearch", "gitleaks", "nikto", "netexec",
-		// Reverse-engineering toolchain for vendored reverse-skill builtins.
 		"default-jdk", "jadx", "apktool", "ghidra", "yara",
 		"android-sdk-platform-tools", "seclists", "graphviz", "plantuml",
 	} {
@@ -77,14 +76,7 @@ func TestSandboxDockerfileStripsNmapFileCapabilities(t *testing.T) {
 	dockerfile := string(dockerfileBytes)
 
 	for _, required := range []string{
-		// Kali's nmap ships /usr/lib/nmap/nmap with file capabilities that
-		// include cap_net_admin, which is outside Docker's default container
-		// capability bounding set; execve(2) then fails with EPERM (#286).
 		"setcap -r /usr/lib/nmap/nmap",
-		// The guard must execute the real binary, not only test that it is on
-		// PATH: build RUN steps use the same default bounding set, so a future
-		// Kali nmap package with out-of-set file caps fails the build instead
-		// of a sandbox task.
 		"nmap --version >/dev/null",
 	} {
 		assertContains(t, dockerfile, required)
@@ -104,9 +96,6 @@ func TestSandboxDockerfileInstallsTheOfflineKnowledgeBaseline(t *testing.T) {
 	}
 	dockerfile := string(dockerfileBytes)
 
-	// The Sandbox image carries the same offline knowledge baseline as the
-	// TSecBench Hosted Image through the shared installer, so challenge work
-	// sees an identical /opt/knowledge layout and lookup tool in both images.
 	for _, required := range []string{
 		"COPY docker/knowledge-baseline/install.sh /tmp/install-knowledge-baseline.sh",
 		"bash /tmp/install-knowledge-baseline.sh",
@@ -128,13 +117,8 @@ func TestSandboxDockerfileProvidesQemuUserEmulation(t *testing.T) {
 	dockerfile := string(dockerfileBytes)
 
 	for _, required := range []string{
-		// User-mode emulators for foreign-architecture binaries.
 		"qemu-user-static",
-		// Kali qemu-user 11 ships qemu-<arch>, not qemu-<arch>-static.
-		// The image must provide both name forms.
 		`"/usr/bin/${base}-static"`,
-		// The build must fail when a pinned emulator is missing. Keep the
-		// >/dev/null suffix so this cannot match qemu-x86_64-static.
 		"command -v qemu-x86_64 >/dev/null",
 		"command -v qemu-x86_64-static",
 		"command -v qemu-aarch64-static",
@@ -175,26 +159,17 @@ func TestSandboxDockerfileInstallsPipOnlyToolsViaPip(t *testing.T) {
 	}
 	dockerfile := string(dockerfileBytes)
 
-	// pwntools and frida-tools have no Kali apt package; they must be pip.
-	// unicorn (a pwntools dep) builds from source when no wheel matches;
-	// cmake must already be in the apt layer.
 	if !strings.Contains(dockerfile, "cmake") || !strings.Contains(dockerfile, "pkg-config") {
 		t.Fatal("sandbox Dockerfile must install cmake and pkg-config before pip-installing pwntools/unicorn")
 	}
-	// Kali rolling installs python3-websockets from apt, and frida-tools pins
-	// websockets<14.0.0; --ignore-installed keeps pip from trying to uninstall
-	// the apt-owned copy, which has no RECORD file.
 	pipLine := "pip3 install --no-cache-dir --ignore-installed pwntools frida-tools --break-system-packages"
 	if !strings.Contains(dockerfile, pipLine) {
 		t.Fatalf("sandbox Dockerfile should install pip-only tools together: %s", pipLine)
 	}
-	// Crypto/RE python libs (pycryptodome, z3-solver) ride pip for portability.
 	cryptoPipLine := "pip3 install --no-cache-dir pycryptodome z3-solver --break-system-packages"
 	if !strings.Contains(dockerfile, cryptoPipLine) {
 		t.Fatalf("sandbox Dockerfile should install crypto/RE python libs via pip: %s", cryptoPipLine)
 	}
-	// The apt block spans from "apt-get install" to the next RUN; pip-only
-	// tools must not appear inside any apt-get package list.
 	aptStart := strings.Index(dockerfile, "apt-get install")
 	aptEnd := strings.Index(dockerfile[aptStart:], "\nRUN")
 	if aptEnd == -1 {

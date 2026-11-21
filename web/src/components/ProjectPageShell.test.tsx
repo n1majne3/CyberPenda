@@ -33,7 +33,6 @@ describe("ProjectPageShell", () => {
     expect(screen.getByText("body")).toBeInTheDocument();
 
     // IA order from read contract §19.1: Overview → Tasks → Blackboard → Findings →
-    // Evidence → Report → Scope. CTF Projects swap Findings/Report for Solution.
     for (const label of [
       "Overview",
       "Tasks",

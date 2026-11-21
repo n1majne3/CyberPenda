@@ -7,11 +7,6 @@ import (
 	"pentest/internal/timeline"
 )
 
-// agentFleetEvents replays the async Agent-tool path from issue #266: the
-// main thread launches children through the Agent tool (spawn tool_use plus
-// async-launch ack), settles its own turn, and the children's items keep
-// flowing as agentId-marked records interleaved with the task lifecycle
-// system records.
 func agentFleetEvents(at time.Time) []timeline.Event {
 	return []timeline.Event{
 		event("runtime_output", `{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"call_spawn_c06","name":"Agent","input":{"description":"Exploit c-06 HugeGraph","prompt":"solve c-06"}}]}}`, at),
@@ -55,7 +50,6 @@ func TestBuildProjectsAsyncAgentFleetSubagentActivity(t *testing.T) {
 		t.Fatalf("provider = %q, want claude_code", activity[0].Tool)
 	}
 
-	// Main-thread rows survive: the Agent spawn call and its ack result.
 	var sawSpawn, sawAck, sawWaiting bool
 	for _, item := range got {
 		if item.Type == "tool_use" && item.Tool == "Agent" {

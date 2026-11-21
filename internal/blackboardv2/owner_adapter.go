@@ -64,7 +64,6 @@ func (s *Service) ApplyForOwnerAtRevision(ctx context.Context, contract owner.Co
 	return s.apply(ctx, contract.ProjectID, "", batch, &expectedBaseRevision)
 }
 
-// ReadCurrentForOwner is the owner-neutral current-detail adapter.
 func (s *Service) ReadCurrentForOwner(ctx context.Context, contract owner.Contract, key string) (CurrentDetail, error) {
 	if err := validateOwnerContract(contract); err != nil {
 		return CurrentDetail{}, err
@@ -75,7 +74,6 @@ func (s *Service) ReadCurrentForOwner(ctx context.Context, contract owner.Contra
 	return s.ReadCurrent(ctx, contract.ProjectID, key)
 }
 
-// ReadHistoryForOwner is the owner-neutral Semantic History adapter.
 func (s *Service) ReadHistoryForOwner(ctx context.Context, contract owner.Contract, key string, options HistoryOptions) (SemanticHistory, error) {
 	if err := validateOwnerContract(contract); err != nil {
 		return SemanticHistory{}, err
@@ -86,7 +84,6 @@ func (s *Service) ReadHistoryForOwner(ctx context.Context, contract owner.Contra
 	return s.ReadHistory(ctx, contract.ProjectID, key, options)
 }
 
-// RuntimeSnapshotForOwner is the owner-neutral canonical Snapshot adapter.
 func (s *Service) RuntimeSnapshotForOwner(ctx context.Context, contract owner.Contract) (RuntimeSnapshot, error) {
 	if err := validateOwnerContract(contract); err != nil {
 		return RuntimeSnapshot{}, err

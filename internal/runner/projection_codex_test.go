@@ -420,7 +420,6 @@ description = "Research role."
 `,
 	})
 
-	// Unmanaged overlay keys merge; the structured cap wins its conflict.
 	if !strings.Contains(config, `default_subagent_model = "gpt-sub"`) {
 		t.Fatalf("expected overlay agents key to merge, got:\n%s", config)
 	}

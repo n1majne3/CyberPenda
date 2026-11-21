@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// TestBlackboardV2RuntimeHasNoGraphV1Ledger is the repository boundary for
-// #127. Historical v1 decoding is deliberately isolated to the offline
-// migration package; the active daemon/runtime path must be v2-only.
 func TestBlackboardV2RuntimeHasNoGraphV1Ledger(t *testing.T) {
 	root := repositoryRoot(t)
 	for _, relativePath := range []string{
@@ -70,9 +67,6 @@ func TestBlackboardV2RuntimeHasNoGraphV1Ledger(t *testing.T) {
 	}
 }
 
-// TestBlackboardV2HasNoCurrentGraphV1ReadOrAuditProjection is the repository
-// boundary for #126. Historical decoding is an offline migration concern; no
-// current daemon, runtime, transport, or CLI package may register or invoke it.
 func TestBlackboardV2HasNoCurrentGraphV1ReadOrAuditProjection(t *testing.T) {
 	root := repositoryRoot(t)
 	for _, relativePath := range []string{

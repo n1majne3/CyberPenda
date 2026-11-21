@@ -25,7 +25,6 @@ import (
 	"pentest/internal/skill"
 )
 
-// CheckStatus is the outcome for a single preflight check.
 type CheckStatus string
 
 const (
@@ -33,7 +32,6 @@ const (
 	CheckFail CheckStatus = "fail"
 )
 
-// Check is one named preflight result.
 type Check struct {
 	Name   string      `json:"name"`
 	Status CheckStatus `json:"status"`
@@ -81,7 +79,6 @@ type CodexMultiAgentPreview struct {
 	MaxDepth                       int    `json:"max_depth,omitempty"`
 }
 
-// Result is the full preflight outcome for a task launch.
 type Result struct {
 	Pass              bool                      `json:"pass"`
 	Checks            []Check                   `json:"checks"`
@@ -92,9 +89,7 @@ type Result struct {
 	CodexMultiAgent   *CodexMultiAgentPreview   `json:"codex_multi_agent,omitempty"`
 }
 
-// Request describes what to validate for a task launch.
 type Request struct {
-	// RuntimeProfileID is the id of the runtime profile the task will use.
 	RuntimeProfileID string
 	// Profile is a source-neutral launch adapter. Direct configuration and
 	// already-captured Snapshots pass a detached Profile and never require a
@@ -107,10 +102,8 @@ type Request struct {
 	// to whatever the runtime profile declares. Useful when project defaults add
 	// references the profile does not.
 	CredentialRefsToResolve []string
-	// Runner is the selected runner. An empty runner defaults to sandbox.
-	Runner string
-	// HostActivated is true when the operator explicitly confirmed host runner.
-	HostActivated bool
+	Runner                  string
+	HostActivated           bool
 	// LaunchModelOverride applies a task-only model choice without editing the profile.
 	LaunchModelOverride string
 	// ModelProviderSnapshot is the immutable provider configuration captured by
@@ -127,17 +120,14 @@ type Request struct {
 	ScopeCapabilities []string
 	// ContainerCLI is the host container executable (docker or podman). Empty
 	// defaults to docker. Used only when Runner is sandbox.
-	ContainerCLI string
-	// SandboxVPNTun requests opt-in TUN device + NET_ADMIN for OpenVPN.
-	SandboxVPNTun bool
-	// SandboxNetwork is the selected sandbox network mode (for conflict checks).
+	ContainerCLI   string
+	SandboxVPNTun  bool
 	SandboxNetwork string
 	// RuntimeRoot is the host directory for task workdirs and bind mounts.
 	// Empty skips the path readiness check (daemon default is applied later).
 	RuntimeRoot string
 }
 
-// ProfileGetter loads runtime profiles for preflight checks.
 type ProfileGetter interface {
 	Get(id string) (runtimeprofile.Profile, error)
 }
@@ -148,7 +138,6 @@ type SkillGetter interface {
 	EnabledSkillBundles(profileID string) ([]skill.Bundle, error)
 }
 
-// Service runs preflight against the runtime profile and credential services.
 type Service struct {
 	profiles          ProfileGetter
 	creds             *credential.Service
@@ -157,8 +146,7 @@ type Service struct {
 	runtimePlugins    *runtimeplugin.Registry
 	runtimeExtensions *runtimeextension.Registry
 	capabilityCache   modelprovider.CapabilityLookup
-	// containerRunner probes the host container CLI. Nil uses the real CLI.
-	containerRunner runner.CommandRunner
+	containerRunner   runner.CommandRunner
 }
 
 // detectEngine probes the live engine on every call. Preflight must never
@@ -170,7 +158,6 @@ func (s *Service) detectEngine(ctx context.Context, cli string) (runner.EngineIn
 	return runner.DetectEngine(ctx, cli, s.containerRunner)
 }
 
-// NewService returns a preflight Service.
 func NewService(profiles ProfileGetter, creds *credential.Service, skillGetters ...SkillGetter) *Service {
 	svc := &Service{profiles: profiles, creds: creds}
 	if len(skillGetters) > 0 {
@@ -202,14 +189,12 @@ func (s *Service) WithContainerRunner(run runner.CommandRunner) *Service {
 	return s
 }
 
-// Run executes all preflight checks for a launch request.
 func (s *Service) Run(ctx context.Context, request Request) Result {
 	result := Result{Pass: true}
 	if request.BlackboardMode != "" && !modeskill.Valid(request.BlackboardMode) {
 		result.add(Check{Name: "blackboard_mode", Status: CheckFail, Detail: "invalid Blackboard Mode"})
 	}
 
-	// Check 1: a source-neutral Runtime configuration is loadable.
 	var profile runtimeprofile.Profile
 	var err error
 	if request.Profile != nil {
@@ -264,8 +249,6 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 			for _, skillID := range request.CapturedSkillIDs {
 				captured, captureErr := s.skills.Get(skillID)
 				if captureErr != nil {
-					// Retired builtins stay in historical snapshots; resume
-					// skips them instead of failing the skills check.
 					if errors.Is(captureErr, skill.ErrNotFound) {
 						unavailable++
 						continue
@@ -375,7 +358,6 @@ func (s *Service) Run(ctx context.Context, request Request) Result {
 		}
 	}
 
-	// Check 2: the selected runner is valid. Empty defaults to sandbox.
 	runner := request.Runner
 	if runner == "" {
 		runner = "sandbox"
@@ -879,8 +861,6 @@ func mergedCodexMultiAgentPreview(profile runtimeprofile.Profile) (*CodexMultiAg
 					v2Config["max_concurrent_threads_per_session"],
 				)
 			} else {
-				// A boolean V2 feature uses the legacy agents thread cap as its
-				// compatibility fallback. max_depth remains V1-only.
 				preview.MaxConcurrentThreadsPerSession, err = positiveConfigInt(
 					"agents.max_concurrent_threads_per_session",
 					agents["max_concurrent_threads_per_session"],

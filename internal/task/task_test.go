@@ -132,7 +132,6 @@ func TestCreateCapturesGoalRunControlsAndScopeSnapshot(t *testing.T) {
 	if fetched.RunControls.Policy.MaxWrongSubmissions != 4 || fetched.RunControls.Policy.MaxRatingDrawdown != 40 {
 		t.Fatalf("expected immutable task policy snapshot, got %#v", fetched.RunControls.Policy)
 	}
-	// Scope snapshot is an immutable copy captured at launch.
 	if got := created.ScopeSnapshot.Domains; len(got) != 1 || got[0] != "example.com" {
 		t.Fatalf("expected scope snapshot domain, got %#v", got)
 	}
@@ -524,10 +523,7 @@ func TestRuntimeConfigVersionsIncrementOnProfileSwitch(t *testing.T) {
 	projects := project.NewService(db)
 	svc := task.NewService(db, projects)
 	proj, _ := projects.Create("P", "", project.Scope{}, project.Defaults{})
-	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type:
-
-	// First config version is captured at launch.
-	task.TypePentest, Goal: "g", RuntimeProfileID: "prof-a", Runner: task.RunnerSandbox})
+	created, _ := svc.Create(task.CreateRequest{ProjectID: proj.ID, Type: task.TypePentest, Goal: "g", RuntimeProfileID: "prof-a", Runner: task.RunnerSandbox})
 
 	first, err := svc.RecordRuntimeConfig(created.ID, "prof-a", map[string]any{"model": "a"})
 	if err != nil {
@@ -537,7 +533,6 @@ func TestRuntimeConfigVersionsIncrementOnProfileSwitch(t *testing.T) {
 		t.Fatalf("expected first version 1, got %d", first.Version)
 	}
 
-	// A profile switch creates version 2, not a new task.
 	second, err := svc.RecordRuntimeConfig(created.ID, "prof-b", map[string]any{"model": "b"})
 	if err != nil {
 		t.Fatalf("record second config: %v", err)
@@ -556,7 +551,6 @@ func TestRuntimeConfigVersionsIncrementOnProfileSwitch(t *testing.T) {
 	if len(versions) != 2 {
 		t.Fatalf("expected 2 config versions, got %d", len(versions))
 	}
-	// Task identity is unchanged.
 	fetched, _ := svc.Get(created.ID)
 	if fetched.RuntimeProfileID != "prof-a" {
 		t.Fatalf("task original profile must be unchanged; profile switch affects next continuation, got %q", fetched.RuntimeProfileID)

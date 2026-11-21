@@ -49,7 +49,6 @@ const (
 	MaxAttachmentCount           = 25
 )
 
-// EventKind classifies the owner-local Session timeline.
 type EventKind string
 
 const (
@@ -78,7 +77,6 @@ type Event struct {
 	CreatedAt time.Time    `json:"created_at"`
 }
 
-// Runner identifies the execution boundary for a Session Runtime.
 type Runner string
 
 const (
@@ -115,7 +113,6 @@ type RuntimeActivity struct {
 	Warning      string `json:"warning,omitempty"`
 }
 
-// RuntimeControls is the owner-local control projection exposed to the UI.
 type RuntimeControls struct {
 	NativeResumeAvailable   bool                  `json:"native_resume_available"`
 	NativeSteerAvailable    bool                  `json:"native_steer_available"`
@@ -141,14 +138,11 @@ type RunControls struct {
 	BlackboardMode BlackboardMode `json:"blackboard_mode"`
 	// ContainerCLI is docker or podman for Session sandbox launches. Empty
 	// means the daemon default (-container-cli / PENTEST_CONTAINER_CLI).
-	ContainerCLI string `json:"container_cli,omitempty"`
-	// SandboxNetwork mirrors Task sandbox network selection when non-empty.
+	ContainerCLI   string `json:"container_cli,omitempty"`
 	SandboxNetwork string `json:"sandbox_network,omitempty"`
-	// SandboxVPNTun opts into /dev/net/tun + NET_ADMIN for OpenVPN in the container.
-	SandboxVPNTun bool `json:"sandbox_vpn_tun,omitempty"`
+	SandboxVPNTun  bool   `json:"sandbox_vpn_tun,omitempty"`
 }
 
-// BlackboardMode is the Runtime Owner's immutable Blackboard Mode.
 type BlackboardMode string
 
 const (
@@ -157,7 +151,6 @@ const (
 	BlackboardModeDisabled     BlackboardMode = "disabled"
 )
 
-// BlackboardConclusionState is the compact owner-local semantic-debt view.
 type BlackboardConclusionState string
 
 const (
@@ -221,7 +214,6 @@ const (
 	ConclusionDirectiveKindVersionRegeneration = owner.ConclusionDirectiveKindVersionRegeneration
 )
 
-// ConclusionDispatchState is the delivery lifecycle of one immutable dispatch.
 type ConclusionDispatchState = owner.ConclusionDispatchState
 
 const (
@@ -234,7 +226,6 @@ const (
 	ConclusionDispatchLateTerminal   = owner.ConclusionDispatchLateTerminal
 )
 
-// ConclusionRecoveryReason is the closed operator-visible fail-closed reason.
 type ConclusionRecoveryReason = owner.ConclusionRecoveryReason
 
 const (
@@ -291,7 +282,6 @@ type RuntimeConfigVersion struct {
 	CreatedAt        time.Time      `json:"created_at"`
 }
 
-// Continuation is the durable Runtime pin for one Session turn.
 type Continuation struct {
 	ID                string        `json:"id"`
 	SessionID         string        `json:"session_id"`
@@ -309,7 +299,6 @@ type Continuation struct {
 	EndedAt           *time.Time    `json:"ended_at,omitempty"`
 }
 
-// CreateContinuationRequest is the durable part of a Session Runtime launch.
 type CreateContinuationRequest struct {
 	RuntimeProfileID  string
 	RuntimeProvider   string
@@ -373,8 +362,6 @@ type AttachmentReference struct {
 	ContinuationID string
 }
 
-// AttachmentReference returns the safe attachment projection represented by
-// this Event. Invalid or legacy malformed payloads are not runtime-visible.
 func (event Event) AttachmentReference() (AttachmentReference, bool) {
 	if event.Kind != EventKindAttachment {
 		return AttachmentReference{}, false
@@ -388,7 +375,6 @@ func (event Event) AttachmentReference() (AttachmentReference, bool) {
 	return AttachmentReference{RelativePath: clean, ContinuationID: strings.TrimSpace(continuationID)}, true
 }
 
-// CreateRequest is the initial Session input and optional initial attachments.
 type CreateRequest struct {
 	Input          string
 	Attachments    []Attachment
@@ -418,7 +404,6 @@ var (
 	ErrInvalidBlackboardMode      = errors.New("Session Blackboard Mode must be interactive, working_graph, or disabled")
 )
 
-// Service implements Session persistence and lifecycle rules against SQLite.
 type Service struct {
 	db             *store.DB
 	workdirRoot    string
@@ -647,7 +632,6 @@ func (s *Service) Create(req CreateRequest) (Session, error) {
 	return created, nil
 }
 
-// Get loads one Session by its own durable identity.
 func (s *Service) Get(id string) (Session, error) {
 	return scanSession(s.db.QueryRow(`SELECT id,title,lifecycle,workdir,blackboard_mode,created_at,updated_at,last_activity_at,blackboard_protocol FROM sessions WHERE id=?`, id))
 }
@@ -731,7 +715,6 @@ func (s *Service) Archive(id string) (Session, error) {
 	return s.transition(id, LifecycleOpen, LifecycleArchived, ErrAlreadyArchived, "archived")
 }
 
-// Restore reopens an archived Session with the same identity and state.
 func (s *Service) Restore(id string) (Session, error) {
 	return s.transition(id, LifecycleArchived, LifecycleOpen, ErrNotArchived, "restored")
 }
@@ -1069,8 +1052,6 @@ func (s *Service) readTranscriptContextBefore(sessionID string, seq int, window 
 			return fmt.Errorf("read Session Transcript Continuation pin: %w", err)
 		}
 	}
-	// Legacy lifecycle Events can predate durable Continuation pins. Preserve
-	// their historical numbering with the old count only on that fallback path.
 	if err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM session_events
 		WHERE session_id=? AND seq<? AND kind='lifecycle'
@@ -1253,9 +1234,6 @@ func (s *Service) PrepareConversationInput(id, continuationID, role, text string
 	}, nil
 }
 
-// AttachmentReferences returns the safe references that will be stored when
-// AppendTx commits. It is used to construct the provider-visible input before
-// the caller commits the shared transaction.
 func (prepared *PreparedConversationInput) AttachmentReferences() []AttachmentReference {
 	result := make([]AttachmentReference, 0, len(prepared.copied))
 	for _, attachment := range prepared.copied {
@@ -1325,7 +1303,6 @@ func (prepared *PreparedConversationInput) Commit() {
 	}
 }
 
-// Rollback removes staged files unless Commit already finalized the input.
 func (prepared *PreparedConversationInput) Rollback() {
 	if prepared == nil || prepared.finalized {
 		return
@@ -1619,7 +1596,6 @@ func (s *Service) CreateReplacementContinuationWithInput(previous Continuation, 
 	return next, nil
 }
 
-// ActiveContinuation returns the current pending/running Session Runtime pin.
 func (s *Service) ActiveContinuation(sessionID string) (*Continuation, error) {
 	row := s.db.QueryRow(`SELECT id,session_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,runtime_config_version_id,started_at,updated_at,ended_at FROM session_continuations WHERE session_id=? AND status IN (?,?) ORDER BY number DESC LIMIT 1`, sessionID, string(RuntimeStatusPending), string(RuntimeStatusRunning))
 	found, err := scanContinuation(row)
@@ -1632,7 +1608,6 @@ func (s *Service) ActiveContinuation(sessionID string) (*Continuation, error) {
 	return &found, nil
 }
 
-// LatestContinuation returns the latest Session Runtime pin, if one exists.
 func (s *Service) LatestContinuation(sessionID string) (*Continuation, error) {
 	row := s.db.QueryRow(`SELECT id,session_id,number,runtime_profile_id,runtime_provider,runner,status,container_id,native_session_id,native_session_path,runtime_config_version_id,started_at,updated_at,ended_at FROM session_continuations WHERE session_id=? ORDER BY number DESC LIMIT 1`, sessionID)
 	found, err := scanContinuation(row)

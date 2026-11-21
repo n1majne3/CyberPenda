@@ -1,5 +1,3 @@
-// Package modelprovidermigrate moves legacy runtime-profile model-service fields
-// into reusable model providers with explicit user confirmation.
 package modelprovidermigrate
 
 import (
@@ -376,8 +374,6 @@ func (s *Service) migrateAPIKey(profile runtimeprofile.Profile, plugin runtimepl
 	return nil
 }
 
-// ClearLegacyModelFields removes migrated model-service fields while keeping
-// unrelated runtime profile configuration.
 func ClearLegacyModelFields(fields runtimeprofile.Fields, provider runtimeprofile.Provider) runtimeprofile.Fields {
 	next := fields
 	next.Endpoint = ""

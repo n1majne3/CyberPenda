@@ -129,7 +129,6 @@ func TestPrepareSandboxSkillsWithoutSymlinkPrivilege(t *testing.T) {
 			requireSkillsDiscovery(t, workdirSkills, sandboxTaskSkillsDir)
 			requireSkillsDiscovery(t, homeSkills, sandboxTaskSkillsDir)
 
-			// The legacy image-baked target has no host directory to expose.
 			imageLayout, err := runner.PrepareTaskLayout(t.TempDir(), "task-2", provider)
 			if err != nil {
 				t.Fatalf("prepare image layout: %v", err)
@@ -139,7 +138,6 @@ func TestPrepareSandboxSkillsWithoutSymlinkPrivilege(t *testing.T) {
 			}
 			requireSkillsDiscovery(t, filepath.Join(imageLayout.Workdir, filepath.FromSlash(runner.SkillsWorkdirRelPath(provider))), "/opt/pentest/skills")
 
-			// An enabled Skill stays discoverable at both discovery paths.
 			const skillID = "recon-helper"
 			const doc = "# Recon\n"
 			requireProjectedSkill(t, layout, skillID, doc)

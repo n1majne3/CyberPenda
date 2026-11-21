@@ -70,8 +70,6 @@ func (input taskContinuationSelectionInput) hasRuntimeProfileSelection() bool {
 	return strings.TrimSpace(input.RuntimeProfileID) != ""
 }
 
-// selectedModel returns the explicit model for this turn. Prefer `model`, then
-// the legacy `model_override` alias.
 func (input taskContinuationSelectionInput) selectedModel() string {
 	if model := strings.TrimSpace(input.Model); model != "" {
 		return model
@@ -312,9 +310,6 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 	}
 	plan = boundPlan
 	if server.providerSessionFactory != nil && supportsPersistentProviderSession(created.Runner, plan.ResolvedProfile.Provider) {
-		// Persistent selection with a factory is fail-closed: factory/bridge errors
-		// never fall back to the legacy one-shot Adapter. Production always installs
-		// the factory; unit tests without one still exercise one-shot host paths.
 		binding, factoryErr := server.providerSessionFactory.Open(context.Background(), ProviderSessionLaunchRequest{
 			Owner: created.OwnerContract(""), Continuation: ownerContinuationFromTask(continuation), Provider: plan.ResolvedProfile.Provider,
 			Runner: created.Runner, LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.CapturedRuntimeConfig,
@@ -345,10 +340,6 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 			}
 			adapter.SetInitialTurnSelection(selection)
 		}
-		// Pi persistent sessions write their turn output to a session jsonl
-		// rather than the bridge RPC channel, so wrap the session adapter with
-		// the tailer that re-emits those lines as runtime_output events. The
-		// legacy one-shot path does the same for sandboxed Pi.
 		providerHome := ""
 		if plan.ValidatedLayout != nil {
 			providerHome = plan.ValidatedLayout.ProviderHome
@@ -385,7 +376,6 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 			server.logTask(created, "shutdown", "")
 		case err == nil:
 			server.logTask(created, "completed", "")
-			// Persistent sessions that end cleanly still release ownership.
 			_ = server.closeProviderSession(created.ID)
 		case errors.Is(err, context.Canceled):
 			server.logTask(created, "stopped", "")
@@ -667,10 +657,6 @@ func (server *Server) applyTaskLaunchDefaults(projectID, requestedProfileID stri
 	return resolved, nil
 }
 
-// recordLoopbackRewriteEvent records a task event when a sandbox task's goal
-// loopback targets were rewritten to host.docker.internal. It is a best-effort
-// record: failures are ignored so they cannot block task launch. Host-runner
-// tasks and goals without loopback targets produce no event.
 func (server *Server) recordLoopbackRewriteEvent(created task.Task) {
 	sandbox := created.Runner == task.RunnerSandbox
 	if !sandbox {
@@ -873,12 +859,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		return taskLaunchPlan{}, err
 	}
 
-	// The daemon operator token authorizes the full API, including Host Runner
-	// launch. Runtime environments are not trusted with it: only a Continuation
-	// Interface Grant may authenticate Runtime traffic. The legacy non-v2 branch
-	// projects no token at all, so when a daemon token is configured its trusted
-	// MCP calls cannot authenticate — the denial happens at the daemon, never
-	// through leaked authority.
 	projectionBinding := runner.ProjectionBinding{}
 	if v2 {
 		projectionBinding.InterfaceToken = strings.TrimSpace(binding.InterfaceToken)
@@ -1048,7 +1028,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 	}
 	if capturedRuntimeConfig != nil {
-		// Pi multi-provider projection set is fixed for this runtime lifetime.
 		if ids, ok := projection.Config["projected_model_provider_ids"]; ok {
 			capturedRuntimeConfig["projected_model_provider_ids"] = ids
 		}
@@ -1253,7 +1232,6 @@ func (server *Server) handleListTasks(response http.ResponseWriter, request *htt
 	if tasks == nil {
 		tasks = []task.Task{}
 	}
-	// Decorate list entries with current Runtime Activity (not Task status).
 	tasks = server.attachRuntimeActivities(tasks)
 	writeJSON(response, http.StatusOK, struct {
 		Tasks []task.Task `json:"tasks"`
@@ -1275,15 +1253,8 @@ func (server *Server) handleGetTask(response http.ResponseWriter, request *http.
 	writeJSON(response, http.StatusOK, detailed)
 }
 
-// workspaceNavigationTaskLimit bounds the number of ordinary Tasks inlined per
-// Project in the Sidebar navigation projection. Busy-runtime Tasks and the
-// selected Task are inlined on top of this limit, so the per-Project row never
-// needs a full Task history (#201).
 const workspaceNavigationTaskLimit = 5
 
-// workspaceNavigationResponse is the single-call Workspace Sidebar projection.
-// A refresh that supplies the current opaque revision receives changed=false
-// and an empty project list instead of a reserialized projection (#201).
 type workspaceNavigationResponse struct {
 	Revision string                       `json:"revision"`
 	Changed  bool                         `json:"changed"`
@@ -1296,19 +1267,6 @@ type workspaceNavigationProject struct {
 	Tasks          []task.Task `json:"tasks"`
 }
 
-// handleWorkspaceNavigation returns one bounded navigation projection for the
-// Workspace Sidebar: every Project, each with the five most recent ordinary
-// Tasks inlined (runtime_activity and Blackboard conclusion already attached),
-// every Task with a live busy Runtime promoted ahead of the ordinary summary,
-// and the selected Task appended when neither rule already included it
-// (#201). Runtime liveness is computed live via attachRuntimeActivity; it is
-// never derived from durable Task status.
-//
-// The query work and response size are bounded by Project count × the fixed
-// summary size plus active Runtime count plus the selected Task; total
-// historical Task count never enters either bound. A request that supplies the
-// current opaque revision is answered with an empty unchanged result, so
-// polling never reserializes the projection.
 func (server *Server) handleWorkspaceNavigation(response http.ResponseWriter, request *http.Request) {
 	requestRevision := strings.TrimSpace(request.URL.Query().Get("revision"))
 	selectedTaskID := strings.TrimSpace(request.URL.Query().Get("selected_task"))
@@ -1398,7 +1356,6 @@ func (server *Server) handleWorkspaceNavigation(response http.ResponseWriter, re
 			Tasks:          inlined,
 		})
 	}
-	// Resolve all inlined Task configurations in one batch across Projects.
 	var allTasks []task.Task
 	for _, summary := range summaries {
 		allTasks = append(allTasks, summary.Tasks...)
@@ -1436,19 +1393,6 @@ func taskIDInList(id string, tasks []task.Task) bool {
 	return false
 }
 
-// navigationRevision returns the opaque conditional-refresh token for the
-// Project Navigation Projection (#201). It folds the durable Project and Task
-// summary epochs, the live busy-Runtime Task set, and the selected Task
-// identity, so every change that can alter the navigation rows yields a new
-// revision while an unchanged refresh can be answered without serializing the
-// projection. All inputs are bounded: the epochs are single indexed reads and
-// the busy set is bounded by the number of active Runtimes.
-//
-// The revision covers what the Sidebar renders: Project/Task summary fields,
-// busy membership, and the selected Task. The attached Blackboard conclusion
-// view is not rendered by navigation, so its transitions do not advance the
-// revision; a conclusion change alone is served from the cached projection
-// until the next revision-relevant change.
 func (server *Server) navigationRevision(busyIDs []string, selected *task.Task) (string, error) {
 	projectEpoch, err := server.projects.LatestUpdate()
 	if err != nil {
@@ -1618,8 +1562,6 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		RuntimeProvider:         string(profile.Provider),
 	}
 	if profile.Provider == runtimeprofile.ProviderPi {
-		// Expose the fixed projected set so Task Conversation UI can fail closed
-		// when metadata is missing (legacy) or the target is outside the set.
 		if ids := server.projectedPiModelProviderIDs(found); len(ids) > 0 {
 			controls.ProjectedModelProviderIDs = ids
 		}
@@ -1765,9 +1707,6 @@ func (server *Server) handleTaskTimeline(response http.ResponseWriter, request *
 	})
 }
 
-// handleTaskTimelineItem returns one complete retained timeline item by stable
-// item ID. A numeric Seq remains valid for retained legacy detail links.
-// including the full payload that the history window preview truncated.
 func (server *Server) handleTaskTimelineItem(response http.ResponseWriter, request *http.Request) {
 	found, ok := server.requireProjectTask(response, request)
 	if !ok {
@@ -2033,7 +1972,6 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 	if server.harness != nil {
 		server.harness.MarkFinishRequested(taskID)
 	}
-	// 2) Close provider session/bridge/process (production Closed() on Close).
 	if err := server.closeProviderSessionForStop(stopContext, taskID); err != nil {
 		if server.harness != nil {
 			server.harness.ClearFinishIntent(taskID)
@@ -2189,7 +2127,6 @@ func (server *Server) settleTaskFailedAfterFinishAbort(taskID string) {
 		switch cont.Status {
 		case task.StatusRunning, task.StatusPaused, task.StatusPending:
 			if _, err := server.tasks.UpdateContinuationStatus(cont.ID, task.StatusFailed); err != nil {
-				// Status may already be terminal from a partial write; re-read.
 				if refreshed, refErr := server.tasks.Continuation(cont.ID); refErr == nil {
 					if refreshed.Status == task.StatusRunning || refreshed.Status == task.StatusPaused || refreshed.Status == task.StatusPending {
 						server.finishDiagnostic(taskID, "settle_continuation", err.Error())
@@ -3066,11 +3003,6 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 	releaseSteeringRequest := server.steering.AcquireRequest(owner.KindTask, found.ID, input.RequestID)
 	defer releaseSteeringRequest()
 
-	// Durable acceptance (#194, #200): the operator message and the dispatch
-	// record commit atomically before the request returns 202. The accepted
-	// steering is dispatched by the owner-neutral FIFO queue at the next valid
-	// work boundary; the Conversation Event is a projection, not the dispatch
-	// source of truth.
 	conversationPayload := task.EventPayload{
 		"role": "user", "text": input.Message, "request_id": input.RequestID,
 		"delivery": "native_steer", "outcome": "pending", "mode": string(mode),
@@ -3374,11 +3306,6 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 			return fmt.Errorf("rebind Blackboard continuation grant: %w", err)
 		}
 	}
-	// Recover any in-flight assisted-conclusion obligation with a NEW Conclusion
-	// Dispatch bound to the replacement Continuation + live session so a later
-	// retry delivers its control turn against the live replacement session
-	// instead of looping on the pre-steer (now dead) session. Historical
-	// dispatch identity is never rewritten (ADR 0021).
 	if _, err := server.tasks.UpdateContinuationStatus(old.ID, task.StatusCompleted); err != nil {
 		_, _ = server.tasks.UpdateContinuationStatus(next.ID, task.StatusFailed)
 		return fmt.Errorf("settle old continuation: %w", err)
@@ -3387,9 +3314,6 @@ func (server *Server) advanceNativeSteerContinuation(currentID string, session r
 	return nil
 }
 
-// errNoContinuationToContinue reports a Task that never had a Runtime
-// Continuation. The legacy one-shot path keeps task-level events in that
-// degenerate state instead of inventing continuation authority.
 var errNoContinuationToContinue = errors.New("no prior continuation to continue after terminal Blackboard state")
 
 // createWritableContinuationForLiveSession detects a terminal Runtime
@@ -3442,11 +3366,6 @@ func (server *Server) createWritableContinuationForLiveSession(found task.Task, 
 			return fail(fmt.Errorf("rebind Blackboard continuation grant: %w", err))
 		}
 	}
-	// Recover any in-flight assisted-conclusion obligation with a NEW Conclusion
-	// Dispatch bound to the replacement Continuation + live session so a later
-	// retry delivers its control turn against the live replacement session
-	// instead of looping on the pre-steer (now dead) session. Historical
-	// dispatch identity is never rewritten (ADR 0021).
 	if _, err := server.tasks.UpdateContinuationStatus(next.ID, task.StatusRunning); err != nil {
 		return fail(fmt.Errorf("start writable continuation: %w", err))
 	}
@@ -3552,11 +3471,6 @@ func (server *Server) resolveNativeTurnSelection(response http.ResponseWriter, f
 	return selection, true
 }
 
-// piProjectedProviderAllowed reports whether providerID was included in the Pi
-// runtime's Config Projection set. ADR 0015 fixes that set until the next
-// projection/restart: missing or empty projected_model_provider_ids fails
-// closed so legacy tasks cannot perform arbitrary native cross-provider turns
-// without a fresh Config Projection that records the set.
 func (server *Server) piProjectedProviderAllowed(found task.Task, providerID string) bool {
 	providerID = strings.TrimSpace(providerID)
 	if providerID == "" {
@@ -3630,10 +3544,6 @@ func (server *Server) currentTurnSelection(found task.Task) (runtime.ProviderSes
 	return configSelection, nil
 }
 
-// selectionFromCapturedRuntimeConfig resolves Model Provider / model / effort
-// from the latest Task Runtime Configuration Version and model_provider_snapshot.
-// Profile fields are only a fallback — launch-resolved and legacy profiles may
-// leave provider/model empty on the Profile while the captured snapshot is true.
 func (server *Server) selectionFromCapturedRuntimeConfig(found task.Task) (runtime.ProviderSessionRequest, error) {
 	selection, _, err := server.selectionFromCapturedRuntimeConfigTimed(found)
 	return selection, err
@@ -3685,7 +3595,6 @@ func (server *Server) precedingConversationTurnSelectionTimed(taskID string) (ru
 		if strings.TrimSpace(providerID) == "" && strings.TrimSpace(model) == "" && strings.TrimSpace(effort) == "" {
 			continue
 		}
-		// Prefer a complete conversation turn; skip incomplete steering noise.
 		if event.Kind == task.EventKindSteering && strings.TrimSpace(providerID) == "" && strings.TrimSpace(model) == "" {
 			continue
 		}

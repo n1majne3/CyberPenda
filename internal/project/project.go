@@ -31,11 +31,9 @@ type Scope struct {
 	Capabilities  []string `json:"capabilities,omitempty"`
 }
 
-// Runner names the execution boundary selected for a task.
 type Runner string
 
 const (
-	// RunnerSandbox runs a runtime inside a sandbox and is the default.
 	RunnerSandbox Runner = "sandbox"
 	// RunnerHost runs a runtime on the host and must be explicitly activated.
 	RunnerHost Runner = "host"
@@ -72,10 +70,8 @@ type Project struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
-// ErrNotFound is returned when no project matches the requested id.
 var ErrNotFound = errors.New("project not found")
 
-// ErrInvalidKind is returned when a Project kind is outside the closed set.
 var ErrInvalidKind = errors.New("invalid project kind")
 
 // ErrKindConversionBlocked is returned when a Project cannot change kind
@@ -105,17 +101,14 @@ type KindConversionPreview struct {
 	Blockers    []KindConversionBlocker `json:"blockers"`
 }
 
-// Service implements project business rules against SQLite.
 type Service struct {
 	db *store.DB
 }
 
-// NewService returns a Service backed by the given database.
 func NewService(db *store.DB) *Service {
 	return &Service{db: db}
 }
 
-// Create stores a new Pentest Project and returns it with a generated id and timestamps.
 func (s *Service) Create(name, description string, scope Scope, defaults Defaults) (Project, error) {
 	return s.CreateWithKind(name, description, KindPentest, scope, defaults)
 }
@@ -166,7 +159,6 @@ func (s *Service) CreateWithKind(name, description, kind string, scope Scope, de
 	return created, nil
 }
 
-// Get loads a single project by id.
 func (s *Service) Get(id string) (Project, error) {
 	row := s.db.QueryRow(
 		`SELECT id, name, description, kind, scope_json, defaults_json, created_at, updated_at, blackboard_protocol FROM projects WHERE id = ?`,
@@ -294,10 +286,6 @@ func validKind(kind string) bool {
 	return kind == KindPentest || kind == KindCTFChallenge
 }
 
-// LatestUpdate returns the newest updated_at across every Project, the durable
-// Project half of the Project Navigation Projection revision. Creation and
-// rename both advance updated_at, so one indexed read covers every
-// navigation-visible Project summary change (#201).
 func (s *Service) LatestUpdate() (time.Time, error) {
 	var value string
 	if err := s.db.QueryRow(`SELECT COALESCE(MAX(updated_at), '') FROM projects`).Scan(&value); err != nil {
@@ -377,7 +365,6 @@ func scanProject(row scanner) (Project, error) {
 		return Project{}, fmt.Errorf("decode scope: %w", err)
 	}
 	if err := json.Unmarshal([]byte(defaultsJSON), &found.Defaults); err != nil {
-		// Older rows may predate the defaults column; treat as empty.
 		found.Defaults = Defaults{}
 	}
 	if found.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
@@ -389,7 +376,6 @@ func scanProject(row scanner) (Project, error) {
 	return found, nil
 }
 
-// ErrMissingName is returned when a project has no non-empty name.
 var ErrMissingName = errors.New("project name is required")
 
 func newID() string {

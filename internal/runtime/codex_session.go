@@ -18,8 +18,6 @@ type NativeSessionMetadata struct {
 	NativeSessionPath string
 }
 
-// DiscoverCodexSession returns the newest saved Codex session under providerHome.
-// It is best-effort: when no session exists yet it returns zero values.
 func DiscoverCodexSession(providerHome string) (NativeSessionMetadata, error) {
 	sessionsRoot := filepath.Join(providerHome, "sessions")
 	var newestPath string

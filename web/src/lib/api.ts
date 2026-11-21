@@ -1,5 +1,3 @@
-// Typed API client for the pentest daemon. Response shapes match the Go structs
-// documented in the backend audit.
 
 import { demoApiGet, demoApiWrite } from "@/demo/demoApi";
 
@@ -11,7 +9,6 @@ let browserSessionRequest: Promise<boolean> | undefined;
 let operatorCredentialNeeded = false;
 const operatorCredentialListeners = new Set<() => void>();
 
-// The one GET a failed bootstrap interrupted. Sign-in replays it exactly once;
 // a denied mutation is never recorded, so it is never replayed.
 let deniedRequestRetry: { path: string } | null = null;
 
@@ -57,7 +54,6 @@ function refreshBrowserSession(): Promise<boolean> {
   return browserSessionRequest;
 }
 
-// The operator submits a token through the sign-in form. The daemon validates
 // it before anything is stored: a rejected token never reaches sessionStorage.
 export async function submitOperatorToken(token: string): Promise<void> {
   const candidate = token.trim();
@@ -694,7 +690,6 @@ export interface RuntimeExtension {
   };
   config?: Record<string, string>;
 }
-
 
 export interface CredentialBinding {
   id: string;

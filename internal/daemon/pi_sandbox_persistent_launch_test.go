@@ -80,7 +80,6 @@ func TestBuildTaskLaunchPlanPiSandboxKeepsBarePiWhenFactoryPresent(t *testing.T)
 		t.Fatalf("pi sandbox still used bootstrap wrapper: %#v", runtimeArgv)
 	}
 
-	// Prove the rewrite seam used by the factory succeeds on these args.
 	rewritten, err := runtime.RewriteDockerCreateCommand(createArgs, "pi", []string{
 		"/usr/local/bin/pentest-provider-bridge", "--provider", "pi", "--", "pi", "--mode", "rpc",
 	})

@@ -22,7 +22,6 @@ const (
 //go:embed builtins/assets
 var builtinAssetFS embed.FS
 
-// BuiltinBundles returns the packaged Skill bundles shipped with the daemon.
 func BuiltinBundles() ([]ImportedBundle, error) {
 	return builtinBundlesFromFS(builtinAssetFS, builtinAssetsRoot)
 }
@@ -50,11 +49,6 @@ var retiredPrunedBuiltinIDs = []string{
 	"tooling-python",
 	"xpath-injection-testing",
 	"xxe-testing",
-	// Retired 2026-09: vendored zhaoxuya520/reverse-skill cluster (router,
-	// methodology sub-skills, CTF-Sandbox-orchestrator, competition-*,
-	// pentest-tools), knowledge-based first-party skills the model already
-	// covers after large-scale RL, SAST skills whose toolchain the sandbox
-	// does not ship, and successor-less legacy IDs from the earlier prune.
 	"api-security",
 	"apk-reverse",
 	"attack-chain",

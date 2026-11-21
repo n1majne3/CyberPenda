@@ -11,7 +11,6 @@ interface ChildPage {
 }
 
 // Keep one bounded child window. A stable item update replaces its earlier
-// version in place; new items enter at the tail. Older pages replace the view.
 function appendChildItems(previous: TaskTranscriptEntry[], updates: TaskTranscriptEntry[]) {
   const items = new Map(previous.map((item) => [item.id, item]));
   for (const item of updates) {

@@ -16,9 +16,6 @@ import (
 	"pentest/internal/testsupport/blackboardfixture"
 )
 
-// TestBlackboardV2DaemonDoesNotRegisterLegacyBlackboardSurfaces proves that a
-// fresh v2 daemon exposes no compatibility route or response for retired v1
-// HTTP and MCP paths.
 func TestBlackboardV2DaemonDoesNotRegisterLegacyBlackboardSurfaces(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "blackboard-v2.db")
 	db, err := store.Open(dbPath)
@@ -150,9 +147,6 @@ func TestBlackboardV2DaemonDoesNotRegisterLegacyBlackboardSurfaces(t *testing.T)
 	}
 }
 
-// TestBlackboardV2FreshResumeIgnoresLegacyRows keeps the Task/Runner resume
-// seam alive while proving its prompt is rebuilt without the retired Fact,
-// Finding, or Task Summary fallbacks.
 func TestBlackboardV2FreshResumeIgnoresLegacyRows(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "handoff-v2.db")
 	server, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, DisableBuiltinSkills: true})

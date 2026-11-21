@@ -34,7 +34,6 @@ import { cn } from "@/lib/utils";
 import { formatRelativeTime } from "@/lib/format";
 
 // Dense sidebar rows: keep a visible focus target without the outer black
-// ring-offset frame that reads as a heavy selection box.
 const sidebarFocusClass =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-signal/40";
 
@@ -55,13 +54,7 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const currentTaskId = taskIdFromPath(pathname);
 
   // One bounded navigation projection replaces the former one-Task-list-fetch-
-  // per-Project fan-out (#193). The daemon returns every Project with its most
   // recent Tasks inlined and a last_activity_at, so the Sidebar makes a single
-  // constant-size request regardless of how many Projects exist. Expanding a
-  // non-current Project loads its full Task list on demand below.
-  //
-  // Conditional refresh (#201): every response carries an opaque revision, and
-  // each refresh sends it back plus the selected Task. When the revision is
   // current the daemon answers changed=false with an empty projection, so
   // polling never reserializes the Sidebar rows. The revision and the selected
   // Task live in refs so a response never retriggers the load that produced it.
@@ -80,12 +73,9 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const isVisible = useDocumentVisibility();
-  // Whether any tracked owner currently has a live, busy runtime or an active
-  // durable continuation (#268). Counting active continuations — not only rows
   // already rendered busy — keeps the fast cadence (2s) while a turn can start
   // at any moment, so a busy/idle transition lands well within ~3s. Once
   // nothing is active the sidebar backs off to a slow cadence so an
-  // open-but-unused tab does not hammer the daemon.
   const hasActive = useMemo(
     () =>
       sessions.some(isSessionActive) ||
@@ -933,7 +923,6 @@ function navigationActivity(summary: WorkspaceProjectSummary) {
 function activityTime(...values: (string | undefined)[]) {
   return Math.max(...values.map((value) => (value ? Date.parse(value) : Number.NEGATIVE_INFINITY)));
 }
-
 
 function takeRecentWithCurrent<T>(
   items: T[],

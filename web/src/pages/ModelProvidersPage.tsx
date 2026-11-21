@@ -79,8 +79,6 @@ export function ModelProvidersPage() {
   const canSubmit = canSubmitModelProvider(form, creating);
   const endpointErrors = endpointValidationErrors(form);
 
-  // When the selection (or its loaded binding) changes, reset the form to match
-  // the selected provider. React allows adjusting state during render by
   // comparing against a stored previous value, which avoids a setState-in-effect.
   const formSelectionKey = selected && !creating
     ? `${selected.id}:${selected.updated_at ?? ""}:${selectedBinding?.updated_at ?? ""}`

@@ -8,7 +8,6 @@ import {
 } from "./modelProviderForm";
 
 // A minimal form for the quick-setup + validation cases, where only the shared
-// base URL, enabled protocols, and optional per-protocol overrides matter.
 const quickSetupForm = (
   baseURL: string,
   protocols: string[],
@@ -145,9 +144,7 @@ describe("canSubmitModelProvider", () => {
   });
 
   describe("quick setup endpoint derivation", () => {
-    // OpenAI Chat Completions and OpenAI Responses use the shared provider base
     // URL as-is; Anthropic Messages removes the final non-empty path segment so
-    // Claude Code can append its own versioned messages operation path.
     it("uses the shared provider base URL as-is for OpenAI Chat Completions and Responses", () => {
       const form = quickSetupForm("https://hub.example.test/v1", ["openai_chat_completions", "openai_responses"]);
       expect(endpointBaseURLForProtocol(form, "openai_chat_completions")).toBe("https://hub.example.test/v1");

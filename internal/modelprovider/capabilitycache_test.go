@@ -90,7 +90,6 @@ func TestFlattenModelsDevResolvesDuplicateIDsByMajorityThenLargerWindow(t *testi
 	if got.ContextWindow != 1048576 || got.MaxOutputTokens != 128000 {
 		t.Fatalf("majority id = %#v", got)
 	}
-	// shared-id appears twice with different limits: tie, pick larger context.
 	shared := flat["shared-id"]
 	if shared.ContextWindow != 1000000 || shared.MaxOutputTokens != 128000 {
 		t.Fatalf("tie-break id = %#v", shared)

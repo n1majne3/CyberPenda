@@ -110,7 +110,6 @@ func TestSessionRestartKeepsContainerCleanupRetryableAfterFailure(t *testing.T) 
 				t.Fatalf("cleanup failure lost the active container identity: %#v, %v", active, readErr)
 			}
 
-			// A later startup retries the same durable container identity.
 			calls := filepath.Join(t.TempDir(), "retry-calls")
 			config.ContainerCLI = filepath.Join(t.TempDir(), "recovered-container-cli")
 			if err := os.WriteFile(config.ContainerCLI, []byte("#!/bin/sh\necho \"$*\" >> "+shellQuote(calls)+"\n"), 0o700); err != nil {
