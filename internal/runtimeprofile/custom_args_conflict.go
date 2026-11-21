@@ -79,9 +79,6 @@ func ValidateCustomArgs(provider Provider, args []string) error {
 				consumedNext = true
 			}
 			if key, value, ok := conflictingConfigAssignment(assignment, rules.configKeys); ok {
-				if consumedNext {
-					i++
-				}
 				return &CustomArgConflictError{
 					Provider:   provider,
 					Argument:   formatConfigOffendingArg(token, head, key, value),

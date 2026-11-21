@@ -134,7 +134,7 @@ func readTARBundle(source io.Reader) (map[string]string, string, error) {
 		if header.Typeflag == tar.TypeDir {
 			continue
 		}
-		if header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA {
+		if header.Typeflag != tar.TypeReg {
 			return nil, "", fmt.Errorf("%w: archive entry %q must be a regular file", ErrInvalidSkill, header.Name)
 		}
 		if header.Size < 0 || header.Size > maxArchiveFileBytes {
