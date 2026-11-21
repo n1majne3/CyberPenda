@@ -17,7 +17,8 @@ import {
 } from "lucide-react";
 import { apiGet, type Dashboard, type Project, type Task } from "@/lib/api";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { buttonVariants, Card, CardDescription, CardTitle, Chip } from "@/components/ui";
+import { buttonVariants } from "@/components/buttonVariants";
+import { Card, CardDescription, CardTitle, Chip } from "@/components/ui";
 import { formatRelativeTime } from "@/lib/format";
 import { ProjectKindConversionCard } from "./ProjectKindConversionCard";
 import { cn } from "@/lib/utils";

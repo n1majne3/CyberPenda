@@ -1,5 +1,6 @@
 import { Download, Plus, X } from "lucide-react";
-import { Button, Input, Label, Textarea, buttonVariants } from "@/components/ui";
+import { buttonVariants } from "@/components/buttonVariants";
+import { Button, Input, Label, Textarea } from "@/components/ui";
 import type { Skill } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
