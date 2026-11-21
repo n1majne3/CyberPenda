@@ -329,7 +329,7 @@ Common `pentestd` options (flags or env):
 | `-container-cli` | `PENTEST_CONTAINER_CLI` | `auto` (PATH probe: `docker`, then `podman`) |
 | `-task-volume` | `PENTEST_TASK_VOLUME` | (empty; Compose sets the named data volume) |
 | `-task-volume-root` | `PENTEST_TASK_VOLUME_ROOT` | `/data` when `-task-volume` is set |
-| `-auth-token` | `PENTEST_AUTH_TOKEN` | (required for non-loopback binds) |
+| `-auth-token` | `PENTEST_AUTH_TOKEN` | (generated when unset) |
 | `-runtime-plugin-dirs` | `PENTEST_RUNTIME_PLUGIN_DIRS` | trusted plugin dirs |
 | `-runtime-extension-dirs` | `PENTEST_RUNTIME_EXTENSION_DIRS` | trusted extension dirs |
 

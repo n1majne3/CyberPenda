@@ -328,7 +328,7 @@ Platform 上检查未完成工作。这些记录不阻塞 Task Finish，且 Fini
 | `-container-cli` | `PENTEST_CONTAINER_CLI` | `auto`（PATH 探测：先 `docker`，再 `podman`） |
 | `-task-volume` | `PENTEST_TASK_VOLUME` | （空；Compose 会设置命名数据卷） |
 | `-task-volume-root` | `PENTEST_TASK_VOLUME_ROOT` | 设置 `-task-volume` 时为 `/data` |
-| `-auth-token` | `PENTEST_AUTH_TOKEN` | （非回环绑定必填） |
+| `-auth-token` | `PENTEST_AUTH_TOKEN` | （未设置时自动生成） |
 | `-runtime-plugin-dirs` | `PENTEST_RUNTIME_PLUGIN_DIRS` | 受信任插件目录 |
 | `-runtime-extension-dirs` | `PENTEST_RUNTIME_EXTENSION_DIRS` | 受信任扩展目录 |
 

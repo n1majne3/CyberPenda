@@ -2,7 +2,7 @@
 
 Status update (2026-09-08): Hermes Runtime execution and image installation are
 retired. The Hermes parts below describe the earlier decision. Retained
-Profiles and Transcripts remain readable; see [current boundary](../../GLOSSARY.md).
+Profiles and Transcripts remain readable; see [current boundary](../product/current-boundary.md).
 
 
 > Later product change: normal Project Challenge Workflow is retired. The

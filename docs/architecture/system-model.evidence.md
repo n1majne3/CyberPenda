@@ -20,7 +20,7 @@ Diagram sources: `system-context.dsl` (L1) and `system-model.dsl` (L2 container 
 | container.hostedController | Hosted Controller | container | high | cmd/pentest-tsecbench-hosted/main.go:12,29, internal/hostedcontroller/controller.go:1-2 |
 | container.hostedDaemon | In-process pentestd | container | high | internal/hostedcontroller/controller.go:340 (daemon.NewServer) |
 | container.challengeClient | Hosted Challenge Client | container | high | cmd/pentest-tsecbench-client/main.go:1-2,15-16, internal/tsecbenchclient/client.go:1 |
-| container.hostedRuntime | Hosted Runtime + tool baseline | container | high | docker/tsecbench-hosted/Dockerfile, docs/adr/0037-offline-knowledge-baseline-in-hosted-image.md, docker/knowledge-baseline/install.sh |
+| container.hostedRuntime | Hosted Runtime + tool baseline | container | high | docker/tsecbench-hosted/Dockerfile, docs/adr/0037-bake-an-offline-knowledge-baseline-into-the-hosted-image.md, docker/knowledge-baseline/install.sh |
 | ext.modelProvider | Model Provider | external-system | high | internal/modelprovider/modelprovider.go:1, README.md:167-190 |
 | ext.containerEngine | Container Engine | external-system | high | docs/adr/0025-container-engine-support-matrix.md, docs/platform-engines.md, docker-compose.yaml |
 | ext.challengePlatform | Challenge Platform (TSecBench) | external-system | high | README.md:138-160, internal/challengeadapter/adapter.go:15 |
@@ -39,7 +39,7 @@ Diagram sources: `system-context.dsl` (L1) and `system-model.dsl` (L2 container 
 
 | From | To | Type / protocol | Confidence | Source refs |
 | --- | --- | --- | --- | --- |
-| operator | spa | calls / HTTPS | high | README.md:107-110 |
+| operator | spa | calls / HTTP | high | README.md:107-110 |
 | spa | pentestd | calls / JSON HTTP /api | high | web/src/lib/api.ts, web/vite.config.ts (/api proxy) |
 | pentestd | db | reads+writes / SQL | high | internal/store/store.go, ADR 0017 |
 | pentestd | containerEngine | controls / Docker-Podman CLI | high | README.md:60-69, cmd/pentestd/main.go (-container-cli) |
@@ -52,10 +52,10 @@ Diagram sources: `system-context.dsl` (L1) and `system-model.dsl` (L2 container 
 | runtime | targetSystems | tests / tool-specific | high | README.md:5,44-45 (tools in sandbox, not proxied) |
 | challengePlatform | hostedController | config + transcript / stdout | high | README.md:163-164 (BENCHMARK_BASE_URL, BENCHMARK_TOKEN) |
 | hostedController | hostedDaemon | boots / in-process | high | internal/hostedcontroller/controller.go:340 |
-| hostedController | challengeClient | exec / one op per process | high | cmd/pentest-tsecbench-client/main.go:1-2 |
+| hostedRuntime | challengeClient | exec / one op per process | high | internal/hostedcontroller/http_app.go:18,68-75, internal/hostedcontroller/assets/ctf-orchestrator/SKILL.md:49-69, cmd/pentest-tsecbench-client/main.go:1-2 |
 | challengeClient | challengePlatform | calls / HTTPS | high | internal/tsecbenchclient/client.go:1, internal/challengeadapter |
 | hostedDaemon | hostedRuntime | launches / process | high | internal/hostedcontroller/controller.go:48-56 |
-| hostedRuntime | modelProvider | calls / HTTPS via gateway | high | README.md:169-171 (.tsecbench.gw) |
+| hostedRuntime | modelProvider | calls / HTTP via gateway | high | README.md:169-171 (.tsecbench.gw) |
 | pentestd -> ghcr | pulls images / HTTPS | medium | README.md:122-124 (image coordinates; pull mechanics not in repo code) |
 | cyberpenda -> vercelDemo | demo build / npm build:demo | high | web/package.json, web/vercel.json |
 
@@ -65,7 +65,7 @@ Diagram sources: `system-context.dsl` (L1) and `system-model.dsl` (L2 container 
 | --- | --- | --- |
 | internal/challengeworkflow | Retired; read-only history handlers still served; write routes return HTTP 410 | internal/challengeworkflow/service.go:1, README.md:287-294 |
 | internal/workinggraph | Legacy Intent publication/compilation/settlement retired; keeps protected filesystem layout for FGS | internal/workinggraph/working_graph.go:1-2 |
-| internal/blackboardmigration | Offline v1 decoder, one-way migration; only consumer is pentestctl | internal/blackboardmigration/service.go:1 |
+| Offline v1 migration | Removed; older databases are refused | internal/store/schema.go |
 | Daemon MCP endpoint | Retired: POST /mcp returns 404; go-sdk still in go.mod but no Go file imports it | internal/daemon/mcp_test.go:27-35, internal/daemon/server.go:1904 |
 | Task Policy | Retained as historical metadata, not enforced | GLOSSARY.md (Task Policy), README.md:290 |
 

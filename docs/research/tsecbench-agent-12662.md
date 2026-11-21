@@ -83,7 +83,7 @@ TSecBench 首页说明，官方榜单只接受托管运行成绩。本地上报�
 | Web漏洞挖掘 | 0.347 |
 | 对抗规避 | 0.286 |
 
-因此，当前 Skill 的“预期原始分 ÷ 预期时间”还不够准确。调度器应使用“预期综合分增量 ÷ 预期剩余时间”。来源是 [Hosted Skill 第 43 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md#L43) 和官方评测集数据。
+因此，当前 Skill 的“预期原始分 ÷ 预期时间”还不够准确。调度器应使用“预期综合分增量 ÷ 预期剩余时间”。来源是 [Hosted Skill 第 43 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md?plain=1#L43) 和官方评测集数据。
 
 ### 单题综合分贡献最大的 Challenge
 
@@ -111,13 +111,13 @@ TSecBench 首页说明，官方榜单只接受托管运行成绩。本地上报�
 
 第一名在开始后的 2 秒内启动三个 Challenge。根据 86 组启动和关闭事件计算，在 73.30% 的运行时间内，有三个 Challenge 同时处于活跃状态。平均活跃数是 2.57。只有 0.07% 的运行时间没有活跃 Challenge。来源是 [Agent 详情 API](https://tsecbench.zc.tencent.com/api/v1/leaderboard/agent/12662) 的 `run_events`。
 
-CyberPenda 当前 Hosted Skill 规定“通常保持两个 Challenge 活跃”，并要求保留第三个槽位。[Hosted Skill 第 52 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md#L52) 这会降低稳定吞吐量。
+CyberPenda 当前 Hosted Skill 规定“通常保持两个 Challenge 活跃”，并要求保留第三个槽位。[Hosted Skill 第 52 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md?plain=1#L52) 这会降低稳定吞吐量。
 
 ### 2. 它使用短首轮和快速重入
 
 第一名一共启动 86 次，但只有 63 个 Challenge。17 个 Challenge 被再次启动。全部首轮的中位时长是 4.10 分钟。没有得分的首轮共有 16 个，中位时长是 10.22 分钟。只有一个首轮超过 12 分钟。没有首轮超过 40 分钟。以上数据由启动、正确提交、错误提交和关闭事件配对计算。
 
-CyberPenda 当前首轮预算是：easy 12 分钟、medium 25 分钟、hard 40 分钟。[Hosted Skill 第 45-49 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md#L45-L49)；[Challenge Pass Clock 第 33-42 行](../../internal/tsecbenchclient/clock.go#L33-L42) 这些预算会让无结果的中题和难题长期占用槽位。
+CyberPenda 当前首轮预算是：easy 12 分钟、medium 25 分钟、hard 40 分钟。[Hosted Skill 第 45-49 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md?plain=1#L45-L49)；[Challenge Pass Clock 第 33-42 行](../../internal/tsecbenchclient/clock.go#L33-L42) 这些预算会让无结果的中题和难题长期占用槽位。
 
 ### 3. 它把解题拆成大量短模型会话
 
@@ -208,7 +208,7 @@ Agent 8487 使用了 11 次提示。其中 9 次提示后的得分可以在时�
 
 ### 中置信度
 
-6. **Benchmark 状态写入可能过重。** 当前 Skill 要求在平台工作前、每个 flag 后、放弃前、压缩后读取 Scope、Working Snapshot 和平台状态，并维护 Attempt、Solution 和 Evidence。[Hosted Skill 第 19-31 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md#L19-L31) Hosted Task 还使用 interactive Blackboard。[HTTP bootstrap 第 139-143 行](../../internal/hostedcontroller/http_app.go#L139-L143) 这些写入保证语义完整，但可能占用模型调用和串行时间。此项仍需单独测量。
+6. **Benchmark 状态写入可能过重。** 当前 Skill 要求在平台工作前、每个 flag 后、放弃前、压缩后读取 Scope、Working Snapshot 和平台状态，并维护 Attempt、Solution 和 Evidence。[Hosted Skill 第 19-31 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md?plain=1#L19-L31) Hosted Task 还使用 interactive Blackboard。[HTTP bootstrap 第 139-143 行](../../internal/hostedcontroller/http_app.go#L139-L143) 这些写入保证语义完整，但可能占用模型调用和串行时间。此项仍需单独测量。
 7. **缺少稳定的后台进程控制。** 第一名公开会话使用 `tmux` 维持长扫描和爆破。Hosted Image 的包清单没有 `tmux`。[Dockerfile 第 44-64 行](../../docker/tsecbench-hosted/Dockerfile#L44-L64) Shell 可以使用其他后台方式，但当前 Skill 没有定义可恢复的 job 状态和日志规则。
 8. **提示策略过早。** Agent 8487 有 11 次提示事件，第一名没有提示事件。提示只应在最后阶段，且在折减后的预期综合分仍然更高时使用。
 
@@ -216,21 +216,21 @@ Agent 8487 使用了 11 次提示。其中 9 次提示后的得分可以在时�
 
 ### P0：下一次正式跑分前完成
 
-1. **把平台全局调度和单题搜索都下沉到模型外框架，而不是再加角色型 Lead。** Hosted Controller 继续只负责启动和观察。不要复制“一个 Lead、三个 Challenge Lead”这种角色分工。作者明确反对按任务角色拆 Agent。应复制的是：外层负责 `list/start/close` 和槽位；每个 Challenge 一张只追加的 FGS 图；同一运行器按图状态触发 Decide 或 Execute；每个 Execute 只做一个 step，并以一条事实收束。这保持现有领域边界：[Hosted ADR 第 5-7 行](../adr/0026-package-tsecbench-as-an-isolated-hosted-image.md#L5-L7)；作者说明见下文「作者一手说明」。
+1. **把平台全局调度和单题搜索都下沉到模型外框架，而不是再加角色型 Lead。** Hosted Controller 继续只负责启动和观察。不要复制“一个 Lead、三个 Challenge Lead”这种角色分工。作者明确反对按任务角色拆 Agent。应复制的是：外层负责 `list/start/close` 和槽位；每个 Challenge 一张只追加的 FGS 图；同一运行器按图状态触发 Decide 或 Execute；每个 Execute 只做一个 step，并以一条事实收束。这保持现有领域边界：[Hosted ADR 第 5-7 行](../adr/0026-package-tsecbench-as-an-isolated-hosted-image.md?plain=1#L5-L7)；作者说明见下文「作者一手说明」。
 2. **稳定使用三个活跃 Challenge。** 在还有大量未启动 Challenge 时，目标是三个槽位持续有工作。只在平台错误或最后阶段保留空槽。目标槽位指标是：三槽占用时间不低于 70%，平均活跃数不低于 2.5。
 3. **把首次侦察预算改为 10-12 分钟。** 不再按 medium 25、hard 40 做首轮。若 10-12 分钟内没有 flag、明确漏洞或高置信度下一步，则记录证据，关闭该 Challenge，并进入重试队列。第二轮只接续明确的剩余步骤。
 4. **按综合分增量调度。** 使用：`成功概率 × 剩余原始分 × 能力域权重 ÷ 能力域原始满分 ÷ 预期分钟`。先保证 B、C、D 类高贡献 Challenge 的覆盖。不要只按 difficulty 或原始 `total_score` 排序。
 5. **第一轮不看提示。** 第一名公开运行事件没有提示操作。最后阶段才评估提示。只有在折减后的预期综合分高于不看提示的预期值时，才查看提示。
-6. **立即提交，立即关闭。** 每得到一个候选 flag，就独立提交。全部 flag 正确后，立即做语义 checkpoint，然后关闭 Challenge。不要把提交、关闭和启动串成一个不可检查的操作。这与 [Hosted Skill 第 74-95 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md#L74-L95) 一致。
+6. **立即提交，立即关闭。** 每得到一个候选 flag，就独立提交。全部 flag 正确后，立即做语义 checkpoint，然后关闭 Challenge。不要把提交、关闭和启动串成一个不可检查的操作。这与 [Hosted Skill 第 74-95 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md?plain=1#L74-L95) 一致。
 7. **使用已验证的模型基线做 A/B。** 若平台提供 `deepseek-v4-flash-202605`，先用 Pi 和该模型做一轮。保持同一个 Hosted Delivery Bundle。不要在同一轮同时更换模型、Runtime、Skill 和工具集。
 
 P0 可以先通过 `CYBERPENDA_TASK_GOAL_APPENDIX` 投影，无需修改 Hosted Controller。该字段最多 8,192 字节。来源：[长度上限](../../internal/hostedcontroller/controller.go#L28-L29)、[输入校验](../../internal/hostedcontroller/controller.go#L133-L135)、[Task Goal 追加](../../internal/hostedcontroller/controller.go#L183-L186)。
 
 ### P1：修改 Hosted Image 和 Skill
 
-1. **选择一个 Pi subagent 实现，并定义固定工具合同。** 当前 Image 同时启用两个不同的 subagent 包。仓库研究已经确认它们是两个产品，并使用不同事件协议。[Pi subagent 研究第 18-31 行](./pi-subagents-event-shapes.md#L18-L31) 应避免模型在两个委派工具之间临时选择。
+1. **选择一个 Pi subagent 实现，并定义固定工具合同。** 当前 Image 同时启用两个不同的 subagent 包。仓库研究已经确认它们是两个产品，并使用不同事件协议。[Pi subagent 研究第 18-31 行](./pi-subagents-event-shapes.md?plain=1#L18-L31) 应避免模型在两个委派工具之间临时选择。
 2. **加入可恢复后台作业控制。** 可以加入 `tmux`，也可以提供更小的专用 job client。每个 job 必须有 Challenge code、命令、PID、开始时间、日志路径和停止动作。不要只使用无状态的 `cmd &`。
-3. **增加精简的 Benchmark Run State。** 它只保存调度数据：Challenge code、槽位、attempt、已用时间、已验证入口、后台 job、flag 索引和下一步。Blackboard 继续保存语义结论。平台 `list` 继续是容器与完成状态的恢复源。该设计符合当前 Skill 的平台/Blackboard 双源边界。[Hosted Skill 第 31 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md#L31)
+3. **增加精简的 Benchmark Run State。** 它只保存调度数据：Challenge code、槽位、attempt、已用时间、已验证入口、后台 job、flag 索引和下一步。Blackboard 继续保存语义结论。平台 `list` 继续是容器与完成状态的恢复源。该设计符合当前 Skill 的平台/Blackboard 双源边界。[Hosted Skill 第 31 行](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md?plain=1#L31)
 4. **减少每个 step 的上下文。** 子 Agent 只接收一个 Challenge 的状态、当前 step、必要证据和稳定工具约定。不要向每个短 step 重复注入完整 63 题状态。保持稳定前缀，以提高模型缓存命中率。
 5. **不要用能力域 Playbook 或大量 Security Skill 锁死搜索路径。** 作者一手说明是：内置提示词很短、不和安全任务耦合；0 Skill、0 RAG、0 MCP。按能力域写 Playbook 会把模型上限锁死。若需要领域提示，应作为可注入的可选 Hint，而不是默认 Skill。
 
@@ -368,8 +368,8 @@ flag 提交仍可以由解题 worker 直接调用平台。`A-07` 的 worker `552
 CyberPenda 当前实现与第一名相反：
 
 - Hosted Controller 只创建一个 CTF Challenge Task，然后观察它。它不获取或调度 Challenge。[Hosted Controller](../../internal/hostedcontroller/controller.go#L231-L245)
-- 一个 Runtime 根据 Hosted Skill 自己执行 `pentest-tsecbench-client list`，取得完整 `challenges` 集合，再由模型按预期分数/时间选择、`start`、`submit` 和 `close`。[Hosted Skill](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md#L33-L60)
-- Hosted Skill 通常只保持两个活跃 Challenge，最多三个。[Hosted Skill](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md#L52)
+- 一个 Runtime 根据 Hosted Skill 自己执行 `pentest-tsecbench-client list`，取得完整 `challenges` 集合，再由模型按预期分数/时间选择、`start`、`submit` 和 `close`。[Hosted Skill](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md?plain=1#L33-L60)
+- Hosted Skill 通常只保持两个活跃 Challenge，最多三个。[Hosted Skill](../../internal/hostedcontroller/assets/tsecbench-hosted-challenge-loop/SKILL.md?plain=1#L52)
 - Hosted Challenge Client 是一次命令、一次平台操作；它不是 scheduler。[Challenge Client](../../cmd/pentest-tsecbench-client/main.go#L1-L2)
 - `List` 直接请求 `/openapi/v1/challenges` 并返回完整集合。[TSecBench Client](../../internal/tsecbenchclient/client.go#L110-L125)
 

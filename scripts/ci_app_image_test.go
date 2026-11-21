@@ -38,7 +38,7 @@ func TestDockerignoreKeepsAppImageContextSmall(t *testing.T) {
 	}
 	dockerignore := string(dockerignoreBytes)
 
-	for _, ignored := range []string{".git", ".cache", "web/node_modules", "web/dist", "internal/daemon/webfs/dist", "pentest.db", "runs"} {
+	for _, ignored := range []string{".git", ".cache", "web/node_modules", "**/node_modules", "web/dist", "internal/daemon/webfs/dist", "pentest.db", "runs", ".env", ".env.*", "**/*.env", "!**/*.env.example"} {
 		assertContains(t, dockerignore, ignored)
 	}
 }

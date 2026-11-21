@@ -16,21 +16,22 @@ An **Operator** drives the **React Dashboard** against the local **pentestd** da
 its **HTTP API** (internal/daemon) fronts domain services (Project, Scope, Task, Session, Skill,
 Model Provider, Credential, Report, Steering, Finish Readiness), the **Blackboard v2** semantic
 memory, and the **FGS store** (accepted Goal/Step/Fact updates with Receipts). All persistence
-goes through the shared **SQLite store** with migrations, kept inline in the domain services
+goes through the shared **SQLite store** with baseline schema bootstrap, kept inline in the domain services
 (ADR 0017). For each Task or Session, the daemon's **Runtime Harness** (internal/runtime) prepares
 launch through **Runner + Config Projection** (internal/runner, internal/preflight) and then
 launches, resumes, steers, and stops one **Agent Runtime** — a Codex, Claude Code, or Pi CLI —
 inside the **Sandbox Runner** (default Kali container, via the container engine) or the explicit
 opt-in **Host Runner**. **Provider Bridges** frame provider protocols between daemon and Runtime.
 Inside the Runtime environment, **pentestctl** is the Project Interface: it publishes FGS updates
-and reads Blackboard state over an authenticated Continuation Interface. The Runtime calls the
+to the local Outbox and reads Blackboard state over an authenticated Continuation Interface. The Runtime calls the
 **Model Provider** directly (never proxied by the daemon) and tests **Authorized Target Systems**
 within Project Scope.
 
 The **TSecBench Hosted Image** is a separate, self-starting linux/amd64 distribution (ADR 0026):
 its **Hosted Controller** boots an in-process pentestd, seeds one evaluation Project and Task,
-runs bounded platform operations through the process-isolated **Hosted Challenge Client**, and
-emits a JSONL transcript. The image bundles the Runtimes, a bounded Kali toolset, and a read-only
+observes the Runtime, which runs bounded platform operations through the process-isolated
+**Hosted Challenge Client**, and emits a JSONL transcript. The image bundles the Runtimes,
+a bounded Kali toolset, and a read-only
 offline knowledge baseline under `/opt/knowledge` (ADR 0037).
 
 ## Views and artifacts

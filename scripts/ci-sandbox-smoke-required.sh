@@ -14,7 +14,9 @@ changed_files() {
     return
   fi
 
-  git diff --name-only "$base...$head" 2>/dev/null || git diff --name-only "$base" "$head"
+  git diff --name-only "$base...$head" 2>/dev/null \
+    || git diff --name-only "$base" "$head" 2>/dev/null \
+    || echo ".github/workflows/ci.yml"
 }
 
 required=false

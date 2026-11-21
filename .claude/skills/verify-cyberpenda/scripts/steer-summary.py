@@ -20,6 +20,6 @@ for path in sorted(root.glob("*.json")):
     print(f"{path.stem}: {owner.get('runtime_activity')} steer={controls.get('native_steer_mode')}/{controls.get('native_steer_state')} "
           f"req={controls.get('native_steer_request_id', '')[:8]} cont=#{continuation.get('number')} "
           f"cid={str(continuation.get('container_id'))[:12]} native={str(continuation.get('native_session_id'))[-8:]} "
-          f"assistant={len(assistant)} last={assistant[-1]['text'][:40]!r}")
+          f"assistant={len(assistant)} last={(assistant[-1]['text'][:40] if assistant else '')!r}")
     for item in settlements[-4:]:
         print(f"    {item['type']} {item.get('content', '')[:200]!r}")

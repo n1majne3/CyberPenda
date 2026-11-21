@@ -38,4 +38,4 @@ Read this index, then the feature file for the behavior under test. These recipe
 - [Non-Project Sessions](sessions.md): launch entry points, archived views, and gated Session creation and lifecycle actions.
 - [真实 LLM Steer 生存性](steering.md)：区分请求接受、派发结算、模型响应和后续输入能力；分别记录 Pi 原生 Steer 与 Claude Code 中断替换。
 
-Other surfaces are outside this seed map: CLI Fallback, MCP Project Interface, Hosted evaluation, and detailed Blackboard, Evidence, and Report journeys. Add their feature recipes when a change requires them.
+Other surfaces are outside this seed map: CLI Fallback, External MCP Servers, Hosted evaluation, and detailed Blackboard, Evidence, and Report journeys. Add their feature recipes when a change requires them.

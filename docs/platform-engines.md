@@ -68,7 +68,7 @@ Or keep the daemon on one engine and pick **Docker** / **Podman** per Task in th
 Windows host                         Desktop WSL Linux VM
 ─────────────────                    ────────────────────
 pentestd.exe  ──docker.exe/podman──►  sandbox container
-  SQLite, UI, API, MCP                 /task bind from Windows path
+  SQLite, UI, API                      /task bind from Windows path
   Host runner (optional)               optional /dev/net/tun
 ```
 
@@ -109,7 +109,7 @@ not `-v C:\...:/task` (drive colon breaks `-v` parsing).
 
 ## Health
 
-`GET /api/health` reports:
+`GET /health` reports:
 
 ```json
 "runner": {

@@ -53,6 +53,7 @@ func TestTSecBenchHostedBundleExportsAndVerifiesUploadArchive(t *testing.T) {
 			t.Fatalf("command log missing %q:\n%s", want, log)
 		}
 	}
+	assertContains(t, log, "make smoke-tsecbench-hosted-image TSECBENCH_HOSTED_IMAGE=cyberpenda-tsecbench-hosted:local")
 	checksum := exec.Command("shasum", "-a", "256", "-c", "SHA256SUMS")
 	checksum.Dir = bundle
 	if result, err := checksum.CombinedOutput(); err != nil {
