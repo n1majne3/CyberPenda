@@ -136,11 +136,12 @@ func (f *fakeAdapter) Run(ctx context.Context, goal string, emit func(task.Event
 // binary directly; sandbox launches point at the container CLI with provider
 // args appended after the image.
 type CommandAdapterConfig struct {
-	Name    string
-	Program string
-	Args    []string
-	Workdir string
-	Env     map[string]string
+	Name         string
+	Program      string
+	Args         []string
+	Workdir      string
+	Env          map[string]string
+	SecretValues []string
 }
 
 type commandAdapter struct {
@@ -154,6 +155,14 @@ type commandAdapter struct {
 // adapters package and runner-specific wrapping belongs to the runner package.
 func NewCommandAdapter(config CommandAdapterConfig) Adapter {
 	return &commandAdapter{config: config}
+}
+
+func SecretValuesFromEnv(processEnv, materializedCredentials map[string]string) []string {
+	values := EnvSecretValues(processEnv)
+	for _, value := range materializedCredentials {
+		values = append(values, value)
+	}
+	return values
 }
 
 func EnvSecretValues(env map[string]string) []string {
@@ -214,10 +223,11 @@ func CommandAdapterLaunch(adapter Adapter) (CommandAdapterConfig, bool) {
 		return CommandAdapterConfig{}, false
 	}
 	out := CommandAdapterConfig{
-		Name:    a.config.Name,
-		Program: a.config.Program,
-		Args:    append([]string(nil), a.config.Args...),
-		Workdir: a.config.Workdir,
+		Name:         a.config.Name,
+		Program:      a.config.Program,
+		Args:         append([]string(nil), a.config.Args...),
+		Workdir:      a.config.Workdir,
+		SecretValues: append([]string(nil), a.config.SecretValues...),
 	}
 	if len(a.config.Env) > 0 {
 		out.Env = make(map[string]string, len(a.config.Env))
@@ -258,7 +268,7 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 	if a.config.Program == "" {
 		return fmt.Errorf("runtime command program is required")
 	}
-	redactor := adapters.NewRedactor(EnvSecretValues(a.config.Env))
+	redactor := adapters.NewRedactor(append(EnvSecretValues(a.config.Env), a.config.SecretValues...))
 	var emitMu sync.Mutex
 	// safeEmit redacts launch and lifecycle diagnostics (non-content surface).
 	safeEmit := func(kind task.EventKind, payload task.EventPayload) {

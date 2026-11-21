@@ -180,6 +180,35 @@ func TestDockerCreateDoesNotOverrideHostDockerHostFromCreateEnv(t *testing.T) {
 	}
 }
 
+func TestSecretValuesFromEnvIncludesMaterializedCredentialNames(t *testing.T) {
+	values := SecretValuesFromEnv(
+		map[string]string{
+			"ANTHROPIC_MODEL":            "claude-sonnet-4-6",
+			"PENTEST_WORKING_GRAPH_ROOT": "/task/workdir/.pentest",
+			"PENTEST_INTERFACE_TOKEN":    "grant-token-xyz",
+		},
+		map[string]string{
+			"DATABASE_URL": "postgres://user:pass@db.internal:5432/app",
+			"PGPASSWORD":   "pg-secret-123",
+		},
+	)
+	joined := "\n" + strings.Join(values, "\n") + "\n"
+	for _, want := range []string{
+		"\ngrant-token-xyz\n",
+		"\npostgres://user:pass@db.internal:5432/app\n",
+		"\npg-secret-123\n",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("SecretValuesFromEnv missing %q: %v", want, values)
+		}
+	}
+	for _, forbidden := range []string{"claude-sonnet-4-6", "/task/workdir/.pentest"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("SecretValuesFromEnv included non-secret %q: %v", forbidden, values)
+		}
+	}
+}
+
 func TestCommandAdapterRedactsStdoutAndStderrSecrets(t *testing.T) {
 	skipUnlessPOSIXShell(t)
 	opaqueSecret := "opaque-grant-secret-9f8e7d6c5b"

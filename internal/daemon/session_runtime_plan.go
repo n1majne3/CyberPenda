@@ -197,12 +197,12 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		}
 		adapter = runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
 			Name: string(profile.Provider), ContainerCLI: command.Program, Image: image,
-			CreateArgs: command.Args, CreateEnv: command.Env, SecretValues: runtime.EnvSecretValues(processEnv),
+			CreateArgs: command.Args, CreateEnv: command.Env, SecretValues: runtime.SecretValuesFromEnv(processEnv, prepared.Credentials()),
 		})
 	} else {
 		adapter = runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
 			Name: string(profile.Provider), Program: providerCommand[0], Args: providerCommand[1:],
-			Workdir: found.Workdir, Env: processEnv,
+			Workdir: found.Workdir, Env: processEnv, SecretValues: runtime.SecretValuesFromEnv(processEnv, prepared.Credentials()),
 		})
 	}
 	adapter = withPiSessionTail(adapter, run == session.RunnerSandbox, profile.Provider, layout)
