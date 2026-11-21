@@ -335,9 +335,11 @@ func walkJSONValue(decoder *json.Decoder, token json.Token, path string) error {
 				return validationDetailError("decode runtime Attempt result: object field is not a string",
 					ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 			}
-			if _, duplicate := seen[field]; duplicate {
-				return validationDetailError(fmt.Sprintf("duplicate JSON field %q", field),
-					ValidationDetail{Reason: ValidationReasonDuplicateField, FieldPath: joinJSONPath(path, field), Expected: "no duplicate JSON fields"})
+			for seenField := range seen {
+				if strings.EqualFold(seenField, field) {
+					return validationDetailError(fmt.Sprintf("duplicate JSON field %q", field),
+						ValidationDetail{Reason: ValidationReasonDuplicateField, FieldPath: joinJSONPath(path, field), Expected: "no duplicate JSON fields"})
+				}
 			}
 			seen[field] = struct{}{}
 			valueToken, err := decoder.Token()

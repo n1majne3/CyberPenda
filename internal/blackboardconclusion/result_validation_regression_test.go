@@ -10,6 +10,50 @@ import (
 
 const validFailedResult = `{"schema":"runtime-attempt-result/v1","base_revision":2,"attempt":{"key":"attempt:search","expected_version":1,"summary":"Tested the search endpoint.","outcome":"failed"},"tested_targets":[{"key":"entity:search","expected_version":1}],"produced_targets":[]}`
 
+func TestDecodeRejectsCaseAliasedVersions(t *testing.T) {
+	if _, err := blackboardconclusion.Decode([]byte(strings.ReplaceAll(validFailedResult, "expected_version", "EXPECTED_VERSION"))); err != nil {
+		t.Fatalf("Decode() rejected positive case-aliased versions: %v", err)
+	}
+	createdAttempt := strings.Replace(validFailedResult, `"expected_version":1`, `"create":true,"EXPECTED_VERSION":0`, 1)
+	createdTarget := strings.Replace(validFailedResult, `"tested_targets":[{"key":"entity:search","expected_version":1}]`, `"tested_targets":[{"key":"objective:search","create_objective":{"objective":"Test search."},"EXPECTED_VERSION":0}]`, 1)
+	for _, raw := range []string{
+		createdAttempt,
+		strings.Replace(createdAttempt, "EXPECTED_VERSION", "expected_verſion", 1),
+		strings.Replace(createdAttempt, `"attempt":`, `"Attempt":`, 1),
+		createdTarget,
+		strings.Replace(createdTarget, `"tested_targets":`, `"Tested_Targets":`, 1),
+	} {
+		if _, err := blackboardconclusion.Decode([]byte(raw)); err == nil {
+			t.Errorf("Decode() accepted a case-aliased zero version: %s", raw)
+		}
+	}
+}
+
+func TestDecodeRejectsCaseFoldedDuplicateFields(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+		path string
+	}{
+		{name: "Attempt version", raw: strings.Replace(validFailedResult, `"expected_version":1`, `"expected_version":1,"EXPECTED_VERSION":0`, 1), path: "attempt.EXPECTED_VERSION"},
+		{name: "target version", raw: strings.Replace(validFailedResult, `"tested_targets":[{"key":"entity:search","expected_version":1}]`, `"tested_targets":[{"key":"entity:search","expected_version":1,"EXPECTED_VERSION":0}]`, 1), path: "tested_targets[0].EXPECTED_VERSION"},
+		{name: "Unicode target alias", raw: strings.Replace(validFailedResult, `"tested_targets":[{"key":"entity:search","expected_version":1}]`, `"tested_targets":[{"key":"entity:search","expected_version":1},{"key":"entity:other","expected_version":1}],"teſted_targets":[{"key":"entity:search","expected_version":1}]`, 1), path: "teſted_targets"},
+		{name: "shorter target alias", raw: strings.Replace(validFailedResult, `"tested_targets":[{"key":"entity:search","expected_version":1}]`, `"tested_targets":[{"key":"entity:search","expected_version":1},{"key":"entity:other","expected_version":1}],"Tested_Targets":[{"key":"entity:search","expected_version":1}]`, 1), path: "Tested_Targets"},
+		{name: "empty target alias", raw: strings.Replace(validFailedResult, `"produced_targets":[]`, `"Tested_Targets":[],"produced_targets":[]`, 1), path: "Tested_Targets"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := blackboardconclusion.Decode([]byte(test.raw))
+			if err == nil {
+				t.Fatal("Decode() accepted case-folded duplicate fields")
+			}
+			detail := blackboardconclusion.DecodeDetailOf(err)
+			if detail.Reason != blackboardconclusion.ValidationReasonDuplicateField || detail.FieldPath != test.path {
+				t.Fatalf("DecodeDetailOf() = %#v; want duplicate_field at %s", detail, test.path)
+			}
+		})
+	}
+}
+
 func TestDecodeRequiresProducedTargets(t *testing.T) {
 	for _, outcome := range []string{"failed", "blocked", "inconclusive"} {
 		t.Run(outcome, func(t *testing.T) {

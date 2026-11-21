@@ -8,12 +8,12 @@ import (
 )
 
 func validateSuppliedVersions(fields map[string]json.RawMessage, result RuntimeAttemptResult) error {
-	if rawAttempt, present := fields["attempt"]; present {
+	if rawAttempt, present := caseFoldedJSONField(fields, "attempt"); present {
 		if err := validateSuppliedVersion(rawAttempt, result.Attempt.ExpectedVersion, "attempt"); err != nil {
 			return err
 		}
 	}
-	if rawTargets, present := fields["tested_targets"]; present {
+	if rawTargets, present := caseFoldedJSONField(fields, "tested_targets"); present {
 		var targets []json.RawMessage
 		if err := json.Unmarshal(rawTargets, &targets); err != nil {
 			return err
@@ -32,11 +32,20 @@ func validateSuppliedVersion(raw json.RawMessage, version int, path string) erro
 	if err := json.Unmarshal(raw, &fields); err != nil {
 		return err
 	}
-	if _, present := fields["expected_version"]; present && version < 1 {
+	if _, present := caseFoldedJSONField(fields, "expected_version"); present && version < 1 {
 		return validationDetailError(fmt.Sprintf("%s.expected_version must be positive", path),
 			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: path + ".expected_version", Expected: "a positive integer"})
 	}
 	return nil
+}
+
+func caseFoldedJSONField(fields map[string]json.RawMessage, name string) (json.RawMessage, bool) {
+	for field, value := range fields {
+		if strings.EqualFold(field, name) {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func validateResult(result RuntimeAttemptResult) error {
