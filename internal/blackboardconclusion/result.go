@@ -251,6 +251,10 @@ func Decode(raw []byte) (ValidatedResult, error) {
 		return ValidatedResult{}, validationDetailError("runtime Attempt result has trailing JSON",
 			ValidationDetail{Reason: ValidationReasonInvalidJSON, Expected: "the result must be exactly one JSON object"})
 	}
+	if _, present := topLevel["produced_targets"]; !present {
+		return ValidatedResult{}, validationDetailError("produced_targets is required",
+			ValidationDetail{Reason: ValidationReasonMissingField, FieldPath: "produced_targets", Expected: "produced_targets must be present"})
+	}
 	if err := validateResult(result); err != nil {
 		return ValidatedResult{}, err
 	}
