@@ -91,7 +91,6 @@ func TestBuildParsesProviderSessionAdapterFromPayloadProvider(t *testing.T) {
 	got := transcript.Build(subject, events)
 
 	requireEntry(t, got, "ev-2-tool-call-0", "tool_call", "assistant", "")
-	// Empty Title must not synthesize a goal row.
 	for _, entry := range got {
 		if entry.Kind == "message" && entry.Role == "user" {
 			t.Fatalf("unexpected synthetic goal row for empty title: %#v", entry)

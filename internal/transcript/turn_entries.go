@@ -11,8 +11,6 @@ func entryFromTurn(turn runtimeoutput.Turn, base Entry) (Entry, bool) {
 	case runtimeoutput.KindReasoning:
 		return reasoningEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "reasoning")), true
 	case runtimeoutput.KindText:
-		// Provider user records are internal prompt/session frames. Operator
-		// text is projected only from durable conversation or steering Events.
 		if turn.Role == "user" {
 			return Entry{}, false
 		}

@@ -65,9 +65,6 @@ func TestBuildDropsTaskProgressNoise(t *testing.T) {
 
 	got := transcript.Build(subject, events)
 
-	// task_progress is kept for the timeline's Subagent Activity projection,
-	// but the transcript message flow must not surface the raw record as a
-	// message or tool entry.
 	for _, entry := range got {
 		if (entry.Kind == "message" || entry.Kind == "tool_call") && strings.Contains(entry.Text, "task_progress") {
 			t.Fatalf("expected task_progress to stay out of the message flow, got %#v", entry)
