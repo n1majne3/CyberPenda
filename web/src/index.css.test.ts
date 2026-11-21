@@ -87,7 +87,7 @@ describe("index.css design tokens", () => {
     const light = tokenBlock(":root");
     expect(light).toContain('--font-geist-sans: "Geist"');
     expect(light).toContain('--font-geist-mono: "Geist Mono"');
-    expect(light).toMatch(/--radius:\s*0\.375rem/);
+    expect(light).toMatch(/--radius:\s*8px/);
   });
 
   it("sets global focus, touch, and overflow interaction defaults", () => {

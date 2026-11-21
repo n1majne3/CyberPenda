@@ -59,7 +59,7 @@ setFGS(project.blackboard_protocol === "fgs");
   ];
 
   return (
-    <nav aria-label="Project sections" className="flex w-full flex-wrap gap-x-4 gap-y-1 text-sm">
+    <nav aria-label="Project sections" className="flex w-full gap-[27px] overflow-x-auto text-xs">
       {links.map((link) => (
         <NavLink
           key={link.to}
@@ -67,7 +67,7 @@ setFGS(project.blackboard_protocol === "fgs");
           end={link.end}
           className={({ isActive }) =>
             cn(
-              "border-b-2 border-transparent px-0.5 py-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+              "shrink-0 whitespace-nowrap border-b-2 border-transparent pb-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
               isActive
                 ? "border-signal font-medium text-signal"
                 : "text-muted-foreground hover:text-foreground",

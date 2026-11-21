@@ -93,7 +93,7 @@ export function TranscriptTurnGroup({
           {lane === "system" && <GitBranch className="h-2.5 w-2.5" aria-hidden="true" />}
         </span>
       )}
-      <div className="border-l border-border pl-4">
+      <div className="pl-2">
         {showMarker && (
           <div data-testid="transcript-turn-header" className="mb-1 flex items-center gap-2 text-xs">
             <span className={cn("font-medium", lane === "runtime" && "text-signal")}>{label}</span>
@@ -173,8 +173,8 @@ export function TranscriptRow({
       data-testid="transcript-message-bubble"
       className={cn(
         "min-w-0 whitespace-pre-wrap break-words text-sm leading-6 text-foreground",
-        isUser && "rounded-lg border border-border bg-card px-3.5 py-3",
-        isAssistant && "border-l-2 border-signal/40 py-1 pl-4",
+        isUser && "rounded-lg bg-muted/40 px-4 py-4",
+        isAssistant && "py-1",
         !isUser && !isAssistant && "rounded-md border border-border bg-muted/30 px-3 py-2",
       )}
     >

@@ -253,8 +253,8 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
       projectChrome={owner.capabilities.projectChrome}
       hideChrome={focusMode}
       data-testid="task-detail-shell"
-      className={focusMode ? "h-[calc(100dvh-3.5rem)] max-w-none p-0 md:h-dvh lg:p-0" : "flex h-full flex-col lg:min-h-0 lg:overflow-hidden"}
-      contentClassName={focusMode ? undefined : "mx-auto max-w-6xl px-0 pb-0 lg:px-0 lg:pb-0"}
+      className={focusMode ? "h-full max-w-none p-0 lg:p-0" : "flex h-full flex-col lg:min-h-0 lg:overflow-hidden"}
+      contentClassName={focusMode ? undefined : "w-full"}
       bodyClassName={focusMode ? "flex h-full min-h-0 flex-col" : "flex min-h-[32rem] flex-1 flex-col pb-0 lg:min-h-0"}
     >
       <RuntimeOwnerHeader
@@ -300,7 +300,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
 
       <div
         data-testid="task-workspace"
-        className="flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible rounded-b-xl border border-border bg-card/30 md:overflow-hidden lg:min-h-0"
+        className="flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-visible bg-transparent md:overflow-hidden lg:min-h-0"
       >
         {activeView === "blackboard" ? (
           <div className="min-h-0 flex-1 overflow-auto p-3 pb-44 sm:p-5 md:pb-5">
@@ -351,9 +351,9 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           <div
             ref={bindTranscriptViewport}
             data-testid="conversation-workspace"
-            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain bg-background px-3 pt-3 pb-44 sm:px-6 md:pb-5 [overflow-anchor:none]"
+            className="relative min-h-0 flex-1 overflow-y-auto overscroll-contain bg-transparent px-0 pt-6 pb-44 md:pb-5 [overflow-anchor:none]"
           >
-            <div className="mx-auto max-w-[860px]">
+            <div className="mx-auto max-w-[980px]">
               {history.transcriptHasOlder && (
                 <div className="mb-2 flex justify-center">
                   <Button

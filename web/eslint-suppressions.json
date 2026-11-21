@@ -16,7 +16,7 @@
   },
   "src/App.tsx": {
     "local/no-comments": {
-      "count": 4
+      "count": 3
     }
   },
   "src/components/ConfirmDialog.test.tsx": {
@@ -61,12 +61,12 @@
   },
   "src/components/WorkspaceSidebar.test.tsx": {
     "local/no-comments": {
-      "count": 56
+      "count": 9
     }
   },
   "src/components/WorkspaceSidebar.tsx": {
     "local/no-comments": {
-      "count": 22
+      "count": 20
     }
   },
   "src/components/WorkspaceSidebarRows.tsx": {
@@ -249,11 +249,6 @@
       "count": 8
     }
   },
-  "src/pages/CredentialBindingsTable.tsx": {
-    "local/no-comments": {
-      "count": 1
-    }
-  },
   "src/pages/EvidencePage.tsx": {
     "local/no-comments": {
       "count": 1
@@ -267,11 +262,6 @@
   "src/pages/ModelProviderMigrationPanel.tsx": {
     "local/no-comments": {
       "count": 1
-    }
-  },
-  "src/pages/ModelProvidersPage.test.tsx": {
-    "local/no-comments": {
-      "count": 7
     }
   },
   "src/pages/ModelProvidersPage.tsx": {
@@ -321,17 +311,12 @@
   },
   "src/pages/RuntimeProfilesPage.test.tsx": {
     "local/no-comments": {
-      "count": 14
+      "count": 1
     }
   },
   "src/pages/RuntimeProfilesPage.tsx": {
     "local/no-comments": {
       "count": 8
-    }
-  },
-  "src/pages/SessionDetailPage.test.tsx": {
-    "local/no-comments": {
-      "count": 3
     }
   },
   "src/pages/SessionDetailPage.tsx": {
@@ -356,7 +341,7 @@
   },
   "src/pages/TaskDetailPage.test.tsx": {
     "local/no-comments": {
-      "count": 52
+      "count": 2
     }
   },
   "src/pages/TaskDetailPage.tsx": {

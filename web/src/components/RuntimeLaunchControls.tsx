@@ -373,7 +373,7 @@ function ConfigAccordion({
   const [internalOpen, setInternalOpen] = useState(defaultOpen ?? false);
   const isOpen = open ?? internalOpen;
   return (
-    <div className="rounded-lg border border-border">
+    <div className="border-b border-border pb-5">
       <button
         type="button"
         aria-expanded={isOpen}

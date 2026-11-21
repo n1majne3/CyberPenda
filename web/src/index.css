@@ -11,11 +11,11 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 0 0% 9%;
+    --background: 60 14% 99%;
+    --foreground: 140 4% 15%;
 
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 9%;
+    --card-foreground: 140 4% 15%;
 
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 9%;
@@ -27,7 +27,7 @@
     --secondary-foreground: 0 0% 9%;
 
     --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 45%;
+    --muted-foreground: 140 3% 43%;
 
     --accent: 0 0% 96%;
     --accent-foreground: 0 0% 9%;
@@ -45,19 +45,19 @@
 
     --signal: 211 92% 42%;
 
-    --border: 0 0% 90%;
-    --input: 0 0% 90%;
+    --border: 90 8% 91%;
+    --input: 90 8% 88%;
     /* Soft gray focus — pure black rings read as a heavy "black box" on lists. */
     --ring: 0 0% 52%;
 
-    --sidebar: 0 0% 98%;
+    --sidebar: 60 9% 96%;
     --sidebar-foreground: 0 0% 9%;
     --sidebar-accent: 0 0% 94%;
     --sidebar-accent-foreground: 0 0% 9%;
-    --sidebar-border: 0 0% 90%;
+    --sidebar-border: 90 8% 91%;
     --sidebar-ring: 0 0% 52%;
 
-    --radius: 0.375rem;
+    --radius: 8px;
 
     --font-geist-sans: "Geist";
     --font-geist-mono: "Geist Mono";
@@ -71,10 +71,10 @@
   }
 
   .dark {
-    --background: 0 0% 4%;
+    --background: 215 16% 10%;
     --foreground: 0 0% 93%;
 
-    --card: 0 0% 7%;
+    --card: 215 17% 12%;
     --card-foreground: 0 0% 93%;
 
     --popover: 0 0% 7%;
@@ -110,7 +110,7 @@
     --input: 0 0% 20%;
     --ring: 0 0% 64%;
 
-    --sidebar: 0 0% 6%;
+    --sidebar: 215 17% 11%;
     --sidebar-foreground: 0 0% 93%;
     --sidebar-accent: 0 0% 12%;
     --sidebar-accent-foreground: 0 0% 93%;
@@ -273,5 +273,13 @@
     .save-check-pop {
       animation: none;
     }
+  }
+}
+
+@media (max-width: 639px) {
+  main [data-testid="project-page-shell-header"] h1,
+  main h1[class*="text-[29px]"] {
+    font-size: 25px;
+    letter-spacing: -0.8px;
   }
 }

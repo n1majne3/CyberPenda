@@ -11,7 +11,7 @@ import { Card, type CardProps } from "@/components/ui";
 
 export const PageContainer = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
   ({ className, children, ...props }, ref) => (
-    <div ref={ref} className={cn("w-full p-5 sm:p-6 lg:p-8", className)} {...props}>
+    <div ref={ref} className={cn("mx-auto w-full max-w-[1280px] px-[22px] pb-12 pt-6 sm:px-8 sm:pt-[35px] lg:px-[45px] lg:pb-[55px]", className)} {...props}>
       {children}
     </div>
   ),
@@ -49,7 +49,7 @@ export function SettingsPageHeader({
   return (
     <div
       className={cn(
-        "mb-6 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between",
+        "mb-7 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between",
         className,
       )}
     >
@@ -59,9 +59,9 @@ export function SettingsPageHeader({
             {eyebrow}
           </p>
         )}
-        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+        <h1 className="text-[29px] font-semibold leading-[1.3] tracking-[-1px]">{title}</h1>
         {description && (
-          <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{description}</p>
+            <p className="mt-2 max-w-3xl text-xs leading-6 text-muted-foreground">{description}</p>
         )}
       </div>
       {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
@@ -85,7 +85,7 @@ export function SettingsPageShell({
   return (
     <PageContainer
       className={cn(
-        "mx-auto flex w-full max-w-6xl flex-col lg:min-h-0 lg:flex-1 lg:overflow-hidden",
+        "mx-auto flex w-full max-w-[1280px] flex-col",
         className,
       )}
       {...props}
@@ -105,10 +105,10 @@ export function SettingsSplitLayout({
   return (
     <div
       className={cn(
-        "grid min-w-0 gap-4",
+        "grid min-w-0 gap-8",
         variant === "management"
           ? "lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]"
-          : "lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
+          : "lg:grid-cols-[240px_minmax(0,1fr)]",
         fill && "lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden",
         className,
       )}
@@ -120,7 +120,7 @@ export function SettingsSplitLayout({
 export function SettingsPanel({ className, ...props }: CardProps) {
   return (
     <Card
-      className={cn("min-w-0 overflow-hidden p-4 shadow-none", className)}
+      className={cn("min-w-0 overflow-hidden rounded-none border-0 bg-transparent p-0 shadow-none", className)}
       {...props}
     />
   );
@@ -161,7 +161,7 @@ export function RichEmptyState({
     <Card
       role="status"
       className={cn(
-        "items-center justify-center border-dashed py-14 text-center",
+        "items-center justify-center border-0 bg-transparent py-12 text-center",
         className,
       )}
     >

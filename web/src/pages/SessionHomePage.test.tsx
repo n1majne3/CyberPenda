@@ -211,7 +211,7 @@ describe("SessionHomePage", () => {
     renderPage(["/sessions"]);
 
     expect(await screen.findByRole("heading", { level: 1, name: "Sessions" })).toBeInTheDocument();
-    expect(screen.getByText("Non-project")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Sessions" })).toBeInTheDocument();
     expect(screen.queryByLabelText("What do you want to explore?")).not.toBeInTheDocument();
     const user = userEvent.setup();
     await user.click(screen.getByRole("link", { name: "New session" }));

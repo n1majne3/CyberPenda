@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, FileText, FolderOpen, Globe, Plus, Server, ShieldAlert } from "lucide-react";
+import { AlertTriangle, FolderOpen, Globe, Plus, Search, Server, ShieldAlert } from "lucide-react";
 import { apiGet, apiPost, type Project, type ProjectKind } from "@/lib/api";
-import { Badge, Button, Card, CardDescription, CardTitle, Input, Label, Select } from "@/components/ui";
+import { Button, Card, CardDescription, CardTitle, Input, Label, Select } from "@/components/ui";
+import { formatRelativeTime } from "@/lib/format";
 import { PageContainer } from "@/components/shared";
 import { notifyWorkspaceNavigationChanged } from "@/lib/workspaceNavigation";
 
@@ -14,6 +15,7 @@ export function ProjectListPage() {
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
+  const [query, setQuery] = useState("");
 	const [kind, setKind] = useState<ProjectKind | "">("");
   const createRequested = searchParams.get("new") === "1";
   const showCreateForm = creating || createRequested;
@@ -60,15 +62,12 @@ export function ProjectListPage() {
   }
 
   return (
-    <PageContainer className="mx-auto max-w-6xl space-y-8">
+    <PageContainer className="space-y-7">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="max-w-2xl">
-          <p className="mb-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
-            Workspace
-          </p>
-          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Projects</h1>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            Bounded security-testing engagements, each with its own scope, tasks, and memory.
+          <h1 className="text-[29px] font-semibold leading-[1.3] tracking-[-1px]">Projects</h1>
+          <p className="mt-2 text-xs leading-6 text-muted-foreground">
+            Bounded engagements. Clear Scope. Traceable results.
           </p>
         </div>
         <Button onClick={() => (showCreateForm ? dismissCreateForm() : setCreating(true))}>
@@ -156,8 +155,12 @@ export function ProjectListPage() {
         </Card>
       )}
 
+      {projects.length > 0 && <div className="flex items-center justify-between gap-4">
+        <label className="flex min-w-0 max-w-80 flex-1 items-center gap-2"><Search className="size-3.5 text-muted-foreground" /><input type="search" aria-label="Search Projects" placeholder="Search Projects…" value={query} onChange={(event) => setQuery(event.target.value)} className="min-w-0 flex-1 bg-transparent py-1.5 text-xs placeholder:text-muted-foreground" /></label>
+        <span className="text-xs text-muted-foreground">{projects.length} Projects</span>
+      </div>}
       <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-        {sortNewestFirst(projects).map((p) => (
+        {sortNewestFirst(projects).filter((p) => `${p.name} ${p.description ?? ""}`.toLowerCase().includes(query.trim().toLowerCase())).map((p) => (
           <ProjectCard key={p.id} project={p} />
         ))}
       </div>
@@ -168,60 +171,23 @@ export function ProjectListPage() {
 function ProjectCard({ project }: { project: Project }) {
   const scope = projectScopeSummary(project);
   const kindLabel = project.kind === "ctf_challenge" ? "CTF Challenge" : "Pentest";
-
   return (
-    <Link
-      to={`/projects/${project.id}`}
-      aria-label={`Open ${project.name} project dashboard`}
-      className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-    >
-      <Card className="h-full transition-colors group-hover:border-signal/40 group-hover:bg-muted/30">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-muted text-muted-foreground transition-colors group-hover:border-signal/40 group-hover:text-signal">
-                <FolderOpen className="h-4 w-4" />
-              </span>
-              <div className="min-w-0">
-                <CardTitle className="truncate text-sm group-hover:text-foreground">{project.name}</CardTitle>
-                {project.description && (
-                  <CardDescription className="mt-1 line-clamp-2">{project.description}</CardDescription>
-                )}
-              </div>
-            </div>
-          </div>
-          <Badge variant={scope.ready ? "success" : "warning"} className="shrink-0">
-            {scope.ready ? <CheckCircle2 className="h-3 w-3" /> : <ShieldAlert className="h-3 w-3" />}
-            {scope.ready ? "Scope ready" : "Needs scope"}
-          </Badge>
-        </div>
-
-        <div className="flex flex-wrap gap-1.5">
-          <Badge variant="outline">{kindLabel}</Badge>
-          {scope.assets.length > 0 ? (
-            scope.assets.map((item) => (
-              <Badge key={item.label} variant="outline">
-                {item.icon}
-                {item.label}
-              </Badge>
-            ))
-          ) : (
-            <Badge variant="outline">No scoped assets</Badge>
-          )}
-          {scope.testingLimits > 0 && (
-            <Badge variant="warning">
-              <AlertTriangle className="h-3 w-3" />
-              {pluralize(scope.testingLimits, "testing limit")}
-            </Badge>
-          )}
-          {scope.hasNotes && (
-            <Badge variant="outline">
-              <FileText className="h-3 w-3" />
-              Scope notes
-            </Badge>
-          )}
-        </div>
-      </Card>
+    <Link to={`/projects/${project.id}`} aria-label={`Open ${project.name} project dashboard`}
+      className="group block rounded-lg border border-border bg-card p-[22px] transition-colors hover:border-signal/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal/40">
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex size-[30px] items-center justify-center rounded border border-signal/15 bg-signal/5 text-[13px] text-signal">{project.name.slice(0, 1).toUpperCase()}</span>
+        <span className={`inline-flex items-center gap-1.5 text-[11px] ${scope.ready ? "text-signal" : "text-warning"}`}><span className="size-1.5 rounded-full bg-current" />{scope.ready ? "Scope ready" : "Needs scope"}</span>
+      </div>
+      <h2 className="mt-4 truncate text-[15px] font-semibold tracking-[-0.2px]">{project.name}</h2>
+      <p className="mt-1 min-h-10 text-xs leading-5 text-muted-foreground">{project.description || `${kindLabel} Project`}</p>
+      <div className="mt-6 flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+        <span>{kindLabel}</span><span className="truncate font-mono text-[10px]">{formatRelativeTime(project.updated_at)}</span>
+      </div>
+      <p className="mt-3 border-t border-border pt-3 text-[10px] leading-5 text-muted-foreground">
+        {scope.assets.length > 0 ? scope.assets.map((asset) => <span key={asset.label} className="mr-2 inline-block">{asset.label}</span>) : "No scoped assets"}
+        {scope.testingLimits > 0 && <span className="mr-2 inline-block">{pluralize(scope.testingLimits, "testing limit")}</span>}
+        {scope.hasNotes && <span className="inline-block">Scope notes</span>}
+      </p>
     </Link>
   );
 }

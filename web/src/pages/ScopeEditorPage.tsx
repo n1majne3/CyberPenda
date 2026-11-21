@@ -189,7 +189,8 @@ export function ScopeEditorPage() {
 
   return (
     <ProjectPageShell
-      title={`Scope & defaults — ${project.name}`}
+      title="Scope"
+      description="Define the authorization boundary before testing. Exclusions and Testing limits apply to every Task."
       actions={
         <Button size="sm" onClick={save} disabled={saving}>
           <Save className="h-4 w-4 mr-1" /> {saving ? "Saving…" : "Save"}
@@ -208,7 +209,7 @@ export function ScopeEditorPage() {
       </section>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card as="section" className="border-warning/25 bg-warning/5">
+        <Card as="section" className="rounded-none border-0 border-t border-border bg-transparent px-0 pt-6">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-warning">
               <AlertTriangle className="h-4 w-4" /> Exclusions
@@ -217,7 +218,7 @@ export function ScopeEditorPage() {
           </CardHeader>
           <div>{field("excluded", "Out-of-scope assets", "admin.example.com\nmail.example.com")}</div>
         </Card>
-        <Card as="section" className="border-warning/25 bg-warning/5">
+        <Card as="section" className="rounded-none border-0 border-t border-border bg-transparent px-0 pt-6">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-warning">
               <AlertTriangle className="h-4 w-4" /> Testing limits
@@ -239,7 +240,7 @@ export function ScopeEditorPage() {
           />
       </section>
 
-      <Card as="section" aria-label="Scope Expansion proposals">
+      <Card as="section" aria-label="Scope Expansion proposals" className="rounded-none border-0 border-t border-border bg-transparent px-0 pt-6">
         <CardHeader>
           <CardTitle>Scope Expansion proposals</CardTitle>
         </CardHeader>

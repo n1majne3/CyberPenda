@@ -57,8 +57,8 @@ describe("knowledge and reporting views", () => {
 
     renderRoute("/projects/project-1/scope", <ScopeEditorPage />, "/projects/:projectId/scope");
 
-    expect(await screen.findByRole("heading", { name: /Scope & defaults/i })).toHaveClass(
-      "tracking-tight",
+    expect(await screen.findByRole("heading", { name: /^Scope$/i })).toHaveClass(
+      "tracking-[-1px]",
     );
     expect(screen.getByText("Project defaults").closest("details")).toHaveClass(
       "rounded-lg",

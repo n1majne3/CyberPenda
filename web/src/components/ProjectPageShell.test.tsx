@@ -14,7 +14,7 @@ function renderShell(ui: React.ReactElement) {
 }
 
 describe("ProjectPageShell", () => {
-  it("pins project chrome with All projects and section tabs in a fixed order", () => {
+  it("renders compact project tabs in domain order without the old back-link band", () => {
     renderShell(
       <ProjectPageShell title="Tasks">
         <p>body</p>
@@ -22,11 +22,11 @@ describe("ProjectPageShell", () => {
     );
 
     const chrome = screen.getByTestId("project-page-shell-chrome");
-    expect(chrome).toHaveClass("sticky", "top-0");
+    expect(chrome).not.toHaveClass("sticky");
     expect(chrome).toHaveClass("w-full", "border-b");
-    expect(chrome.parentElement).toHaveClass("min-w-0", "max-w-full");
+    expect(chrome.parentElement).toHaveClass("min-w-0", "w-full");
     expect(screen.getByTestId("project-page-shell-header").parentElement).toHaveClass("min-w-0", "w-full");
-    expect(screen.getByRole("link", { name: /All projects/i })).toHaveAttribute("href", "/");
+    expect(screen.queryByRole("link", { name: /All projects/i })).not.toBeInTheDocument();
     const nav = screen.getByRole("navigation", { name: "Project sections" });
     expect(nav).toHaveClass("w-full");
     expect(screen.getByRole("heading", { name: "Tasks" })).toBeInTheDocument();
@@ -41,11 +41,10 @@ describe("ProjectPageShell", () => {
       "Report",
       "Scope",
     ]) {
-      expect(screen.getByRole("link", { name: label })).toHaveClass("border-b-2", "px-0.5");
+      expect(screen.getByRole("link", { name: label })).toHaveClass("border-b-2", "pb-[13px]");
     }
 
     const chromeText = chrome.textContent ?? "";
-    expect(chromeText.indexOf("All projects")).toBeLessThan(chromeText.indexOf("Overview"));
     expect(chromeText.indexOf("Overview")).toBeLessThan(chromeText.indexOf("Tasks"));
     expect(chromeText.indexOf("Tasks")).toBeLessThan(chromeText.indexOf("Blackboard"));
     expect(chromeText.indexOf("Blackboard")).toBeLessThan(chromeText.indexOf("Findings"));

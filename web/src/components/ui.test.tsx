@@ -66,9 +66,9 @@ describe("Card", () => {
 });
 
 describe("Button", () => {
-  it("defaults to a 4px-rhythm height", () => {
+  it("uses the prototype primary control height", () => {
     const { getByRole } = render(<Button>x</Button>);
-    expect(getByRole("button")).toHaveClass("h-8");
+    expect(getByRole("button")).toHaveClass("h-[35px]");
   });
 
   it("uses a tight control radius", () => {
@@ -115,7 +115,7 @@ describe("Button", () => {
 
   it("forwards extra className and merges", () => {
     const { getByRole } = render(<Button className="w-full">x</Button>);
-    expect(getByRole("button")).toHaveClass("w-full", "h-8");
+    expect(getByRole("button")).toHaveClass("w-full", "h-[35px]");
   });
 });
 

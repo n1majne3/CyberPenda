@@ -60,14 +60,15 @@ export function TaskLaunchPage() {
     <ProjectPageShell
       title={
         <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-          <Rocket className="h-5 w-5 text-signal" /> Launch task
+          <Rocket className="h-5 w-5 text-signal" /> New task
         </h1>
       }
-      bodyClassName="mx-auto grid w-full max-w-[1080px] grid-cols-1 gap-6 lg:grid-cols-[1fr_300px]"
+      description="Start with a goal. Change the configuration only when needed."
+      bodyClassName="grid w-full grid-cols-1 gap-[35px] lg:grid-cols-[minmax(0,1fr)_258px]"
     >
       <div className="space-y-5">
-        <section className="rounded-lg border border-border bg-card">
-          <div className="p-4">
+        <section className="border-b border-border pb-6">
+          <div>
             <Label htmlFor="goal" className="text-sm font-medium">What do you want to explore?</Label>
             <Textarea
               id="goal"

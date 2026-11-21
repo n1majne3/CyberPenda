@@ -67,7 +67,7 @@ export function RuntimeOwnerHeader({
     : "";
 
   return (
-    <header data-testid="task-session-header" className="shrink-0 rounded-t-xl border border-b-0 border-border bg-card px-2 py-2 sm:px-3">
+    <header data-testid="task-session-header" className={focusMode ? "shrink-0 px-3 py-2" : "shrink-0 pb-5"}>
       <div className="flex min-w-0 items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -84,7 +84,7 @@ export function RuntimeOwnerHeader({
                 <Button size="sm" variant="ghost" onClick={() => setEditingTitle(false)}>Cancel</Button>
               </div>
             ) : (
-              <h1 className="min-w-0 truncate text-base font-semibold tracking-tight" title={owner.title}>{owner.title}</h1>
+              <h1 className={focusMode ? "min-w-0 truncate text-base font-semibold tracking-tight" : "line-clamp-3 min-w-0 basis-full break-words text-[29px] font-semibold leading-[1.3] tracking-[-1px] [overflow-wrap:anywhere]"} title={owner.title}>{owner.title}</h1>
             )}
             <StatusBadge status={owner.status} />
             <RuntimeActivityBadge activity={owner.runtimeActivity} />

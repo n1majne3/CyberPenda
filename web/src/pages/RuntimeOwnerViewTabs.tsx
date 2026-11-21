@@ -23,7 +23,8 @@ export function RuntimeOwnerViewTabs({
   scrollTimelineToBottom: () => void;
 }) {
   return (
-    <div className="flex h-10 shrink-0 items-center gap-1 border-x border-border bg-card px-2 sm:px-3">
+    <div className="mb-2 flex shrink-0 items-center gap-1 border-b border-border pb-3">
+      <div className="flex items-center rounded-md bg-muted/60 p-0.5">
       <button
         type="button"
         className={tabClass(activeView === "conversation")}
@@ -48,6 +49,7 @@ export function RuntimeOwnerViewTabs({
       >
         Blackboard
       </button>}
+      </div>
       <div className="ml-auto">
         {activeView === "conversation" ? (
           <FloatingScrollControls autoFollow={autoFollow} onTop={scrollToTop} onBottom={scrollToLatest} />

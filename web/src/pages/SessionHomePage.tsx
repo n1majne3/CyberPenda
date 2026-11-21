@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Archive, ArchiveRestore, MessageSquareText, Pencil, Plus, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, MessageSquareText, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { LaunchSummaryRail } from "@/components/LaunchSummaryRail";
 import { RuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
 import { useRuntimeLaunchControls } from "@/components/useRuntimeLaunchControls";
 import { AttachmentPicker } from "@/components/AttachmentPicker";
 import { archiveSession, createSession, deleteSession, listSessions, renameSession, restoreSession, type Session } from "@/lib/api";
 import { formatCompactDateTime } from "@/lib/format";
-import { LoadingState, PageContainer, RichEmptyState, SectionLabel, SettingsAlert } from "@/components/shared";
+import { LoadingState, PageContainer, RichEmptyState, SettingsAlert } from "@/components/shared";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { Badge, Button, Card, Input, Label, Textarea } from "@/components/ui";
 
@@ -19,6 +19,7 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
   const [openSessions, setOpenSessions] = useState<Session[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<Session[]>([]);
   const [draft, setDraft] = useState("");
+  const [query, setQuery] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const launchControls = useRuntimeLaunchControls({ defaultBlackboardMode: "disabled" });
   const [loading, setLoading] = useState(true);
@@ -128,15 +129,16 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
   }
 
   return (
-    <PageContainer className="mx-auto max-w-6xl space-y-8">
+    <PageContainer className="space-y-7">
       <header className="flex items-end justify-between gap-3">
         <div>
-          <SectionLabel>Non-project</SectionLabel>
-          <h1 id="sessions-heading" className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl">
-            {archivedView ? "Archived Sessions" : "Sessions"}
+                    <h1 id="sessions-heading" className="text-[29px] font-semibold leading-[1.3] tracking-[-1px]">
+            {showLaunch ? "New session" : archivedView ? "Archived Sessions" : "Sessions"}
           </h1>
+          <p className="mt-2 text-xs leading-6 text-muted-foreground">{showLaunch ? "Start with a goal. Change the configuration only when needed." : "Focused work outside a Project."}</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-3">
+          {showLaunch && <Link to="/sessions" className="text-xs text-muted-foreground hover:text-foreground">Cancel</Link>}
           {!archivedView && !showLaunch && <Link to="/sessions#new-session"><Button size="sm"><Plus className="size-3.5" aria-hidden="true" /> New session</Button></Link>}
         <Link
           to={archivedView ? "/sessions" : "/sessions/archived"}
@@ -151,17 +153,13 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
       {showLaunch && (
         <form
           id="new-session"
-          aria-labelledby="new-session-heading"
+          aria-labelledby="sessions-heading"
           onSubmit={submit}
-          className="mx-auto grid w-full max-w-[1080px] grid-cols-1 gap-6 lg:grid-cols-[1fr_300px]"
+          className="grid w-full grid-cols-1 gap-[35px] lg:grid-cols-[minmax(0,1fr)_258px]"
         >
           <div className="space-y-5">
-            <div className="flex items-center justify-between gap-3">
-              <h2 id="new-session-heading" className="text-base font-medium">New session</h2>
-              <Link to="/sessions" className="text-sm text-muted-foreground hover:text-foreground">Cancel</Link>
-            </div>
-            <section className="rounded-lg border border-border bg-card shadow-sm">
-              <div className="p-4">
+            <section className="border-b border-border pb-6">
+              <div>
                 <Label htmlFor="session-initial-input" className="text-sm font-medium">What do you want to explore?</Label>
                 <Textarea
                   id="session-initial-input"
@@ -198,10 +196,11 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
 
       {error && <SettingsAlert>{error}</SettingsAlert>}
 
+      {!showLaunch && <label className="flex max-w-80 items-center gap-2"><Search className="size-3.5 text-muted-foreground" /><input type="search" aria-label="Search Sessions" placeholder="Search Sessions…" value={query} onChange={(event) => setQuery(event.target.value)} className="min-w-0 flex-1 bg-transparent py-1.5 text-xs placeholder:text-muted-foreground" /></label>}
       {!archivedView && !showLaunch && <SessionSection
         id="open-sessions"
         title="Open sessions"
-        sessions={openSessions}
+        sessions={openSessions.filter((session) => session.title.toLowerCase().includes(query.trim().toLowerCase()))}
         lifecycle="open"
         loading={loading}
         busyId={busyId}
@@ -216,7 +215,7 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
       {archivedView && <SessionSection
         id="archived-sessions"
         title="Archived sessions"
-        sessions={archivedSessions}
+        sessions={archivedSessions.filter((session) => session.title.toLowerCase().includes(query.trim().toLowerCase()))}
         lifecycle="archived"
         loading={loading}
         busyId={busyId}
@@ -351,7 +350,7 @@ function SessionRow({
   return (
     <Card
       as="article"
-      className="gap-3 transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist hover:-translate-y-0.5 hover:border-signal/40 hover:shadow-md motion-reduce:translate-y-0 motion-reduce:transition-none sm:flex-row sm:items-center sm:justify-between"
+      className="gap-3 rounded-none border-0 border-b border-border bg-transparent px-0 py-[17px] shadow-none sm:flex-row sm:items-center sm:justify-between"
     >
       <div className="min-w-0">
         {renaming ? (
@@ -383,9 +382,9 @@ function SessionRow({
               <MessageSquareText className="h-4 w-4" aria-hidden="true" />
             </span>
             <span className="min-w-0 flex-col">
-              <span className="block truncate font-medium group-hover:text-signal">{session.title}</span>
+              <span className="block truncate text-xs font-medium group-hover:text-signal">{session.title}</span>
               <span className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <Badge variant={session.lifecycle === "open" ? "success" : "outline"}>{session.lifecycle}</Badge>
+                <span className="text-[10px] capitalize">{session.lifecycle}</span>
                 <span>Activity {formatCompactDateTime(session.last_activity_at)}</span>
               </span>
             </span>

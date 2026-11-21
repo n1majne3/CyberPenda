@@ -82,7 +82,7 @@ describe("TasksPage", () => {
     expect(links.map((link) => goals.find((goal) => link.textContent?.includes(goal)))).toEqual(goals);
   });
 
-  it("clamps long Task Goals inside focusable task cards", async () => {
+  it("keeps full Task Goals available while truncating long list rows", async () => {
     const longGoal =
       "Investigate a-super-long-hostname-that-should-wrap-without-overlapping-status-or-metadata.example.internal";
     mockApi({
@@ -96,7 +96,8 @@ describe("TasksPage", () => {
     renderPage();
 
     const goal = await screen.findByText(longGoal);
-    expect(goal).toHaveClass("break-words", "line-clamp-2");
+    expect(goal).toHaveClass("truncate", "text-xs");
+    expect(goal).toHaveAttribute("title", longGoal);
     expect(screen.getByRole("link", { name: /a-super-long-hostname/i })).toHaveClass(
       "focus-visible:ring-2",
     );

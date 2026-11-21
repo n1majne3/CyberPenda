@@ -273,10 +273,10 @@ describe("ProjectDashboardPage", () => {
     renderPage();
 
     expect(await screen.findByRole("heading", { level: 1, name: "Acme External" })).toBeInTheDocument();
-    expect(screen.getByTestId("project-page-shell-header").parentElement).toHaveClass("mx-auto", "max-w-6xl", "px-6", "lg:px-8");
-    expect(screen.getByRole("link", { name: /All projects/i })).toHaveAttribute("href", "/");
-    expect(screen.getByRole("link", { name: /launch task/i })).toHaveClass("rounded-md", "bg-primary");
-    expect(screen.getByRole("link", { name: /open report/i })).toHaveClass("border-border", "bg-background");
+    expect(screen.getByTestId("project-page-shell-header").parentElement?.parentElement).toHaveClass("mx-auto", "max-w-[1280px]", "lg:px-[45px]");
+    expect(screen.queryByRole("link", { name: /All projects/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /new task/i })).toHaveClass("rounded-md", "bg-primary");
+    expect(screen.getByRole("link", { name: /open report/i })).toHaveClass("text-signal");
     expect(screen.getByRole("link", { name: "Blackboard" })).toHaveAttribute(
       "href",
       "/projects/project-1/blackboard",
@@ -288,8 +288,8 @@ describe("ProjectDashboardPage", () => {
     expect(within(nav).getByRole("link", { name: /findings/i })).toHaveTextContent("1");
 
     const scope = screen.getByRole("region", { name: /scope readiness/i });
-    expect(scope).toHaveClass("rounded-lg", "border-warning/30");
-    expect(scope).toHaveTextContent("2 / 3 complete");
+    await userEvent.click(within(scope).getByText(/Readiness checklist/));
+    expect(scope).toHaveTextContent("2 / 3");
     expect(scope).toHaveTextContent("Add at least one in-scope asset");
     expect(scope).toHaveTextContent("Scope notes");
     expect(scope).toHaveTextContent("Testing limits");
@@ -308,14 +308,12 @@ describe("ProjectDashboardPage", () => {
     expect(within(activeTasks).getByRole("link", { name: /Enumerate api.acme.example running/i })).toHaveAttribute("href", "/projects/project-1/tasks/task-1");
     expect(within(activeTasks).queryByText("Exploration objectives")).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Needs your attention" })).toHaveTextContent("No Tasks need attention.");
-    const activity = screen.getByText("Recent activity").closest("details");
-    expect(activity).not.toHaveAttribute("open");
-    await userEvent.click(screen.getByText("Recent activity"));
+    const activity = screen.getByRole("region", { name: "Recent activity" });
     expect(activity).toHaveTextContent("Port scan 203.0.113.10 — Completed");
     expect(activity).toHaveTextContent("Fingerprint cdn.acme.example — Stopped");
     expect(screen.getByRole("link", { name: /open Blackboard/i })).toHaveAttribute("href", "/projects/project-1/blackboard");
 
-    expect(screen.getByText("Pentest Project")).toHaveClass("border-signal/25", "bg-signal/10", "text-signal");
+    expect(screen.getByText("Pentest Project")).toBeVisible();
   });
 
   it("previews and confirms a blocker-free Project Kind Conversion", async () => {

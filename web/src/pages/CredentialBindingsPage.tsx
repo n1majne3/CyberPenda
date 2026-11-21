@@ -6,6 +6,7 @@ import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SettingsAlert, SettingsPageHeader, SettingsPanel, SettingsSplitLayout, SettingsPageShell } from "@/components/shared";
 import { SettingsListColumn } from "@/components/settingsLibrary";
 import { cn } from "@/lib/utils";
+import { CredentialBindingDetails } from "./CredentialBindingDetails";
 import { CredentialBindingsTable } from "./CredentialBindingsTable";
 import { CredentialBindingCreatePane, CredentialBindingEditPane } from "./CredentialBindingForms";
 
@@ -28,6 +29,7 @@ export function CredentialBindingsPage() {
   const [confirmDelete, setConfirmDelete] = useState<{ id: string; credentialRef: string } | null>(null);
   const [editing, setEditing] = useState<CredentialBinding | null>(null);
   const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
@@ -66,6 +68,7 @@ export function CredentialBindingsPage() {
   }
 
   function startEdit(binding: CredentialBinding) {
+    setSelectedId(binding.id);
     setCreating(false);
     setEditing(binding);
     setForm({
@@ -181,6 +184,8 @@ export function CredentialBindingsPage() {
     });
   }, [bindings, query, statusFilter, sourceFilter, modelProviders, profiles]);
 
+  const selectedBinding = filteredBindings.find((binding) => binding.id === selectedId) ?? filteredBindings[0];
+
   const sourceValueLabel =
     form.kind === "env" ? "Host environment variable name" : "Secret value";
 
@@ -201,8 +206,8 @@ export function CredentialBindingsPage() {
     <SettingsPageShell>
       <SettingsPageHeader
         className="mb-4 shrink-0"
-        title="Credential bindings"
-        eyebrow="Configuration"
+        title="Credentials"
+        description="References and sources only. Secret values are never shown."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={() => load()} aria-label="Refresh credentials">
@@ -217,20 +222,7 @@ export function CredentialBindingsPage() {
 
       {error && <SettingsAlert className="mb-3 shrink-0">{error}</SettingsAlert>}
 
-      <SettingsSplitLayout data-testid="credential-bindings-settings-layout" variant="management" fill>
-        <SettingsListColumn data-testid="credential-bindings-settings-list">
-          <div className="flex items-center justify-between lg:shrink-0">
-            <div>
-              <h2 className="text-base font-semibold">Credential library</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">Bindings resolve during preflight for Runtime Profiles and Model Providers.</p>
-            </div>
-            <div className="text-right">
-              <span className="text-xl font-semibold">{activeCount}</span>
-              <span className="text-xs text-muted-foreground"> active · {bindings.length} total</span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 lg:shrink-0">
+      <div className="mb-7 flex flex-wrap items-center gap-2">
             <div className="flex rounded-lg border border-input p-0.5" role="group" aria-label="Filter by status">
               {(
                 [
@@ -247,7 +239,7 @@ export function CredentialBindingsPage() {
                   className={cn(
                     "rounded-md px-2.5 py-1 text-xs",
                     statusFilter === id
-                      ? "bg-primary font-medium text-primary-foreground"
+                      ? "bg-card font-medium text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground",
                   )}
                 >
@@ -279,8 +271,7 @@ export function CredentialBindingsPage() {
                 </button>
               ))}
             </div>
-            <div className="flex-1" />
-            <div className="flex h-8 w-[220px] items-center gap-2 rounded-md border border-input bg-background px-2">
+            <div className="order-first mr-auto flex h-8 w-[220px] items-center gap-2 rounded-md border border-input bg-background px-2">
               <Search className="h-3.5 w-3.5 text-muted-foreground" />
               <input
                 id="credentials-search"
@@ -295,7 +286,8 @@ export function CredentialBindingsPage() {
               />
             </div>
           </div>
-
+      <SettingsSplitLayout data-testid="credential-bindings-settings-layout" className="lg:grid-cols-[240px_minmax(0,1fr)]">
+        <SettingsListColumn data-testid="credential-bindings-settings-list">
           {loading ? (
             <SettingsPanel className="items-center justify-center py-12 text-center lg:min-h-0 lg:flex-1 lg:overflow-y-auto" role="status" aria-label="Loading credential bindings">
               <LoaderCircle className="h-5 w-5 animate-spin text-muted-foreground motion-reduce:animate-none" />
@@ -336,6 +328,8 @@ export function CredentialBindingsPage() {
             </SettingsPanel>
           ) : (
             <CredentialBindingsTable
+              selectedId={selectedBinding?.id}
+              onSelect={(binding) => { setSelectedId(binding.id); cancelEdit(); setCreating(false); }}
               filteredBindings={filteredBindings}
               modelProviderForRef={modelProviderForRef}
               profilesUsingRef={profilesUsingRef}
@@ -346,7 +340,7 @@ export function CredentialBindingsPage() {
           )}
         </SettingsListColumn>
 
-        <SettingsListColumn>
+        <SettingsListColumn id="credential-binding-details">
           {editing ? (
             <CredentialBindingEditPane
               editing={editing}
@@ -361,17 +355,11 @@ export function CredentialBindingsPage() {
               destinationEnvRequired={destinationEnvRequired}
             />
           ) : !creating ? (
-            <div
-              data-testid="credential-binding-create-panel"
-              className="rounded-lg border border-border bg-card p-4 shadow-sm"
-            >
-              <h3 className="text-sm font-medium">Library actions</h3>
-              <p className="mt-1.5 text-xs text-muted-foreground">Reference existing credential sources without storing values in the UI unless you choose a literal source.</p>
-              <Button onClick={startCreate} className="mt-3 w-full">
-                <Plus className="h-4 w-4" /> New binding
-              </Button>
-              <p className="mt-3 text-xs text-muted-foreground">Manage Model Provider API keys on the Model Providers page when a credential is used only for LLM authentication.</p>
-            </div>
+            selectedBinding ? <CredentialBindingDetails binding={selectedBinding}
+              provider={modelProviderForRef(selectedBinding.credential_ref)} profileNames={profilesUsingRef(selectedBinding.credential_ref)}
+              onEdit={() => startEdit(selectedBinding)}
+              onDelete={() => setConfirmDelete({ id: selectedBinding.id, credentialRef: selectedBinding.credential_ref })} /> :
+              <p data-testid="credential-binding-create-panel" className="py-8 text-xs text-muted-foreground">Select a credential or create a binding.</p>
           ) : (
             <CredentialBindingCreatePane
               cancelCreate={cancelCreate}
