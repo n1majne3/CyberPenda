@@ -372,9 +372,8 @@ func (h *Harness) Validate(schemaName string, raw []byte) error {
 		}
 		h.resolved[schemaName] = resolved
 	}
-	var value any
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	if err := decoder.Decode(&value); err != nil {
+	value, err := decodeContractJSON(raw)
+	if err != nil {
 		return fmt.Errorf("decode JSON: %w", err)
 	}
 	if err := resolved.Validate(value); err != nil {
