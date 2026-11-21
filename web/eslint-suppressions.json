@@ -29,6 +29,11 @@
       "count": 3
     }
   },
+  "src/components/LaunchSummaryRail.tsx": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
   "src/components/Logo.tsx": {
     "local/no-comments": {
       "count": 1
@@ -46,7 +51,7 @@
   },
   "src/components/RuntimeLaunchControls.tsx": {
     "local/no-comments": {
-      "count": 13
+      "count": 3
     }
   },
   "src/components/ThemeProvider.tsx": {
@@ -102,6 +107,11 @@
   "src/components/theme-context.ts": {
     "local/no-comments": {
       "count": 1
+    }
+  },
+  "src/components/useRuntimeLaunchControls.ts": {
+    "local/no-comments": {
+      "count": 7
     }
   },
   "src/components/workspaceSidebarActivity.ts": {
@@ -214,14 +224,19 @@
       "count": 8
     }
   },
+  "src/pages/BlackboardHealthPanel.tsx": {
+    "local/no-comments": {
+      "count": 1
+    }
+  },
   "src/pages/BlackboardPage.test.tsx": {
     "local/no-comments": {
       "count": 7
     }
   },
-  "src/pages/BlackboardPage.tsx": {
+  "src/pages/BlackboardRecordPanel.tsx": {
     "local/no-comments": {
-      "count": 4
+      "count": 3
     }
   },
   "src/pages/CredentialBindingsPage.test.tsx": {
@@ -231,7 +246,12 @@
   },
   "src/pages/CredentialBindingsPage.tsx": {
     "local/no-comments": {
-      "count": 9
+      "count": 8
+    }
+  },
+  "src/pages/CredentialBindingsTable.tsx": {
+    "local/no-comments": {
+      "count": 1
     }
   },
   "src/pages/EvidencePage.tsx": {
@@ -306,7 +326,7 @@
   },
   "src/pages/RuntimeProfilesPage.tsx": {
     "local/no-comments": {
-      "count": 12
+      "count": 8
     }
   },
   "src/pages/SessionDetailPage.test.tsx": {
@@ -362,6 +382,11 @@
   "src/pages/runtimeOwnerConversationControls.ts": {
     "local/no-comments": {
       "count": 3
+    }
+  },
+  "src/pages/runtimeProfileEditorModel.ts": {
+    "local/no-comments": {
+      "count": 4
     }
   },
   "src/pages/runtimeProfileForm.ts": {
