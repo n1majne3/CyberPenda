@@ -287,6 +287,7 @@ func (s *Service) resolveRetainedEvidenceRedirects(ctx context.Context, projectI
 }
 
 func resolveRetainedEvidenceRedirectsTx(ctx context.Context, tx *sql.Tx, projectID string, request RetainEvidenceRequest) (RetainEvidenceRequest, error) {
+	request.Links = append([]EvidenceLink(nil), request.Links...)
 	var err error
 	request.Key, _, err = resolveKeyRedirect(ctx, tx, projectID, request.Key)
 	if err != nil {
