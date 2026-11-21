@@ -8,8 +8,6 @@ import (
 	"pentest/internal/runtimeoutput"
 )
 
-// IsIgnorableRuntimeLine reports whether a raw runtime stdout/stderr line is
-// provider metadata that should not be stored or shown in the task conversation transcript.
 func IsIgnorableRuntimeLine(text string) bool {
 	return runtimeoutput.ShouldIgnoreForStorage(text)
 }

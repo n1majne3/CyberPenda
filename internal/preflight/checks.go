@@ -229,8 +229,6 @@ func (s *Service) checkContainerEngine(ctx context.Context, result *Result, requ
 		})
 	}
 
-	// Probe both engines so the UI can show which CLIs are ready on this host.
-	// The probes are independent, so run them concurrently.
 	candidates := []string{"docker", "podman"}
 	probes := make([]struct {
 		info runner.EngineInfo
@@ -245,8 +243,6 @@ func (s *Service) checkContainerEngine(ctx context.Context, result *Result, requ
 		}()
 	}
 	wg.Wait()
-	// A cancelled request must not pass preflight, even if a probe double
-	// ignored the context.
 	if err := ctx.Err(); err != nil {
 		result.add(Check{
 			Name:   "container_engine",
@@ -293,8 +289,6 @@ func (s *Service) checkContainerEngine(ctx context.Context, result *Result, requ
 		}
 		return
 	}
-	// DetectEngine may have used absolute test CLI only for selected path; when
-	// probing bare "docker"/"podman" the selected info is from the loop above.
 	if selectedInfo.CLI == "" {
 		info, err := s.detectEngine(ctx, selected)
 		if err != nil {
@@ -370,12 +364,6 @@ func trim(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// globalEnvCheckDetail validates that every active global Credential Binding
-// (a Global Environment Variable) can be materialized and projects under a real
-// env var name. It returns (detail, true) when all global bindings resolve and
-// (detail, false) when one cannot, with detail naming the offending credential
-// reference so preflight can block launch. Global bindings inject into every
-// Runtime independent of credential_refs, so this check runs unconditionally.
 func globalEnvCheckDetail(creds *credential.Service) (string, bool) {
 	if creds == nil {
 		return "", true
@@ -444,9 +432,6 @@ func codexFeatureEnabled(value any) (bool, bool) {
 		return enabled, true
 	}
 	if config, ok := value.(map[string]any); ok {
-		// Codex's configurable feature form is enabled only by its explicit
-		// `enabled` member. Other settings (for example V2 thread caps) do not
-		// turn the feature on by themselves.
 		return boolValue(config["enabled"])
 	}
 	return false, false
