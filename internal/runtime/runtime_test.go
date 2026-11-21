@@ -225,7 +225,7 @@ func TestCommandRuntimeOutputKeepsSecretShapedContent(t *testing.T) {
 
 	const opaque = "opaque-launch-secret-value-42"
 	binary := filepath.Join(t.TempDir(), "content-test")
-	script := "#!/bin/sh\necho \"flag:$1 env:$FLAG_VALUE shape:bearer secret-echo-token-123456\"\n"
+	script := "#!/bin/sh\necho \"flag:$1 env:$LAUNCH_SECRET_TOKEN model:$ANTHROPIC_MODEL root:$PENTEST_WORKING_GRAPH_ROOT shape:bearer secret-echo-token-123456\"\n"
 	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
 		t.Fatalf("write content binary: %v", err)
 	}
@@ -234,7 +234,11 @@ func TestCommandRuntimeOutputKeepsSecretShapedContent(t *testing.T) {
 		Name:    "content-test",
 		Program: binary,
 		Args:    []string{opaque},
-		Env:     map[string]string{"FLAG_VALUE": opaque},
+		Env: map[string]string{
+			"LAUNCH_SECRET_TOKEN":        opaque,
+			"ANTHROPIC_MODEL":            "claude-sonnet-4-5",
+			"PENTEST_WORKING_GRAPH_ROOT": "/workspace/project-root",
+		},
 	})
 	var events []task.EventPayload
 	var kinds []task.EventKind
@@ -254,7 +258,10 @@ func TestCommandRuntimeOutputKeepsSecretShapedContent(t *testing.T) {
 		switch kinds[i] {
 		case task.EventKindRuntimeOutput:
 			text, _ := event["text"].(string)
-			if strings.Contains(text, "flag:"+opaque+" env:"+opaque+" shape:bearer secret-echo-token-123456") {
+			if strings.Contains(text, opaque) {
+				t.Fatalf("runtime output leaked known launch secret: %#v", event)
+			}
+			if strings.Contains(text, "flag:[REDACTED] env:[REDACTED] model:claude-sonnet-4-5 root:/workspace/project-root shape:bearer secret-echo-token-123456") {
 				sawContent = true
 			}
 		case task.EventKindLifecycle:

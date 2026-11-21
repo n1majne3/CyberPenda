@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -25,6 +26,7 @@ type DockerSandboxConfig struct {
 	ContainerCLI    string
 	Image           string
 	CreateArgs      []string
+	CreateEnv       map[string]string
 	RequiredNetwork *DockerNetworkRequirement
 	Log             func(DockerSandboxLogEvent)
 	// SecretValues holds resolved credential values (e.g. from the launch env)
@@ -73,6 +75,27 @@ func DockerSandboxCreateArgs(adapter Adapter) ([]string, bool) {
 		case *dockerSandboxAdapter:
 			out := make([]string, len(a.config.CreateArgs))
 			copy(out, a.config.CreateArgs)
+			return out, true
+		case *piSessionTailAdapter:
+			adapter = a.inner
+		default:
+			return nil, false
+		}
+	}
+	return nil, false
+}
+
+func DockerSandboxCreateEnv(adapter Adapter) (map[string]string, bool) {
+	for adapter != nil {
+		switch a := adapter.(type) {
+		case *dockerSandboxAdapter:
+			if len(a.config.CreateEnv) == 0 {
+				return nil, true
+			}
+			out := make(map[string]string, len(a.config.CreateEnv))
+			for key, value := range a.config.CreateEnv {
+				out[key] = value
+			}
 			return out, true
 		case *piSessionTailAdapter:
 			adapter = a.inner
@@ -140,7 +163,7 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 	contentEmit := func(kind task.EventKind, payload task.EventPayload) {
 		emitMu.Lock()
 		defer emitMu.Unlock()
-		emit(kind, payload)
+		emit(kind, redactor.RedactKnownSecrets(payload))
 	}
 	cli := strings.TrimSpace(a.config.ContainerCLI)
 	if cli == "" {
@@ -156,7 +179,15 @@ func (a *dockerSandboxAdapter) Run(ctx context.Context, goal string, emit func(t
 		return err
 	}
 
-	create := exec.CommandContext(ctx, cli, a.config.CreateArgs...)
+	createArgs, createEnv, cleanupCreateEnv, err := prepareDockerCreateCommand(os.Environ(), a.config.CreateArgs, a.config.CreateEnv)
+	if err != nil {
+		return err
+	}
+	defer cleanupCreateEnv()
+	create := exec.CommandContext(ctx, cli, createArgs...)
+	if len(createEnv) > 0 {
+		create.Env = createEnv
+	}
 	var createStdout, createStderr bytes.Buffer
 	create.Stdout = &createStdout
 	create.Stderr = &createStderr

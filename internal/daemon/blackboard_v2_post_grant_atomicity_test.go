@@ -248,14 +248,26 @@ func TestClaudeAndPiV2SandboxArgvAndEnvOmitIdentityAndHostTaskRoots(t *testing.T
 			if !ok {
 				t.Fatal("expected Docker sandbox adapter with inspectable create argv")
 			}
+			createEnv, ok := runtime.DockerSandboxCreateEnv(bound.Adapter)
+			if !ok {
+				t.Fatal("expected Docker sandbox adapter with inspectable create env")
+			}
 			taskRoot := filepath.Join(runtimeRoot, createdTask.ID)
 
-			var envPairs []string
+			var envFlags []string
 			for i := 0; i < len(createArgs)-1; i++ {
 				if createArgs[i] == "-e" {
-					envPairs = append(envPairs, createArgs[i+1])
+					envFlags = append(envFlags, createArgs[i+1])
 					i++
 				}
+			}
+			envFlagsJoined := strings.Join(envFlags, "\n")
+			if strings.Contains(envFlagsJoined, "PENTEST_INTERFACE_TOKEN=") {
+				t.Fatalf("sandbox create argv leaked secret value:\n%s", envFlagsJoined)
+			}
+			var envPairs []string
+			for key, value := range createEnv {
+				envPairs = append(envPairs, key+"="+value)
 			}
 			envJoined := strings.Join(envPairs, "\n")
 			for _, required := range []string{

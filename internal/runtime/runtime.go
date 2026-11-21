@@ -7,8 +7,8 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,11 +136,12 @@ func (f *fakeAdapter) Run(ctx context.Context, goal string, emit func(task.Event
 // binary directly; sandbox launches point at the container CLI with provider
 // args appended after the image.
 type CommandAdapterConfig struct {
-	Name    string
-	Program string
-	Args    []string
-	Workdir string
-	Env     map[string]string
+	Name         string
+	Program      string
+	Args         []string
+	Workdir      string
+	Env          map[string]string
+	SecretValues []string
 }
 
 type commandAdapter struct {
@@ -156,15 +157,58 @@ func NewCommandAdapter(config CommandAdapterConfig) Adapter {
 	return &commandAdapter{config: config}
 }
 
+func SecretValuesFromEnv(processEnv, materializedCredentials map[string]string) []string {
+	values := EnvSecretValues(processEnv)
+	for _, value := range materializedCredentials {
+		values = append(values, value)
+	}
+	return values
+}
+
 func EnvSecretValues(env map[string]string) []string {
 	if len(env) == 0 {
 		return nil
 	}
 	values := make([]string, 0, len(env))
-	for _, value := range env {
+	for key, value := range env {
+		if !isSecretEnvKey(key) {
+			continue
+		}
 		values = append(values, value)
 	}
 	return values
+}
+
+func isSecretEnvKey(key string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(key))
+	if upper == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"SECRET",
+		"TOKEN",
+		"PASSWORD",
+		"PASSWD",
+		"API_KEY",
+		"APIKEY",
+		"PRIVATE_KEY",
+		"ACCESS_KEY",
+		"CREDENTIAL",
+		"AUTH",
+		"COOKIE",
+		"JWT",
+		"BEARER",
+	} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	for _, suffix := range []string{"_KEY", "_PASS", "_PAT"} {
+		if strings.HasSuffix(upper, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // CommandAdapterLaunch returns the host launch config for adapters built by
@@ -179,10 +223,11 @@ func CommandAdapterLaunch(adapter Adapter) (CommandAdapterConfig, bool) {
 		return CommandAdapterConfig{}, false
 	}
 	out := CommandAdapterConfig{
-		Name:    a.config.Name,
-		Program: a.config.Program,
-		Args:    append([]string(nil), a.config.Args...),
-		Workdir: a.config.Workdir,
+		Name:         a.config.Name,
+		Program:      a.config.Program,
+		Args:         append([]string(nil), a.config.Args...),
+		Workdir:      a.config.Workdir,
+		SecretValues: append([]string(nil), a.config.SecretValues...),
 	}
 	if len(a.config.Env) > 0 {
 		out.Env = make(map[string]string, len(a.config.Env))
@@ -223,7 +268,7 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 	if a.config.Program == "" {
 		return fmt.Errorf("runtime command program is required")
 	}
-	redactor := adapters.NewRedactor(EnvSecretValues(a.config.Env))
+	redactor := adapters.NewRedactor(append(EnvSecretValues(a.config.Env), a.config.SecretValues...))
 	var emitMu sync.Mutex
 	// safeEmit redacts launch and lifecycle diagnostics (non-content surface).
 	safeEmit := func(kind task.EventKind, payload task.EventPayload) {
@@ -234,15 +279,12 @@ func (a *commandAdapter) Run(ctx context.Context, goal string, emit func(task.Ev
 	contentEmit := func(kind task.EventKind, payload task.EventPayload) {
 		emitMu.Lock()
 		defer emitMu.Unlock()
-		emit(kind, payload)
+		emit(kind, redactor.RedactKnownSecrets(payload))
 	}
 
 	cmd := exec.CommandContext(ctx, a.config.Program, a.config.Args...)
 	cmd.Dir = a.config.Workdir
-	cmd.Env = os.Environ()
-	for key, value := range a.config.Env {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
+	cmd.Env = buildHostProcessEnv(a.config.Env)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

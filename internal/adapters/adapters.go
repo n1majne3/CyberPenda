@@ -242,33 +242,47 @@ func (r *Redactor) Redact(payload map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(payload))
 	for k, v := range payload {
-		out[k] = r.redactValue(v)
+		out[k] = r.redactValue(v, true)
 	}
 	return out
 }
 
-func (r *Redactor) redactValue(v any) any {
+func (r *Redactor) RedactKnownSecrets(payload map[string]any) map[string]any {
+	if payload == nil || len(r.secrets) == 0 {
+		return payload
+	}
+	out := make(map[string]any, len(payload))
+	for k, v := range payload {
+		out[k] = r.redactValue(v, false)
+	}
+	return out
+}
+
+func (r *Redactor) redactValue(v any, applyShapes bool) any {
 	switch val := v.(type) {
 	case string:
-		return r.redactString(val)
+		return r.redactStringWithShapes(val, applyShapes)
 	case map[string]any:
-		return r.Redact(val)
+		if applyShapes {
+			return r.Redact(val)
+		}
+		return r.RedactKnownSecrets(val)
 	case []any:
 		out := make([]any, len(val))
 		for i, item := range val {
-			out[i] = r.redactValue(item)
+			out[i] = r.redactValue(item, applyShapes)
 		}
 		return out
 	case []string:
 		out := make([]string, len(val))
 		for i, item := range val {
-			out[i] = r.redactString(item)
+			out[i] = r.redactStringWithShapes(item, applyShapes)
 		}
 		return out
 	case map[string]string:
 		out := make(map[string]string, len(val))
 		for k, item := range val {
-			out[k] = r.redactString(item)
+			out[k] = r.redactStringWithShapes(item, applyShapes)
 		}
 		return out
 	default:
@@ -277,8 +291,15 @@ func (r *Redactor) redactValue(v any) any {
 }
 
 func (r *Redactor) redactString(s string) string {
+	return r.redactStringWithShapes(s, true)
+}
+
+func (r *Redactor) redactStringWithShapes(s string, applyShapes bool) string {
 	for _, secret := range r.secrets {
 		s = strings.ReplaceAll(s, secret, "[REDACTED]")
+	}
+	if !applyShapes {
+		return s
 	}
 	for _, pat := range secretPatterns {
 		s = pat.ReplaceAllStringFunc(s, func(match string) string {

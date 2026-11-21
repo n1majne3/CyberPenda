@@ -288,6 +288,9 @@ func validateSessionBoundRows(tx *sql.Tx, req IssueSessionGrantRequest) error {
 		}
 		return fmt.Errorf("read grant Session: %w", err)
 	}
+	if lifecycle != "open" {
+		return ValidationError(ErrCodeContinuationClosed, "continuation grant Session is archived", "context.session_id")
+	}
 	var sessionID, profileID, provider, runner, configVersionID string
 	if err := tx.QueryRow(`SELECT session_id, runtime_profile_id, runtime_provider, runner, runtime_config_version_id FROM session_continuations WHERE id=?`, req.ContinuationID).
 		Scan(&sessionID, &profileID, &provider, &runner, &configVersionID); err != nil {

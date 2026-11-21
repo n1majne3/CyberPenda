@@ -67,7 +67,7 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		authDoc = buildPiAuthFromProjected(projected, materialized)
 	} else {
 		modelsDoc = buildPiModels(profile, materialized, req)
-		authDoc = buildPiAuth(profile, materialized)
+		authDoc = buildPiAuth(profile, materialized, req)
 	}
 	modelsDoc, err = applyConfigOverlay(profile.Provider, modelsDoc, profile.Fields.CustomConfigFile)
 	if err != nil {
@@ -220,7 +220,7 @@ func buildPiModels(profile runtimeprofile.Profile, materialized map[string]strin
 	if api := inferPiAPI(profile); api != "" {
 		provider["api"] = api
 	}
-	if apiKeyRef := piAPIKeyRef(materialized); apiKeyRef != "" {
+	if apiKeyRef := piAPIKeyRef(profile, materialized, req); apiKeyRef != "" {
 		provider["apiKey"] = apiKeyRef
 	}
 	if profile.Fields.Model != "" {
@@ -234,8 +234,8 @@ func buildPiModels(profile runtimeprofile.Profile, materialized map[string]strin
 	}
 }
 
-func buildPiAuth(profile runtimeprofile.Profile, materialized map[string]string) map[string]map[string]string {
-	envKey := piAPIKeyEnv(materialized)
+func buildPiAuth(profile runtimeprofile.Profile, materialized map[string]string, req ProjectionRequest) map[string]map[string]string {
+	envKey := piAPIKeyEnv(profile, materialized, req)
 	if envKey == "" {
 		return nil
 	}
@@ -278,8 +278,8 @@ func inferPiAPI(profile runtimeprofile.Profile) string {
 	}
 }
 
-func piAPIKeyRef(materialized map[string]string) string {
-	if key := piAPIKeyEnv(materialized); key != "" {
+func piAPIKeyRef(profile runtimeprofile.Profile, materialized map[string]string, req ProjectionRequest) string {
+	if key := piAPIKeyEnv(profile, materialized, req); key != "" {
 		return "$" + key
 	}
 	return ""
@@ -292,7 +292,48 @@ func piProviderID(profile runtimeprofile.Profile) string {
 	return "custom"
 }
 
-func piAPIKeyEnv(materialized map[string]string) string {
+func piAPIKeyEnv(profile runtimeprofile.Profile, materialized map[string]string, req ProjectionRequest) string {
+	if len(materialized) == 0 {
+		return ""
+	}
+	if req.ModelSnapshot != nil {
+		if explicit := strings.TrimSpace(req.ModelSnapshot.APIKeyEnv); explicit != "" {
+			if _, ok := materialized[explicit]; ok {
+				return explicit
+			}
+		}
+	}
+	var preferred []string
+	switch inferPiAPI(profile) {
+	case "anthropic-messages":
+		preferred = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+	case "google-generative-ai":
+		preferred = []string{"GEMINI_API_KEY", "GOOGLE_API_KEY"}
+	default:
+		preferred = []string{"OPENAI_API_KEY"}
+	}
+	for _, candidate := range preferred {
+		if _, ok := materialized[candidate]; ok {
+			return candidate
+		}
+	}
+	for _, candidate := range []string{
+		"OPENAI_API_KEY",
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_AUTH_TOKEN",
+		"GEMINI_API_KEY",
+		"GOOGLE_API_KEY",
+		"OPENROUTER_API_KEY",
+		"DEEPSEEK_API_KEY",
+		"MISTRAL_API_KEY",
+		"GROQ_API_KEY",
+		"XAI_API_KEY",
+		"TOGETHER_API_KEY",
+	} {
+		if _, ok := materialized[candidate]; ok {
+			return candidate
+		}
+	}
 	keys := make([]string, 0, len(materialized))
 	for key := range materialized {
 		if strings.TrimSpace(key) != "" {
@@ -300,6 +341,11 @@ func piAPIKeyEnv(materialized map[string]string) string {
 		}
 	}
 	sort.Strings(keys)
+	for _, key := range keys {
+		if strings.HasSuffix(strings.ToUpper(key), "_API_KEY") {
+			return key
+		}
+	}
 	if len(keys) == 0 {
 		return ""
 	}

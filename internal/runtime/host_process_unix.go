@@ -5,7 +5,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -48,10 +47,7 @@ func (LocalHostProcessStarter) Start(_ context.Context, spec HostProcessSpec) (H
 	}
 	cmd := exec.Command(spec.Program, spec.Args...)
 	cmd.Dir = spec.Workdir
-	cmd.Env = os.Environ()
-	for key, value := range spec.Env {
-		cmd.Env = append(cmd.Env, key+"="+value)
-	}
+	cmd.Env = buildHostProcessEnv(spec.Env)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := cmd.StdinPipe()

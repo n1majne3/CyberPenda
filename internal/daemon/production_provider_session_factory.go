@@ -243,6 +243,9 @@ func sandboxBridgeDockerForLaunch(base runtime.SandboxBridgeDocker, adapter runt
 	switch docker := base.(type) {
 	case runtime.DockerCLISandboxBridgeDocker:
 		docker.ContainerCLI = strings.TrimSpace(cli)
+		if createEnv, hasEnv := runtime.DockerSandboxCreateEnv(adapter); hasEnv && len(createEnv) > 0 {
+			docker.CreateEnv = createEnv
+		}
 		return docker
 	default:
 		return base
