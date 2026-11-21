@@ -118,12 +118,6 @@ type ProviderSessionObservationSink interface {
 	SetObservationSink(ProviderSessionObserve)
 }
 
-// ProviderSessionTurnLineageResolver resolves provider correlation against
-// Harness-owned requests. Observations never classify their own Runtime Turn.
-type ProviderSessionTurnLineageResolver interface {
-	ResolveProviderSessionTurnKind(requestID, providerTurnID string) (RuntimeTurnKind, bool)
-}
-
 // ProviderSessionTurnLineage freezes canonical request/Turn correlation, the
 // Harness-owned kind, and the explicit Runtime Turn Selection sent for one
 // provider request. Provider notifications may supply lookup keys, but never
