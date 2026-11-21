@@ -80,6 +80,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 		return taskLaunchPlan{Adapter: runtime.NewFakeAdapter(), RuntimeConfig: runtimeConfig, CapturedRuntimeConfig: capturedRuntimeConfig, LaunchModelOverride: launchModelOverride, LaunchReasoningEffort: launchReasoningEffort, NativeResumeSessionID: nativeResumeSessionID, ResolvedProfile: profile, LaunchGoal: launchGoal, BlackboardProjection: blackboardProjection}, nil
 	}
+	if blackboardProjection != runner.BlackboardProjectionOmitted && !v2 {
+		return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 binding is required for Blackboard projection")
+	}
 	var layout runner.Layout
 	var err error
 	if v2 {
@@ -193,29 +196,24 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 				return taskLaunchPlan{}, err
 			}
 		}
-		var readOnlyTaskFiles, readOnlyTaskDirs []string
-		if binding != nil {
-			if v2 {
-				readOnlyTaskDirs = []string{"workdir/.pentest"}
-			} else {
-				readOnlyTaskFiles = []string{"workdir/.pentest/blackboard.json", "workdir/.pentest/scope.json"}
-			}
+		var readOnlyTaskDirs []string
+		if v2 {
+			readOnlyTaskDirs = []string{"workdir/.pentest"}
 		}
 		containerCLI := task.ResolveContainerCLI(created.RunControls.ContainerCLI, server.containerCLI)
 		command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
-			Layout:            layout,
-			Provider:          profile.Provider,
-			Image:             sandboxImage,
-			ContainerCLI:      containerCLI,
-			ContainerIDFile:   containerIDFile,
-			RuntimeCommand:    sandboxRuntime,
-			ProcessEnv:        processEnv,
-			NetworkMode:       sandboxNetwork,
-			VPNTun:            created.RunControls.SandboxVPNTun,
-			TaskVolume:        server.taskVolume,
-			TaskVolumeRoot:    server.taskVolumeRoot,
-			ReadOnlyTaskFiles: readOnlyTaskFiles,
-			ReadOnlyTaskDirs:  readOnlyTaskDirs,
+			Layout:           layout,
+			Provider:         profile.Provider,
+			Image:            sandboxImage,
+			ContainerCLI:     containerCLI,
+			ContainerIDFile:  containerIDFile,
+			RuntimeCommand:   sandboxRuntime,
+			ProcessEnv:       processEnv,
+			NetworkMode:      sandboxNetwork,
+			VPNTun:           created.RunControls.SandboxVPNTun,
+			TaskVolume:       server.taskVolume,
+			TaskVolumeRoot:   server.taskVolumeRoot,
+			ReadOnlyTaskDirs: readOnlyTaskDirs,
 		})
 		if err != nil {
 			return taskLaunchPlan{}, err
