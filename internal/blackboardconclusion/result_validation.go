@@ -72,9 +72,13 @@ func validateResult(result RuntimeAttemptResult) error {
 		return validationDetailError("tested_targets must be a non-empty array",
 			ValidationDetail{Reason: ValidationReasonRuleViolation, FieldPath: "tested_targets", Expected: "a non-empty array"})
 	}
-	if len(result.TestedTargets) > 32 || len(result.ProducedTargets) > 32 {
+	if len(result.TestedTargets) > 32 {
 		return validationDetailError("runtime Attempt result target count exceeds 32",
 			ValidationDetail{Reason: ValidationReasonOversizedValue, FieldPath: "tested_targets", Expected: "at most 32 target entries"})
+	}
+	if len(result.ProducedTargets) > 32 {
+		return validationDetailError("runtime Attempt result target count exceeds 32",
+			ValidationDetail{Reason: ValidationReasonOversizedValue, FieldPath: "produced_targets", Expected: "at most 32 target entries"})
 	}
 	seen := map[string]bool{result.Attempt.Key: true}
 	for index, target := range result.TestedTargets {

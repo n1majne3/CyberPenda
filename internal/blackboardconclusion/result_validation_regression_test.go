@@ -1,6 +1,7 @@
 package blackboardconclusion_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -55,6 +56,40 @@ func TestDecodeRejectsNonPositiveSuppliedVersions(t *testing.T) {
 			t.Run(test.name+"/"+version, func(t *testing.T) {
 				if _, err := blackboardconclusion.Decode([]byte(test.raw)); err == nil {
 					t.Fatal("Decode() accepted a non-positive supplied expected_version")
+				}
+			})
+		}
+	}
+}
+
+func TestDecodeTargetCountFieldPath(t *testing.T) {
+	for _, field := range []string{"tested_targets", "produced_targets"} {
+		for _, count := range []int{32, 33} {
+			t.Run(fmt.Sprintf("%s/%d", field, count), func(t *testing.T) {
+				targets := make([]string, count)
+				for index := range targets {
+					targets[index] = fmt.Sprintf(`{"key":"fact:target-%d","expected_version":1}`, index)
+				}
+				raw := validFailedResult
+				if field == "tested_targets" {
+					raw = strings.Replace(raw, `"tested_targets":[{"key":"entity:search","expected_version":1}]`, `"tested_targets":[`+strings.Join(targets, ",")+`]`, 1)
+				} else {
+					raw = strings.Replace(raw, `"outcome":"failed"`, `"outcome":"succeeded"`, 1)
+					raw = strings.Replace(raw, `"produced_targets":[]`, `"produced_targets":[`+strings.Join(targets, ",")+`]`, 1)
+				}
+				_, err := blackboardconclusion.Decode([]byte(raw))
+				if count == 32 {
+					if err != nil {
+						t.Fatalf("Decode() rejected 32 targets: %v", err)
+					}
+					return
+				}
+				if err == nil {
+					t.Fatal("Decode() accepted 33 targets")
+				}
+				detail := blackboardconclusion.DecodeDetailOf(err)
+				if detail.Reason != blackboardconclusion.ValidationReasonOversizedValue || detail.FieldPath != field {
+					t.Fatalf("DecodeDetailOf() = %#v; want value_too_large at %s", detail, field)
 				}
 			})
 		}
