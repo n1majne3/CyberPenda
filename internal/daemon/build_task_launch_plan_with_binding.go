@@ -128,40 +128,28 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 	}
 	configPath := runner.LaunchConfigPath(layout, profile.Provider, projection.ConfigPath, sandbox)
-	mcpConfigPath := runner.LaunchMCPConfigPath(layout, profile.Provider, sandbox, projection)
 	if v2 && !sandbox {
 		// Host argv must not embed TaskRoot absolute paths (they contain the Task ID).
 		configPath = blackboardV2HostRelativePath(layout.Workdir, configPath)
-		mcpConfigPath = blackboardV2HostRelativePath(layout.Workdir, mcpConfigPath)
 	}
 	launchProfile := profile
 	if projection.ResolvedProfile.Provider != "" {
 		launchProfile = projection.ResolvedProfile
 	}
-	providerCommand, err := adapters.BuildLaunchOrResumeArgs(adapters.LaunchArgsRequest{
-		Provider:      profile.Provider,
-		Profile:       launchProfile,
-		Goal:          launchGoal,
-		ConfigPath:    configPath,
-		MCPConfigPath: mcpConfigPath,
-		Sandbox:       sandbox,
-	}, nativeResumeSessionID)
+	providerBinary, err := resolveProviderBinary(server.runtimePlugins, launchProfile)
 	if err != nil {
 		return taskLaunchPlan{}, err
 	}
 
-	runtimeCommand := append([]string{}, providerCommand...)
-	commandProgram := runtimeCommand[0]
-	commandArgs := runtimeCommand[1:]
+	commandProgram := providerBinary
+	var commandArgs []string
 	workdir := layout.Workdir
-	// Structured launch facts for the provider-session factory: family
-	// assemblers consume these instead of re-parsing the rendered one-shot
-	// argv below.
 	launchFacts := ProviderSessionLaunchFacts{
-		ProviderBinary: providerCommand[0],
+		ProviderBinary: providerBinary,
 		CustomArgs:     append([]string(nil), launchProfile.Fields.CustomArgs...),
 		SettingsPath:   configPath,
 		Workdir:        "/task/workdir",
+		Env:            processEnv,
 	}
 	if !sandbox {
 		launchFacts.Workdir = workdir
@@ -174,7 +162,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault
 	sandboxImage := ""
-	var commandEnv map[string]string
 	if sandbox {
 		sandboxNetwork = sandboxNetworkMode(created.RunControls)
 		sandboxImage = strings.TrimSpace(profile.Fields.SandboxImage)
@@ -184,17 +171,6 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		containerIDFile = filepath.Join(layout.Logs, "container.cid")
 		if err := os.Remove(containerIDFile); err != nil && !os.IsNotExist(err) {
 			return taskLaunchPlan{}, err
-		}
-		sandboxRuntime := runtimeCommand
-		// One-shot Pi sandbox installs pi via an sh -c bootstrap wrapper. The
-		// persistent provider-session path rewrites the image command to the
-		// bridge and therefore needs a bare "pi" token in docker create argv.
-		// Skip the wrapper whenever this launch will open a provider session.
-		if profile.Provider == runtimeprofile.ProviderPi {
-			sandboxRuntime, err = server.sandboxPiRuntimeCommand(runtimeCommand, launchProfile, created.Runner)
-			if err != nil {
-				return taskLaunchPlan{}, err
-			}
 		}
 		var readOnlyTaskDirs []string
 		if v2 {
@@ -207,7 +183,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 			Image:            sandboxImage,
 			ContainerCLI:     containerCLI,
 			ContainerIDFile:  containerIDFile,
-			RuntimeCommand:   sandboxRuntime,
+			RuntimeCommand:   []string{providerBinary},
 			ProcessEnv:       processEnv,
 			NetworkMode:      sandboxNetwork,
 			VPNTun:           created.RunControls.SandboxVPNTun,
@@ -220,7 +196,9 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 		commandProgram = command.Program
 		commandArgs = command.Args
-		commandEnv = command.Env
+		launchFacts.SandboxContainerCLI = command.Program
+		launchFacts.SandboxCreateArgs = command.Args
+		launchFacts.SandboxCreateEnv = command.Env
 		workdir = ""
 	}
 
@@ -268,49 +246,10 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		}
 	}
 
-	var adapter runtime.Adapter
-	if sandbox {
-		sandboxConfig := runtime.DockerSandboxConfig{
-			Name:         string(profile.Provider),
-			ContainerCLI: commandProgram,
-			Image:        sandboxImage,
-			CreateArgs:   commandArgs,
-			CreateEnv:    commandEnv,
-			SecretValues: runtime.SecretValuesFromEnv(processEnv, prepared.Credentials()),
-			Log: func(event runtime.DockerSandboxLogEvent) {
-				server.logDockerSandboxEvent(created, event)
-			},
-		}
-		if sandboxNetwork == runner.SandboxNetworkHostProxyOnly {
-			sandboxConfig.RequiredNetwork = &runtime.DockerNetworkRequirement{
-				Name:     runner.HostProxyOnlySandboxNetworkName,
-				Driver:   "bridge",
-				Internal: false,
-			}
-		}
-		adapter = runtime.NewDockerSandboxAdapter(sandboxConfig)
-	} else {
-		adapter = runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
-			Name:         string(profile.Provider),
-			Program:      commandProgram,
-			Args:         commandArgs,
-			Workdir:      workdir,
-			Env:          processEnv,
-			SecretValues: runtime.SecretValuesFromEnv(processEnv, prepared.Credentials()),
-		})
-	}
-
-	// Pi writes its real-time progress to a session jsonl file instead of
-	// stdout, so a sandboxed Pi task's timeline is empty until it exits. The
-	// shared tailer re-emits appended lines as runtime_output events the
-	// transcript parser already understands.
-	adapter = withPiSessionTail(adapter, sandbox, profile.Provider, layout)
-
 	metadata := providerNativeSessionMetadata(sandbox, profile.Provider, layout, containerIDFile)
 	stopConfirmation := dockerStopConfirmation(created.RunControls.ContainerCLI, server.containerCLI, containerIDFile)
 
 	return taskLaunchPlan{
-		Adapter:                 adapter,
 		RuntimeConfig:           runtimeConfig,
 		CapturedRuntimeConfig:   capturedRuntimeConfig,
 		MaterializedCredentials: prepared.Credentials(),

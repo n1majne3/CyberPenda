@@ -128,12 +128,17 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 		server.failSessionProviderLaunch(found.ID, continuation.ID, err)
 		return continuation, err
 	}
-	if server.providerSessionFactory != nil && supportsPersistentProviderSession(task.Runner(run), profile.Provider) {
+	if supportsPersistentProviderSession(task.Runner(run), profile.Provider) {
+		if server.providerSessionFactory == nil {
+			factoryErr := errors.New("provider session factory is required")
+			server.failSessionProviderLaunch(found.ID, continuation.ID, factoryErr)
+			return continuation, factoryErr
+		}
 		binding, factoryErr := server.providerSessionFactory.Open(ctx, ProviderSessionLaunchRequest{
 			Owner:        found.OwnerContract(),
 			Continuation: ownerContinuationFromSession(continuation), Provider: profile.Provider,
 			Runner: task.Runner(run), LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.RuntimeConfig,
-			LegacyAdapter: plan.Adapter, Facts: plan.Facts,
+			Facts: plan.Facts,
 		})
 		if factoryErr == nil {
 			factoryErr = validateProviderSessionBinding(binding)

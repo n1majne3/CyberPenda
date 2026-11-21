@@ -24,7 +24,7 @@ import (
 func TestNewServerReconcilesGhostTasksOnRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "pentest.db")
 
-	first, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath})
+	first, err := daemon.NewServer(daemon.Config{Version: "v", DBPath: dbPath, ProviderSessionFactory: testScriptProviderSessionFactory{}})
 	if err != nil {
 		t.Fatalf("first NewServer: %v", err)
 	}

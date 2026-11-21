@@ -289,11 +289,16 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		return err
 	}
 	plan = boundPlan
-	if server.providerSessionFactory != nil && supportsPersistentProviderSession(created.Runner, plan.ResolvedProfile.Provider) {
+	if supportsPersistentProviderSession(created.Runner, plan.ResolvedProfile.Provider) {
+		if server.providerSessionFactory == nil {
+			redactedErr := newProviderSessionFactoryError(errors.New("provider session factory is required"), plan.MaterializedCredentials)
+			server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
+			return redactedErr
+		}
 		binding, factoryErr := server.providerSessionFactory.Open(context.Background(), ProviderSessionLaunchRequest{
 			Owner: created.OwnerContract(""), Continuation: ownerContinuationFromTask(continuation), Provider: plan.ResolvedProfile.Provider,
 			Runner: created.Runner, LaunchGoal: plan.LaunchGoal, RuntimeConfig: plan.CapturedRuntimeConfig,
-			LegacyAdapter: plan.Adapter, Facts: plan.Facts,
+			Facts: plan.Facts,
 		})
 		if factoryErr == nil {
 			factoryErr = validateProviderSessionBinding(binding)
