@@ -20,7 +20,9 @@ tsecbench 向导（立即开始跑分 → 选择本地模式 → 选择评测集
     python scripts/tsecbench-launch.py --dry-run               # 彩排，不写任何状态
     python scripts/tsecbench-launch.py --check                 # 只看状态
 
-环境变量 PLAYWRIGHT_MCP_EXTENSION_TOKEN（或 --pw-token）：扩展中继鉴权 token，可选。
+环境变量：
+    PENTEST_AUTH_TOKEN（或 --auth-token）：daemon operator 鉴权 token（Bearer）。
+    PLAYWRIGHT_MCP_EXTENSION_TOKEN（或 --pw-token）：扩展中继鉴权 token，可选。
 """
 
 import argparse
@@ -59,11 +61,12 @@ from tsecbench_launch_browser import (
     wizard_code,
 )
 
-DEFAULT_DAEMON = "http://127.0.0.1:8787"
+DEFAULT_DAEMON = os.environ.get("PENTEST_DAEMON_URL", "http://127.0.0.1:8787").rstrip("/")
 DEFAULT_PROFILE_NAME = "tsecbench"
 DEFAULT_SET_ID = "4"  # Tsecbench v1（/benchmark/prepare/<set_id>）
 DEFAULT_AGENT_NAME = "CyberPenda"  # 平台 AGENT 信息下拉里的选项
 CRED_REF = "BENCHMARK_TOKEN"
+AUTH_TOKEN = os.environ.get("PENTEST_AUTH_TOKEN", "").strip()
 
 DEFAULT_GOAL = """# 开始
 先执行 VPN 联通预检（curl http://10.0.100.58 status:"ok"）；通过后再调用 GET /openapi/v1/challenges 获取题目列表，然后按上述流程逐题推进。预检不通过则立即中断并提示「VPN检测未通过,请检查靶场VPN网络配置」，不要进入跑分流程。
@@ -71,13 +74,25 @@ DEFAULT_GOAL = """# 开始
 
 
 def _curl(args, timeout=60):
-    command = ["curl", "-s", "--noproxy", "*", "--max-time", str(timeout), "-w", "\n%{http_code}"] + args
-    result = subprocess.run(command, capture_output=True, timeout=timeout + 10)
+    command = ["curl", "-s", "--noproxy", "*", "--max-time", str(timeout), "-w", "\n%{http_code}"]
+    stdin_bytes = None
+    if AUTH_TOKEN:
+        escaped = AUTH_TOKEN.replace("\\", "\\\\").replace('"', '\\"')
+        command += ["-K", "-"]
+        stdin_bytes = ('header = "Authorization: Bearer %s"\n' % escaped).encode("utf-8")
+    command += args
+    result = subprocess.run(command, input=stdin_bytes, capture_output=True, timeout=timeout + 10)
     output = result.stdout.decode("utf-8", "replace")
     if "\n" not in output:
         die("curl failed: %s" % (result.stderr.decode("utf-8", "replace")[:200] or output[:200]))
     body, _, status = output.rpartition("\n")
     return status.strip(), body
+
+
+def _auth_hint(status):
+    if status == "401" and not AUTH_TOKEN:
+        return "hint: daemon 需要 operator token，请设置 PENTEST_AUTH_TOKEN 或传入 --auth-token"
+    return ""
 
 
 def http_json(method, url, body=None, timeout=30):
@@ -90,7 +105,7 @@ def http_json(method, url, body=None, timeout=30):
             status, text = _curl(args, timeout=timeout)
             if status.startswith("2"):
                 return json.loads(text)
-            die("%s %s -> HTTP %s: %s" % (method, url, status, text[:400]))
+            die("%s %s -> HTTP %s: %s" % (method, url, status, text[:400]), _auth_hint(status))
         except subprocess.TimeoutExpired as exc:
             last_error = exc
             time.sleep(0.5 * (attempt + 1))
@@ -166,7 +181,7 @@ def create_session(daemon, profile_id, goal, ovpn_path, dry_run):
             if status.startswith("2"):
                 created = json.loads(text)
                 break
-            die("create session -> HTTP %s: %s" % (status, text[:400]))
+            die("create session -> HTTP %s: %s" % (status, text[:400]), _auth_hint(status))
         except subprocess.TimeoutExpired as exc:
             last_error = exc
             time.sleep(0.5 * (attempt + 1))
@@ -189,11 +204,14 @@ def main():
     parser.add_argument("--set-id", default=DEFAULT_SET_ID, help="tsecbench 评测集 id（URL /benchmark/prepare/<id>）")
     parser.add_argument("--agent", default=DEFAULT_AGENT_NAME, help="平台 AGENT 信息下拉选择的 Agent 名称")
     parser.add_argument("--daemon", default=DEFAULT_DAEMON)
+    parser.add_argument("--auth-token", default="", help="Daemon operator token（默认读 PENTEST_AUTH_TOKEN 环境变量）")
     parser.add_argument("--pw-token", default="", help="Playwright 扩展中继 token（默认读 PLAYWRIGHT_MCP_EXTENSION_TOKEN 环境变量）")
     parser.add_argument("--dry-run", action="store_true", help="只打印动作，不写任何状态")
     parser.add_argument("--check", action="store_true", help="只检查 daemon/profile 状态")
     args = parser.parse_args()
-    global PW_TOKEN
+    global AUTH_TOKEN, PW_TOKEN
+    if args.auth_token:
+        AUTH_TOKEN = args.auth_token.strip()
     if args.pw_token:
         PW_TOKEN = args.pw_token.strip()
         browser.PW_TOKEN = PW_TOKEN
