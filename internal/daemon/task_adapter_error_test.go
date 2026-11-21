@@ -14,6 +14,7 @@ import (
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
+	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
 	"pentest/internal/task"
@@ -26,7 +27,7 @@ func TestBuildTaskAdapterReturnsActionableErrorForClaudeGLMProfile(t *testing.T)
 	proj := createAdapterErrorTestProject(t, server)
 	created := createAdapterErrorTestTask(t, server, proj.ID, profile.ID)
 
-	_, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
+	_, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, &taskLaunchPlan{BlackboardProjection: runner.BlackboardProjectionOmitted})
 	if err == nil {
 		t.Fatal("expected buildTaskLaunchPlanWithBinding to fail")
 	}
@@ -148,7 +149,7 @@ func TestBuildTaskAdapterAppliesHostProxyOnlySandboxNetworkFromRunControls(t *te
 		t.Fatalf("create task: %v", err)
 	}
 
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, &taskLaunchPlan{BlackboardProjection: runner.BlackboardProjectionOmitted})
 	if err != nil {
 		t.Fatalf("build adapter: %v", err)
 	}
@@ -209,7 +210,7 @@ func TestBuildTaskAdapterAppliesSandboxVPNTunFromRunControls(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, &taskLaunchPlan{BlackboardProjection: runner.BlackboardProjectionOmitted})
 	if err != nil {
 		t.Fatalf("build adapter: %v", err)
 	}
@@ -276,7 +277,7 @@ func TestSandboxLaunchPlanWiresImagePullProgressToDaemonLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, &taskLaunchPlan{BlackboardProjection: runner.BlackboardProjectionOmitted})
 	if err != nil {
 		t.Fatalf("build task adapter: %v", err)
 	}
