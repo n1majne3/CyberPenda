@@ -1,11 +1,7 @@
 package daemon
 
 import (
-	"crypto/rand"
-	"database/sql"
-	"encoding/json"
 	"net/http"
-	"time"
 
 	"pentest/internal/runtimeconfig"
 	"pentest/internal/task"
@@ -58,49 +54,25 @@ func (server *Server) prepareSelectedRuntimeConfig(response http.ResponseWriter,
 
 func (server *Server) appendTaskSteeringSelection(response http.ResponseWriter, found task.Task, payload task.EventPayload, input taskContinuationSelectionInput) (task.Event, *task.RuntimeConfigVersion, bool) {
 	var version *task.RuntimeConfigVersion
-	var configJSON []byte
 	if input.hasSelection() {
 		prepared, ok := server.prepareSelectedRuntimeConfig(response, found, input)
 		if !ok {
 			return task.Event{}, nil, false
 		}
-		var err error
-		configJSON, err = json.Marshal(prepared.Config)
-		if err != nil {
-			writeTaskError(response, err)
-			return task.Event{}, nil, false
-		}
-		prepared.ID = rand.Text()
 		version = &prepared
 	}
-	tx, err := server.db.Begin()
-	if err != nil {
-		writeTaskError(response, err)
-		return task.Event{}, nil, false
-	}
-	defer func() { _ = tx.Rollback() }()
-	event, err := server.tasks.AppendEventTx(tx, found.ID, task.EventKindSteering, payload)
+	event, err := server.tasks.AppendEvent(found.ID, task.EventKindSteering, payload)
 	if err != nil {
 		writeTaskError(response, err)
 		return task.Event{}, nil, false
 	}
 	if version != nil {
-		var maxVersion sql.NullInt64
-		if err := tx.QueryRow(`SELECT MAX(version) FROM task_runtime_config_versions WHERE task_id = ?`, found.ID).Scan(&maxVersion); err != nil {
+		recorded, err := server.tasks.RecordRuntimeConfig(found.ID, version.RuntimeProfileID, version.Config)
+		if err != nil {
 			writeTaskError(response, err)
 			return task.Event{}, nil, false
 		}
-		version.Version = int(maxVersion.Int64) + 1
-		version.CreatedAt = time.Now().UTC()
-		if _, err := tx.Exec(`INSERT INTO task_runtime_config_versions (id, task_id, version, runtime_profile_id, config_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			version.ID, version.TaskID, version.Version, version.RuntimeProfileID, string(configJSON), version.CreatedAt.Format(time.RFC3339Nano)); err != nil {
-			writeTaskError(response, err)
-			return task.Event{}, nil, false
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		writeTaskError(response, err)
-		return task.Event{}, nil, false
+		version = &recorded
 	}
 	return event, version, true
 }

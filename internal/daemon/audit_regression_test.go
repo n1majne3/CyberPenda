@@ -145,7 +145,7 @@ func TestNativeResumeReturnsSteeringReadError(t *testing.T) {
 	}
 }
 
-func TestTaskSteeringSelectionCommitsTogether(t *testing.T) {
+func TestTaskSteeringSelectionStorageOrder(t *testing.T) {
 	for _, route := range []string{"steer/queue", "steer"} {
 		for _, fault := range []string{"", "task_events", "task_runtime_config_versions"} {
 			for _, selection := range []string{"", `,"model":"gpt-test"`} {
@@ -161,7 +161,7 @@ func TestTaskSteeringSelectionCommitsTogether(t *testing.T) {
 						t.Fatal(err)
 					}
 					w := httptest.NewRecorder()
-					s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+found.ProjectID+"/tasks/"+found.ID+"/"+route, strings.NewReader(`{"directive":"atomic directive"`+selection+`}`)))
+					s.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/projects/"+found.ProjectID+"/tasks/"+found.ID+"/"+route, strings.NewReader(`{"directive":"test directive"`+selection+`}`)))
 					want := http.StatusOK
 					if fault == "task_events" || fault == "task_runtime_config_versions" && selection != "" {
 						want = http.StatusInternalServerError
@@ -183,6 +183,9 @@ func TestTaskSteeringSelectionCommitsTogether(t *testing.T) {
 						if selection != "" {
 							wantVersions++
 						}
+					}
+					if fault == "task_runtime_config_versions" && selection != "" {
+						wantEvents = 1
 					}
 					if len(events) != wantEvents || len(versions) != wantVersions {
 						t.Fatalf("events=%d versions=%d, want events=%d versions=%d", len(events), len(versions), wantEvents, wantVersions)
