@@ -33,11 +33,11 @@ var secretEnvKeyPattern = regexp.MustCompile(`(?i)(token|api[_-]?key|secret|pass
 var piExecuteAgentMarkdown []byte
 
 // piDefaultPackages are the Pi packages CyberPenda always projects:
-// pi-subagents powers Execute subagent dispatch and pi-web-access provides web
-// fetch/search. Both are installed globally in the Sandbox and Hosted images,
-// and plain npm: refs without a version range resolve from Pi's global npm
-// root without network access, so launches stay offline-safe.
-var piDefaultPackages = []string{"npm:@tintinweb/pi-subagents", "npm:pi-web-access"}
+// pi-subagents, pi-web-access, and pi-rtk-optimizer. All three are installed
+// globally in the Sandbox and Hosted images, and plain npm: refs without a
+// version range resolve from Pi's global npm root without network access, so
+// launches stay offline-safe.
+var piDefaultPackages = []string{"npm:@tintinweb/pi-subagents", "npm:pi-web-access", "npm:pi-rtk-optimizer"}
 
 // GlobalModelProviderSnapshot is an immutable List() result captured before any
 // Store transaction that projects runtime config. Projection filters this list

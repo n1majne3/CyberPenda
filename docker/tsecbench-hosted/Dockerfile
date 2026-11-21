@@ -128,6 +128,30 @@ RUN --mount=type=cache,target=/root/.npm \
       @anthropic-ai/claude-code@latest \
       agent-browser@latest
 
+ARG RTK_VERSION=v1.2.1
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+      x86_64) RTK_ASSET="rtk-x86_64-unknown-linux-musl.tar.gz"; RTK_SHA256="75f64525711be935657a6b228d929c24bd9d1ab7d640ea374a8b913e5b5bac05" ;; \
+      aarch64|arm64) RTK_ASSET="rtk-aarch64-unknown-linux-musl.tar.gz"; RTK_SHA256="cae1a911eda9e898dbb90039436e9d53922b20afb1e3e4ae341f749eb62b7781" ;; \
+      *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+    esac; \
+    TMP_DIR="$(mktemp -d)"; \
+    curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}/${RTK_ASSET}" -o "${TMP_DIR}/${RTK_ASSET}"; \
+    printf '%s  %s\n' "${RTK_SHA256}" "${TMP_DIR}/${RTK_ASSET}" | sha256sum -c -; \
+    tar -xzf "${TMP_DIR}/${RTK_ASSET}" -C "${TMP_DIR}"; \
+    install -m 0755 "${TMP_DIR}/rtk" /usr/local/bin/rtk; \
+    ln -sf /usr/local/bin/rtk /usr/bin/rtk; \
+    rm -rf "${TMP_DIR}"; \
+    mkdir -p /root/.claude; \
+    rtk init --global
+
+# Install pi-rtk-optimizer in its own global npm step so its legacy peer
+# range on @earendil-works/pi-coding-agent does not block resolving Pi 1.6+.
+RUN --mount=type=cache,target=/root/.npm \
+    test -n "${RUNTIME_RELEASE_CACHE_BUST}" \
+  && npm install -g pi-rtk-optimizer@latest
+
 # Host Claude uses a persistent public Agent SDK Query. Install from the
 # repository lock so the bridge and its dependency stay compatible.
 WORKDIR /opt/pentest/claude-sdk-bridge
@@ -146,13 +170,13 @@ COPY docker/tsecbench-hosted/tsecbench-local-validate.py /usr/local/bin/tsecbenc
 RUN chmod 0755 /usr/local/bin/tsecbench-local-validate \
   && ln -s /usr/local/bin/pentest-tsecbench-client /usr/local/bin/pentest-challenge-client
 
-# Keep Chromium headless and use no runtime browser download. Pi enables only
-# the async-capable tintinweb subagents extension plus pi-web-access; both are
+# Keep Chromium headless and use no runtime browser download. Pi enables
+# @tintinweb/pi-subagents, pi-web-access, and pi-rtk-optimizer; all three are
 # installed globally above, so the plain npm: refs resolve offline from the
 # global npm root. The subagents background Agent tool writes the
 # parent-session subagents:record entries CyberPenda observes.
 RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
-  && printf '%s\n' '{"packages":["npm:@tintinweb/pi-subagents","npm:pi-web-access"]}' > /root/.pi/agent/settings.json \
+  && printf '%s\n' '{"packages":["npm:@tintinweb/pi-subagents","npm:pi-web-access","npm:pi-rtk-optimizer"]}' > /root/.pi/agent/settings.json \
   && printf '%s\n' '{"executablePath":"/usr/bin/chromium"}' > /root/.agent-browser/config.json \
   && PI_VERSION="$(node -p "require('$(npm root -g)/@earendil-works/pi-coding-agent/package.json').version")" \
      CODEX_VERSION="$(node -p "require('$(npm root -g)/@openai/codex/package.json').version")" \
@@ -163,6 +187,7 @@ RUN mkdir -p /root/.agent-browser /opt/cyberpenda /data /root/.pi/agent \
   && command -v pi || missing_hosted_tool pi \
   && command -v codex || missing_hosted_tool codex \
   && command -v claude || missing_hosted_tool claude \
+  && command -v rtk || missing_hosted_tool rtk \
   && command -v bash || missing_hosted_tool bash \
   && command -v git || missing_hosted_tool git \
   && command -v curl || missing_hosted_tool curl \
