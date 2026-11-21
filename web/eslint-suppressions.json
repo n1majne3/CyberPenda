@@ -249,6 +249,21 @@
       "count": 1
     }
   },
+  "src/pages/RuntimeOwnerComposer.tsx": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/pages/RuntimeOwnerHeader.tsx": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/pages/RuntimeOwnerTranscript.tsx": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
   "src/pages/RuntimeProfilesPage.test.tsx": {
     "local/no-comments": {
       "count": 14
@@ -291,7 +306,7 @@
   },
   "src/pages/TaskDetailPage.tsx": {
     "local/no-comments": {
-      "count": 87
+      "count": 10
     }
   },
   "src/pages/TaskLaunchPage.test.tsx": {
@@ -309,6 +324,11 @@
       "count": 2
     }
   },
+  "src/pages/runtimeOwnerConversationControls.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
   "src/pages/runtimeProfileForm.ts": {
     "local/no-comments": {
       "count": 7
@@ -317,6 +337,21 @@
   "src/pages/taskDetailView.ts": {
     "local/no-comments": {
       "count": 5
+    }
+  },
+  "src/pages/useContinuationSelection.ts": {
+    "local/no-comments": {
+      "count": 10
+    }
+  },
+  "src/pages/useConversationFollow.ts": {
+    "local/no-comments": {
+      "count": 22
+    }
+  },
+  "src/pages/useRuntimeOwnerHistory.ts": {
+    "local/no-comments": {
+      "count": 36
     }
   },
   "src/test/mockApi.ts": {
