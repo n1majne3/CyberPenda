@@ -57,8 +57,11 @@ func parseCreateSessionRequest(request *http.Request) (createSessionInput, []upl
 	if strings.HasPrefix(request.Header.Get("Content-Type"), "multipart/form-data") {
 		return parseMultipartCreateSessionRequest(request)
 	}
-	raw, err := io.ReadAll(request.Body)
+	raw, err := readBoundedJSONBody(request.Body, maxJSONRequestBodyBytes)
 	if err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			return createSessionInput{}, nil, err
+		}
 		return createSessionInput{}, nil, errInvalidSessionBody
 	}
 	if err := rejectLegacyBlackboardModeField(raw); err != nil {
@@ -139,7 +142,7 @@ func (server *Server) handleCreateSession(response http.ResponseWriter, request 
 	}
 	input, uploads, err := parseCreateSessionRequest(request)
 	if err != nil {
-		writeError(response, http.StatusBadRequest, err.Error())
+		writeRequestBodyError(response, err)
 		return
 	}
 	attachments := make([]session.Attachment, 0, len(uploads))

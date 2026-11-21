@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -219,7 +220,11 @@ func decodeOptionalJSON(request *http.Request, target any) error {
 	if request.Body == nil {
 		return nil
 	}
-	err := json.NewDecoder(request.Body).Decode(target)
+	raw, err := readBoundedJSONBody(request.Body, maxJSONRequestBodyBytes)
+	if err != nil {
+		return err
+	}
+	err = json.NewDecoder(bytes.NewReader(raw)).Decode(target)
 	if errors.Is(err, io.EOF) {
 		return nil
 	}
