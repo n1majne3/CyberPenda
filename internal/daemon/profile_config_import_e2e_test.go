@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"pentest/internal/daemon"
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 )
@@ -119,7 +120,9 @@ func TestProfileConfigImportEndToEndJourney(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare layout: %v", err)
 	}
-	projection, err := runner.ProjectRuntimeConfig(layout, imported.Profile, runner.ProjectionRequest{})
+	projection, err := runner.ProjectRuntimeConfig(layout, imported.Profile, runner.ProjectionRequest{
+		BlackboardMode: modeskill.ModeDisabled,
+	})
 	if err != nil {
 		t.Fatalf("project: %v", err)
 	}

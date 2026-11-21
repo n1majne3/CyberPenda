@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/store"
@@ -38,6 +39,7 @@ func TestProjectRuntimeConfigUsesModelProviderSnapshotWithoutLeakingKey(t *testi
 		TaskRoot:     taskRoot,
 		RuntimeHome:  filepath.Join(taskRoot, "runtime-home"),
 		ProviderHome: filepath.Join(taskRoot, "runtime-home", "codex"),
+		SkillsRoot:   filepath.Join(taskRoot, "skills"),
 		Workdir:      filepath.Join(taskRoot, "workdir"),
 	}
 	profile := runtimeprofile.Profile{
@@ -45,6 +47,7 @@ func TestProjectRuntimeConfigUsesModelProviderSnapshotWithoutLeakingKey(t *testi
 		Fields:   runtimeprofile.Fields{ModelProviderID: provider.ID},
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:      modeskill.ModeDisabled,
 		ModelProviders:      providers,
 		LaunchModelOverride: "mimo-v2-pro",
 	})

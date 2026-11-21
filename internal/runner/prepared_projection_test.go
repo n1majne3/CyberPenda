@@ -10,6 +10,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -53,6 +54,7 @@ func TestPreparedConfigProjectionKeepsNativeCredentialsAndLimits(t *testing.T) {
 				}
 				prepared, err := runner.PrepareConfigProjection(profile, runner.ConfigProjectionInput{
 					ProjectionRequest: runner.ProjectionRequest{
+						BlackboardMode: modeskill.ModeDisabled,
 						Owner:          owner.NewTaskContract("owner", "project", layout.Workdir),
 						ModelProviders: providers, GlobalModelProviderSnapshot: global,
 						DaemonAddr: "127.0.0.1:8080", BlackboardProtocol: "fgs",
@@ -134,7 +136,7 @@ func TestPreparedConfigProjectionKeepsWriteErrorsAndPartialFiles(t *testing.T) {
 				contract = owner.NewSessionContract("resume-owner", layout.Workdir)
 			}
 			profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode}
-			req := runner.ProjectionRequest{Owner: contract}
+			req := runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, Owner: contract}
 			prepared, err := runner.PrepareConfigProjection(profile, runner.ConfigProjectionInput{ProjectionRequest: req})
 			if err != nil {
 				t.Fatal(err)
@@ -162,6 +164,7 @@ func TestPreparedConfigProjectionKeepsEmptyCredentialCapture(t *testing.T) {
 	t.Setenv("PREPARED_TEST_API_KEY", "live-key")
 	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex}
 	req := runner.ProjectionRequest{
+		BlackboardMode:          modeskill.ModeDisabled,
 		ModelSnapshot:           &modelprovider.Snapshot{APIKeyEnv: "PREPARED_TEST_API_KEY"},
 		MaterializedCredentials: map[string]string{},
 	}
@@ -193,7 +196,8 @@ func TestPreparedConfigProjectionKeepsEmptySkillSelection(t *testing.T) {
 		runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode},
 		runner.ConfigProjectionInput{
 			ProjectionRequest: runner.ProjectionRequest{
-				Owner: owner.NewSessionContract("empty-skills-owner", layout.Workdir),
+				BlackboardMode: modeskill.ModeDisabled,
+				Owner:          owner.NewSessionContract("empty-skills-owner", layout.Workdir),
 			},
 			Skills: skills, CapturedSkillIDs: []string{},
 		},
@@ -261,7 +265,8 @@ func TestPreparedConfigProjectionKeepsCapturedFilesAndEnvironment(t *testing.T) 
 				}}
 				prepared, err := runner.PrepareConfigProjection(profile, runner.ConfigProjectionInput{
 					ProjectionRequest: runner.ProjectionRequest{
-						Owner: contract, Credentials: creds, ModelProviders: providers,
+						BlackboardMode: modeskill.ModeDisabled,
+						Owner:          contract, Credentials: creds, ModelProviders: providers,
 						Sandbox: sandbox, LaunchModelOverride: "captured-model", RequestedReasoningEffort: "low",
 					},
 					Skills: skills,

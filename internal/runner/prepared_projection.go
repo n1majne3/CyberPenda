@@ -44,6 +44,9 @@ func PrepareConfigProjection(profile runtimeprofile.Profile, input ConfigProject
 	if err := validateProjectionOwner(req.Owner); err != nil {
 		return nil, err
 	}
+	if err := validateBlackboardMode(req.BlackboardMode); err != nil {
+		return nil, err
+	}
 	if req.ModelSnapshot == nil && req.ModelProviders != nil && strings.TrimSpace(profile.Fields.ModelProviderID) != "" {
 		snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
 			Profile: profile, Providers: req.ModelProviders, Plugins: req.RuntimePlugins,

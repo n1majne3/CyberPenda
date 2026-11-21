@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeextension"
 	"pentest/internal/runtimeprofile"
@@ -50,6 +51,7 @@ func TestProjectRuntimeConfigProjectsRuntimeExtensions(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:              modeskill.ModeDisabled,
 		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
 		RuntimeExtensions:           registry,
 	})
@@ -92,6 +94,7 @@ func TestProjectRuntimeConfigKeepsCatalogRuntimeExtensionRefs(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:              modeskill.ModeDisabled,
 		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
 		RuntimeExtensions:           registry,
 	})
@@ -129,6 +132,7 @@ func TestProjectRuntimeConfigRejectsUnknownLocalRuntimeExtensionRefs(t *testing.
 	}
 
 	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
+		BlackboardMode:              modeskill.ModeDisabled,
 		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
 		RuntimeExtensions:           registry,
 	}); err == nil {

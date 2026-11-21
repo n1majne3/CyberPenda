@@ -107,6 +107,9 @@ func PrepareBlackboardV2TaskLayout(rootDir, taskID string, provider runtimeprofi
 }
 
 func ProjectBlackboardV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
+	if err := validateBlackboardMode(req.BlackboardMode); err != nil {
+		return ConfigProjection{}, err
+	}
 	var projection ConfigProjection
 	var err error
 	switch profile.Provider {
@@ -144,17 +147,12 @@ func projectCodexV2RuntimeConfig(layout Layout, profile runtimeprofile.Profile, 
 	if err := projectModeAndUserSkills(layout, req); err != nil {
 		return ConfigProjection{}, err
 	}
-	if req.Sandbox || len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
-		target := sandboxSkillsImagePath
-		if len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
-			target = layout.SkillsRoot
-			if req.Sandbox {
-				target = "/task/skills"
-			}
-		}
-		if err := PrepareSandboxSkills(layout, profile.Provider, target); err != nil {
-			return ConfigProjection{}, err
-		}
+	skillsTarget := layout.SkillsRoot
+	if req.Sandbox {
+		skillsTarget = sandboxTaskSkillsPath
+	}
+	if err := PrepareSandboxSkills(layout, profile.Provider, skillsTarget); err != nil {
+		return ConfigProjection{}, err
 	}
 
 	materialized, err := resolveMaterializedCredentials(profile, req)
@@ -247,19 +245,11 @@ func prepareBlackboardV2Skills(layout Layout, profile runtimeprofile.Profile, re
 	if err := projectModeAndUserSkills(layout, req); err != nil {
 		return err
 	}
-	if req.Sandbox || len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
-		target := sandboxSkillsImagePath
-		if len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
-			target = layout.SkillsRoot
-			if req.Sandbox {
-				target = "/task/skills"
-			}
-		}
-		if err := PrepareSandboxSkills(layout, profile.Provider, target); err != nil {
-			return err
-		}
+	skillsTarget := layout.SkillsRoot
+	if req.Sandbox {
+		skillsTarget = sandboxTaskSkillsPath
 	}
-	return nil
+	return PrepareSandboxSkills(layout, profile.Provider, skillsTarget)
 }
 
 // BlackboardV2ProfileWithModelSnapshot is the shared name for model snapshot

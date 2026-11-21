@@ -106,6 +106,9 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if err := validateProjectionOwner(req.Owner); err != nil {
 		return ConfigProjection{}, err
 	}
+	if err := validateBlackboardMode(req.BlackboardMode); err != nil {
+		return ConfigProjection{}, err
+	}
 	if req.BlackboardProjection == BlackboardProjectionOmitted {
 		if err := preflightOmittedBlackboardProjection(layout, profile); err != nil {
 			return ConfigProjection{}, err
@@ -121,20 +124,12 @@ func ProjectRuntimeConfig(layout Layout, profile runtimeprofile.Profile, req Pro
 	if err := projectModeAndUserSkills(layout, req); err != nil {
 		return ConfigProjection{}, err
 	}
-	if len(req.SkillBundles) > 0 {
-		// User bundles were projected by projectModeAndUserSkills above.
+	skillsTarget := layout.SkillsRoot
+	if req.Sandbox {
+		skillsTarget = sandboxTaskSkillsPath
 	}
-	if req.Sandbox || len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
-		target := sandboxSkillsImagePath
-		if len(req.SkillBundles) > 0 || req.BlackboardMode != "" {
-			target = layout.SkillsRoot
-			if req.Sandbox {
-				target = "/task/skills"
-			}
-		}
-		if err := PrepareSandboxSkills(layout, profile.Provider, target); err != nil {
-			return ConfigProjection{}, err
-		}
+	if err := PrepareSandboxSkills(layout, profile.Provider, skillsTarget); err != nil {
+		return ConfigProjection{}, err
 	}
 
 	plugin, ok := runtimePluginForProvider(profile.Provider, req.RuntimePlugins)
