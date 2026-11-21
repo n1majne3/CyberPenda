@@ -97,8 +97,9 @@ func TestProjectPiConfigProjectsAllLaunchReadyGlobalProviders(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		BlackboardMode: modeskill.ModeDisabled,
-		ModelProviders: providers,
+		BlackboardMode:              modeskill.ModeDisabled,
+		GlobalModelProviderSnapshot: mustSnapshotModelProviders(t, providers),
+		ModelProviders:              providers,
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)
@@ -267,8 +268,9 @@ func TestProjectPiConfigHostModelsIgnoredWhenGlobalProjectionAvailable(t *testin
 		},
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		BlackboardMode: modeskill.ModeDisabled,
-		ModelProviders: providers,
+		BlackboardMode:              modeskill.ModeDisabled,
+		GlobalModelProviderSnapshot: mustSnapshotModelProviders(t, providers),
+		ModelProviders:              providers,
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)
@@ -348,9 +350,10 @@ func TestMaterializeLaunchCredentialsIncludesAllPiProjectedProviders(t *testing.
 		t.Fatal(err)
 	}
 	creds, err := runner.MaterializeLaunchCredentials(profile, runner.ProjectionRequest{
-		BlackboardMode: modeskill.ModeDisabled,
-		ModelProviders: providers,
-		ModelSnapshot:  &snapshot,
+		BlackboardMode:              modeskill.ModeDisabled,
+		GlobalModelProviderSnapshot: mustSnapshotModelProviders(t, providers),
+		ModelProviders:              providers,
+		ModelSnapshot:               &snapshot,
 	})
 	if err != nil {
 		t.Fatalf("materialize: %v", err)
@@ -388,7 +391,7 @@ func TestProjectPiConfigInvalidInitialProviderStillFails(t *testing.T) {
 	_, err = runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderPi,
 		Fields:   runtimeprofile.Fields{ModelProviderID: broken.ID},
-	}, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, ModelProviders: providers})
+	}, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, GlobalModelProviderSnapshot: mustSnapshotModelProviders(t, providers), ModelProviders: providers})
 	if err == nil {
 		t.Fatal("expected invalid initial provider to fail projection")
 	}
@@ -428,7 +431,7 @@ func TestProjectedConfigTextMatchesPiLaunchReadyGlobals(t *testing.T) {
 		Provider: runtimeprofile.ProviderPi,
 		Fields:   runtimeprofile.Fields{ModelProviderID: primary.ID},
 	}
-	req := runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, ModelProviders: providers}
+	req := runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, GlobalModelProviderSnapshot: mustSnapshotModelProviders(t, providers), ModelProviders: providers}
 
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-pi-preview", runtimeprofile.ProviderPi)

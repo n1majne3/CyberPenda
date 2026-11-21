@@ -16,9 +16,10 @@ import (
 func newDaemon(t *testing.T) *daemon.Server {
 	t.Helper()
 	server, err := daemon.NewServer(daemon.Config{
-		Version:              "test-version",
-		DBPath:               filepath.Join(t.TempDir(), "pentest.db"),
-		DisableBuiltinSkills: true,
+		Version:                "test-version",
+		DBPath:                 filepath.Join(t.TempDir(), "pentest.db"),
+		DisableBuiltinSkills:   true,
+		ProviderSessionFactory: testScriptProviderSessionFactory{},
 	})
 	if err != nil {
 		t.Fatalf("NewServer returned error: %v", err)

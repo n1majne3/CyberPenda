@@ -51,8 +51,9 @@ func TestProjectRuntimeConfigProjectsRuntimeExtensions(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		BlackboardMode:    modeskill.ModeDisabled,
-		RuntimeExtensions: registry,
+		BlackboardMode:              modeskill.ModeDisabled,
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
+		RuntimeExtensions:           registry,
 	})
 	if err != nil {
 		t.Fatalf("project runtime config: %v", err)
@@ -93,8 +94,9 @@ func TestProjectRuntimeConfigKeepsCatalogRuntimeExtensionRefs(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		BlackboardMode:    modeskill.ModeDisabled,
-		RuntimeExtensions: registry,
+		BlackboardMode:              modeskill.ModeDisabled,
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
+		RuntimeExtensions:           registry,
 	})
 	if err != nil {
 		t.Fatalf("project runtime config: %v", err)
@@ -130,8 +132,9 @@ func TestProjectRuntimeConfigRejectsUnknownLocalRuntimeExtensionRefs(t *testing.
 	}
 
 	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		BlackboardMode:    modeskill.ModeDisabled,
-		RuntimeExtensions: registry,
+		BlackboardMode:              modeskill.ModeDisabled,
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
+		RuntimeExtensions:           registry,
 	}); err == nil {
 		t.Fatal("expected unknown local runtime extension to fail")
 	}

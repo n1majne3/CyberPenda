@@ -105,7 +105,7 @@ func TestProjectCodexConfigOnlyWritesOpenAIAPIKeyToAuthJSON(t *testing.T) {
 			},
 		},
 	}
-	_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled})
+	_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)})
 	if err != nil {
 		t.Fatalf("project codex config: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestProjectPiConfigPrefersProviderAPIKeyOverAlphabeticalCredentials(t *test
 			},
 		},
 	}
-	_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled})
+	_, err = runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)})
 	if err != nil {
 		t.Fatalf("project pi config: %v", err)
 	}

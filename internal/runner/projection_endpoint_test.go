@@ -156,8 +156,9 @@ func TestProjectRuntimeConfigWritesSelectedEndpointBaseURL(t *testing.T) {
 				Fields:   runtimeprofile.Fields{ModelProviderID: provider.ID},
 			}
 			projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-				BlackboardMode: modeskill.ModeDisabled,
-				ModelProviders: providers,
+				BlackboardMode:              modeskill.ModeDisabled,
+				GlobalModelProviderSnapshot: mustSnapshotModelProviders(t, providers),
+				ModelProviders:              providers,
 			})
 			if err != nil {
 				t.Fatalf("project runtime config: %v", err)
@@ -240,8 +241,9 @@ func TestModelProviderSnapshotCarriesEndpointProvenanceWithoutSecrets(t *testing
 		Fields:   runtimeprofile.Fields{ModelProviderID: provider.ID},
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		BlackboardMode: modeskill.ModeDisabled,
-		ModelProviders: providers,
+		BlackboardMode:              modeskill.ModeDisabled,
+		GlobalModelProviderSnapshot: mustSnapshotModelProviders(t, providers),
+		ModelProviders:              providers,
 	})
 	if err != nil {
 		t.Fatalf("project runtime config: %v", err)

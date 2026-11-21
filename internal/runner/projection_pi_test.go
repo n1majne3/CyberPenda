@@ -49,9 +49,10 @@ func TestProjectPiConfigWritesModelsAndAuth(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		BlackboardMode: modeskill.ModeDisabled,
-		Owner:          owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
-		Credentials:    creds,
+		BlackboardMode:              modeskill.ModeDisabled,
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
+		Owner:                       owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
+		Credentials:                 creds,
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)
@@ -177,8 +178,9 @@ func TestProjectPiConfigWritesCatalogExtensionPackages(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		BlackboardMode: modeskill.ModeDisabled,
-		Owner:          owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
+		BlackboardMode:              modeskill.ModeDisabled,
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
+		Owner:                       owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)
@@ -261,8 +263,9 @@ func TestProjectPiSettingsIgnoresHostSettings(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		BlackboardMode: modeskill.ModeDisabled,
-		Owner:          owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
+		BlackboardMode:              modeskill.ModeDisabled,
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil),
+		Owner:                       owner.NewTaskContract("task-pi", "project-1", layout.Workdir),
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)

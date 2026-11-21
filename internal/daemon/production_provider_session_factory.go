@@ -231,20 +231,16 @@ func (f *ProductionProviderSessionFactory) resolveHostBridgeCommand() (string, e
 	return path, nil
 }
 
-// sandboxBridgeDockerForLaunch prefers the container CLI from the launch
-// Docker sandbox adapter (Task/Session Run Controls) when the factory transport
-// is the production Docker CLI seam. Mock transports stay unchanged so tests
-// keep full control of Create/Start without a real CLI.
-func sandboxBridgeDockerForLaunch(base runtime.SandboxBridgeDocker, adapter runtime.Adapter) runtime.SandboxBridgeDocker {
-	cli, ok := runtime.DockerSandboxContainerCLI(adapter)
-	if !ok || strings.TrimSpace(cli) == "" {
+func sandboxBridgeDockerForLaunch(base runtime.SandboxBridgeDocker, facts ProviderSessionLaunchFacts) runtime.SandboxBridgeDocker {
+	cli := strings.TrimSpace(facts.SandboxContainerCLI)
+	if cli == "" {
 		return base
 	}
 	switch docker := base.(type) {
 	case runtime.DockerCLISandboxBridgeDocker:
-		docker.ContainerCLI = strings.TrimSpace(cli)
-		if createEnv, hasEnv := runtime.DockerSandboxCreateEnv(adapter); hasEnv && len(createEnv) > 0 {
-			docker.CreateEnv = createEnv
+		docker.ContainerCLI = cli
+		if len(facts.SandboxCreateEnv) > 0 {
+			docker.CreateEnv = facts.SandboxCreateEnv
 		}
 		return docker
 	default:

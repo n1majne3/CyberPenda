@@ -109,15 +109,11 @@ func (f *ProductionProviderSessionFactory) openHostWithAssembler(ctx context.Con
 		return f.rebindPrior(prior, request.Continuation.ID)
 	}
 
-	launch, ok := runtime.CommandAdapterLaunch(request.LegacyAdapter)
-	if !ok {
-		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires host command adapter")
-	}
-	workdir := strings.TrimSpace(launch.Workdir)
+	workdir := strings.TrimSpace(request.Facts.Workdir)
 	if workdir == "" {
 		return ProviderSessionBinding{}, fmt.Errorf("host provider session bridge requires owner workdir")
 	}
-	assembly := providerSessionAssembly{request: request, env: launch.Env}
+	assembly := providerSessionAssembly{request: request, env: request.Facts.Env}
 	program, args, err := assembler.HostCommand(assembly)
 	if err != nil {
 		return ProviderSessionBinding{}, err
@@ -127,7 +123,7 @@ func (f *ProductionProviderSessionFactory) openHostWithAssembler(ctx context.Con
 	var runAdapterMu sync.RWMutex
 	bridge, err := f.hostBridges.Bind(ctx, taskID, request.Continuation.ID, func() (*runtime.HostSessionBridge, error) {
 		bridge, err := runtime.NewHostSessionBridge(runtime.HostSessionBridgeConfig{
-			TaskID: taskID, Program: program, Args: args, Workdir: workdir, Env: launch.Env,
+			TaskID: taskID, Program: program, Args: args, Workdir: workdir, Env: request.Facts.Env,
 			Diagnostics: f.config.Diagnostics, Starter: f.config.HostStarter,
 			ProtocolEmit: func(event runtime.SandboxBridgeEvent) {
 				runAdapterMu.RLock()
@@ -187,22 +183,21 @@ func (f *ProductionProviderSessionFactory) openSandboxWithAssembler(ctx context.
 		return f.rebindPrior(prior, request.Continuation.ID)
 	}
 
-	legacyArgs, ok := runtime.DockerSandboxCreateArgs(request.LegacyAdapter)
-	if !ok {
-		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires Docker sandbox adapter")
+	if len(request.Facts.SandboxCreateArgs) == 0 {
+		return ProviderSessionBinding{}, fmt.Errorf("provider session bridge requires sandbox create args")
 	}
 	assembly := providerSessionAssembly{request: request}
 	bridgeCommand, err := assembler.SandboxCommand(assembly)
 	if err != nil {
 		return ProviderSessionBinding{}, err
 	}
-	createArgs, err := runtime.RewriteDockerCreateCommand(legacyArgs, string(request.Provider), bridgeCommand)
+	createArgs, err := runtime.RewriteDockerCreateCommand(request.Facts.SandboxCreateArgs, string(request.Provider), bridgeCommand)
 	if err != nil {
 		return ProviderSessionBinding{}, err
 	}
 	var runAdapter *runtime.ProviderSessionRunAdapter
 	var runAdapterMu sync.RWMutex
-	bridgeDocker := sandboxBridgeDockerForLaunch(f.config.Docker, request.LegacyAdapter)
+	bridgeDocker := sandboxBridgeDockerForLaunch(f.config.Docker, request.Facts)
 	bridge, err := f.bridges.Bind(ctx, taskID, request.Continuation.ID, func() (*runtime.SandboxSessionBridge, error) {
 		bridge, err := runtime.NewSandboxSessionBridge(bridgeDocker, runtime.SandboxBridgeConfig{
 			TaskID: taskID, CreateArgs: createArgs, Diagnostics: f.config.Diagnostics,
