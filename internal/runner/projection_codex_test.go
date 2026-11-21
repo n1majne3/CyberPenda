@@ -433,3 +433,29 @@ description = "Research role."
 		t.Fatalf("expected multi-agent feature on, got:\n%s", config)
 	}
 }
+
+func TestProjectCodexConfigKeepsStdioMCPEnabledOutsideEnvTable(t *testing.T) {
+	config := projectCodexMultiAgentConfig(t, runtimeprofile.Fields{
+		Model: "gpt-test",
+		MCPServers: []runtimeprofile.MCPServer{{
+			Name: "local.tools", Mode: runtimeprofile.MCPServerExternal, Command: "tool-server",
+			Env: map[string]string{"LOG_LEVEL": "debug", "B-MODE": "on"},
+		}},
+	})
+	var parsed struct {
+		MCPServers map[string]struct {
+			Enabled bool              `toml:"enabled"`
+			Env     map[string]string `toml:"env"`
+		} `toml:"mcp_servers"`
+	}
+	if _, err := toml.Decode(config, &parsed); err != nil {
+		t.Fatalf("decode config.toml: %v\n%s", err, config)
+	}
+	server, ok := parsed.MCPServers["local.tools"]
+	if !ok || !server.Enabled {
+		t.Fatalf("expected enabled server local.tools, got %#v\n%s", parsed.MCPServers, config)
+	}
+	if len(server.Env) != 2 || server.Env["LOG_LEVEL"] != "debug" || server.Env["B-MODE"] != "on" {
+		t.Fatalf("expected only the operator env values, got %#v", server.Env)
+	}
+}

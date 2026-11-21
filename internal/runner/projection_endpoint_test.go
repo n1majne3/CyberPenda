@@ -283,3 +283,12 @@ func TestModelProviderSnapshotCarriesEndpointProvenanceWithoutSecrets(t *testing
 		t.Fatalf("snapshot leaked full catalog model list: %s", encoded)
 	}
 }
+
+func TestEndpointURLsBracketIPv6ListenHost(t *testing.T) {
+	if got, want := runner.APIEndpointURL("[::1]:8787", false), "http://[::1]:8787/api"; got != want {
+		t.Fatalf("API endpoint = %q, want %q", got, want)
+	}
+	if got, want := runner.MCPEndpointURL("[::1]:8787", false), "http://[::1]:8787/mcp"; got != want {
+		t.Fatalf("MCP endpoint = %q, want %q", got, want)
+	}
+}
