@@ -168,13 +168,35 @@ export function RuntimeOwnerNotices({
   owner,
   focusMode,
   finishReadiness,
+  pollError,
+  onRetryPoll,
 }: {
   owner: RuntimeOwnerView;
   focusMode: boolean;
   finishReadiness: FinishReadiness | null;
+  pollError?: string | null;
+  onRetryPoll?: () => void;
 }) {
   return (
     <>
+      {pollError && (
+        <div
+          role="alert"
+          data-testid="poll-error-notice"
+          className="flex shrink-0 items-center justify-between gap-2 border-b border-warning/30 bg-warning/5 px-3 py-2 text-xs text-warning"
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <TriangleAlert className="h-4 w-4 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 break-words">Live refresh failed: {pollError}</span>
+          </div>
+          {onRetryPoll && (
+            <Button size="sm" variant="ghost" onClick={onRetryPoll} className="h-6 shrink-0 px-2 text-xs">
+              Retry
+            </Button>
+          )}
+        </div>
+      )}
+
       {owner.kind === "session" && !focusMode && (
         <div role="note" className="flex shrink-0 items-center gap-2 border-b border-info/20 bg-info/5 px-3 py-2 text-xs text-muted-foreground">
           <Info className="h-4 w-4 shrink-0 text-info" aria-hidden="true" />
