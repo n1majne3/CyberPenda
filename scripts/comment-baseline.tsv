@@ -250,7 +250,7 @@ internal/pentestctl/fgs_receipt_wait_internal_test.go	13
 internal/pentestctl/fgs_test.go	2
 internal/preflight/codex_multi_agent_test.go	2
 internal/preflight/engine_probe_test.go	4
-internal/preflight/preflight.go	70
+internal/preflight/preflight.go	55
 internal/preflight/preflight_test.go	27
 internal/project/project.go	34
 internal/project/project_test.go	2
@@ -409,7 +409,7 @@ internal/timeline/subagent_async_test.go	6
 internal/timeline/timeline.go	13
 internal/transcript/subagent_block.go	40
 internal/transcript/subagent_block_test.go	13
-internal/transcript/transcript.go	47
+internal/transcript/transcript.go	45
 internal/transcript/transcript_test.go	9
 internal/tsecbenchclient/client.go	2
 internal/tsecbenchclient/clock.go	1
