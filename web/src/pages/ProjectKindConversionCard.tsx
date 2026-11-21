@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { apiPost, type Project, type ProjectKind } from "@/lib/api";
 import { Button, Card, CardDescription, CardTitle } from "@/components/ui";
@@ -26,7 +26,7 @@ export function ProjectKindConversionCard({ project, onConverted }: {
   const base = `/projects/${project.id}`;
   const target: ProjectKind = project.kind === "ctf_challenge" ? "pentest" : "ctf_challenge";
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (preview) previewPanel.current?.focus();
   }, [preview]);
 
