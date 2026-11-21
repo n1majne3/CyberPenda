@@ -6,7 +6,7 @@ const pages={overview:'Overview',projects:'Projects',sessions:'Sessions',archive
 let view='overview',toastTimer;
 const path=key=>`#${key}`;
 const nav=(key,label,i,extra='')=>`<a class="nav-link ${view===key?'active':''}" href="${path(key)}" ${view===key?'aria-current="page"':''}>${icon(i)}<span>${label}</span>${extra}</a>`;
-const btn=(label,action='',primary=false,i='')=>`<button class="btn ${primary?'primary':''}" ${action?`data-action="${action}"`:''}>${i?icon(i):''}${label}</button>`;
+const btn=(label,action='',primary=false,i='')=>`<button type="button" class="btn ${primary?'primary':''}" ${action?`data-action="${action}"`:''}>${i?icon(i):''}${label}</button>`;
 const linkBtn=(label,key,primary=false,i='')=>`<a class="btn ${primary?'primary':''}" href="${path(key)}">${i?icon(i):''}${label}</a>`;
 const status=(text,color='')=>`<span class="status ${color}"><span class="dot ${color}"></span>${text}</span>`;
 const field=(id,label,value='',type='text',hint='')=>`<div class="field"><label for="${id}">${label}</label>${type==='textarea'?`<textarea id="${id}" name="${id}">${esc(value)}</textarea>`:`<input id="${id}" name="${id}" type="${type}" value="${esc(value)}">`}${hint?`<small>${hint}</small>`:''}</div>`;
