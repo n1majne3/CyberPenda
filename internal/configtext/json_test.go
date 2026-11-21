@@ -29,3 +29,18 @@ func TestRenderJSONTargetNestedMember(t *testing.T) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
+
+func TestRenderJSONTargetAddsNewMembersInKeyOrder(t *testing.T) {
+	source := `{"a": 1}`
+	target := map[string]any{"a": float64(1), "z": 2, "m": 3, "b": 4, "c": 5}
+	want := `{"a": 1,"b": 4,"c": 5,"m": 3,"z": 2}`
+	for range 20 {
+		got, err := RenderJSONTarget(source, target)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got != want {
+			t.Fatalf("got %q want %q", got, want)
+		}
+	}
+}

@@ -2,7 +2,6 @@ package configtext
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -478,12 +477,7 @@ func tomlTargetCovers(keys map[string]bool, blockKey string) bool {
 		return true
 	}
 	prefix := blockKey + "\x00"
-	ordered := make([]string, 0, len(keys))
 	for key := range keys {
-		ordered = append(ordered, key)
-	}
-	sort.Strings(ordered)
-	for _, key := range ordered {
 		if strings.HasPrefix(key, prefix) {
 			return true
 		}
