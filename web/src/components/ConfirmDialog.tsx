@@ -1,4 +1,12 @@
 import { useEffect, useId, useRef } from "react";
+
+function useLatest<T>(value: T) {
+  const ref = useRef(value);
+  useEffect(() => {
+    ref.current = value;
+  });
+  return ref;
+}
 import { Button, Card, CardDescription, CardTitle, Input } from "@/components/ui";
 
 export function ConfirmDialog({
@@ -24,6 +32,7 @@ export function ConfirmDialog({
   const descriptionId = useId();
   const cancelRef = useRef<HTMLButtonElement>(null);
   const restoreFocusRef = useRef<Element | null>(null);
+  const onCancelRef = useLatest(onCancel);
 
   useEffect(() => {
     if (!open) return;
@@ -32,7 +41,7 @@ export function ConfirmDialog({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onCancel();
+        onCancelRef.current();
       }
     };
     window.addEventListener("keydown", closeOnEscape);
@@ -40,7 +49,7 @@ export function ConfirmDialog({
       window.removeEventListener("keydown", closeOnEscape);
       (restoreFocusRef.current as HTMLElement | null)?.focus?.();
     };
-  }, [open, onCancel]);
+  }, [open, onCancelRef]);
 
   if (!open) return null;
 
@@ -115,6 +124,7 @@ export function PromptDialog({
   const titleId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const restoreFocusRef = useRef<Element | null>(null);
+  const onCancelRef = useLatest(onCancel);
 
   useEffect(() => {
     if (!open) return;
@@ -124,7 +134,7 @@ export function PromptDialog({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onCancel();
+        onCancelRef.current();
       }
     };
     window.addEventListener("keydown", closeOnEscape);
@@ -132,7 +142,7 @@ export function PromptDialog({
       window.removeEventListener("keydown", closeOnEscape);
       (restoreFocusRef.current as HTMLElement | null)?.focus?.();
     };
-  }, [open, onCancel]);
+  }, [open, onCancelRef]);
 
   if (!open) return null;
 
