@@ -77,9 +77,6 @@ func Load(adapterID string, searchDirs []string) (Manifest, error) {
 		if err != nil {
 			return Manifest{}, err
 		}
-		if strings.TrimSpace(manifest.ID) == "" {
-			manifest.ID = id
-		}
 		return manifest, nil
 	}
 	raw, err := baked.ReadFile("adapters/" + name)

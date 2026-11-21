@@ -3,9 +3,12 @@ package runner
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 
 	"pentest/internal/owner"
@@ -50,7 +53,7 @@ func APIEndpointURL(daemonAddr string, sandbox bool) string {
 	} else if host == "" || host == "0.0.0.0" || host == "[::]" || host == "::" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("http://%s:%s/api", host, port)
+	return "http://" + net.JoinHostPort(host, port) + "/api"
 }
 
 func MCPEndpointURL(daemonAddr string, sandbox bool) string {
@@ -60,7 +63,7 @@ func MCPEndpointURL(daemonAddr string, sandbox bool) string {
 	} else if host == "" || host == "0.0.0.0" || host == "[::]" || host == "::" {
 		host = "127.0.0.1"
 	}
-	return fmt.Sprintf("http://%s:%s/mcp", host, port)
+	return "http://" + net.JoinHostPort(host, port) + "/mcp"
 }
 
 func splitListenHostPort(addr string) (host, port string) {
@@ -324,7 +327,8 @@ func appendCodexMCPTOML(builder *strings.Builder, servers []runtimeprofile.MCPSe
 		if name == "" {
 			continue
 		}
-		fmt.Fprintf(builder, "\n[mcp_servers.%s]\n", name)
+		key := tomlKey(name)
+		fmt.Fprintf(builder, "\n[mcp_servers.%s]\n", key)
 		if url := strings.TrimSpace(server.URL); url != "" {
 			fmt.Fprintf(builder, "url = %q\n", url)
 			fmt.Fprintf(builder, "enabled = true\n")
@@ -335,15 +339,24 @@ func appendCodexMCPTOML(builder *strings.Builder, servers []runtimeprofile.MCPSe
 			if len(server.Args) > 0 {
 				fmt.Fprintf(builder, "args = %s\n", formatTOMLStringArray(server.Args))
 			}
+			fmt.Fprintf(builder, "enabled = true\n")
 			if len(server.Env) > 0 {
-				fmt.Fprintf(builder, "\n[mcp_servers.%s.env]\n", name)
-				for key, value := range server.Env {
-					fmt.Fprintf(builder, "%s = %q\n", key, value)
+				fmt.Fprintf(builder, "\n[mcp_servers.%s.env]\n", key)
+				for _, envKey := range slices.Sorted(maps.Keys(server.Env)) {
+					fmt.Fprintf(builder, "%s = %q\n", tomlKey(envKey), server.Env[envKey])
 				}
 			}
-			fmt.Fprintf(builder, "enabled = true\n")
 		}
 	}
+}
+
+func tomlKey(name string) string {
+	for _, r := range name {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			return strconv.Quote(name)
+		}
+	}
+	return name
 }
 
 func formatTOMLStringArray(values []string) string {

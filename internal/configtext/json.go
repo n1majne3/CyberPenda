@@ -6,7 +6,9 @@ package configtext
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 )
 
@@ -315,10 +317,11 @@ func renderJSONObjectTarget(source jsonDocument, node jsonNode, target map[strin
 			body:    source.raw[member.keyStart:member.value.start] + valueRaw,
 		})
 	}
-	for key, value := range target {
+	for _, key := range slices.Sorted(maps.Keys(target)) {
 		if seen[key] {
 			continue
 		}
+		value := target[key]
 		keyRaw, _ := json.Marshal(key)
 		valueRaw, err := json.Marshal(value)
 		if err != nil {

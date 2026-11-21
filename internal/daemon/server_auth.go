@@ -179,7 +179,7 @@ func isLoopback(addr string) bool {
 	}
 	host = strings.TrimSpace(strings.Trim(host, "[]"))
 	if host == "" {
-		return true
+		return strings.TrimSpace(addr) == ""
 	}
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback()

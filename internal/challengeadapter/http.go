@@ -94,7 +94,7 @@ func (driver *HTTPDriver) challengeArray(raw json.RawMessage) (json.RawMessage, 
 	}
 	if err := json.Unmarshal(raw, &envelope); err == nil && envelope.Code != nil {
 		if *envelope.Code != 0 {
-			return nil, fmt.Errorf("challenge platform rejected request: %s", strings.ReplaceAll(envelope.Message, driver.token, "[REDACTED]"))
+			return nil, fmt.Errorf("challenge platform rejected request: %s", driver.redact(envelope.Message))
 		}
 		if isArrayJSON(envelope.Data) {
 			return envelope.Data, nil
@@ -267,7 +267,7 @@ func (driver *HTTPDriver) checkEnvelope(raw json.RawMessage) error {
 		return nil
 	}
 	if *envelope.Code != 0 {
-		return fmt.Errorf("challenge platform rejected request: %s", strings.ReplaceAll(envelope.Message, driver.token, "[REDACTED]"))
+		return fmt.Errorf("challenge platform rejected request: %s", driver.redact(envelope.Message))
 	}
 	return nil
 }
@@ -364,7 +364,7 @@ func (driver *HTTPDriver) call(ctx context.Context, op, code, candidate string) 
 	if len(operation.JSON) > 0 {
 		payload := map[string]string{}
 		for key, value := range operation.JSON {
-			payload[key] = strings.NewReplacer("{{code}}", code, "{{candidate}}", candidate).Replace(value)
+			payload[key] = replacer.Replace(value)
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
@@ -386,7 +386,7 @@ func (driver *HTTPDriver) call(ctx context.Context, op, code, candidate string) 
 	}
 	response, err := driver.client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("challenge platform request failed: %s", strings.ReplaceAll(err.Error(), driver.token, "[REDACTED]"))
+		return nil, fmt.Errorf("challenge platform request failed: %s", driver.redact(err.Error()))
 	}
 	defer response.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
@@ -397,10 +397,17 @@ func (driver *HTTPDriver) call(ctx context.Context, op, code, candidate string) 
 		return nil, errors.New("challenge platform response exceeded size limit")
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("challenge platform returned HTTP %d: %s", response.StatusCode, strings.ReplaceAll(string(raw), driver.token, "[REDACTED]"))
+		return nil, fmt.Errorf("challenge platform returned HTTP %d: %s", response.StatusCode, driver.redact(string(raw)))
 	}
 	if !json.Valid(raw) {
 		return nil, errors.New("challenge platform returned malformed JSON")
 	}
 	return json.RawMessage(raw), nil
+}
+
+func (driver *HTTPDriver) redact(text string) string {
+	if driver.token == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, driver.token, "[REDACTED]")
 }

@@ -176,10 +176,6 @@ func redactMCPServerURLs(servers []runtimeprofile.MCPServer) []runtimeprofile.MC
 	return out
 }
 
-func StructuredProjectedConfigText(provider runtimeprofile.Provider, profile runtimeprofile.Profile) (string, error) {
-	return StructuredProjectedConfigTextWith(provider, profile, ProjectionRequest{})
-}
-
 // StructuredProjectedConfigTextWith renders the structured projection using
 // the same builders as launch. When the request carries CredentialEnvNames
 // (the editor preview path), credential-derived env keys render as redacted

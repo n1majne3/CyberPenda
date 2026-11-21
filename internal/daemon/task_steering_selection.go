@@ -7,7 +7,26 @@ import (
 	"pentest/internal/task"
 )
 
-func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, found task.Task, steeringEventID string, input taskContinuationSelectionInput) (task.RuntimeConfigVersion, bool) {
+func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, found task.Task, _ string, input taskContinuationSelectionInput) (task.RuntimeConfigVersion, bool) {
+	prepared, ok := server.prepareSelectedRuntimeConfig(response, found, input)
+	if !ok {
+		return task.RuntimeConfigVersion{}, false
+	}
+	recorded, err := server.tasks.RecordRuntimeConfig(found.ID, prepared.RuntimeProfileID, prepared.Config)
+	if err != nil {
+		writeTaskError(response, err)
+		return task.RuntimeConfigVersion{}, false
+	}
+	return recorded, true
+}
+
+func (server *Server) prepareSelectedRuntimeConfig(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (task.RuntimeConfigVersion, bool) {
+	effort, err := normalizeLaunchReasoningEffort(input.ReasoningEffort)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return task.RuntimeConfigVersion{}, false
+	}
+	input.ReasoningEffort = effort
 	requestedProfile, ok := server.resolveTaskContinuationRuntimeProfile(response, found, input)
 	if !ok {
 		return task.RuntimeConfigVersion{}, false
@@ -36,10 +55,30 @@ func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, 
 	if cloned.RuntimeProfile != nil {
 		provenance = cloned.RuntimeProfile.ID
 	}
-	recorded, err := server.tasks.RecordRuntimeConfig(found.ID, provenance, runtimeSnapshotMap(cloned))
+	return task.RuntimeConfigVersion{TaskID: found.ID, RuntimeProfileID: provenance, Config: runtimeSnapshotMap(cloned)}, true
+}
+
+func (server *Server) appendTaskSteeringSelection(response http.ResponseWriter, found task.Task, payload task.EventPayload, input taskContinuationSelectionInput) (task.Event, *task.RuntimeConfigVersion, bool) {
+	var version *task.RuntimeConfigVersion
+	if input.hasSelection() {
+		prepared, ok := server.prepareSelectedRuntimeConfig(response, found, input)
+		if !ok {
+			return task.Event{}, nil, false
+		}
+		version = &prepared
+	}
+	event, err := server.tasks.AppendEvent(found.ID, task.EventKindSteering, payload)
 	if err != nil {
 		writeTaskError(response, err)
-		return task.RuntimeConfigVersion{}, false
+		return task.Event{}, nil, false
 	}
-	return recorded, true
+	if version != nil {
+		recorded, err := server.tasks.RecordRuntimeConfig(found.ID, version.RuntimeProfileID, version.Config)
+		if err != nil {
+			writeTaskError(response, err)
+			return task.Event{}, nil, false
+		}
+		version = &recorded
+	}
+	return event, version, true
 }

@@ -106,10 +106,6 @@ func blackboardV2ObsoleteInstructionFiles(provider runtimeprofile.Provider) []st
 	return []string{"CLAUDE.md"}
 }
 
-func CodexV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) map[string]string {
-	return BlackboardV2ProcessEnv(env, layout, sandbox)
-}
-
 // BlackboardV2ProcessEnv strips model-visible Project Interface identity and
 // transport credentials while retaining runtime/model credentials.
 func BlackboardV2ProcessEnv(env map[string]string, layout Layout, sandbox bool) map[string]string {

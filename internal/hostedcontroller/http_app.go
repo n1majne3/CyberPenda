@@ -227,13 +227,11 @@ func (app *HTTPApp) Wait(ctx context.Context, run HostedEvaluationReference, std
 		}
 		if taskState.Status == "failed" || taskState.Status == "interrupted" || taskState.Status == "stopped" {
 			if !sawRunning {
-				if next, drainErr := app.drainTranscript(ctx, run, stdout, masker, cursor); drainErr != nil {
+				if _, drainErr := app.drainTranscript(ctx, run, stdout, masker, cursor); drainErr != nil {
 					if contextEnded(drainErr) {
 						return nil
 					}
 					return fmt.Errorf("final hosted Transcript drain: %w", drainErr)
-				} else {
-					cursor = next
 				}
 				return errors.New("hosted Runtime failed")
 			}

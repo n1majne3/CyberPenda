@@ -97,10 +97,10 @@ func (server *Server) logTask(t task.Task, phase, detail string) {
 		goal = goal[:57] + "..."
 	}
 	if detail == "" {
-		server.logger.Printf("task %s runner=%s provider=%s id=%s goal=%q", phase, t.Runner, t.RuntimeProfileID, t.ID, goal)
+		server.logger.Printf("task %s runner=%s profile=%s id=%s goal=%q", phase, t.Runner, t.RuntimeProfileID, t.ID, goal)
 		return
 	}
-	server.logger.Printf("task %s runner=%s provider=%s id=%s goal=%q detail=%q", phase, t.Runner, t.RuntimeProfileID, t.ID, goal, detail)
+	server.logger.Printf("task %s runner=%s profile=%s id=%s goal=%q detail=%q", phase, t.Runner, t.RuntimeProfileID, t.ID, goal, detail)
 }
 
 // logTaskLaunchStage records the synchronous preparation boundary entered by a

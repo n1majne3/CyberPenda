@@ -280,17 +280,6 @@ func columnExists(t *testing.T, db *sql.DB, table, column string) bool {
 	return false
 }
 
-func assertCount(t *testing.T, db *sql.DB, table string, want int) {
-	t.Helper()
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
-		t.Fatalf("count %s: %v", table, err)
-	}
-	if n != want {
-		t.Fatalf("%s count: got %d want %d", table, n, want)
-	}
-}
-
 func TestBlackboardReadCursorSecretIsDatabaseSpecificAndPersistsAcrossReopen(t *testing.T) {
 	firstPath := filepath.Join(t.TempDir(), "first.db")
 	first, err := store.Open(firstPath)

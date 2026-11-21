@@ -36,6 +36,16 @@ func TestWrapSandboxPiCommandInstallsPiWhenMissing(t *testing.T) {
 	}
 }
 
+func TestWrapSandboxPiCommandQuotesApostropheOnce(t *testing.T) {
+	wrapped, err := runner.WrapSandboxPiCommand([]string{"pi", "-p", "don't stop"}, map[string]string{})
+	if err != nil {
+		t.Fatalf("wrap command: %v", err)
+	}
+	if want := `exec pi '-p' 'don'\''t stop'`; !strings.Contains(wrapped[2], want) {
+		t.Fatalf("expected script to contain %q, got:\n%s", want, wrapped[2])
+	}
+}
+
 func TestWrapSandboxPiCommandHonorsPackageOverride(t *testing.T) {
 	wrapped, err := runner.WrapSandboxPiCommand(
 		[]string{"pi", "goal"},

@@ -194,11 +194,3 @@ func TestConcurrentResumeSecondConflictsWithoutStoppingFirst(t *testing.T) {
 		t.Fatalf("continuation number jumped from %d to %d after concurrent resumes", beforeNumber, latest.Number)
 	}
 }
-
-func postResume(server *Server, projectID, taskID string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", bytes.NewReader([]byte(`{}`)))
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	server.ServeHTTP(resp, req)
-	return resp
-}

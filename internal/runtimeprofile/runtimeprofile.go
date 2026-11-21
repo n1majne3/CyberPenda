@@ -27,13 +27,6 @@ const (
 	ProviderHermes     Provider = "hermes"
 )
 
-var providers = map[Provider]bool{
-	ProviderFake:       true,
-	ProviderCodex:      true,
-	ProviderClaudeCode: true,
-	ProviderPi:         true,
-}
-
 // MCPServerMode marks an MCP server as trusted (a project interface) or
 // external (available to the runtime but not trusted for project writes).
 type MCPServerMode string

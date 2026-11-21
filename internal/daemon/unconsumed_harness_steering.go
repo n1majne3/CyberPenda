@@ -120,21 +120,9 @@ func (server *Server) handleQueueSteerTask(response http.ResponseWriter, request
 	if input.ReasoningEffort != "" {
 		payload["reasoning_effort"] = input.ReasoningEffort
 	}
-	event, err := server.tasks.AppendEvent(taskID, task.EventKindSteering, payload)
-	if err != nil {
-		writeTaskError(response, err)
+	event, configVersion, ok := server.appendTaskSteeringSelection(response, found, payload, input.taskContinuationSelectionInput)
+	if !ok {
 		return
-	}
-	// Config Projection / Runtime Config Version is only for profile or Model
-	// Provider changes. Same-provider model/effort stay on the event payload
-	// (and on native turns) without minting a new version.
-	var configVersion *task.RuntimeConfigVersion
-	if input.hasSelection() {
-		recorded, ok := server.recordSelectedRuntimeConfig(response, found, event.ID, input.taskContinuationSelectionInput)
-		if !ok {
-			return
-		}
-		configVersion = &recorded
 	}
 	writeJSON(response, http.StatusOK, struct {
 		Event                task.Event                 `json:"event"`
@@ -242,19 +230,9 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 		payload["reasoning_effort"] = input.ReasoningEffort
 	}
 
-	event, err := server.tasks.AppendEvent(taskID, task.EventKindSteering, payload)
-	if err != nil {
-		writeTaskError(response, err)
+	event, configVersion, ok := server.appendTaskSteeringSelection(response, found, payload, input.taskContinuationSelectionInput)
+	if !ok {
 		return
-	}
-
-	var configVersion *task.RuntimeConfigVersion
-	if input.hasSelection() {
-		recorded, ok := server.recordSelectedRuntimeConfig(response, found, event.ID, input.taskContinuationSelectionInput)
-		if !ok {
-			return
-		}
-		configVersion = &recorded
 	}
 
 	if activeSteer {

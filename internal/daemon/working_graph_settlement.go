@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 
@@ -77,8 +76,4 @@ func (server *Server) sessionWorkingGraphSettlement(sessionID string, allowActio
 func (server *Server) waitForSessionWorkingGraphSettlement(ctx context.Context, sessionID string, allowActionRequired bool) error {
 	_, err := server.sessionWorkingGraphSettlement(sessionID, allowActionRequired)(ctx, true)
 	return err
-}
-
-func workingGraphActionRequired(err error) bool {
-	return errors.Is(err, errSemanticConclusionActionRequired)
 }

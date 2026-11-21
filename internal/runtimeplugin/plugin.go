@@ -258,11 +258,3 @@ func Validate(plugin Plugin) error {
 	}
 	return nil
 }
-
-func SupportedProjectionPrimitive(name string) bool {
-	return projectionPrimitives[name]
-}
-
-func SupportedTranscriptParser(name string) bool {
-	return transcriptParsers[name]
-}

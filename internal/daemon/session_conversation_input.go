@@ -44,22 +44,17 @@ func (server *Server) handleSessionQueueSteer(response http.ResponseWriter, requ
 		writeSessionError(response, err)
 		return
 	}
-	// Queue-steering a Session is a directive, not a plain message: record the
-	// same steering event tasks emit so the timeline and transcript surface it
-	// identically for both owner kinds. The send below stays the Session queue
-	// path.
-	if directive := strings.TrimSpace(input.value()); directive != "" {
-		payload := session.EventPayload{
-			"directive": directive,
-			"phase":     "steering_requested",
-			"mode":      "queue",
-		}
-		if _, err := server.sessions.AppendEvent(id, session.EventKindSteering, payload); err != nil {
-			writeSessionError(response, err)
-			return
-		}
+	server.handleSessionMessageInput(response, request, found, input, uploads, true)
+}
+
+func (server *Server) recordSessionQueueSteering(id, message string, queueSteer bool) error {
+	if !queueSteer {
+		return nil
 	}
-	server.handleSessionMessageInput(response, request, found, input, uploads)
+	_, err := server.sessions.AppendEvent(id, session.EventKindSteering, session.EventPayload{
+		"directive": message, "phase": "steering_requested", "mode": "queue",
+	})
+	return err
 }
 
 // writeDecoratedSessionWithSteeringOutcome returns the decorated Session with

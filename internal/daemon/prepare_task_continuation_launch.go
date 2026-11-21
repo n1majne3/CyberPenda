@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"pentest/internal/adapters"
@@ -194,17 +192,6 @@ func mergeFixedAtLaunchRuntimeConfig(dest, source map[string]any) {
 			dest["config_projection"] = projection
 		}
 		projection["projected_model_provider_ids"] = ids
-	}
-}
-
-// scrubBlackboardV2GrantBearingProjection removes trusted MCP config that may
-// embed a Continuation grant token after a failed atomic launch.
-func scrubBlackboardV2GrantBearingProjection(layout runner.Layout, provider runtimeprofile.Provider) {
-	switch provider {
-	case runtimeprofile.ProviderClaudeCode:
-		_ = os.Remove(filepath.Join(layout.Workdir, ".mcp.json"))
-	case runtimeprofile.ProviderPi:
-		_ = os.Remove(filepath.Join(layout.ProviderHome, "agent", "mcp.json"))
 	}
 }
 
