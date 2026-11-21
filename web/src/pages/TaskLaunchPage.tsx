@@ -15,7 +15,6 @@ export function TaskLaunchPage() {
   const [goal, setGoal] = useState("");
   const [launching, setLaunching] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
-  const effectiveGoal = goal;
 
   async function launchTask() {
     if (!projectId) return;
@@ -30,7 +29,7 @@ export function TaskLaunchPage() {
       const launch = launchControls.launchPayload();
       const payload = {
         type: taskType,
-        goal: effectiveGoal,
+        goal,
         ...launch,
       };
       const taskPath = `/api/projects/${projectId}/tasks`;
@@ -86,7 +85,7 @@ export function TaskLaunchPage() {
               id="goal"
               name="task_goal"
               rows={4}
-              value={effectiveGoal}
+              value={goal}
               onChange={(event) => setGoal(event.target.value)}
               placeholder="Describe the goal, for example: enumerate the authenticated surface of staging.example.com…"
               autoComplete="off"
@@ -105,14 +104,14 @@ export function TaskLaunchPage() {
           </div>
         </section>
 
-        <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={effectiveGoal} />
+        <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={goal} />
 
 
       </div>
 
 <LaunchSummaryRail
         controller={launchControls}
-        disabled={!taskTypeMatchesProject || !launchControls.launchReady(effectiveGoal) || launching || hostBlocked}
+        disabled={!taskTypeMatchesProject || !launchControls.launchReady(goal) || launching || hostBlocked}
         busy={launching}
         label="Launch"
         onClick={launchTask}

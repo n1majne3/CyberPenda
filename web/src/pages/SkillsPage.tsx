@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Plus, RefreshCw } from "lucide-react";
 import { apiDelete, apiGet, apiPost, apiPostForm, apiPut, type RuntimeProfile, type Skill } from "@/lib/api";
 import { Button, Label, Select } from "@/components/ui";
@@ -59,14 +59,19 @@ export function SkillsPage() {
     });
   }
 
+  const skillsRequest = useRef(0);
+
   async function loadSkills(nextProfileId = profileId) {
+    const request = ++skillsRequest.current;
     setSkillsLoading(true);
     try {
       const suffix = nextProfileId ? `?runtime_profile_id=${encodeURIComponent(nextProfileId)}` : "";
       const data = await apiGet<{ skills: Skill[] }>(`/api/skills${suffix}`);
-      setSkills(data.skills ?? []);
+      if (request === skillsRequest.current) setSkills(data.skills ?? []);
+    } catch (cause) {
+      if (request === skillsRequest.current) throw cause;
     } finally {
-      setSkillsLoading(false);
+      if (request === skillsRequest.current) setSkillsLoading(false);
     }
   }
 

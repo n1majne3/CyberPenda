@@ -71,21 +71,26 @@ export function ScopeEditorPage() {
 
   useEffect(() => {
     if (!projectId) return;
+    let cancelled = false;
     (async () => {
       try {
         const [p, expansionData] = await Promise.all([
           apiGet<Project>(`/api/projects/${projectId}`),
           apiGet<{ expansions?: ScopeExpansion[] }>(`/api/projects/${projectId}/scope-expansions`),
         ]);
+        if (cancelled) return;
         setProject(p);
         setDraft(toDraft(p.scope));
         setDefaultRunner(p.defaults.runner || "sandbox");
         setExpansions(expansionData.expansions ?? []);
         setError(null);
       } catch (e) {
-        setError((e as Error).message);
+        if (!cancelled) setError((e as Error).message);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [projectId]);
 
   async function save() {

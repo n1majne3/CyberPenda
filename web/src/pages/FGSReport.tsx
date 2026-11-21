@@ -6,13 +6,13 @@ import { ProjectPageShell } from "@/components/ProjectPageShell";
 export function ProjectReportProtocol({ legacy, fgs }: { legacy: ReactNode; fgs?: ReactNode }) {
   const { projectId = "" } = useParams();
   const [project, setProject] = useState<Project>();
-  const [error, setError] = useState("");
+  const [failure, setFailure] = useState<{ projectId: string; message: string }>();
   useEffect(() => {
     let active = true;
-    apiGet<Project>(`/api/projects/${projectId}`).then((p) => { if (active) setProject(p); }).catch((e: unknown) => { if (active) setError(e instanceof Error ? e.message : "Cannot load Project"); });
+    apiGet<Project>(`/api/projects/${projectId}`).then((p) => { if (active) setProject(p); }).catch((e: unknown) => { if (active) setFailure({ projectId, message: e instanceof Error ? e.message : "Cannot load Project" }); });
     return () => { active = false; };
   }, [projectId]);
-  if (error) return <p role="alert">{error}</p>;
+  if (failure?.projectId === projectId) return <p role="alert">{failure.message}</p>;
   if (!project || project.id !== projectId) return <p className="p-6">Loading report…</p>;
   return project.blackboard_protocol === "fgs" ? fgs ?? <FGSReport key={projectId} projectId={projectId} /> : legacy;
 }

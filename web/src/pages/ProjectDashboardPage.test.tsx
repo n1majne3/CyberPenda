@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { ProjectDashboardPage } from "./ProjectDashboardPage";
 import { mockApi } from "@/test/mockApi";
@@ -345,4 +345,41 @@ describe("ProjectDashboardPage", () => {
     // The report route does not exist for CTF projects, so the footer button hides.
     expect(screen.queryByRole("link", { name: /open report/i })).not.toBeInTheDocument();
   });
+
+  it("keeps the latest Project when a previous Project read finishes late", async () => {
+    let releaseFirst = () => {};
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    const second = { ...project, id: "project-2", name: "Second Project" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/api/projects/project-1")) {
+        await firstGate;
+        if (url.endsWith("/dashboard")) return json(dashboard);
+        if (url.endsWith("/tasks")) return json(tasks);
+        return json(project);
+      }
+      if (url.endsWith("/api/projects/project-2/dashboard")) return json({ ...dashboard, project_id: "project-2", name: "Second Project" });
+      if (url.endsWith("/api/projects/project-2/tasks")) return json({ tasks: [] });
+      return json(second);
+    }));
+
+    render(
+      <MemoryRouter initialEntries={["/projects/project-1"]}>
+        <Link to="/projects/project-2">Open second Project</Link>
+        <Routes>
+          <Route path="/projects/:projectId" element={<ProjectDashboardPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await userEvent.click(screen.getByRole("link", { name: "Open second Project" }));
+    expect(await screen.findByRole("heading", { level: 1, name: "Second Project" })).toBeInTheDocument();
+    releaseFirst();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByText("Acme External")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1, name: "Second Project" })).toBeInTheDocument();
+  });
 });
+
