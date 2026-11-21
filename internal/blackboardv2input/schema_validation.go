@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	googlejsonschema "github.com/google/jsonschema-go/jsonschema"
 	detailedjsonschema "github.com/santhosh-tekuri/jsonschema/v6"
@@ -162,6 +163,9 @@ func compileDetailedToolSchema(source *googlejsonschema.Schema) (*detailedjsonsc
 }
 
 func validateDetailedToolArgs(schema *detailedjsonschema.Schema, raw json.RawMessage) (any, *blackboardv2.Error) {
+	if !utf8.Valid(raw) {
+		return nil, invalidToolSchemaError("arguments", map[string]any{"reason": "invalid_json"})
+	}
 	if err := rejectDuplicateJSONFields(raw); err != nil {
 		details := map[string]any{"reason": "invalid_json"}
 		if syntaxErr, ok := err.(*json.SyntaxError); ok {

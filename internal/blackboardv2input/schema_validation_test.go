@@ -75,3 +75,23 @@ func TestRejectDuplicateJSONFieldsAtAnyDepth(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeContractInputRequiresValidUTF8(t *testing.T) {
+	for _, name := range []string{"Host", "Hôte 世界", "�"} {
+		var target blackboardv2.ChangeBatch
+		raw := strings.Replace(validChangeInput, "Host", name, 1)
+		if err := DecodeContractInput("changeBatch", false, json.RawMessage(raw), &target); err != nil {
+			t.Fatalf("DecodeContractInput() rejected valid UTF-8 %q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"\xff", "\xc0\xaf", "\xe2\x82", "\xed\xa0\x80"} {
+		t.Run(name, func(t *testing.T) {
+			target := blackboardv2.ChangeBatch{Schema: "unchanged"}
+			raw := strings.Replace(validChangeInput, "Host", name, 1)
+			assertInvalidJSON(t, DecodeContractInput("changeBatch", false, json.RawMessage(raw), &target))
+			if target.Schema != "unchanged" || target.Changes != nil {
+				t.Fatalf("DecodeContractInput() changed the target: %#v", target)
+			}
+		})
+	}
+}
