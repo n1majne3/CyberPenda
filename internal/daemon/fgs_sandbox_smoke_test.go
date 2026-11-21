@@ -92,18 +92,16 @@ func TestSandboxFGSOutboxLive(t *testing.T) {
 	if !ok {
 		t.Fatal("missing sandbox adapter")
 	}
-	processEnv := map[string]string{}
-	for i := 0; i+1 < len(createArgs); i++ {
-		if createArgs[i] == "-e" {
-			key, value, ok := strings.Cut(createArgs[i+1], "=")
-			if ok {
-				processEnv[key] = value
-			}
-		}
+	processEnv, ok := runtime.DockerSandboxCreateEnv(bound.Adapter)
+	if !ok {
+		t.Fatal("missing sandbox adapter env")
 	}
 	token := processEnv["PENTEST_INTERFACE_TOKEN"]
 	if token == "" || processEnv["PENTEST_CONTINUATION_ID"] != cont.ID {
 		t.Fatal("bound Runtime is missing its Continuation capability or identity")
+	}
+	if strings.Contains(strings.Join(createArgs, " "), token) {
+		t.Fatal("bound Runtime leaked PENTEST_INTERFACE_TOKEN into docker create argv")
 	}
 	api := &http.Server{Handler: server, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = api.Serve(listener) }()
