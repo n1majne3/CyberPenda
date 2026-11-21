@@ -175,13 +175,15 @@ func stampAgentIdentity(turns []Turn, record map[string]any) []Turn {
 
 func parseMessageRecord(record map[string]any, opts ParseOptions, role string, createdAt time.Time) []Turn {
 	if message, ok := mapValue(record, "message"); ok {
-		if mr := stringValue(message, "role"); mr == "toolResult" || mr == "tool" {
+		mr := stringValue(message, "role")
+		if mr == "toolResult" || mr == "tool" {
 			if turn := toolResultTurn(message, createdAt); turn.Output != "" || turn.ToolCallID != "" || turn.Tool != "" {
 				return []Turn{turn}
 			}
 		}
+		messageRole := normalizeMessageRole(mr, role)
 		if content, ok := sliceValue(message, "content"); ok {
-			turns := parseContentBlocks(content, opts, role, createdAt)
+			turns := parseContentBlocks(content, opts, messageRole, createdAt)
 			messageID := firstText(record, "uuid", "message_id", "messageId", "id")
 			if messageID == "" {
 				messageID = firstText(message, "uuid", "message_id", "messageId", "id")
@@ -189,16 +191,30 @@ func parseMessageRecord(record map[string]any, opts ParseOptions, role string, c
 			return assignReasoningBlockIDs(turns, messageID)
 		}
 		if text := firstText(message, "text", "content", "message"); text != "" {
-			return []Turn{{Kind: KindText, Role: role, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+			return []Turn{{Kind: KindText, Role: messageRole, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
 		}
 	}
+	recordRole := normalizeMessageRole(stringValue(record, "role"), role)
 	if content, ok := sliceValue(record, "content"); ok {
-		return assignReasoningBlockIDs(parseContentBlocks(content, opts, role, createdAt), firstText(record, "uuid", "message_id", "messageId", "id"))
+		return assignReasoningBlockIDs(parseContentBlocks(content, opts, recordRole, createdAt), firstText(record, "uuid", "message_id", "messageId", "id"))
 	}
 	if text := firstText(record, "text", "content", "message"); text != "" {
-		return []Turn{{Kind: KindText, Role: role, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+		return []Turn{{Kind: KindText, Role: recordRole, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
 	}
 	return nil
+}
+
+func normalizeMessageRole(raw, fallback string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "user":
+		return roleUser
+	case "system":
+		return roleSystem
+	case "assistant":
+		return roleAssistant
+	default:
+		return fallback
+	}
 }
 
 func assignReasoningBlockIDs(turns []Turn, messageID string) []Turn {
