@@ -21,6 +21,12 @@ func (server *Server) recordSelectedRuntimeConfig(response http.ResponseWriter, 
 }
 
 func (server *Server) prepareSelectedRuntimeConfig(response http.ResponseWriter, found task.Task, input taskContinuationSelectionInput) (task.RuntimeConfigVersion, bool) {
+	effort, err := normalizeLaunchReasoningEffort(input.ReasoningEffort)
+	if err != nil {
+		writeError(response, http.StatusBadRequest, err.Error())
+		return task.RuntimeConfigVersion{}, false
+	}
+	input.ReasoningEffort = effort
 	requestedProfile, ok := server.resolveTaskContinuationRuntimeProfile(response, found, input)
 	if !ok {
 		return task.RuntimeConfigVersion{}, false
