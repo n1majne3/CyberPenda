@@ -25,7 +25,6 @@ type OwnerHarnessConfig struct {
 	RegisterRuntimeOutputFlush        func(string, func() error) func()
 	outputBatchDelay                  time.Duration
 	MarkRunning                       func(string, string) error
-	UpdateContinuationStatus          func(string, string) error
 	UpdateContinuationRuntimeMetadata func(string, string, string, string) error
 	Finalize                          func(string, string, string) error
 }
