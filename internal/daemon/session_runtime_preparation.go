@@ -15,10 +15,6 @@ import (
 	"pentest/internal/session"
 )
 
-func (server *Server) resolveSessionModelSnapshot(profile runtimeprofile.Profile, input sessionRuntimeInput) (*modelprovider.Snapshot, error) {
-	return server.resolveSessionModelSnapshotForTurn(profile, input, nil)
-}
-
 func (server *Server) resolveSessionModelSnapshotForTurn(profile runtimeprofile.Profile, input sessionRuntimeInput, prior *runtimeconfig.RuntimeConfigurationSnapshot) (*modelprovider.Snapshot, error) {
 	if profile.Provider == runtimeprofile.ProviderFake {
 		return nil, nil

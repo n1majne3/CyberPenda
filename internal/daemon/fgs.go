@@ -167,6 +167,7 @@ func (server *Server) startFGSReceiver() {
 				continue
 			}
 			for _, b := range bindings {
+				cursor = b.kind + ":" + b.continuation
 				var c owner.Contract
 				if b.kind == "session" {
 					found, e := server.sessions.Get(b.id)
@@ -190,7 +191,6 @@ func (server *Server) startFGSReceiver() {
 						log.Printf("FGS receive owner %s: %v", b.id, drainErr)
 					}
 				}
-				cursor = b.kind + ":" + b.continuation
 			}
 			if len(bindings) < 64 {
 				cursor = ""

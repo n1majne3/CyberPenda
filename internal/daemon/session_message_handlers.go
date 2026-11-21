@@ -25,10 +25,10 @@ func (server *Server) handleSessionMessage(response http.ResponseWriter, request
 		writeSessionError(response, err)
 		return
 	}
-	server.handleSessionMessageInput(response, request, found, input, uploads)
+	server.handleSessionMessageInput(response, request, found, input, uploads, false)
 }
 
-func (server *Server) handleSessionMessageInput(response http.ResponseWriter, request *http.Request, found session.Session, input createSessionInput, uploads []uploadedAttachment) {
+func (server *Server) handleSessionMessageInput(response http.ResponseWriter, request *http.Request, found session.Session, input createSessionInput, uploads []uploadedAttachment, queueSteer bool) {
 	id := found.ID
 	if strings.TrimSpace(input.RuntimeProfileID) != "" {
 		writeError(response, http.StatusBadRequest, "runtime_profile_locked")
@@ -109,6 +109,11 @@ func (server *Server) handleSessionMessageInput(response http.ResponseWriter, re
 				writeSessionError(response, uploadErr)
 				return
 			}
+			if err := server.recordSessionQueueSteering(id, message, queueSteer); err != nil {
+				reservation.cancel()
+				writeSessionError(response, err)
+				return
+			}
 			runtimeMessage := sessionGoalWithAttachmentEvents(message, found.Workdir, active.Runner, uploadedEvents)
 			reservation.commit(runtimeMessage, selection)
 			server.writeDecoratedSession(response, http.StatusAccepted, id)
@@ -120,11 +125,17 @@ func (server *Server) handleSessionMessageInput(response http.ResponseWriter, re
 		}
 	}
 	conversationInput := sessionConversationInput(message, uploads)
-	_, launchErr := server.startSessionRuntimeWithConversationInput(request.Context(), found, message, sessionRuntimeInputFromCreate(input), &conversationInput)
+	continuation, launchErr := server.startSessionRuntimeWithConversationInput(request.Context(), found, message, sessionRuntimeInputFromCreate(input), &conversationInput)
 	var commitErr sessionConversationInputCommitError
 	if errors.As(launchErr, &commitErr) {
 		writeSessionError(response, commitErr.cause)
 		return
+	}
+	if continuation.ID != "" {
+		if err := server.recordSessionQueueSteering(id, message, queueSteer); err != nil {
+			writeSessionError(response, err)
+			return
+		}
 	}
 	if launchErr != nil {
 		server.writeDecoratedSession(response, http.StatusAccepted, id)

@@ -182,14 +182,6 @@ func (server *Server) handleFinishTask(response http.ResponseWriter, request *ht
 var errSemanticConclusionActionRequired = errors.New("semantic_conclusion_action_required")
 var errTaskControlOperationActive = errors.New("task control operation already active")
 
-func (server *Server) waitForWorkingGraphSettlement(ctx context.Context, found task.Task, allowActionRequired bool) error {
-	if found.BlackboardProtocol == "fgs" && found.RunControls.BlackboardMode != task.BlackboardModeDisabled {
-		_, err := server.settleTaskWorkingGraph(ctx, found, allowActionRequired)
-		return err
-	}
-	return nil
-}
-
 // acquireTaskControlAfterWorkingGraphSettlement closes the settle/acquire race:
 // after taking Task control it rechecks the durable receipt. If a conclusion
 // became pending between the optimistic drain and acquisition, it releases

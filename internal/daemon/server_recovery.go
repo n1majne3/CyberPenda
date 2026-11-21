@@ -15,7 +15,7 @@ import (
 
 // reconcileInterruptedSessions closes the in-memory ownership gap after a
 // daemon restart. Provider bridges are intentionally not reopened implicitly;
-// Sandbox containers are removed before their Continuations become interrupted.
+// Sandbox containers and Host process groups stop before their Continuations become interrupted.
 // A cleanup failure leaves the Continuation active for the next startup retry.
 // Every recovered open Session continuation is marked interrupted and the next
 // user message/resume request creates a fresh continuation while retaining the
@@ -44,6 +44,13 @@ func (server *Server) reconcileInterruptedSessions(excludedIDs ...[]string) erro
 		}
 		if active == nil {
 			continue
+		}
+		if active.Runner == session.RunnerHost {
+			if pgid, ok := runtime.ParseHostProcessGroupID(active.ContainerID); ok {
+				if err := runtime.KillHostProcessGroup(context.Background(), pgid); err != nil {
+					return fmt.Errorf("Session recovery: stop Host process group %d for Session %s: %w", pgid, found.ID, err)
+				}
+			}
 		}
 		if active.Runner == session.RunnerSandbox && strings.TrimSpace(active.ContainerID) != "" {
 			if err := runtime.StopDockerContainer(server.containerCLI, active.ContainerID, 2*time.Second); err != nil {

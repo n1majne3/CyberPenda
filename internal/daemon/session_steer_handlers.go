@@ -81,7 +81,7 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		return
 	}
 	if !bound || active == nil || !server.sessionHarness.IsActive(id) {
-		server.handleSessionMessageInput(response, request, found, createSessionInputFromRuntime(message, input), uploads)
+		server.handleSessionMessageInput(response, request, found, createSessionInputFromRuntime(message, input), uploads, false)
 		return
 	}
 	if conflict := sessionContinuationSelectionConflict(*active, input); conflict != "" {
