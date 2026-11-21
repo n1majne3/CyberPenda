@@ -379,7 +379,7 @@ func relationParts(relation RelationshipTuple) (from, rel, to string, ok bool) {
 	return from, rel, to, true
 }
 
-func redirectIntegrityAnomalies(ctx context.Context, tx *sql.Tx, projectID string) ([]HealthAnomaly, error) {
+func redirectIntegrityAnomalies(ctx context.Context, tx *sql.Tx, projectID string, typeByKey map[string]string) ([]HealthAnomaly, error) {
 	rows, err := tx.QueryContext(ctx, `
 		SELECT source_key, canonical_key
 		FROM blackboard_v2_key_redirects
@@ -409,16 +409,7 @@ func redirectIntegrityAnomalies(ctx context.Context, tx *sql.Tx, projectID strin
 
 	anomalies := make([]HealthAnomaly, 0)
 	for _, item := range redirects {
-		var canonicalExists int
-		if err := tx.QueryRowContext(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM blackboard_v2_records WHERE project_id = ? AND key = ?
-			)`,
-			projectID, item.canonical,
-		).Scan(&canonicalExists); err != nil {
-			return nil, fmt.Errorf("check redirect canonical for health: %w", err)
-		}
-		if canonicalExists == 0 {
+		if _, canonicalExists := typeByKey[item.canonical]; !canonicalExists {
 			anomalies = append(anomalies, HealthAnomaly{
 				Code:        "redirect_integrity",
 				Severity:    HealthSeverityCritical,
@@ -437,16 +428,7 @@ func redirectIntegrityAnomalies(ctx context.Context, tx *sql.Tx, projectID strin
 				RelatedKeys: []string{item.canonical},
 			})
 		}
-		var sourceExists int
-		if err := tx.QueryRowContext(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM blackboard_v2_records WHERE project_id = ? AND key = ?
-			)`,
-			projectID, item.source,
-		).Scan(&sourceExists); err != nil {
-			return nil, fmt.Errorf("check redirect source for health: %w", err)
-		}
-		if sourceExists != 0 {
+		if _, sourceExists := typeByKey[item.source]; sourceExists {
 			anomalies = append(anomalies, HealthAnomaly{
 				Code:        "redirect_integrity",
 				Severity:    HealthSeverityCritical,

@@ -95,7 +95,7 @@ func (s *Service) ProjectSemanticHealth(ctx context.Context, projectID string) (
 	}
 
 	anomalies := make([]HealthAnomaly, 0)
-	redirectAnomalies, err := redirectIntegrityAnomalies(ctx, tx, projectID)
+	redirectAnomalies, err := redirectIntegrityAnomalies(ctx, tx, projectID, typeByKey)
 	if err != nil {
 		return SemanticHealth{}, err
 	}
