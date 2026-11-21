@@ -81,10 +81,11 @@ func (a *piSessionTailAdapter) Run(ctx context.Context, goal string, emit func(t
 }
 
 type piSessionTailFile struct {
-	file   *os.File
-	reader *bufio.Reader
-	offset int64
-	path   string
+	file    *os.File
+	reader  *bufio.Reader
+	offset  int64
+	path    string
+	pending string
 }
 
 // tailPiSession polls sessionDir for *.jsonl session files and follows the
@@ -156,15 +157,17 @@ func tailPiSession(ctx context.Context, sessionDir string, observe func(string),
 			tf := tailed[key]
 			for {
 				line, err := tf.reader.ReadString('\n')
-				if len(line) > 0 {
-					tf.offset += int64(len(line))
-					if trimmed := strings.TrimRight(line, "\n"); trimmed != "" {
-						if observe != nil {
-							observe(trimmed)
-						}
-						if runtimeoutput.ShouldIgnoreForStorage(trimmed) {
-							continue
-						}
+				tf.offset += int64(len(line))
+				if err != nil && !stopping {
+					tf.pending += line
+					break
+				}
+				line, tf.pending = tf.pending+line, ""
+				if trimmed := strings.TrimRight(line, "\n"); trimmed != "" {
+					if observe != nil {
+						observe(trimmed)
+					}
+					if !runtimeoutput.ShouldIgnoreForStorage(trimmed) {
 						emit(task.EventKindRuntimeOutput, task.EventPayload{
 							"stream": "pi_session",
 							"text":   trimmed,
