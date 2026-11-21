@@ -1,7 +1,6 @@
 package runner
 
 import (
-	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -53,23 +52,12 @@ func listPiLaunchReadyProviders(profile runtimeprofile.Profile, req ProjectionRe
 }
 
 func globalModelProvidersForProjection(req ProjectionRequest) ([]modelprovider.Provider, error) {
-	if req.GlobalModelProviderSnapshot != nil {
-		// Non-nil snapshot owns the set (may be empty). Copy so callers cannot
-		// mutate the request snapshot while filtering.
-		return append([]modelprovider.Provider(nil), req.GlobalModelProviderSnapshot.Providers...), nil
-	}
-	if req.ModelProviders == nil {
+	if req.GlobalModelProviderSnapshot == nil {
 		return nil, nil
 	}
-	lister, ok := req.ModelProviders.(modelprovider.ProviderLister)
-	if !ok {
-		return nil, nil
-	}
-	all, err := lister.List()
-	if err != nil {
-		return nil, fmt.Errorf("list model providers for pi projection: %w", err)
-	}
-	return all, nil
+	// Non-nil snapshot owns the set (may be empty). Copy so callers cannot
+	// mutate the request snapshot while filtering.
+	return append([]modelprovider.Provider(nil), req.GlobalModelProviderSnapshot.Providers...), nil
 }
 
 // piLaunchReadyProvider returns true when a global Model Provider has a

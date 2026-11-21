@@ -89,9 +89,17 @@ func TestHostedModelLimitsReachRuntimeConfig(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			request := runner.ProjectionRequest{ModelProviders: providers, CapabilityCache: modelprovider.NewCapabilityCache(map[string]modelprovider.CatalogLimits{
-				"hosted-custom-model": {ContextWindow: 200000, MaxOutputTokens: 32000},
-			}, "", nil)}
+			listedProviders, err := providers.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := runner.ProjectionRequest{
+				ModelProviders:              providers,
+				GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(listedProviders),
+				CapabilityCache: modelprovider.NewCapabilityCache(map[string]modelprovider.CatalogLimits{
+					"hosted-custom-model": {ContextWindow: 200000, MaxOutputTokens: 32000},
+				}, "", nil),
+			}
 			projection, err := runner.ProjectRuntimeConfig(layout, profile, request)
 			if err != nil {
 				t.Fatal(err)

@@ -274,9 +274,10 @@ func projectResolverFixture(t *testing.T) (string, string) {
 	}
 	ownerContract := owner.NewTaskContract("task-resolver-fixture", "project-1", layout.Workdir)
 	materialized, err := runner.MaterializeLaunchCredentials(capturedProfile, runner.ProjectionRequest{
-		Owner:          ownerContract,
-		Credentials:    credentials,
-		ModelProviders: providers,
+		Owner:                       ownerContract,
+		Credentials:                 credentials,
+		ModelProviders:              providers,
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(created),
 	})
 	if err != nil {
 		t.Fatal(err)

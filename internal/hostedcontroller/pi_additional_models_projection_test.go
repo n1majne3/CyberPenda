@@ -135,10 +135,11 @@ func TestHostedPIAdditionalModelsReachTheProjectedPiRegistry(t *testing.T) {
 		"second-model": {ContextWindow: 200000, MaxOutputTokens: 32000},
 	}, "", nil)
 	materialized, err := runner.MaterializeLaunchCredentials(capturedProfile, runner.ProjectionRequest{
-		Owner:           ownerContract,
-		Credentials:     credentials,
-		ModelProviders:  providers,
-		CapabilityCache: capabilityCache,
+		Owner:                       ownerContract,
+		Credentials:                 credentials,
+		ModelProviders:              providers,
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(created),
+		CapabilityCache:             capabilityCache,
 	})
 	if err != nil {
 		t.Fatal(err)
