@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { apiGet, type Project } from "@/lib/api";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
+import { downloadMarkdown } from "@/lib/download";
 
 export function ProjectReportProtocol({ legacy, fgs }: { legacy: ReactNode; fgs?: ReactNode }) {
   const { projectId = "" } = useParams();
@@ -27,9 +28,7 @@ function FGSReport({ projectId }: { projectId: string }) {
   }, [projectId]);
   const download = () => {
     if (!report) return;
-    const url = URL.createObjectURL(new Blob([report.markdown], { type: "text/markdown" }));
-    const link = document.createElement("a");
-    link.href = url; link.download = "fgs-report.md"; link.click(); URL.revokeObjectURL(url);
+    downloadMarkdown(report.markdown, "fgs-report.md");
   };
   return <ProjectPageShell title="Report" bodyClassName="space-y-4">
     <p className="text-sm text-muted-foreground">Accepted Goals, Steps, and Facts from one Blackboard revision.</p>

@@ -3,7 +3,6 @@ import { useVirtualWindow } from "@/lib/virtualWindow";
 import type { OwnerHistory, RuntimeOwnerView } from "@/lib/runtimeOwner/types";
 import { buildTranscriptRows, isNearScrollBottom, prefersReducedMotion } from "./runtimeOwnerView";
 
-// needs real row layout, so rows carry no content-visibility size hints that
 const TRANSCRIPT_ROW_ESTIMATE = 72;
 
 export function useConversationFollow({

@@ -14,6 +14,7 @@ import {
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Badge, Button, Card, CardHeader, CardTitle } from "@/components/ui";
 import { ErrorState, LoadingState, SectionHeading } from "@/components/shared";
+import { downloadMarkdown } from "@/lib/download";
 
 const SEVERITY_VARIANT: Record<string, "destructive" | "warning" | "info" | "outline"> = {
   critical: "destructive",
@@ -67,13 +68,7 @@ function LegacyReportPage() {
 
   function download() {
     if (!markdown) return;
-    const blob = new Blob([markdown], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "report.md";
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadMarkdown(markdown, "report.md");
   }
 
   return (

@@ -1,6 +1,5 @@
 
 import { demoApiGet, demoApiWrite } from "@/demo/demoApi";
-import type { RuntimeProfile } from "./runtimeTypes";
 import type { Task } from "./taskTypes";
 import type { SessionLifecycle, Session, SessionLaunchOptions } from "./sessionTypes";
 
@@ -393,10 +392,6 @@ export function restoreSession(sessionId: string) {
 
 export function deleteSession(sessionId: string) {
   return apiDelete(`/api/sessions/${encodeURIComponent(sessionId)}`);
-}
-
-export function listRuntimeProfiles() {
-  return apiGet<{ profiles: RuntimeProfile[] }>("/api/runtime-profiles");
 }
 
 /** Provider-native seed text the config editor opens on (redacted). */

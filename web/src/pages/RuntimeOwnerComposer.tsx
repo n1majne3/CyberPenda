@@ -134,7 +134,7 @@ export function RuntimeOwnerComposer({
         {runtimeOffline && (
           <div className="flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-[hsl(28_90%_32%)]">
             <PlugZap className="h-3.5 w-3.5 flex-none" />
-            <span>The Runtime is offline. Sending a message resumes this Session with a new Runtime.</span>
+            <span>The Runtime is offline. Sending a message resumes this {ownerLabel} with a new Runtime.</span>
           </div>
         )}
         {steerState === "action_required" && (

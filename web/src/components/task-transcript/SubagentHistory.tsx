@@ -107,9 +107,9 @@ function ChildHistoryWindow({ history, renderItems }: Props) {
       } finally {
         if (token === generation.current) active.current = null;
       }
-    }, page.has_newer ? 0 : 3000);
+    }, page.has_newer && !error ? 0 : 3000);
     return () => clearTimeout(timer);
-  }, [history, page, tail, loading, retries, unseen]);
+  }, [history, page, tail, loading, retries, unseen, error]);
 
   useEffect(() => {
     if (tail && following.current && viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;

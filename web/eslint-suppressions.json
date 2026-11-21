@@ -406,12 +406,12 @@
   },
   "src/pages/useConversationFollow.ts": {
     "local/no-comments": {
-      "count": 22
+      "count": 21
     }
   },
   "src/pages/useRuntimeOwnerHistory.ts": {
     "local/no-comments": {
-      "count": 36
+      "count": 32
     }
   },
   "src/test/mockApi.ts": {

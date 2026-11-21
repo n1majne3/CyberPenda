@@ -195,7 +195,7 @@ export function RuntimeProfilesPage() {
 
   async function remove(id: string) {
     try {
-      await apiDelete(`/api/runtime-profiles/${id}`);
+      await apiDelete(`/api/runtime-profiles/${encodeURIComponent(id)}`);
       if (selectedId === id) setSelectedId(null);
       await load();
     } catch (e) {
@@ -214,7 +214,7 @@ export function RuntimeProfilesPage() {
       // The Custom Config File is owned by the config editor's import flow,
       // not this form; carry the stored overlay through so a form save never
       // wipes it.
-      await apiPatch(`/api/runtime-profiles/${selected.id}`, {
+      await apiPatch(`/api/runtime-profiles/${encodeURIComponent(selected.id)}`, {
         name: draft.name,
         provider: draft.provider,
         fields: {

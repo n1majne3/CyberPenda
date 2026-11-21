@@ -5,9 +5,6 @@ export const RECORD_DETAIL_SCHEMA = "blackboard-record/v2" as const;
 
 export const SEMANTIC_HISTORY_SCHEMA = "semantic-history/v2" as const;
 
-export const SNAPSHOT_SEMANTICS =
-  "work is active; knowledge is current; history and details are available by key" as const;
-
 export const RELATIONSHIP_TYPES = [
   "about",
   "part_of",

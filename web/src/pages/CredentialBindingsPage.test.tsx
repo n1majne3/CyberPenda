@@ -327,4 +327,27 @@ describe("CredentialBindingsPage", () => {
     // destination_env is an independent field; it keeps its prefilled value.
     expect(body.source.destination_env).toBe("OPENAI_API_KEY");
   });
+
+  it("sends the trimmed credential reference and value when it creates a binding", async () => {
+    const fetchMock = mockApi({
+      "/api/credential-bindings": { bindings: [] },
+      "/api/runtime-profiles": { profiles: [] },
+      "/api/model-providers": { providers: [] },
+    });
+
+    renderPage();
+    await userEvent.click((await screen.findAllByRole("button", { name: /New binding/i }))[0]!);
+    await userEvent.type(screen.getByLabelText("Credential reference"), " MY_KEY ");
+    await userEvent.type(screen.getByLabelText("Secret value"), " sk-1 ");
+    await userEvent.type(screen.getByLabelText("Runtime environment variable name"), "MY_KEY");
+    await userEvent.click(screen.getByRole("button", { name: "Create binding" }));
+
+    const put = fetchMock.mock.calls.find(([input, init]) =>
+      String(input).includes("/api/credential-bindings") && init?.method === "PUT",
+    );
+    expect(put).toBeDefined();
+    const body = JSON.parse(String(put![1]!.body));
+    expect(body.credential_ref).toBe("MY_KEY");
+    expect(body.source.value).toBe("sk-1");
+  });
 });

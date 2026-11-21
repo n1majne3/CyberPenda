@@ -14,6 +14,7 @@ import {
 import { ProjectPageShell } from "@/components/ProjectPageShell";
 import { Badge, Button, Card, CardHeader, CardTitle } from "@/components/ui";
 import { ErrorState, LoadingState, SectionHeading } from "@/components/shared";
+import { downloadMarkdown } from "@/lib/download";
 
 /**
  * CTF Solution deliverable over GET /api/v2/.../reports/ctf-solution.
@@ -55,13 +56,7 @@ function LegacySolutionPage() {
 
   function download() {
     if (!markdown) return;
-    const blob = new Blob([markdown], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "solution.md";
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadMarkdown(markdown, "solution.md");
   }
 
   return (

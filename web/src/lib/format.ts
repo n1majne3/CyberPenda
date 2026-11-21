@@ -31,16 +31,21 @@ function toDate(value: string | number | Date): Date {
   return value instanceof Date ? value : new Date(value);
 }
 
+function formatValidDate(formatter: Intl.DateTimeFormat, value: string | number | Date): string {
+  const date = toDate(value);
+  return Number.isNaN(date.getTime()) ? "" : formatter.format(date);
+}
+
 export function formatDateTime(value: string | number | Date): string {
-  return dateTimeFormatter.format(toDate(value));
+  return formatValidDate(dateTimeFormatter, value);
 }
 
 export function formatCompactDateTime(value: string | number | Date): string {
-  return compactDateTimeFormatter.format(toDate(value));
+  return formatValidDate(compactDateTimeFormatter, value);
 }
 
 export function formatClockTime(value: string | number | Date): string {
-  return clockTimeFormatter.format(toDate(value));
+  return formatValidDate(clockTimeFormatter, value);
 }
 
 export function formatRelativeTime(value: string | number | Date | undefined): string {
