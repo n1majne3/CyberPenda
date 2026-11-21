@@ -16,9 +16,9 @@ import {
 } from "./ui";
 
 describe("Card", () => {
-  it("uses a neutral bordered surface with restrained shadow", () => {
+  it("uses a quiet bordered surface without a default shadow", () => {
     const { container } = render(<Card>x</Card>);
-    expect(container.firstChild).toHaveClass("border", "bg-card", "shadow-sm");
+    expect(container.firstChild).toHaveClass("border", "bg-card");
     expect(container.firstChild).not.toHaveClass("ring-1");
   });
 

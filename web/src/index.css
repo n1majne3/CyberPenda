@@ -20,7 +20,7 @@
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 9%;
 
-    --primary: 0 0% 9%;
+    --primary: 211 92% 42%;
     --primary-foreground: 0 0% 98%;
 
     --secondary: 0 0% 96%;
@@ -43,8 +43,7 @@
     --warning: 38 92% 45%;
     --warning-foreground: 0 0% 9%;
 
-    /* Desaturated teal used sparingly as the interactive/identity signal. */
-    --signal: 187 42% 38%;
+    --signal: 211 92% 42%;
 
     --border: 0 0% 90%;
     --input: 0 0% 90%;
@@ -81,7 +80,7 @@
     --popover: 0 0% 7%;
     --popover-foreground: 0 0% 93%;
 
-    --primary: 0 0% 93%;
+    --primary: 211 100% 70%;
     --primary-foreground: 0 0% 9%;
 
     --secondary: 0 0% 15%;
@@ -105,7 +104,7 @@
     --warning-foreground: 0 0% 9%;
 
     /* Dark surfaces need a lighter, slightly cooler signal to stay legible. */
-    --signal: 186 48% 58%;
+    --signal: 211 100% 70%;
 
     --border: 0 0% 18%;
     --input: 0 0% 20%;

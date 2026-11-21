@@ -156,7 +156,7 @@ export function ProjectListPage() {
         </Card>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
         {sortNewestFirst(projects).map((p) => (
           <ProjectCard key={p.id} project={p} />
         ))}
@@ -175,7 +175,7 @@ function ProjectCard({ project }: { project: Project }) {
       aria-label={`Open ${project.name} project dashboard`}
       className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
     >
-      <Card className="h-full transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist group-hover:-translate-y-0.5 group-hover:border-signal/40 group-hover:bg-accent/40 group-hover:shadow-md motion-reduce:transition-none motion-reduce:group-hover:translate-y-0">
+      <Card className="h-full transition-colors group-hover:border-signal/40 group-hover:bg-muted/30">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">

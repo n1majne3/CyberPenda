@@ -46,10 +46,8 @@ export function RuntimeProfileAdvancedSection({
   compatibleExtensions: RuntimeExtension[];
 }) {
   return (
-    <section className="rounded-lg border border-border bg-card shadow-sm">
-      <div className="border-b border-border px-4 py-3">
-        <span className="text-sm font-medium">Environment and advanced</span>
-      </div>
+    <details className="rounded-lg border border-border bg-card">
+      <summary className="cursor-pointer px-4 py-3 text-sm font-medium">Environment and advanced</summary>
       <div className="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
       {has("custom_args") && <div className="col-span-2">
         <Label htmlFor="profile-custom-args">Custom args</Label>
@@ -322,6 +320,6 @@ export function RuntimeProfileAdvancedSection({
         )}
       </div>}
       </div>
-    </section>
+    </details>
   );
 }

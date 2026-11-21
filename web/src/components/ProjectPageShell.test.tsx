@@ -41,7 +41,7 @@ describe("ProjectPageShell", () => {
       "Report",
       "Scope",
     ]) {
-      expect(screen.getByRole("link", { name: label })).toHaveClass("rounded-md", "px-3");
+      expect(screen.getByRole("link", { name: label })).toHaveClass("border-b-2", "px-0.5");
     }
 
     const chromeText = chrome.textContent ?? "";

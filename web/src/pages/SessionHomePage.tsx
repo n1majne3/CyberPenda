@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Archive, ArchiveRestore, MessageSquareText, Pencil, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, MessageSquareText, Pencil, Plus, Trash2 } from "lucide-react";
 import { LaunchSummaryRail } from "@/components/LaunchSummaryRail";
 import { RuntimeLaunchControls } from "@/components/RuntimeLaunchControls";
 import { useRuntimeLaunchControls } from "@/components/useRuntimeLaunchControls";
@@ -14,6 +14,7 @@ import { Badge, Button, Card, Input, Label, Textarea } from "@/components/ui";
 export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" }) {
   const archivedView = view === "archived";
   const { hash } = useLocation();
+  const showLaunch = !archivedView && hash === "#new-session";
   const navigate = useNavigate();
   const [openSessions, setOpenSessions] = useState<Session[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<Session[]>([]);
@@ -131,10 +132,12 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
       <header className="flex items-end justify-between gap-3">
         <div>
           <SectionLabel>Non-project</SectionLabel>
-          <h1 id="new-session-heading" className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl">
-            {archivedView ? "Archived Sessions" : "New session"}
+          <h1 id="sessions-heading" className="mt-1 text-xl font-semibold tracking-tight sm:text-2xl">
+            {archivedView ? "Archived Sessions" : "Sessions"}
           </h1>
         </div>
+        <div className="flex flex-wrap items-center justify-end gap-3">
+          {!archivedView && !showLaunch && <Link to="/sessions#new-session"><Button size="sm"><Plus className="size-3.5" aria-hidden="true" /> New session</Button></Link>}
         <Link
           to={archivedView ? "/sessions" : "/sessions/archived"}
           className="inline-flex w-fit shrink-0 items-center gap-2 text-sm text-muted-foreground hover:text-foreground"
@@ -142,9 +145,10 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
           <Archive className="size-4" aria-hidden="true" />
           {archivedView ? "Back to open Sessions" : "Archived Sessions"}
         </Link>
+        </div>
       </header>
 
-      {!archivedView && (
+      {showLaunch && (
         <form
           id="new-session"
           aria-labelledby="new-session-heading"
@@ -152,6 +156,10 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
           className="mx-auto grid w-full max-w-[1080px] grid-cols-1 gap-6 lg:grid-cols-[1fr_300px]"
         >
           <div className="space-y-5">
+            <div className="flex items-center justify-between gap-3">
+              <h2 id="new-session-heading" className="text-base font-medium">New session</h2>
+              <Link to="/sessions" className="text-sm text-muted-foreground hover:text-foreground">Cancel</Link>
+            </div>
             <section className="rounded-lg border border-border bg-card shadow-sm">
               <div className="p-4">
                 <Label htmlFor="session-initial-input" className="text-sm font-medium">What do you want to explore?</Label>
@@ -190,7 +198,7 @@ export function SessionHomePage({ view = "open" }: { view?: "open" | "archived" 
 
       {error && <SettingsAlert>{error}</SettingsAlert>}
 
-      {!archivedView && <SessionSection
+      {!archivedView && !showLaunch && <SessionSection
         id="open-sessions"
         title="Open sessions"
         sessions={openSessions}

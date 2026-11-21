@@ -1,4 +1,5 @@
 import { act, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mockApi } from "@/test/mockApi";
@@ -41,6 +42,27 @@ afterEach(() => {
 });
 
 describe("TasksPage", () => {
+  it("filters by Task state without confusing Runtime liveness with completion", async () => {
+    mockApi({
+      "/api/projects/project-1/tasks": { tasks: [
+        task("running", "Inspect service", "running", "2026-01-04T00:00:00Z"),
+        task("done", "Retain proof", "completed", "2026-01-03T00:00:00Z"),
+        task("live", "Review conclusion", "completed", "2026-01-02T00:00:00Z", { liveness: "live" }),
+      ] },
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByText("Inspect service");
+    await user.click(screen.getByRole("button", { name: "Active" }));
+    expect(screen.getByText("Review conclusion")).toBeVisible();
+    expect(screen.queryByText("Retain proof")).not.toBeInTheDocument();
+    await user.type(screen.getByRole("searchbox", { name: "Search tasks" }), "missing");
+    expect(screen.getByText("No tasks match your filters.")).toBeVisible();
+    await user.clear(screen.getByRole("searchbox", { name: "Search tasks" }));
+    await user.click(screen.getByRole("button", { name: "All" }));
+    expect(screen.getByText("Retain proof")).toBeVisible();
+  });
+
   it("shows running tasks first, then newest tasks first", async () => {
     mockApi({
       "/api/projects/project-1/tasks": {

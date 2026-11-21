@@ -63,7 +63,7 @@ describe("settings helpers", () => {
     );
 
     expect(getByRole("heading", { name: "Model providers" })).toHaveClass(
-      "text-lg",
+      "text-2xl",
       "tracking-tight",
     );
     expect(getByText("Reusable endpoints.")).toHaveClass("max-w-3xl", "text-muted-foreground");

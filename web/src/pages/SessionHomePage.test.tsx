@@ -62,7 +62,7 @@ const sessionLaunchRoutes = {
   },
 };
 
-function renderPage(initialEntries = ["/sessions"], view: "open" | "archived" = "open") {
+function renderPage(initialEntries = ["/sessions#new-session"], view: "open" | "archived" = "open") {
   return render(
     <MemoryRouter initialEntries={initialEntries}>
       <SessionHomePage view={view} />
@@ -208,10 +208,16 @@ describe("SessionHomePage", () => {
       },
     });
 
-    renderPage();
+    renderPage(["/sessions"]);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "New session" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Sessions" })).toBeInTheDocument();
     expect(screen.getByText("Non-project")).toBeInTheDocument();
+    expect(screen.queryByLabelText("What do you want to explore?")).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("link", { name: "New session" }));
+    expect(screen.getByLabelText("What do you want to explore?")).toBeVisible();
+    await user.click(screen.getByRole("link", { name: "Cancel" }));
+    expect(screen.queryByLabelText("What do you want to explore?")).not.toBeInTheDocument();
     expect(await screen.findByRole("link", { name: /open investigate a host session/i })).toHaveAttribute(
       "href",
       "/sessions/session-open",
@@ -379,7 +385,7 @@ describe("SessionHomePage", () => {
         { path: "/sessions", element: <SessionHomePage /> },
         { path: "/sessions/:sessionId", element: <div data-testid="session-detail" /> },
       ],
-      { initialEntries: ["/sessions"] },
+      { initialEntries: ["/sessions#new-session"] },
     );
     const user = userEvent.setup();
     render(<RouterProvider router={router} />);

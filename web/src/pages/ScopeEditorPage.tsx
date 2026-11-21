@@ -197,91 +197,6 @@ export function ScopeEditorPage() {
       }
       bodyClassName="space-y-6"
     >
-      <Card as="section">
-        <CardHeader>
-          <CardTitle>Project defaults</CardTitle>
-        </CardHeader>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <Label htmlFor="scope-default-runner">Default runner</Label>
-            <Select
-              id="scope-default-runner"
-              name="default_runner"
-              value={defaultRunner}
-              onChange={(e) => setDefaultRunner(e.target.value)}
-            >
-              <option value="sandbox">sandbox</option>
-              <option value="host">host</option>
-            </Select>
-          </div>
-        </div>
-      </Card>
-
-      <Card as="section" aria-label="Scope Expansion proposals">
-        <CardHeader>
-          <CardTitle>Scope Expansion proposals</CardTitle>
-        </CardHeader>
-        <p className="mb-4 text-sm text-muted-foreground">
-          Propose a discovered addition. It does not become authorized Scope until an operator approves it.
-        </p>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <Label htmlFor="expansion-field">Expansion field</Label>
-            <Select id="expansion-field" value={expansionField} onChange={(event) => setExpansionField(event.target.value as Exclude<keyof Scope, "notes">)}>
-              <option value="capabilities">Authorized capabilities</option>
-              <option value="domains">Domains</option>
-              <option value="ips">IP addresses</option>
-              <option value="cidrs">CIDRs</option>
-              <option value="urls">URLs</option>
-              <option value="ports">Ports</option>
-              <option value="excluded">Exclusions</option>
-              <option value="testing_limits">Testing limits</option>
-            </Select>
-          </div>
-          <div>
-            <Label htmlFor="expansion-value">Proposed addition</Label>
-            <Input id="expansion-value" value={expansionValue} onChange={(event) => setExpansionValue(event.target.value)} autoComplete="off" />
-          </div>
-          <div>
-            <Label htmlFor="expansion-source">Discovery source</Label>
-            <Input id="expansion-source" value={discoverySource} onChange={(event) => setDiscoverySource(event.target.value)} autoComplete="off" />
-          </div>
-          <div>
-            <Label htmlFor="expansion-risk">Expansion risk</Label>
-            <Input id="expansion-risk" value={expansionRisk} onChange={(event) => setExpansionRisk(event.target.value)} autoComplete="off" />
-          </div>
-          <div className="sm:col-span-2">
-            <Label htmlFor="expansion-reason">Expansion reason</Label>
-            <Textarea id="expansion-reason" value={expansionReason} onChange={(event) => setExpansionReason(event.target.value)} autoComplete="off" />
-          </div>
-        </div>
-        <div className="mt-3 flex justify-end">
-          <Button onClick={proposeExpansion} disabled={proposing || !expansionValue.trim() || !discoverySource.trim() || !expansionReason.trim() || !expansionRisk.trim()}>
-            <Plus className="mr-1 h-4 w-4" /> {proposing ? "Proposing…" : "Propose Scope Expansion"}
-          </Button>
-        </div>
-        {expansions.length > 0 && (
-          <ul className="mt-4 divide-y divide-border border-y border-border">
-            {expansions.map((expansion) => (
-              <li key={expansion.id} className="space-y-2 py-3">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
-                    <p className="text-sm font-medium">{scopeAdditionLabel(expansion.addition)}</p>
-                    <p className="text-xs text-muted-foreground">{expansion.discovery_source} · {expansion.reason} · Risk: {expansion.risk}</p>
-                  </div>
-                  <Badge variant="outline">{expansion.status}</Badge>
-                </div>
-                {expansion.status === "proposed" && (
-                  <div className="flex gap-2">
-                    <Button size="sm" onClick={() => decideExpansion(expansion.id, "approve")} disabled={deciding === expansion.id}>Approve</Button>
-                    <Button size="sm" variant="outline" onClick={() => decideExpansion(expansion.id, "reject")} disabled={deciding === expansion.id}>Reject</Button>
-                  </div>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
 
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {field("capabilities", "Authorized capabilities", "challenge_platform\nnetwork_access")}
@@ -323,6 +238,98 @@ export function ScopeEditorPage() {
             autoComplete="off"
           />
       </section>
+
+      <Card as="section" aria-label="Scope Expansion proposals">
+        <CardHeader>
+          <CardTitle>Scope Expansion proposals</CardTitle>
+        </CardHeader>
+        <details>
+          <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">New Scope Expansion</summary>
+          <div className="mt-4">
+        <p className="mb-4 text-sm text-muted-foreground">
+          Propose a discovered addition. It does not become authorized Scope until an operator approves it.
+        </p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <Label htmlFor="expansion-field">Expansion field</Label>
+            <Select id="expansion-field" value={expansionField} onChange={(event) => setExpansionField(event.target.value as Exclude<keyof Scope, "notes">)}>
+              <option value="capabilities">Authorized capabilities</option>
+              <option value="domains">Domains</option>
+              <option value="ips">IP addresses</option>
+              <option value="cidrs">CIDRs</option>
+              <option value="urls">URLs</option>
+              <option value="ports">Ports</option>
+              <option value="excluded">Exclusions</option>
+              <option value="testing_limits">Testing limits</option>
+            </Select>
+          </div>
+          <div>
+            <Label htmlFor="expansion-value">Proposed addition</Label>
+            <Input id="expansion-value" value={expansionValue} onChange={(event) => setExpansionValue(event.target.value)} autoComplete="off" />
+          </div>
+          <div>
+            <Label htmlFor="expansion-source">Discovery source</Label>
+            <Input id="expansion-source" value={discoverySource} onChange={(event) => setDiscoverySource(event.target.value)} autoComplete="off" />
+          </div>
+          <div>
+            <Label htmlFor="expansion-risk">Expansion risk</Label>
+            <Input id="expansion-risk" value={expansionRisk} onChange={(event) => setExpansionRisk(event.target.value)} autoComplete="off" />
+          </div>
+          <div className="sm:col-span-2">
+            <Label htmlFor="expansion-reason">Expansion reason</Label>
+            <Textarea id="expansion-reason" value={expansionReason} onChange={(event) => setExpansionReason(event.target.value)} autoComplete="off" />
+          </div>
+        </div>
+        <div className="mt-3 flex justify-end">
+          <Button onClick={proposeExpansion} disabled={proposing || !expansionValue.trim() || !discoverySource.trim() || !expansionReason.trim() || !expansionRisk.trim()}>
+            <Plus className="mr-1 h-4 w-4" /> {proposing ? "Proposing…" : "Propose Scope Expansion"}
+          </Button>
+        </div>
+          </div>
+        </details>
+        {expansions.length > 0 && (
+          <ul className="mt-4 divide-y divide-border border-y border-border">
+            {expansions.map((expansion) => (
+              <li key={expansion.id} className="space-y-2 py-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium">{scopeAdditionLabel(expansion.addition)}</p>
+                    <p className="text-xs text-muted-foreground">{expansion.discovery_source} · {expansion.reason} · Risk: {expansion.risk}</p>
+                  </div>
+                  <Badge variant="outline">{expansion.status}</Badge>
+                </div>
+                {expansion.status === "proposed" && (
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={() => decideExpansion(expansion.id, "approve")} disabled={deciding === expansion.id}>Approve</Button>
+                    <Button size="sm" variant="outline" onClick={() => decideExpansion(expansion.id, "reject")} disabled={deciding === expansion.id}>Reject</Button>
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+
+      <details className="rounded-lg border border-border p-4">
+        <summary className="cursor-pointer text-sm font-medium">Project defaults</summary>
+        <div className="mt-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <Label htmlFor="scope-default-runner">Default runner</Label>
+            <Select
+              id="scope-default-runner"
+              name="default_runner"
+              value={defaultRunner}
+              onChange={(e) => setDefaultRunner(e.target.value)}
+            >
+              <option value="sandbox">sandbox</option>
+              <option value="host">host</option>
+            </Select>
+          </div>
+        </div>
+        </div>
+      </details>
     </ProjectPageShell>
   );
 }

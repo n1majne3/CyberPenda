@@ -76,9 +76,11 @@ describe("index.css design tokens", () => {
     expect(tokenBlock(":root")).toContain(token);
   });
 
-  it("uses Geist neutral primary", () => {
+  it("uses the blue Logo hue for actions and navigation in both themes", () => {
     const light = tokenBlock(":root");
-    expect(light).toMatch(/--primary:\s*0\s+0%\s+9%/);
+    expect(light).toMatch(/--primary:\s*211\s+92%\s+42%/);
+    expect(light).toMatch(/--signal:\s*211\s+92%\s+42%/);
+    expect(tokenBlock(".dark")).toMatch(/--primary:\s*211\s+100%\s+70%/);
   });
 
   it("sets Geist font variables and a tight control radius", () => {

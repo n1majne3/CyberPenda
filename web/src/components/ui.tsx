@@ -13,7 +13,7 @@ import { buttonVariants } from "@/components/buttonVariants";
 import { cn } from "@/lib/utils";
 
 const cardVariants = cva(
-  "flex flex-col rounded-lg border border-border bg-card text-card-foreground shadow-sm",
+  "flex flex-col rounded-lg border border-border bg-card text-card-foreground",
   {
     variants: {
       variant: {

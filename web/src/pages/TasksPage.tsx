@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, Circle, ListChecks, Loader2, PauseCircle, Plus, Rocket, Square } from "lucide-react";
 import { apiGet, type Task } from "@/lib/api";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
-import { Badge, Button, Card } from "@/components/ui";
+import { Badge, Button, Card, Input } from "@/components/ui";
 import { ErrorState, LoadingState, RichEmptyState } from "@/components/shared";
 import { formatDateTime } from "@/lib/format";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
@@ -35,6 +35,8 @@ export function TasksPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState("All");
+  const [query, setQuery] = useState("");
   const isVisible = useDocumentVisibility();
   const hasActive = tasks.some(isTaskActive);
 
@@ -86,6 +88,10 @@ export function TasksPage() {
   }, [projectId, isVisible, hasActive]);
 
   const base = `/projects/${projectId}`;
+  const visibleTasks = sortTasksForDisplay(tasks).filter((task) => {
+    const matchesState = filter === "All" || (filter === "Active" ? task.status === "pending" || isTaskActive(task) : task.status === "completed" && !isTaskActive(task));
+    return matchesState && task.goal.toLowerCase().includes(query.trim().toLowerCase());
+  });
 
   return (
     <ProjectPageShell
@@ -123,8 +129,20 @@ export function TasksPage() {
       )}
 
       {tasks.length > 0 && (
-        <div className="space-y-2">
-          {sortTasksForDisplay(tasks).map((task) => {
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
+          <div className="flex gap-1" role="group" aria-label="Task state">
+            {["All", "Active", "Completed"].map((state) => (
+              <Button key={state} size="sm" variant={filter === state ? "secondary" : "ghost"} aria-pressed={filter === state} onClick={() => setFilter(state)}>{state}</Button>
+            ))}
+          </div>
+          <Input type="search" aria-label="Search tasks" placeholder="Search tasks…" value={query} onChange={(event) => setQuery(event.target.value)} className="w-full sm:w-60" />
+        </div>
+      )}
+      {tasks.length > 0 && visibleTasks.length === 0 && <p role="status" className="py-8 text-center text-sm text-muted-foreground">No tasks match your filters.</p>}
+
+      {tasks.length > 0 && (
+        <div className="divide-y divide-border border-y border-border">
+          {visibleTasks.map((task) => {
             const meta = STATUS_META[task.status] ?? { variant: "outline" as const, icon: Circle };
             const StatusIcon = meta.icon;
             return (
@@ -133,10 +151,10 @@ export function TasksPage() {
                 to={`${base}/tasks/${task.id}`}
                 className="group block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal/40 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               >
-                <Card className="transition-[border-color,box-shadow,background-color,transform] duration-150 ease-geist group-hover:-translate-y-0.5 group-hover:border-signal/40 group-hover:bg-accent/40 group-hover:shadow-md motion-reduce:transition-none motion-reduce:group-hover:translate-y-0">
+                <Card className="rounded-none border-0 px-2 py-4 transition-colors group-hover:bg-muted/50">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                     <div className="flex min-w-0 flex-1 gap-3">
-                      <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-muted text-muted-foreground transition-colors group-hover:border-signal/40 group-hover:text-signal">
+                      <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center text-muted-foreground transition-colors group-hover:border-signal/40 group-hover:text-signal">
                         <StatusIcon className={`h-4 w-4 ${task.status === "running" ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden="true" />
                       </span>
                       <div className="min-w-0 flex-1">

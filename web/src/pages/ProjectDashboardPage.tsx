@@ -6,11 +6,9 @@ import {
   CheckCircle2,
   Circle,
   ClipboardList,
-  Compass,
   FileText,
   FlaskConical,
   FolderLock,
-  LayoutGrid,
   ListChecks,
   Plus,
   Rocket,
@@ -143,21 +141,14 @@ export function ProjectDashboardPage() {
   const recentTasks = [...tasks]
     .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at))
     .slice(0, 4);
-  const latestTask = recentTasks[0];
   const runningCount = tasks.filter((task) => task.status === "running").length;
-  // Blackboard objective/attempt/solution counts are not part of the dashboard
-  // payload, so Current work surfaces the closest loaded metrics: open Tasks
-  // stand in for open exploration objectives, running Tasks for active
-  // attempts, and current Findings for verified solutions.
-  const openTaskCount = tasks.filter((task) => OPEN_TASK_STATUSES[task.status]).length;
+  const activeTasks = tasks.filter((task) => OPEN_TASK_STATUSES[task.status]);
+  const attentionTasks = tasks.filter((task) => ["failed", "interrupted", "paused"].includes(task.status));
 
   return (
     <ProjectPageShell
       title={
         <div>
-          <p className="mb-1 font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
-            Engagement
-          </p>
           <div className="mt-0.5 flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-semibold tracking-tight">{project.name}</h1>
             <Chip variant="signal" dot>{projectKindLabel}</Chip>
@@ -221,94 +212,79 @@ export function ProjectDashboardPage() {
         </section>
       )}
 
-      <div className="grid min-w-0 max-w-full grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard
-          icon={<ListChecks className="h-3.5 w-3.5" />}
-          label="Tasks"
-          n={dash.counts.tasks}
-          to={`${base}/tasks`}
-          chip={runningCount > 0 ? `${runningCount} running` : undefined}
-          sub={latestTask ? `Latest: ${latestTask.goal} · ${formatRelativeTime(latestTask.updated_at)}` : undefined}
-        />
+      <div aria-label="Project totals" className={cn("grid grid-cols-2 divide-x divide-border border-y border-border", isCTF && project.blackboard_protocol !== "fgs" ? "sm:grid-cols-3" : "sm:grid-cols-4")}>
+        <StatCard icon={<ListChecks className="h-3.5 w-3.5" />} label="Tasks" n={dash.counts.tasks} to={`${base}/tasks`} chip={runningCount > 0 ? `${runningCount} running` : undefined} />
         <StatCard icon={<FileText className="h-3.5 w-3.5" />} label="Facts" n={dash.counts.facts} to={`${base}/blackboard`} />
-        <StatCard
-          icon={<FlaskConical className="h-3.5 w-3.5" />}
-          label={project.blackboard_protocol === "fgs" ? "Goals" : "Findings"}
-          n={project.blackboard_protocol === "fgs" ? dash.counts.goals ?? 0 : dash.counts.findings}
-          to={project.blackboard_protocol === "fgs" ? `${base}/blackboard` : `${base}/findings`}
-          zeroHint={project.blackboard_protocol === "fgs" ? "No accepted Goals yet" : "No Findings yet — generated from Task conclusions"}
-        />
-        <StatCard icon={<FolderLock className="h-3.5 w-3.5" />} label={project.blackboard_protocol === "fgs" ? "Steps" : "Evidence"} n={project.blackboard_protocol === "fgs" ? dash.counts.steps ?? 0 : dash.counts.evidence} to={project.blackboard_protocol === "fgs" ? `${base}/blackboard` : `${base}/evidence`} />
+        {project.blackboard_protocol === "fgs" ? (
+          <>
+            <StatCard icon={<FlaskConical className="h-3.5 w-3.5" />} label="Goals" n={dash.counts.goals ?? 0} to={`${base}/blackboard`} />
+            <StatCard icon={<FolderLock className="h-3.5 w-3.5" />} label="Steps" n={dash.counts.steps ?? 0} to={`${base}/blackboard`} />
+          </>
+        ) : (
+          <>
+            {!isCTF && <StatCard icon={<FlaskConical className="h-3.5 w-3.5" />} label="Findings" n={dash.counts.findings} to={`${base}/findings`} />}
+            <StatCard icon={<FolderLock className="h-3.5 w-3.5" />} label="Evidence" n={dash.counts.evidence} to={`${base}/evidence`} />
+          </>
+        )}
       </div>
 
-      <div className="grid min-w-0 max-w-full gap-5 lg:grid-cols-5">
-        <section
-          aria-labelledby="recent-activity-title"
-          className="min-w-0 rounded-lg border border-border bg-card shadow-sm lg:col-span-3"
-        >
-          <div className="flex items-center justify-between border-b border-border px-4 py-3">
-            <span id="recent-activity-title" className="text-sm font-medium">Recent activity</span>
-            <Link to={`${base}/tasks`} className="text-xs text-muted-foreground hover:text-foreground">
-              View all
-            </Link>
+      <div className="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+        <section aria-labelledby="current-work-title" className="min-w-0">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 id="current-work-title" className="text-base font-medium">Active Tasks</h2>
+            <Link to={`${base}/tasks`} className="text-xs text-muted-foreground hover:text-foreground">View all Tasks</Link>
           </div>
-          {recentTasks.length === 0 ? (
-            <p className="px-4 py-6 text-center text-xs text-muted-foreground">No recent task activity.</p>
-          ) : (
-            <ul className="divide-y divide-border text-sm">
-              {recentTasks.map((task) => (
-                <li key={task.id} className="flex items-center gap-3 px-4 py-2.5">
-                  <span className={cn("h-1.5 w-1.5 flex-none rounded-full", statusDotClass(task.status))} />
-                  <span className="min-w-0 flex-1 truncate">
-                    {task.goal} — {activityStatusText(task)}
-                  </span>
-                  <span className="flex-none text-xs text-muted-foreground">
-                    {formatRelativeTime(task.updated_at)}
-                  </span>
+          {activeTasks.length === 0 ? <p className="py-6 text-sm text-muted-foreground">No active Tasks.</p> : (
+            <ul className="divide-y divide-border border-y border-border">
+              {activeTasks.slice(0, 5).map((task) => (
+                <li key={task.id}>
+                  <Link to={`${base}/tasks/${task.id}`} aria-label={`${task.goal} ${task.status}`} className="flex items-center gap-3 py-4 hover:text-signal">
+                    <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", statusDotClass(task.status))} />
+                    <span className="min-w-0 flex-1 break-words text-sm font-medium">{task.goal}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{task.status}</span>
+                  </Link>
                 </li>
               ))}
             </ul>
           )}
+          <details className="mt-5 border-t border-border pt-3">
+            <summary id="recent-activity-title" className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">Recent activity</summary>
+            <ul className="mt-3 divide-y divide-border text-sm">
+              {recentTasks.map((task) => (
+                <li key={task.id}>
+                  <Link to={`${base}/tasks/${task.id}`} className="flex items-center gap-3 py-3">
+                    <span className="min-w-0 flex-1 truncate">{task.goal} — {activityStatusText(task)}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{formatRelativeTime(task.updated_at)}</span>
+                  </Link>
+                </li>
+              ))}
+              {recentTasks.length === 0 && <li className="py-3 text-sm text-muted-foreground">No recent task activity.</li>}
+            </ul>
+          </details>
         </section>
-
-        <section
-          aria-labelledby="current-work-title"
-          className="min-w-0 rounded-lg border border-border bg-card shadow-sm lg:col-span-2"
-        >
-          <div className="border-b border-border px-4 py-3">
-            <span id="current-work-title" className="text-sm font-medium">Current work</span>
-          </div>
-          <div className="space-y-3 px-4 py-3.5 text-sm">
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <Compass className="h-4 w-4 text-muted-foreground" /> {project.blackboard_protocol === "fgs" ? "Goals" : "Exploration objectives"}
-              </span>
-              <span className="font-semibold">{project.blackboard_protocol === "fgs" ? `${dash.counts.goals ?? 0} reported` : `${openTaskCount} open`}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <FlaskConical className="h-4 w-4 text-muted-foreground" /> {project.blackboard_protocol === "fgs" ? "Steps" : "Attempts"}
-              </span>
-              <span className="font-semibold">{project.blackboard_protocol === "fgs" ? `${dash.counts.steps ?? 0} reported` : `${runningCount} in progress`}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 text-muted-foreground" />{" "}
-                {project.blackboard_protocol === "fgs" ? "Facts" : isCTF ? "Solutions" : "Findings"}
-              </span>
-              <span className="font-semibold">{project.blackboard_protocol === "fgs" ? dash.counts.facts : dash.counts.findings} current</span>
-            </div>
-            <Link
-              to={`${base}/blackboard`}
-              className="mt-1 flex h-8 items-center justify-center gap-1.5 rounded-md border border-border text-xs font-medium hover:bg-muted"
-            >
-              <LayoutGrid className="h-3.5 w-3.5" /> Open Blackboard
-            </Link>
-          </div>
+        <section aria-labelledby="attention-title" className="min-w-0">
+          <h2 id="attention-title" className="mb-3 text-base font-medium">Needs your attention</h2>
+          {attentionTasks.length === 0 ? <p className="py-3 text-sm text-muted-foreground">No Tasks need attention.</p> : (
+            <ul className="divide-y divide-border">
+              {attentionTasks.slice(0, 5).map((task) => (
+                <li key={task.id}>
+                  <Link to={`${base}/tasks/${task.id}`} className="block py-3 text-sm hover:text-signal">
+                    <span className="mb-1 block text-xs capitalize text-warning">{task.status}</span>
+                    <span className="line-clamp-2 break-words">{task.goal}</span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+          <Link to={`${base}/blackboard`} className="mt-4 inline-block text-sm text-signal hover:underline">Open Blackboard →</Link>
+          {isCTF && <Link to={`${base}/solution`} className="mt-3 block text-sm text-signal hover:underline">Open Solution →</Link>}
         </section>
       </div>
 
-      <ProjectKindConversionCard key={project.id} project={project} onConverted={setProject} />
+      <details className="border-t border-border pt-4">
+        <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">Project settings</summary>
+        <div className="mt-4"><ProjectKindConversionCard key={project.id} project={project} onConverted={setProject} /></div>
+      </details>
 
       {!isCTF && (
         <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-6">
@@ -327,28 +303,19 @@ function StatCard({
   n,
   to,
   chip,
-  sub,
-  zeroHint,
 }: {
   icon: React.ReactNode;
   label: string;
   n: number;
   to: string;
   chip?: string;
-  sub?: string;
-  zeroHint?: string;
 }) {
   const empty = n === 0;
   return (
     <Link
       to={to}
       aria-label={`View ${n} ${countLabel(label, n)}`}
-      className={cn(
-        "group min-w-0 overflow-hidden rounded-lg border p-4 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-        empty
-          ? "border-dashed border-border bg-card/50 hover:border-ring"
-          : "border-border bg-card shadow-sm hover:border-ring",
-      )}
+      className="group min-w-0 px-4 py-4 transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span className="flex items-center gap-1.5">
@@ -369,11 +336,6 @@ function StatCard({
           </Chip>
         )}
       </div>
-      {(sub || (empty && zeroHint)) && (
-        <div className="mt-1 truncate text-xs text-muted-foreground">
-          {empty && zeroHint ? zeroHint : sub}
-        </div>
-      )}
     </Link>
   );
 }

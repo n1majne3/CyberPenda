@@ -128,7 +128,8 @@ describe("ProjectDashboardPage", () => {
     const user = userEvent.setup();
     conversionApi("pentest", failure);
     renderPage();
-    await user.click(await screen.findByRole("button", { name: /change project kind/i }));
+    await user.click(await screen.findByText("Project settings"));
+    await user.click(screen.getByRole("button", { name: /change project kind/i }));
     if (failure === "confirm") await user.click(screen.getByRole("button", { name: /confirm conversion to/i }));
     const card = screen.getByRole("region", { name: "Project kind" });
     expect(within(card).getByRole("alert")).toHaveTextContent("Please try again");
@@ -143,7 +144,8 @@ describe("ProjectDashboardPage", () => {
     const user = userEvent.setup();
     conversionApi("ctf_challenge");
     renderPage();
-    await user.click(await screen.findByRole("button", { name: /change project kind/i }));
+    await user.click(await screen.findByText("Project settings"));
+    await user.click(screen.getByRole("button", { name: /change project kind/i }));
     expect(screen.getByText("CTF Challenge → Pentest")).toBeVisible();
     expect(screen.getByText(/Only Project Kind changes/)).toHaveTextContent("Historical Task Types stay unchanged. Findings and Solutions are not converted into each other.");
     await user.click(screen.getByRole("button", { name: "Confirm conversion to Pentest" }));
@@ -155,7 +157,8 @@ describe("ProjectDashboardPage", () => {
     const user = userEvent.setup();
     conversionApi("pentest", undefined, true);
     renderPage();
-    await user.click(await screen.findByRole("button", { name: /change project kind/i }));
+    await user.click(await screen.findByText("Project settings"));
+    await user.click(screen.getByRole("button", { name: /change project kind/i }));
     expect(screen.queryByRole("button", { name: /confirm conversion/i })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Review Tasks" })).toHaveAttribute("href", "/projects/project-1/tasks");
     expect(screen.getByRole("link", { name: "Review Findings" })).toHaveAttribute("href", "/projects/project-1/findings");
@@ -168,7 +171,8 @@ describe("ProjectDashboardPage", () => {
     const user = userEvent.setup();
     const fetchMock = conversionApi();
     renderPage();
-    await user.click(await screen.findByRole("button", { name: /change project kind/i }));
+    await user.click(await screen.findByText("Project settings"));
+    await user.click(screen.getByRole("button", { name: /change project kind/i }));
     const cancel = screen.getByRole("button", { name: "Cancel" });
     cancel.focus();
     await user.keyboard("{Enter}");
@@ -187,7 +191,8 @@ describe("ProjectDashboardPage", () => {
         : normalFetch(input, init));
     vi.stubGlobal("fetch", pendingFetch);
     renderPage();
-    await user.dblClick(await screen.findByRole("button", { name: /change project kind/i }));
+    await user.click(await screen.findByText("Project settings"));
+    await user.dblClick(screen.getByRole("button", { name: /change project kind/i }));
     expect(screen.getByRole("status")).toHaveTextContent("Checking…");
     expect(pendingFetch.mock.calls.filter(([url]) => String(url).includes("/kind-conversion"))).toHaveLength(1);
     resolveRequest(new Response(JSON.stringify({ current_kind: "pentest", target_kind: "ctf_challenge", ready: true, blockers: [] })));
@@ -275,39 +280,22 @@ describe("ProjectDashboardPage", () => {
       "/projects/project-1/scope",
     );
 
-    const tasksCard = screen.getByRole("link", { name: /view 3 tasks/i });
-    expect(tasksCard).toHaveClass("rounded-lg", "border", "bg-card");
-    expect(within(tasksCard).getByText("1 running")).toBeInTheDocument();
-    expect(tasksCard).toHaveClass("min-w-0", "overflow-hidden");
-    expect(within(tasksCard).getByText(/Latest: Enumerate api\.acme\.example · .* ago/)).toBeInTheDocument();
+    const totals = screen.getByLabelText("Project totals");
+    const tasksTotal = within(totals).getByRole("link", { name: /view 3 tasks/i });
+    expect(within(tasksTotal).getByText("1 running")).toBeVisible();
     expect(screen.getByRole("link", { name: /view 8 facts/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 1 finding/i })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /view 5 evidence items/i })).toBeInTheDocument();
-
-    const activity = screen.getByText("Recent activity").closest("section");
-    expect(activity).not.toBeNull();
-    expect(activity!).toHaveClass("min-w-0");
-    expect(activity!).toHaveTextContent("Enumerate api.acme.example — Running");
-    expect(activity!).toHaveTextContent("12 minutes ago");
-    expect(activity!).toHaveTextContent("Port scan 203.0.113.10 — Completed");
-    expect(activity!).toHaveTextContent("2 hours ago");
-    expect(activity!).toHaveTextContent("Fingerprint cdn.acme.example — Stopped");
-    expect(within(activity!).getByRole("link", { name: "View all" })).toHaveAttribute(
-      "href",
-      "/projects/project-1/tasks",
-    );
-
-    const currentWork = screen.getByText("Current work").closest("section");
-    expect(currentWork).not.toBeNull();
-    expect(currentWork!).toHaveClass("min-w-0");
-    expect(currentWork!).toHaveTextContent("Exploration objectives");
-    expect(currentWork!).toHaveTextContent("1 open");
-    expect(currentWork!).toHaveTextContent("1 in progress");
-    expect(currentWork!).toHaveTextContent("1 current");
-    expect(within(currentWork!).getByRole("link", { name: /open Blackboard/i })).toHaveAttribute(
-      "href",
-      "/projects/project-1/blackboard",
-    );
+    const activeTasks = screen.getByRole("region", { name: "Active Tasks" });
+    expect(within(activeTasks).getByRole("link", { name: /Enumerate api.acme.example running/i })).toHaveAttribute("href", "/projects/project-1/tasks/task-1");
+    expect(within(activeTasks).queryByText("Exploration objectives")).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Needs your attention" })).toHaveTextContent("No Tasks need attention.");
+    const activity = screen.getByText("Recent activity").closest("details");
+    expect(activity).not.toHaveAttribute("open");
+    await userEvent.click(screen.getByText("Recent activity"));
+    expect(activity).toHaveTextContent("Port scan 203.0.113.10 — Completed");
+    expect(activity).toHaveTextContent("Fingerprint cdn.acme.example — Stopped");
+    expect(screen.getByRole("link", { name: /open Blackboard/i })).toHaveAttribute("href", "/projects/project-1/blackboard");
 
     expect(screen.getByText("Pentest Project")).toHaveClass("border-signal/25", "bg-signal/10", "text-signal");
   });
@@ -336,7 +324,8 @@ describe("ProjectDashboardPage", () => {
     );
 
     renderPage();
-    await user.click(await screen.findByRole("button", { name: /change project kind/i }));
+    await user.click(await screen.findByText("Project settings"));
+    await user.click(screen.getByRole("button", { name: /change project kind/i }));
     expect(await screen.findByText(/conversion is ready/i)).toBeInTheDocument();
     expect(screen.getByText("Pentest → CTF Challenge")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /confirm conversion to CTF Challenge/i }));
@@ -382,4 +371,3 @@ describe("ProjectDashboardPage", () => {
     expect(screen.getByRole("heading", { level: 1, name: "Second Project" })).toBeInTheDocument();
   });
 });
-

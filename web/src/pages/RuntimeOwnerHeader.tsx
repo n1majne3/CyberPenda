@@ -3,6 +3,7 @@ import type { NavigateFunction } from "react-router-dom";
 import { Archive, ArchiveRestore, Flag, Info, Maximize2, Minimize2, Pencil, Play, Trash2, TriangleAlert, Wrench } from "lucide-react";
 import type { FinishReadiness } from "@/lib/api";
 import { Button, Input } from "@/components/ui";
+import { ActionMenu } from "@/components/ActionMenu";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { formatRelativeTime } from "@/lib/format";
 import type { RuntimeOwnerView } from "@/lib/runtimeOwner/types";
@@ -106,26 +107,33 @@ export function RuntimeOwnerHeader({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-1">
-          {owner.kind === "task" && projectId && owner.challengeHistoryAvailable && (
-            <Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/tasks/${owner.id}/challenges`)} aria-label="Challenge history" title="Open Challenge history">
-              <Wrench className="h-4 w-4" /> <span className="hidden sm:inline">Challenge history</span>
-            </Button>
-          )}
-          {owner.capabilities.rename && !editingTitle && (
-            <Button size="icon" variant="outline" onClick={() => setEditingTitle(true)} aria-label={`Rename ${owner.title}`} title="Rename Session" className="h-8 w-8">
-              <Pencil className="h-4 w-4" />
-            </Button>
-          )}
-          {owner.capabilities.archive && (
-            <Button size="icon" variant="outline" onClick={() => void changeSessionLifecycle("archive")} aria-label="Archive" title="Archive Session" className="h-8 w-8">
-              <Archive className="h-4 w-4" />
-            </Button>
-          )}
-          {owner.capabilities.restore && (
-            <Button size="icon" variant="outline" onClick={() => void changeSessionLifecycle("restore")} aria-label="Restore" title="Restore Session" className="h-8 w-8">
-              <ArchiveRestore className="h-4 w-4" />
-            </Button>
-          )}
+          <ActionMenu>
+            {owner.kind === "task" && projectId && owner.challengeHistoryAvailable && (
+              <Button size="sm" variant="ghost" onClick={() => navigate(`/projects/${projectId}/tasks/${owner.id}/challenges`)} aria-label="Challenge history" title="Open Challenge history">
+                <Wrench className="h-4 w-4" /> <span>Challenge history</span>
+              </Button>
+            )}
+            {owner.capabilities.rename && !editingTitle && (
+              <Button size="sm" variant="ghost" onClick={() => setEditingTitle(true)} aria-label={`Rename ${owner.title}`} title="Rename Session">
+                <Pencil className="h-4 w-4" /> Rename
+              </Button>
+            )}
+            {owner.capabilities.archive && (
+              <Button size="sm" variant="ghost" onClick={() => void changeSessionLifecycle("archive")} aria-label="Archive" title="Archive Session">
+                <Archive className="h-4 w-4" /> Archive
+              </Button>
+            )}
+            {owner.capabilities.restore && (
+              <Button size="sm" variant="ghost" onClick={() => void changeSessionLifecycle("restore")} aria-label="Restore" title="Restore Session">
+                <ArchiveRestore className="h-4 w-4" /> Restore
+              </Button>
+            )}
+            {owner.capabilities.delete && (
+              <Button size="sm" variant="ghost" onClick={() => setConfirmAction("delete")} aria-label={`Delete ${owner.kind}`} title={`Delete ${owner.kind === "session" ? "Session" : "Task"}`} className="text-destructive hover:text-destructive">
+                <Trash2 className="h-4 w-4" /> Delete
+              </Button>
+            )}
+          </ActionMenu>
           {running && finishAvailable && (
             <Button
               size="sm"
@@ -141,11 +149,6 @@ export function RuntimeOwnerHeader({
           {owner.capabilities.resumeWithoutMessage && !running && (
             <Button size="sm" variant="ghost" onClick={resumeNative} disabled={!resumeAvailable} aria-label="Resume" title={nativeResumeAvailable ? "Resume native session" : "Start a fresh continuation from the current Task state"}>
               <Play className="h-4 w-4" /> <span className="hidden sm:inline">Resume</span>
-            </Button>
-          )}
-          {owner.capabilities.delete && (
-            <Button size="icon" variant="outline" onClick={() => setConfirmAction("delete")} aria-label={`Delete ${owner.kind}`} title={`Delete ${owner.kind === "session" ? "Session" : "Task"}`} className="h-8 w-8 text-destructive hover:text-destructive">
-              <Trash2 className="h-4 w-4" />
             </Button>
           )}
           <Button

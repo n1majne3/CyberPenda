@@ -9,7 +9,7 @@ export function navItemClasses(isActive: boolean, className?: string) {
     "group relative inline-flex h-9 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
     sidebarFocusClass,
     isActive
-      ? "bg-signal/5 font-semibold text-sidebar-accent-foreground"
+      ? "bg-signal/5 font-semibold text-signal"
       : "text-muted-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
     className,
   );

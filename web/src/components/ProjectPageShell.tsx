@@ -44,7 +44,7 @@ export const ProjectPageShell = forwardRef<HTMLDivElement, ProjectPageShellProps
         {!hideChrome && (
           <div
             data-testid="project-page-shell-chrome"
-            className="sticky top-0 z-20 mb-6 w-full border-b border-border bg-background/90 px-6 py-3 backdrop-blur-sm supports-[backdrop-filter]:bg-background/80 lg:px-8"
+            className="sticky top-0 z-20 mb-6 w-full border-b border-border bg-background/90 px-5 pt-3 backdrop-blur-sm supports-[backdrop-filter]:bg-background/80 sm:px-6 lg:px-8"
           >
             <div className="mx-auto w-full max-w-6xl space-y-2">
               <BackLink to="/" className="mb-0">
@@ -57,7 +57,7 @@ export const ProjectPageShell = forwardRef<HTMLDivElement, ProjectPageShellProps
 
         <div
           className={cn(
-            "mx-auto flex w-full max-w-6xl min-w-0 flex-1 flex-col min-h-0 px-6 pb-6 lg:px-8 lg:pb-8",
+            "mx-auto flex w-full max-w-6xl min-w-0 flex-1 flex-col min-h-0 px-5 pb-6 sm:px-6 lg:px-8 lg:pb-8",
             hideChrome && "max-w-none p-0 lg:p-0",
             contentClassName,
           )}
@@ -75,7 +75,7 @@ export const ProjectPageShell = forwardRef<HTMLDivElement, ProjectPageShellProps
                     title
                   ))}
                 {description != null && (
-                  <div className="mt-1 text-sm leading-6 text-muted-foreground">
+                  <div className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
                     {description}
                   </div>
                 )}

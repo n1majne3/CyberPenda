@@ -11,7 +11,7 @@ import { Card, type CardProps } from "@/components/ui";
 
 export const PageContainer = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
   ({ className, children, ...props }, ref) => (
-    <div ref={ref} className={cn("w-full p-6 lg:p-8", className)} {...props}>
+    <div ref={ref} className={cn("w-full p-5 sm:p-6 lg:p-8", className)} {...props}>
       {children}
     </div>
   ),
@@ -59,7 +59,7 @@ export function SettingsPageHeader({
             {eyebrow}
           </p>
         )}
-        <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
         {description && (
           <p className="mt-1 max-w-3xl text-sm text-muted-foreground">{description}</p>
         )}
@@ -120,7 +120,7 @@ export function SettingsSplitLayout({
 export function SettingsPanel({ className, ...props }: CardProps) {
   return (
     <Card
-      className={cn("min-w-0 overflow-hidden p-4", className)}
+      className={cn("min-w-0 overflow-hidden p-4 shadow-none", className)}
       {...props}
     />
   );

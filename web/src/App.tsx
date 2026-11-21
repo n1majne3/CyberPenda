@@ -196,7 +196,7 @@ export function ShellLayout() {
           aria-hidden={sidebarAvailable ? undefined : true}
           inert={sidebarAvailable ? undefined : true}
           className={cn(
-            "flex w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground shadow-sm",
+            "flex w-64 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground",
             // Off-canvas below md: out of document flow so main uses full viewport width.
             "fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-geist md:static md:z-auto md:translate-x-0",
             mobileNavOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",

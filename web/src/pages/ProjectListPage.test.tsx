@@ -171,7 +171,7 @@ describe("ProjectListPage", () => {
 
     const link = await screen.findByRole("link", { name: /open acme external project dashboard/i });
     expect(link).toHaveClass("rounded-lg", "focus-visible:ring-2");
-    expect(link.firstElementChild).toHaveClass("rounded-lg", "border", "bg-card", "shadow-sm");
+    expect(link.firstElementChild).toHaveClass("rounded-lg", "border", "bg-card");
     expect(screen.getByText("Scope ready")).toBeInTheDocument();
     expect(screen.getByText("CTF Challenge")).toBeInTheDocument();
     expect(screen.getByText("1 domain")).toBeInTheDocument();

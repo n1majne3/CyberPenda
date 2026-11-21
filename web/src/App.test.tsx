@@ -212,8 +212,8 @@ describe("App", () => {
 
     const sidebar = document.getElementById("workspace-sidebar");
     expect(sidebar).not.toBeNull();
-    // Off-canvas below md so main can use the full 390px viewport; desktop keeps w-72 in flow.
-    expect(sidebar).toHaveClass("fixed", "inset-y-0", "left-0", "w-72", "md:static");
+    // Off-canvas below md so main can use the full 390px viewport; desktop keeps w-64 in flow.
+    expect(sidebar).toHaveClass("fixed", "inset-y-0", "left-0", "w-64", "md:static");
     expect(sidebar!.className.split(/\s+/)).toEqual(
       expect.arrayContaining(["-translate-x-full", "md:translate-x-0"]),
     );
