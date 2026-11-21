@@ -67,6 +67,7 @@ export function useRuntimeOwnerHistory({
 
   async function loadAll(mode: "initial" | "poll") {
     if (!ownerID || (!isSession && !projectId)) return;
+    if (mode === "poll" && abortRef.current) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -114,6 +115,8 @@ export function useRuntimeOwnerHistory({
         return;
       }
       setError((e as Error).message);
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
     }
   }
 
