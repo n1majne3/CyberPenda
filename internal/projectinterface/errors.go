@@ -2,7 +2,9 @@ package projectinterface
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
+	"strings"
 )
 
 // tokenEncoding is unpadded base64url: safe in Authorization headers, query
@@ -84,7 +86,42 @@ func ValidationError(code, message, path string) *Error {
 	return &Error{ProtocolVersion: RuntimeProtocolVersion, Code: code, Message: message, Path: path}
 }
 
+// InternalError builds a 500-mapped Project Interface error for an unexpected
+// failure that is not a domain or envelope validation error.
+func InternalError(message string) *Error {
+	return &Error{ProtocolVersion: RuntimeProtocolVersion, Code: ErrCodeInternal, Message: message, Path: "internal"}
+}
+
+func persistenceError(action string, err error) *Error {
+	message := action + ": " + err.Error()
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "database is locked") || strings.Contains(lower, "database is busy") ||
+		strings.Contains(lower, "sqlite_busy") || strings.Contains(lower, "sqlite_locked") {
+		return &Error{
+			ProtocolVersion: RuntimeProtocolVersion,
+			Code:            ErrCodeStorageBusy,
+			Message:         "SQLite writer lock is busy",
+			Path:            "storage",
+			Retryable:       true,
+		}
+	}
+	return InternalError(message)
+}
+
 // ErrCodeInternal is the interface code for unexpected internal/integrity
 // failures that are not semantic validation or request-envelope errors. It
 // maps to HTTP 500.
 const ErrCodeInternal = "internal"
+
+// AsError extracts a project-interface *Error from err, returning nil when err
+// is not one.
+func AsError(err error) *Error {
+	if err == nil {
+		return nil
+	}
+	var e *Error
+	if errors.As(err, &e) {
+		return e
+	}
+	return nil
+}
