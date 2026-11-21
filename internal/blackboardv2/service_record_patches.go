@@ -1,9 +1,5 @@
 package blackboardv2
 
-func stringPtr(value string) *string {
-	return &value
-}
-
 func entityPatchEmpty(patch EntityPatch) bool {
 	return patch.Kind == nil && patch.Name == nil && patch.Locator == nil && patch.Description == nil && patch.ScopeStatus == nil && patch.CredentialRef == nil
 }

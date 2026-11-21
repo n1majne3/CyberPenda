@@ -12,8 +12,6 @@ import (
 	"pentest/internal/task"
 )
 
-const snapshotEstimatorVersion = "utf8-bytes-div-4/v1"
-
 var ErrLaunchPinIntegrity = errors.New("Launch Blackboard Pin integrity check failed")
 
 type ContinuityFailurePoint string

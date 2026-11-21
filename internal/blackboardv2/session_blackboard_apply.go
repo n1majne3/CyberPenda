@@ -224,8 +224,6 @@ func sessionApplyUpdate(ctx context.Context, tx *sql.Tx, sessionID string, revis
 		if patchErr != nil {
 			return revision, "", 0, false, patchErr
 		}
-		if len(change.Clear) > 0 {
-		}
 		entity, patchErr := applyEntityPatch(existing.record.entityRecord(), patch, change.Clear, path+".clear")
 		if patchErr != nil {
 			return revision, "", 0, false, patchErr
