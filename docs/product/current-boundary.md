@@ -36,7 +36,9 @@ new `interactive` input is a compatibility alias. Historical snapshots retain
 their original mode, and either enabled value uses FGS on Resume and Continuation.
 Skill compatibility treats both enabled values equally and keeps Disabled separate.
 
-Migration 77 updates the Runtime protocol without converting historical records
+The current Store creates only the baseline schema and refuses older databases;
+it does not run the former numbered migrations. Migration 77 updated the Runtime
+protocol without converting historical records
 or deleting Evidence files. Already running processes receive new instructions
 only when their Runtime restarts. Entity, Exploration Objective, Attempt, Project
 Fact, Finding, Solution, and Evidence Artifact are not additional FGS node types.

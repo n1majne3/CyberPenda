@@ -6,7 +6,7 @@ first with `shasum -a 256 -c SHA256SUMS` or `sha256sum -c SHA256SUMS`.
 
 The image retains the normal embedded CyberPenda Web UI resources. It does not
 publish or expose the loopback daemon port. `COMPONENTS.txt` records the exact
-versions of the four Runtime CLIs and the Claude Agent SDK used by the packaged
+versions of the three Runtime CLIs and the Claude Agent SDK used by the packaged
 Claude bridge.
 
 ## Hosted Mode
@@ -197,6 +197,5 @@ upload its `.tar.gz` Docker archive to the TSecBench page. The GitHub Actions
 workflow cannot do this VPN-backed validation because it has no TSecBench
 credential or VPN access.
 
-Pull requests that change Hosted Image inputs also run this workflow. These
-builds use `pr-<commit>` as the Bundle version. The workflow does not use a
-TSecBench token, a model API key, or the TSecBench VPN.
+This workflow runs only through `workflow_dispatch`. Pull requests do not trigger
+it. The workflow does not use a TSecBench token, a model API key, or the TSecBench VPN.

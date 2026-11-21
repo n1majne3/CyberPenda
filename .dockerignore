@@ -10,5 +10,10 @@ pentest.db
 runs
 
 web/node_modules
+**/node_modules
 web/dist
 internal/daemon/webfs/dist
+.env
+.env.*
+**/*.env
+!**/*.env.example

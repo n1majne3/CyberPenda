@@ -1,15 +1,14 @@
 @GLOSSARY.md
 
 Always read GLOSSARY.md, unconditionally.
-Use TDD(but some changes make be not nessary to be tested) and ASD-STE100 Simplified Technical English(or Chines if user talks in Chinese) to write code, tests, and documentation. Always use the ubiquitous language in GLOSSARY.md files. Always update GLOSSARY.md when the user explicitly resolves a domain ambiguity.
-for builfing the sandbox images: perfer to use github action
+Use TDD (but some changes may not need tests) and ASD-STE100 Simplified Technical English (or Chinese if the user talks in Chinese) to write code, tests, and documentation. Always use the ubiquitous language in GLOSSARY.md files. Always update GLOSSARY.md when the user explicitly resolves a domain ambiguity.
+For building the Sandbox images, prefer GitHub Actions.
 
 ## Workspace file safety
 
 Treat every existing workspace file and directory as user-owned, including untracked content. Get the user's explicit authorization before deleting, overwriting, restoring, or cleaning it. A path name or `git status` state is not proof that content is a test artifact. To identify generated content, use a before-and-after workspace snapshot or a documented generator contract. If an accidental destructive change occurs, stop other work, disclose the exact action, and prioritize recovery.
 
-Update `GLOSSARY.md` when the user explicitly resolves a domain ambiguity.
-Always talk in ASD-STE100 Simplified Technical English(or Chines if user talks in Chinese). Always read GLOSSARY.md, and use its ubiquitous language.
+Always talk in ASD-STE100 Simplified Technical English (or Chinese if the user talks in Chinese).
 ## Agent skills
 
 ### Issue tracker

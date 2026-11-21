@@ -102,3 +102,19 @@ func repoRoot(t *testing.T) string {
 		wd = parent
 	}
 }
+
+func TestCISandboxSmokeRequiredFailsSafeOnUnknownBase(t *testing.T) {
+	root := repoRoot(t)
+	script := filepath.Join(root, "scripts", "ci-sandbox-smoke-required.sh")
+	for _, base := range []string{"", "0000000000000000000000000000000000000000", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"} {
+		cmd := exec.Command("bash", script, base, "HEAD")
+		cmd.Dir = root
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("base %q: %v\n%s", base, err, out)
+		}
+		if got := strings.TrimSpace(string(out)); got != "required=true" {
+			t.Fatalf("base %q: got %q, want required=true", base, got)
+		}
+	}
+}

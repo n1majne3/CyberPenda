@@ -12,7 +12,7 @@ workspace "CyberPenda System Context" "Current-state system context of the Cyber
         ghcr = softwareSystem "GHCR Image Registry" "Publishes the app and sandbox images (ghcr.io/n1majne3/cyberpenda*). Distribution surface only." "Distribution"
         vercelDemo = softwareSystem "Vercel Demo Deployment" "Static, read-only demo build of the dashboard (vite build:demo mode). No daemon, no Runtimes, no tools." "Distribution"
 
-        operator -> cyberpenda "Operates Projects, Tasks, Scope, and Settings in the browser" "HTTPS loopback :8787"
+        operator -> cyberpenda "Operates Projects, Tasks, Scope, and Settings in the browser" "HTTP loopback :8787"
         cyberpenda -> modelProvider "Runtime model calls with projected credentials" "HTTPS"
         cyberpenda -> containerEngine "Creates and controls Sandbox task containers" "Docker/Podman CLI"
         cyberpenda -> targetSystems "Runtime tool traffic from Sandbox or Host Runner, bounded by Scope" "tool-specific"

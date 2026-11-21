@@ -18,7 +18,7 @@ workspace "CyberPenda" "Current-state container and component model of the Cyber
                 fgs = component "FGS Store" "Accepted Goal/Step/Fact updates with delivery Receipts (Runtime Outbox settlement)." "internal/fgs"
                 blackboard = component "Blackboard v2 Service" "Durable semantic memory: Entities, Project Facts, Findings, Solutions, Relationships." "internal/blackboardv2 (+contract/grammar/input)"
                 domains = component "Domain Services" "Project, Scope, Task, Session, Skill, Model Provider, Credential, Report, Steering, Finish Readiness." "internal/{project,task,session,skill,modelprovider,credential,report,steering,finishreadiness}"
-                store = component "Store" "SQLite connection and schema migrations shared by every domain package; persistence stays inline in domain services (ADR 0017)." "internal/store"
+                store = component "Store" "SQLite connection and baseline schema bootstrap shared by every domain package; persistence stays inline in domain services (ADR 0017)." "internal/store"
             }
             db = container "SQLite Database" "pentest.db: projects, tasks, sessions, continuations, runtime config versions, runtime profiles, skills, credentials, blackboard_v2_*, fgs_* tables." "SQLite (modernc.org/sqlite)" {
                 tags "Database"
@@ -35,7 +35,7 @@ workspace "CyberPenda" "Current-state container and component model of the Cyber
             hostedRuntime = container "Hosted Runtime" "Bundled Codex / Claude Code / Pi with the Hosted Tool Baseline (bounded Kali toolset) and read-only offline reference data under /opt/knowledge." "Provider CLI + Kali toolset"
         }
 
-        operator -> cyberpenda.spa "Uses the dashboard" "HTTPS"
+        operator -> cyberpenda.spa "Uses the dashboard" "HTTP"
         cyberpenda.spa -> cyberpenda.pentestd "REST API calls" "JSON/HTTP /api"
         cyberpenda.pentestd -> cyberpenda.db "Reads/writes" "SQL"
         cyberpenda.pentestd -> containerEngine "Creates and controls Sandbox task containers" "Docker/Podman CLI"
@@ -43,16 +43,16 @@ workspace "CyberPenda" "Current-state container and component model of the Cyber
         cyberpenda.pentestd -> cyberpenda.bridges "Owns bridge processes" "stdio"
         cyberpenda.bridges -> cyberpenda.runtime "Frames provider protocol sessions" "JSON-RPC / JSONL"
         cyberpenda.runtime -> cyberpenda.pentestctl "Publishes FGS updates and reads Blackboard state" "CLI invocation"
-        cyberpenda.pentestctl -> cyberpenda.pentestd "Continuation Interface: emit/read/status/history" "HTTP"
+        cyberpenda.pentestctl -> cyberpenda.pentestd "Continuation Interface: read/status/history" "HTTP"
         cyberpenda.runtime -> modelProvider "Model calls with projected credentials" "HTTPS"
         cyberpenda.runtime -> targetSystems "Authorized testing within Project Scope" "tool-specific"
 
         challengePlatform -> hostedImage.hostedController "Injects BENCHMARK_BASE_URL and one-use BENCHMARK_TOKEN; consumes the JSONL transcript" "stdout/HTTPS"
         hostedImage.hostedController -> hostedImage.hostedDaemon "Boots in-process daemon; seeds the evaluation Project and Task" "in-process"
         hostedImage.hostedDaemon -> hostedImage.hostedRuntime "Launches the Hosted Runtime" "process"
-        hostedImage.hostedController -> hostedImage.challengeClient "Runs one bounded platform operation per process" "process exec"
+        hostedImage.hostedRuntime -> hostedImage.challengeClient "Runs one bounded platform operation per process" "process exec"
         hostedImage.challengeClient -> challengePlatform "list/start/hint/submit/close/abandon" "HTTPS"
-        hostedImage.hostedRuntime -> modelProvider "Model calls through the evaluation gateway" "HTTPS"
+        hostedImage.hostedRuntime -> modelProvider "Model calls through the evaluation gateway" "HTTP"
 
         cyberpenda.pentestd.httpApi -> cyberpenda.pentestd.domains "Domain handlers" "in-process"
         cyberpenda.pentestd.httpApi -> cyberpenda.pentestd.blackboard "Blackboard v2 routes" "in-process"
@@ -63,7 +63,7 @@ workspace "CyberPenda" "Current-state container and component model of the Cyber
         cyberpenda.pentestd.blackboard -> cyberpenda.pentestd.store "Semantic records" "in-process"
         cyberpenda.pentestd.fgs -> cyberpenda.pentestd.store "Accepted updates and Receipts" "in-process"
         cyberpenda.pentestd.store -> cyberpenda.db "SQL" "modernc.org/sqlite"
-        cyberpenda.pentestctl -> cyberpenda.pentestd.httpApi "working-graph emit/read/status/history" "HTTP"
+        cyberpenda.pentestctl -> cyberpenda.pentestd.httpApi "working-graph read/status/history" "HTTP"
     }
 
     views {

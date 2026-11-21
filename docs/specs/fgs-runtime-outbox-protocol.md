@@ -484,6 +484,10 @@ fixture is acceptable for the first slice; it is not a completed product migrati
 
 ## 11. Implementation status
 
+The current Store creates only the baseline schema and refuses older databases.
+The numbered migrations described below record the earlier rollout; this binary
+does not run them. The offline v1 migration CLI has also been removed.
+
 The FGS service supports atomic updates, durable receipts, replay, description
 history, Goal reopening, terminal Step retries, Fact corrections, priority, and
 data references. Malformed JSON produces a durable rejected receipt that can be

@@ -96,7 +96,7 @@ export function SectionLabel({ className, children, ...props }: HTMLAttributes<H
 
 - [x] **Step 3: Verify**
 
-Run: `cd web && npx vitest run --grep "ui|shared" -v`
+Run: `cd web && npx vitest run -t "ui|shared" --reporter=verbose`
 Expected: PASS
 
 - [x] **Step 4: Commit**
@@ -172,7 +172,7 @@ Show count badges on "Non-project" and "Projects" group headers:
 
 - [x] **Step 5: Verify**
 
-Run: `cd web && npx vitest run --grep "WorkspaceSidebar" -v`
+Run: `cd web && npx vitest run -t "WorkspaceSidebar" --reporter=verbose`
 Expected: PASS
 
 - [x] **Step 6: Commit**
@@ -281,7 +281,7 @@ Replace the card wrapper around assistant conclusion messages:
 
 - [x] **Step 6: Verify**
 
-Run: `cd web && npx vitest run --grep "AgentTranscriptView" -v`
+Run: `cd web && npx vitest run -t "AgentTranscriptView" --reporter=verbose`
 Expected: PASS
 
 - [x] **Step 7: Commit**
@@ -433,7 +433,7 @@ Change the page body to a 2-column grid with the right rail:
 
 - [x] **Step 8: Verify**
 
-Run: `cd web && npx vitest run --grep "TaskLaunchPage|RuntimeLaunchControls" -v`
+Run: `cd web && npx vitest run -t "TaskLaunchPage|RuntimeLaunchControls" --reporter=verbose`
 Expected: PASS
 
 - [x] **Step 9: Commit**
@@ -571,7 +571,7 @@ Update the project nav tabs to pill style with count badges:
 
 - [x] **Step 6: Verify**
 
-Run: `cd web && npx vitest run --grep "ProjectDashboardPage" -v`
+Run: `cd web && npx vitest run -t "ProjectDashboardPage" --reporter=verbose`
 Expected: PASS
 
 - [x] **Step 7: Commit**
@@ -682,7 +682,7 @@ Change the form container from `max-w-[720px] mx-auto px-8` to `px-6`.
 
 - [x] **Step 9: Verify**
 
-Run: `cd web && npx vitest run --grep "RuntimeProfilesPage" -v`
+Run: `cd web && npx vitest run -t "RuntimeProfilesPage" --reporter=verbose`
 Expected: PASS
 
 - [x] **Step 10: Commit**
@@ -774,7 +774,7 @@ Change the form container from `max-w-[720px] mx-auto px-8` to `px-6`.
 
 - [x] **Step 9: Verify**
 
-Run: `cd web && npx vitest run --grep "ModelProvidersPage" -v`
+Run: `cd web && npx vitest run -t "ModelProvidersPage" --reporter=verbose`
 Expected: PASS
 
 - [x] **Step 10: Commit**
@@ -888,7 +888,7 @@ Remove the `description` prop from `SettingsPageHeader`.
 
 - [x] **Step 6: Verify**
 
-Run: `cd web && npx vitest run --grep "CredentialBindingsPage" -v`
+Run: `cd web && npx vitest run -t "CredentialBindingsPage" --reporter=verbose`
 Expected: PASS
 
 - [x] **Step 7: Commit**
@@ -1008,7 +1008,7 @@ Remove the `description` prop from `SettingsPageHeader`.
 
 - [x] **Step 6: Verify**
 
-Run: `cd web && npx vitest run --grep "SkillsPage" -v`
+Run: `cd web && npx vitest run -t "SkillsPage" --reporter=verbose`
 Expected: PASS
 
 - [x] **Step 7: Commit**
@@ -1056,7 +1056,7 @@ git commit -m "refactor(skills): profile selector card, table with toggles, righ
 
 - [x] **Step 3: Verify**
 
-Run: `cd web && npx vitest run --grep "AgentTranscriptView" -v`
+Run: `cd web && npx vitest run -t "AgentTranscriptView" --reporter=verbose`
 Expected: PASS
 
 - [x] **Step 4: Commit**

@@ -26,10 +26,10 @@
 依据：
 
 - [迁移 77](/Users/benjamin/tools/CyberPenda/internal/store/fgs_migration.go:67)把已有 Project 和 Session 的 Runtime 协议改为 FGS，没有转换或删除旧记录。
-- [新 Project 创建](/Users/benjamin/tools/CyberPenda/internal/project/project.go:126)固定采用 FGS。
-- [HTTP 写入保护](/Users/benjamin/tools/CyberPenda/internal/daemon/fgs.go:32)拒绝 FGS Project 的旧图写入。
-- [Working Graph settlement](/Users/benjamin/tools/CyberPenda/internal/daemon/working_graph_settlement.go:15)仍同时维护 FGS Drain 和旧 Intent 编译路径。
-- [Finish Readiness](/Users/benjamin/tools/CyberPenda/internal/finishreadiness/service.go:49)仍读取旧结论、Attempt、Finish Intent 和 Challenge 记录。
+- [新 Project 创建](../../internal/project/project.go#L126)固定采用 FGS。
+- [HTTP 写入保护](../../internal/daemon/fgs.go#L32)拒绝 FGS Project 的旧图写入。
+- [Working Graph settlement](../../internal/daemon/working_graph_settlement.go#L15)仍同时维护 FGS Drain 和旧 Intent 编译路径。
+- [Finish Readiness](../../internal/finishreadiness/service.go#L49)仍读取旧结论、Attempt、Finish Intent 和 Challenge 记录。
 
 建议删除目标：旧 Working Graph 编译器、旧模式专用投影、只服务旧写入的结论流程和旧写入入口。先查清 Challenge Workflow 与历史任务恢复的依赖，再逐层退役。保留历史记录读取、证据文件访问、必要的 Trusted Origin 和升级能力。
 
@@ -39,7 +39,7 @@
 
 **2. 把三个 Blackboard 模式收敛为“FGS 开启／关闭”。**
 
-[启动界面](/Users/benjamin/tools/CyberPenda/web/src/components/RuntimeLaunchControls.tsx:354)仍展示 Interactive、Working Graph、Disabled，并为前两者给出不同承诺。但 [Runner 投影](/Users/benjamin/tools/CyberPenda/internal/runner/projection.go:174)对 FGS 的非禁用模式统一使用 FGS instructions；[接收器](/Users/benjamin/tools/CyberPenda/internal/daemon/fgs.go:134)也按 FGS 与非禁用状态接收更新。
+[启动界面](../../web/src/components/RuntimeLaunchControls.tsx#L354)仍展示 Interactive、Working Graph、Disabled，并为前两者给出不同承诺。但 [Runner 投影](../../internal/runner/projection.go#L174)对 FGS 的非禁用模式统一使用 FGS instructions；[接收器](../../internal/daemon/fgs.go#L134)也按 FGS 与非禁用状态接收更新。
 
 建议先减少新建界面的选项，再让旧输入在兼容边界映射到明确的 FGS 开启状态。保留旧值用于解释历史，避免直接改写历史快照。还要检查 Skill 兼容规则，不能只把两个按钮改成一个按钮。
 
@@ -47,13 +47,13 @@
 
 **3. 将 Challenge Workflow 列为整块退役候选。**
 
-它不是死代码。[daemon 入口](/Users/benjamin/tools/CyberPenda/cmd/pentestd/main.go:52)能加载平台配置，[服务](/Users/benjamin/tools/CyberPenda/internal/challengeworkflow/service.go:322)维护 claim、submit、abandon、finalize、重放与恢复，[记录器](/Users/benjamin/tools/CyberPenda/internal/challengeworkflow/blackboard_recorder.go:29)仍写旧 Objective、Attempt、Solution 和 Evidence。
+它不是死代码。[daemon 入口](../../cmd/pentestd/main.go#L52)能加载平台配置，[服务](../../internal/challengeworkflow/service.go#L322)维护 claim、submit、abandon、finalize、重放与恢复，[记录器](/Users/benjamin/tools/CyberPenda/internal/challengeworkflow/blackboard_recorder.go:29)仍写旧 Objective、Attempt、Solution 和 Evidence。
 
-与此同时，[Hosted Controller](/Users/benjamin/tools/CyberPenda/internal/hostedcontroller/controller.go:29)使用独立 Hosted Challenge Client，调度归 Runtime。两条路径有不同职责，不能把一个直接替换成另一个。
+与此同时，[Hosted Controller](../../internal/hostedcontroller/controller.go#L29)使用独立 Hosted Challenge Client，调度归 Runtime。两条路径有不同职责，不能把一个直接替换成另一个。
 
 建议：如果没有持续使用“由 daemon 管理挑战操作、策略和恢复”的需求，退役普通产品里的 Challenge Workflow 页面、写接口与专用执行服务，保留 Hosted Client 路径及历史操作读取。这也会减少旧 Blackboard 退役的阻力。
 
-立即可简化的入口：[Task 页面](/Users/benjamin/tools/CyberPenda/web/src/pages/TaskDetailPage.tsx:844)只检查是否为 Task 就显示 Challenges，没有按 CTF 类型和已配置平台限制。至少应只在可用时显示。
+立即可简化的入口：[Task 页面](../../web/src/pages/TaskDetailPage.tsx#L844)只检查是否为 Task 就显示 Challenges，没有按 CTF 类型和已配置平台限制。至少应只在可用时显示。
 
 完整退役会失去 daemon 侧的操作幂等、策略检查和恢复，必须先明确这些能力是否还需要。优先级高，取舍置信度中等。
 
@@ -67,13 +67,13 @@
 - [validate-juice-shop-assisted-live.py](/Users/benjamin/tools/CyberPenda/scripts/validate-juice-shop-assisted-live.py:48)
 - [validate-juice-shop-assisted-multiturn-live.py](/Users/benjamin/tools/CyberPenda/scripts/validate-juice-shop-assisted-multiturn-live.py:429)
 
-[当前 API](/Users/benjamin/tools/CyberPenda/internal/daemon/blackboard_mode_contract.go:8)明确拒绝这个字段。它们研究的 Assisted 行为也已经退役，因此不建议仅改字段名继续保留。
+[当前 API](../../internal/daemon/blackboard_mode_contract.go#L8)明确拒绝这个字段。它们研究的 Assisted 行为也已经退役，因此不建议仅改字段名继续保留。
 
 建议将研究结果保留为历史记录，退出这些脚本的受支持执行范围；获准后删除脚本及仅验证旧行为的测试。保留当前 FGS sandbox smoke、真实 Runtime smoke、Hosted 合同与交付验证。优先级高，置信度高。
 
 **5. 删除外部插件目录浏览，保留显式导入和投影。**
 
-[目录服务](/Users/benjamin/tools/CyberPenda/internal/runtimeextension/catalog.go:37)抓取 Pi 页面和 Claude 插件目录，其中 Pi 依赖 HTML 属性和正则解析。[Runtime Profile 页面](/Users/benjamin/tools/CyberPenda/web/src/pages/RuntimeProfilesPage.tsx:244)加载目录并维护候选、筛选和已选包的展示。
+[目录服务](/Users/benjamin/tools/CyberPenda/internal/runtimeextension/catalog.go:37)抓取 Pi 页面和 Claude 插件目录，其中 Pi 依赖 HTML 属性和正则解析。[Runtime Profile 页面](../../web/src/pages/RuntimeProfilesPage.tsx#L244)加载目录并维护候选、筛选和已选包的展示。
 
 这个功能主要帮助发现第三方插件，与 Project、Task、FGS 的核心流程关系较弱，却引入外部页面变化、网络失败和缓存行为。
 
@@ -81,15 +81,15 @@
 
 **6. 让旧迁移工具退出日常配置界面。**
 
-[Runtime Profile 页面](/Users/benjamin/tools/CyberPenda/web/src/pages/RuntimeProfilesPage.tsx:607)仍嵌有旧 Model Provider 迁移面板；后端同时保留迁移服务。旧 Profile 模型字段迁移、配置导入、原始配置余项不是同一件事。
+[Runtime Profile 页面](../../web/src/pages/RuntimeProfilesPage.tsx#L607)仍嵌有旧 Model Provider 迁移面板；后端同时保留迁移服务。旧 Profile 模型字段迁移、配置导入、原始配置余项不是同一件事。
 
 建议把一次性旧模型字段迁移放到明确的升级工具中。普通页面保留直接 Launch Selection 与少量高级 Profile 配置。
 
-[Profile Config Import](/Users/benjamin/tools/CyberPenda/internal/runtimeprofile/profile_config_import.go)本身超过千行，但它有原生配置导入价值。先降级为高级工具，不因体积大就删除；也不能删除 Custom Config File 后丢失用户已有设置。优先级中等。
+[Profile Config Import](../../internal/runtimeprofile/profile_config_import.go)本身超过千行，但它有原生配置导入价值。先降级为高级工具，不因体积大就删除；也不能删除 Custom Config File 后丢失用户已有设置。优先级中等。
 
 **7. Session 是最大的可选产品分支之一，应按产品目标决定。**
 
-[非 Project 路由](/Users/benjamin/tools/CyberPenda/web/src/App.tsx:229)、[Session 服务](/Users/benjamin/tools/CyberPenda/internal/session/session.go)及其 HTTP 层维护独立生命周期、导航、归档和 Blackboard 身份。主要 Session 文件约 5,681 行，不含共享内核及其他集成。
+[非 Project 路由](../../web/src/App.tsx#L229)、[Session 服务](../../internal/session/session.go)及其 HTTP 层维护独立生命周期、导航、归档和 Blackboard 身份。主要 Session 文件约 5,681 行，不含共享内核及其他集成。
 
 如果产品只服务有 Scope 的安全测试 Project，建议停止扩展 Non-Project Mode，并评估取消新建入口、保留历史读取与导出。
 
@@ -97,7 +97,7 @@
 
 **8. 减少默认打包的 Runtime，先从 Hosted Hermes 评估。**
 
-[Hosted 镜像](/Users/benjamin/tools/CyberPenda/docker/tsecbench-hosted/Dockerfile:103)安装并验证 Hermes 及其 Python 环境，而 [Hosted Controller](/Users/benjamin/tools/CyberPenda/internal/hostedcontroller/controller.go:64)提供的 Runtime 选择是 Codex、Claude Code、Pi。
+[Hosted 镜像](../../docker/tsecbench-hosted/Dockerfile#L103)安装并验证 Hermes 及其 Python 环境，而 [Hosted Controller](../../internal/hostedcontroller/controller.go#L64)提供的 Runtime 选择是 Codex、Claude Code、Pi。
 
 建议先确认评测中的 Runtime 是否会把 Hermes 当作辅助工具。如果没有这项用途，移除 Hosted 镜像中的 Hermes 是比删除全项目 Hermes 适配器更小的改动。镜像大小收益需要构建后测量。
 
@@ -109,7 +109,7 @@
 
 CONTEXT.md 有 1,725 行、186,319 字节，包含术语、运行约束、Hosted 参数和大量重复的已解决问题。文中还同时保留较早的 Interactive 默认描述与后来的 Working Graph／Disabled 默认描述。
 
-[README](/Users/benjamin/tools/CyberPenda/README.md)仍介绍内置 `/mcp` 与七个语义工具，但 [测试](/Users/benjamin/tools/CyberPenda/internal/daemon/mcp_test.go:27)已经要求该端点返回 404。[文档索引](/Users/benjamin/tools/CyberPenda/docs/README.md)仍把旧 Blackboard v2 文档列为唯一规范。
+[README](../../README.md)仍介绍内置 `/mcp` 与七个语义工具，但 [测试](../../internal/daemon/mcp_test.go#L27)已经要求该端点返回 404。[文档索引](../../docs/README.md)仍把旧 Blackboard v2 文档列为唯一规范。
 
 建议让 CONTEXT.md 只承载当前核心术语和有效不变量，产品入口文档只描述当前流程；将被取代的细节留在带状态的 ADR 和历史文档。保留单一领域上下文，不引入多个互相竞争的 CONTEXT.md。
 
@@ -117,7 +117,7 @@ CONTEXT.md 有 1,725 行、186,319 字节，包含术语、运行约束、Hosted
 
 **10. 从源码扫描范围中移出运行数据。**
 
-[默认 Runtime Root](/Users/benjamin/tools/CyberPenda/internal/daemon/server.go:472)位于数据库旁的 `runs`，默认开发配置因此容易将任务文件留在源码仓库。`.gitignore` 排除它们，但 Go 的包扫描仍会进入这些目录。
+[默认 Runtime Root](../../internal/daemon/server.go#L472)位于数据库旁的 `runs`，默认开发配置因此容易将任务文件留在源码仓库。`.gitignore` 排除它们，但 Go 的包扫描仍会进入这些目录。
 
 本次运行只读的 `go mod tidy -diff` 时，实际扫描到了 `runs/.../workdir/src-vul` 下的 Pigweed 和 libheif 源码，并尝试解析它们的依赖。检查还因默认缓存不可写和离线缺少依赖而失败，因此没有得到可采信的完整依赖差异。
 

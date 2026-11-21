@@ -12,7 +12,7 @@ This repo is **single-context**: one `GLOSSARY.md` and one `docs/adr/` at the re
 ├── docs/adr/
 │   ├── 0001-...
 │   └── 0002-...
-└── src/
+└── internal/
 ```
 
 ## Before exploring, read these

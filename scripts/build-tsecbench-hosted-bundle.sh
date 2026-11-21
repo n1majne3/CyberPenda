@@ -77,7 +77,7 @@ trap cleanup EXIT
 echo "running complete acceptance suite"
 make test-ci >&2
 echo "running Hosted Image smoke"
-CYBERPENDA_TSECBENCH_HOSTED_IMAGE="${image}" make smoke-tsecbench-hosted-image >&2
+make smoke-tsecbench-hosted-image TSECBENCH_HOSTED_IMAGE="${image}" >&2
 
 platform="$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "${image}")"
 if [ "${platform}" != "linux/amd64" ]; then
