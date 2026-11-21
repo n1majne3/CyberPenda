@@ -179,10 +179,11 @@ export function AgentTranscriptView({ owner, items, profileName, isLive = false,
     const text = displayItems
       .map((item) => `[${getEventLabel(item)}] ${getEventSummary(item)}`)
       .join("\n");
-    void navigator.clipboard.writeText(text).then(() => {
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(text).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    });
+    }, () => {});
   }, [displayItems]);
 
   const toggleTool = useCallback((tool: string) => {

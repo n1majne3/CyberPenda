@@ -120,8 +120,8 @@ export function CredentialBindingsPage() {
     setError(null);
     try {
       await apiPut("/api/credential-bindings", {
-        credential_ref: form.credential_ref,
-        source: { kind: form.kind, value: form.value, destination_env: destinationEnv },
+        credential_ref: form.credential_ref.trim(),
+        source: { kind: form.kind, value: form.value.trim(), destination_env: destinationEnv },
       });
       setForm(emptyForm);
       setCreating(false);
@@ -136,7 +136,7 @@ export function CredentialBindingsPage() {
   async function remove(id: string) {
     setError(null);
     try {
-      await apiDelete(`/api/credential-bindings/${id}`);
+      await apiDelete(`/api/credential-bindings/${encodeURIComponent(id)}`);
       await load();
     } catch (e) {
       setError((e as Error).message);

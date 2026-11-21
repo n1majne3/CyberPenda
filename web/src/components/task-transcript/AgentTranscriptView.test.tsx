@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { AgentTranscriptView } from "./AgentTranscriptView";
@@ -226,6 +226,28 @@ describe("AgentTranscriptView history window (#202)", () => {
       expect(screen.queryByText("event-250")).not.toBeInTheDocument();
     } finally {
       delete (HTMLElement.prototype as unknown as { clientHeight?: number }).clientHeight;
+    }
+  });
+
+  it("does not fail Copy all when the clipboard is missing or denies the write", async () => {
+    const items = [{ seq: 1, type: "tool_use", tool: "shell", input: { command: "ls" } }];
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    try {
+      Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+      const { unmount } = render(<AgentTranscriptView owner={owner} items={items} />);
+      expect(() => fireEvent.click(screen.getByRole("button", { name: /Copy all/i }))).not.toThrow();
+      unmount();
+
+      const writeText = vi.fn(() => Promise.reject(new Error("denied")));
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      render(<AgentTranscriptView owner={owner} items={items} />);
+      fireEvent.click(screen.getByRole("button", { name: /Copy all/i }));
+      expect(writeText).toHaveBeenCalledTimes(1);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(screen.getByRole("button", { name: /Copy all/i })).toBeInTheDocument();
+    } finally {
+      if (original) Object.defineProperty(navigator, "clipboard", original);
+      else Reflect.deleteProperty(navigator, "clipboard");
     }
   });
 });
