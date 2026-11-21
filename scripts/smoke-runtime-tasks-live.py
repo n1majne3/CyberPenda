@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch real Codex / Claude / Pi tasks that must upsert a fact via trusted MCP."""
+"""Launch real Codex / Claude / Pi tasks that must publish an FGS Fact via pentestctl."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -20,23 +21,59 @@ POLL_SEC = 3
 PREFLIGHT_TIMEOUT_SEC = int(os.environ.get("PENTEST_SMOKE_PREFLIGHT_TIMEOUT_SEC", "90"))
 
 SMOKE_GOAL = (
-    "SMOKE TEST: call trusted MCP tool upsert_project_fact once, then exit. "
-    "Use project_id from PENTEST_PROJECT_ID. "
-    "fact_key={fact_key} category=recon summary={summary} "
-    "body=runtime task-level MCP smoke confidence=confirmed scope_status=in_scope. "
-    "No shell work."
+    "Authorized automated FGS smoke test. Do not ask questions. "
+    "Publish one Goal, Step, and Fact to the Working Graph by piping this exact JSON into "
+    "`pentestctl working-graph emit --input -`, then exit:\n"
+    "{payload}"
 )
 
-# Claude + third-party Anthropic-compatible APIs (e.g. Zhipu GLM) may not expose
-# local MCP tools in -p mode; allow one JSON-RPC call to PENTEST_MCP_URL as fallback.
-CLAUDE_SMOKE_GOAL = (
-    "Authorized automated smoke test. Do not ask questions. "
-    "Call upsert_project_fact once (or one curl JSON-RPC to PENTEST_MCP_URL). "
-    "project_id from PENTEST_PROJECT_ID. "
-    "fact_key={fact_key} category=recon summary={summary} "
-    "body=runtime task-level MCP smoke confidence=confirmed scope_status=in_scope. "
-    "Then exit."
-)
+
+def build_smoke_fgs_payload(slug: str, summary: str) -> tuple[str, str]:
+    goal_key = f"goal:smoke-{slug}"
+    step_key = f"step:smoke-{slug}"
+    fact_key = f"fact:smoke-{slug}"
+    payload = json.dumps(
+        {
+            "operations": [
+                {
+                    "op": "goal.create",
+                    "key": goal_key,
+                    "title": f"Runtime FGS smoke ({slug})",
+                    "success_criteria": f"Accept {fact_key}",
+                },
+                {
+                    "op": "step.create",
+                    "key": step_key,
+                    "goal": goal_key,
+                    "action": "Emit smoke fact via pentestctl",
+                },
+                {
+                    "op": "fact.append",
+                    "key": fact_key,
+                    "step": step_key,
+                    "summary": summary,
+                    "body": "runtime task-level FGS smoke",
+                },
+                {
+                    "op": "step.transition",
+                    "key": step_key,
+                    "from": "open",
+                    "to": "done",
+                    "outputs": [fact_key],
+                },
+                {
+                    "op": "goal.transition",
+                    "key": goal_key,
+                    "from": "open",
+                    "to": "done",
+                    "facts": [fact_key],
+                    "summary": summary,
+                },
+            ]
+        },
+        separators=(",", ":"),
+    )
+    return fact_key, payload
 
 FATAL_OUTPUT_PATTERNS = (
     "not logged in",
@@ -154,24 +191,39 @@ def format_event_tail(events: list[dict], limit: int = 8) -> list[str]:
     return tail
 
 
+def find_fgs_fact(project_id: str, fact_key: str) -> dict | None:
+    """Walk the project FGS graph pages and return the matching accepted Fact node."""
+    cursor = ""
+    seen_cursors: set[str] = set()
+    encoded_project = urllib.parse.quote(project_id, safe="")
+    while True:
+        query = urllib.parse.urlencode(
+            {"limit": 200, **({"cursor": cursor} if cursor else {})}
+        )
+        graph = request("GET", f"/api/v2/projects/{encoded_project}/fgs?{query}")
+        for node in graph.get("nodes") or []:
+            if node.get("type") == "fact" and node.get("key") == fact_key:
+                return node
+        next_cursor = (graph.get("next_cursor") or "").strip()
+        if not next_cursor or next_cursor in seen_cursors:
+            return None
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
+
+
 def wait_for_smoke_outcome(project_id: str, task_id: str, fact_key: str) -> tuple[bool, str]:
-    """Poll fact + task status together so failures exit quickly instead of hanging."""
+    """Poll FGS graph + task status together so failures exit quickly instead of hanging."""
     deadline = time.time() + TIMEOUT_SEC
     started_at = time.time()
     seen_events = 0
     last_activity = started_at
     process_started = False
-    encoded_fact = urllib.request.quote(fact_key, safe="")
 
     while time.time() < deadline:
-        try:
-            fact = request("GET", f"/api/projects/{project_id}/facts/{encoded_fact}")
-            if fact.get("fact_key") == fact_key:
-                print(f"  fact ok: {fact.get('summary')}")
-                return True, "fact"
-        except urllib.error.HTTPError as err:
-            if err.code != 404:
-                raise
+        fact = find_fgs_fact(project_id, fact_key)
+        if fact is not None:
+            print(f"  fact ok: {fact.get('summary')}")
+            return True, "fact"
 
         task = request("GET", f"/api/projects/{project_id}/tasks/{task_id}")
         status = task.get("status", "")
@@ -197,6 +249,10 @@ def wait_for_smoke_outcome(project_id: str, task_id: str, fact_key: str) -> tupl
             return False, status
 
         if status == "completed":
+            fact = find_fgs_fact(project_id, fact_key)
+            if fact is not None:
+                print(f"  fact ok: {fact.get('summary')}")
+                return True, "fact"
             return False, "completed_without_fact"
 
         now = time.time()
@@ -270,7 +326,7 @@ def launch_case(
     provider: str,
     profile_id: str,
     runner: str,
-    fact_key: str,
+    slug: str,
     summary: str,
     *,
     goal_template: str = SMOKE_GOAL,
@@ -281,7 +337,8 @@ def launch_case(
         print(f"  FAIL preflight: {preflight}")
         return False
 
-    goal = goal_template.format(fact_key=fact_key, summary=summary)
+    fact_key, payload = build_smoke_fgs_payload(slug, summary)
+    goal = goal_template.format(fact_key=fact_key, summary=summary, payload=payload)
     created = request(
         "POST",
         f"/api/projects/{project_id}/tasks",
@@ -289,6 +346,7 @@ def launch_case(
             "goal": goal,
             "runtime_profile_id": profile_id,
             "runner": runner,
+            "run_controls": {"blackboard_mode": "working_graph"},
         },
     )
     task_id = created["id"]
@@ -357,7 +415,7 @@ def main() -> int:
         "POST",
         "/api/projects",
         {
-            "name": "Runtime MCP Live Smoke",
+            "name": "Runtime FGS Live Smoke",
             "scope": {"domains": ["example.com"], "notes": "automated runtime smoke"},
         },
     )
@@ -416,23 +474,23 @@ def main() -> int:
         )
 
     cases = [
-        ("codex", codex_profile, "sandbox", "smoke:codex", "Codex runtime MCP smoke passed", SMOKE_GOAL, None),
+        ("codex", codex_profile, "sandbox", "codex", "Codex runtime FGS smoke passed", SMOKE_GOAL, None),
         (
             "claude_code",
             claude_profile,
             "sandbox",
-            "smoke:claude",
-            "Claude runtime MCP smoke passed",
-            CLAUDE_SMOKE_GOAL,
+            "claude",
+            "Claude runtime FGS smoke passed",
+            SMOKE_GOAL,
             claude_preflight_error,
         ),
-        ("pi", pi_profile, "host", "smoke:pi", "Pi runtime MCP smoke passed", SMOKE_GOAL, None),
+        ("pi", pi_profile, "host", "pi", "Pi runtime FGS smoke passed", SMOKE_GOAL, None),
         (
             "pi_sandbox",
             pi_profile,
             "sandbox",
-            "smoke:pi-sandbox",
-            "Pi sandbox runtime MCP smoke passed",
+            "pi-sandbox",
+            "Pi sandbox runtime FGS smoke passed",
             SMOKE_GOAL,
             None,
         ),
@@ -442,14 +500,14 @@ def main() -> int:
         cases = [case for case in cases if case[0] in only]
 
     results: dict[str, bool] = {}
-    for provider, profile_id, runner, fact_key, summary, goal_template, preflight in cases:
+    for provider, profile_id, runner, slug, summary, goal_template, preflight in cases:
         try:
             results[provider] = launch_case(
                 project_id,
                 provider,
                 profile_id,
                 runner,
-                fact_key,
+                slug,
                 summary,
                 goal_template=goal_template,
                 preflight=preflight,

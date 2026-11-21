@@ -191,17 +191,42 @@ func TestSandboxDockerfileKeepsProviderBridgeSourceInLateCacheLayer(t *testing.T
 	}
 	dockerfile := string(dockerfileBytes)
 
-	sdkInstall := strings.Index(dockerfile, "npm install --prefix /opt/pentest/claude-sdk-bridge")
+	lockCopy := strings.Index(dockerfile, "COPY cmd/pentest-claude-sdk-bridge/package.json cmd/pentest-claude-sdk-bridge/package-lock.json /opt/pentest/claude-sdk-bridge/")
+	sdkInstall := strings.Index(dockerfile, "npm ci --omit=dev")
 	hostEntrypoint := strings.Index(dockerfile, "COPY docker/pentest-sandbox/host-proxy-only-entrypoint.sh")
 	bridgeSource := strings.Index(dockerfile, "COPY cmd/pentest-claude-sdk-bridge/bridge.mjs")
-	if sdkInstall == -1 || hostEntrypoint == -1 || bridgeSource == -1 {
+	if lockCopy == -1 || sdkInstall == -1 || hostEntrypoint == -1 || bridgeSource == -1 {
 		t.Fatalf("sandbox Dockerfile is missing Claude bridge build steps")
 	}
-	if sdkInstall > hostEntrypoint {
-		t.Fatal("Claude Agent SDK dependency layer should remain before heavyweight sandbox tools")
+	if strings.Contains(dockerfile, "npm install --prefix /opt/pentest/claude-sdk-bridge") {
+		t.Fatal("sandbox Dockerfile must install Claude Agent SDK from package-lock.json via npm ci instead of a hardcoded version")
+	}
+	if lockCopy > sdkInstall || sdkInstall > hostEntrypoint {
+		t.Fatal("Claude Agent SDK lockfile and dependency layer should remain before heavyweight sandbox tools")
 	}
 	if bridgeSource < hostEntrypoint {
 		t.Fatal("Claude bridge source should be copied after heavyweight sandbox layers for cache reuse")
+	}
+}
+
+func TestSandboxDockerfilePinsRtkReleaseWithoutMutablePipeToShell(t *testing.T) {
+	repoRoot := repoRoot(t)
+	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read sandbox Dockerfile: %v", err)
+	}
+	dockerfile := string(dockerfileBytes)
+
+	if strings.Contains(dockerfile, "refs/heads/") || strings.Contains(dockerfile, "install.sh | sh") {
+		t.Fatal("sandbox Dockerfile must not pipe a mutable-branch remote script into sh")
+	}
+	for _, required := range []string{
+		"ARG RTK_VERSION=v",
+		"https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}/${RTK_ASSET}",
+		"sha256sum -c -",
+		"rtk init --global",
+	} {
+		assertContains(t, dockerfile, required)
 	}
 }
 
