@@ -91,6 +91,24 @@ const tasks = {
 };
 
 describe("ProjectDashboardPage", () => {
+  it.each([
+    ["pentest", "working_graph", "report"],
+    ["pentest", "fgs", "report"],
+    ["ctf_challenge", "working_graph", "solution"],
+    ["ctf_challenge", "fgs", "report"],
+  ])("opens the correct deliverable for %s with %s", async (kind, protocol, destination) => {
+    mockApi({
+      "/api/projects/project-1/dashboard": dashboard,
+      "/api/projects/project-1/tasks": tasks,
+      "/api/projects/project-1": { ...project, kind, blackboard_protocol: protocol },
+    });
+    renderPage();
+    await screen.findByRole("heading", { name: project.name });
+    expect(screen.getByRole("link", { name: new RegExp(`open ${destination}`, "i") })).toHaveAttribute("href", `/projects/project-1/${destination}`);
+    const wrongDestination = destination === "report" ? "solution" : "report";
+    expect(screen.queryByRole("link", { name: new RegExp(`open ${wrongDestination}`, "i") })).not.toBeInTheDocument();
+  });
+
   function conversionApi(kind = "pentest", fail?: "preview" | "confirm", blocked = false) {
     const target = kind === "pentest" ? "ctf_challenge" : "pentest";
     let failed = false;

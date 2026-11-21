@@ -102,6 +102,7 @@ export function ProjectDashboardPage() {
   // Count badges on the section tabs come from the shared ProjectNav chrome,
   // so the dashboard renders no second nav (keeps every tab on one plane).
   const isCTF = project.kind === "ctf_challenge";
+  const usesSolution = isCTF && project.blackboard_protocol !== "fgs";
 
   // Scope readiness checklist derived from the scope summary the dashboard
   // already loads: one required item (at least one named in-scope asset — the
@@ -277,7 +278,7 @@ export function ProjectDashboardPage() {
             </ul>
           )}
           <Link to={`${base}/blackboard`} className="mt-4 inline-block text-sm text-signal hover:underline">Open Blackboard →</Link>
-          {isCTF && <Link to={`${base}/solution`} className="mt-3 block text-sm text-signal hover:underline">Open Solution →</Link>}
+          {usesSolution && <Link to={`${base}/solution`} className="mt-3 block text-sm text-signal hover:underline">Open Solution →</Link>}
         </section>
       </div>
 
@@ -286,7 +287,7 @@ export function ProjectDashboardPage() {
         <div className="mt-4"><ProjectKindConversionCard key={project.id} project={project} onConverted={setProject} /></div>
       </details>
 
-      {!isCTF && (
+      {!usesSolution && (
         <div className="flex flex-wrap items-center gap-2 border-t border-border/60 pt-6">
           <Link to={`${base}/report`} className={buttonVariants({ variant: "outline", size: "sm" })}>
             <ClipboardList className="h-4 w-4" /> Open report
