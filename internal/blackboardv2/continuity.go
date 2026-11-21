@@ -12,8 +12,6 @@ import (
 	"pentest/internal/task"
 )
 
-const snapshotEstimatorVersion = "utf8-bytes-div-4/v1"
-
 var ErrLaunchPinIntegrity = errors.New("Launch Blackboard Pin integrity check failed")
 
 type ContinuityFailurePoint string
@@ -112,19 +110,21 @@ type ActiveSnapshot struct {
 }
 
 type ContinuityService struct {
-	db          *store.DB
-	board       *Service
-	tasks       *task.Service
-	grants      *projectinterface.GrantStore
-	runtimeRoot string
-	fail        ContinuityFailureInjector
+	db                     *store.DB
+	board                  *Service
+	tasks                  *task.Service
+	grants                 *projectinterface.GrantStore
+	runtimeRoot            string
+	fail                   ContinuityFailureInjector
+	publishWorkingSnapshot func(string, string, []byte) error
 }
 
 func NewContinuityService(db *store.DB, board *Service, tasks *task.Service, runtimeRoot string) *ContinuityService {
 	board.runtimeRoot = runtimeRoot
 	return &ContinuityService{
 		db: db, board: board, tasks: tasks, runtimeRoot: runtimeRoot,
-		grants: projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{}),
+		grants:                 projectinterface.NewGrantStore(db, projectinterface.SystemClock{}, projectinterface.RandomIDSource{}, projectinterface.RandomTokenSource{}),
+		publishWorkingSnapshot: materializeWorkingSnapshot,
 	}
 }
 

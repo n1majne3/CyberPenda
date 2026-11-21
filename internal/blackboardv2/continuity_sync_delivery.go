@@ -197,8 +197,15 @@ func (s *Service) rematerializeContinuationWorkingSnapshotLocked(ctx context.Con
 		SELECT continuation.task_id,state.working_snapshot_bytes
 		FROM task_continuations AS continuation
 		JOIN blackboard_v2_continuation_state AS state ON state.continuation_id=continuation.id
-		WHERE continuation.id=?`, continuationID,
+		WHERE continuation.id=? AND continuation.status IN ('pending','running','paused')
+		  AND NOT EXISTS (
+			SELECT 1 FROM task_continuations AS newer
+			WHERE newer.task_id=continuation.task_id AND newer.number>continuation.number
+		  )`, continuationID,
 	).Scan(&taskID, &workingBytes)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}

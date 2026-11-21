@@ -223,17 +223,15 @@ func countSessionHistoryItems(ctx context.Context, tx *sql.Tx, sessionID, key st
 }
 
 func loadSessionCurrentRelationshipsForKey(ctx context.Context, tx *sql.Tx, sessionID, key string) ([]RelationshipTuple, error) {
-	all, err := loadSessionCurrentRelationships(ctx, tx, sessionID)
+	rows, err := tx.QueryContext(ctx, `
+		SELECT from_key, relation, to_key, reason
+		FROM blackboard_v2_session_relationships WHERE session_id=? AND (from_key=? OR to_key=?)
+		ORDER BY from_key ASC, relation ASC, to_key ASC, reason ASC`, sessionID, key, key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read Session Blackboard relationships: %w", err)
 	}
-	filtered := make([]RelationshipTuple, 0)
-	for _, tuple := range all {
-		if tuple[0] == key || tuple[2] == key {
-			filtered = append(filtered, tuple)
-		}
-	}
-	return filtered, nil
+	defer rows.Close()
+	return scanSessionCurrentRelationships(rows)
 }
 
 func loadSessionCurrentRelationships(ctx context.Context, tx *sql.Tx, sessionID string) ([]RelationshipTuple, error) {
@@ -245,6 +243,10 @@ func loadSessionCurrentRelationships(ctx context.Context, tx *sql.Tx, sessionID 
 		return nil, fmt.Errorf("read Session Blackboard relationships: %w", err)
 	}
 	defer rows.Close()
+	return scanSessionCurrentRelationships(rows)
+}
+
+func scanSessionCurrentRelationships(rows *sql.Rows) ([]RelationshipTuple, error) {
 	result := make([]RelationshipTuple, 0)
 	for rows.Next() {
 		var from, relation, to, reason string
