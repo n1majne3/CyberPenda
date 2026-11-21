@@ -131,7 +131,7 @@
   },
   "src/lib/api.ts": {
     "local/no-comments": {
-      "count": 56
+      "count": 34
     }
   },
   "src/lib/blackboardv2.ts": {
@@ -162,6 +162,16 @@
   "src/lib/runtimeOwner/status.ts": {
     "local/no-comments": {
       "count": 1
+    }
+  },
+  "src/lib/runtimeTypes.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/lib/taskTypes.ts": {
+    "local/no-comments": {
+      "count": 19
     }
   },
   "src/lib/useDocumentVisibility.ts": {
