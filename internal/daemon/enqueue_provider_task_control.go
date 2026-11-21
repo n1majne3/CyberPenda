@@ -136,6 +136,10 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 	}
 	var input taskContinuationSelectionInput
 	if err := decodeOptionalJSON(request, &input); err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			writeError(response, http.StatusRequestEntityTooLarge, err.Error())
+			return
+		}
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
 		return
 	}

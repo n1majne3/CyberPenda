@@ -191,17 +191,9 @@ func (s *Service) Delete(id string) error {
 		return fmt.Errorf("begin Session delete: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`DELETE FROM session_events WHERE session_id=?`, id); err != nil {
+	if err := deleteSessionOwnedRowsTx(tx, id); err != nil {
 		restore()
-		return fmt.Errorf("delete Session Events: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM session_continuations WHERE session_id=?`, id); err != nil {
-		restore()
-		return fmt.Errorf("delete Session continuations: %w", err)
-	}
-	if _, err := tx.Exec(`DELETE FROM session_runtime_config_versions WHERE session_id=?`, id); err != nil {
-		restore()
-		return fmt.Errorf("delete Session Runtime configs: %w", err)
+		return err
 	}
 	result, err := tx.Exec(`DELETE FROM sessions WHERE id=? AND lifecycle=?`, id, string(LifecycleArchived))
 	if err != nil {
@@ -226,6 +218,37 @@ func (s *Service) Delete(id string) error {
 		// failure leaves the quarantine path as a durable retry marker and must
 		// not turn the already-committed operation into a false API failure.
 		_ = s.removeAll(quarantine)
+	}
+	return nil
+}
+
+func deleteSessionOwnedRowsTx(tx *sql.Tx, id string) error {
+	deletes := []struct {
+		label string
+		query string
+	}{
+		{"Session Events", `DELETE FROM session_events WHERE session_id=?`},
+		{"Session continuations", `DELETE FROM session_continuations WHERE session_id=?`},
+		{"Session Runtime configs", `DELETE FROM session_runtime_config_versions WHERE session_id=?`},
+		{"Session pending Blackboard conclusions", `DELETE FROM session_pending_blackboard_conclusions WHERE session_id=?`},
+		{"Session child history context", `DELETE FROM child_history_context WHERE owner_kind='session' AND owner_id=?`},
+		{"Session child history blocks", `DELETE FROM child_history_blocks WHERE owner_kind='session' AND owner_id=?`},
+		{"Session child history aliases", `DELETE FROM child_history_aliases WHERE owner_kind='session' AND owner_id=?`},
+		{"Session child history observations", `DELETE FROM child_history_observations WHERE owner_kind='session' AND owner_id=?`},
+		{"Session child history items", `DELETE FROM child_history_items WHERE owner_kind='session' AND owner_id=?`},
+		{"Session child history changes", `DELETE FROM child_history_changes WHERE owner_kind='session' AND owner_id=?`},
+		{"Session FGS boards", `DELETE FROM fgs_boards WHERE kind='session' AND owner_id=?`},
+		{"Session FGS nodes", `DELETE FROM fgs_nodes WHERE board_kind='session' AND board_id=?`},
+		{"Session FGS history", `DELETE FROM fgs_history WHERE board_kind='session' AND board_id=?`},
+		{"Session FGS receipts", `DELETE FROM fgs_receipts WHERE owner_kind='session' AND owner_id=?`},
+		{"Session FGS outbox inventory", `DELETE FROM fgs_outbox_inventory WHERE owner_kind='session' AND owner_id=?`},
+		{"Session Accepted Steering", `DELETE FROM accepted_steering WHERE owner_kind='session' AND owner_id=?`},
+		{"Session working graph intents", `DELETE FROM working_graph_intents WHERE owner_kind='session' AND owner_id=?`},
+	}
+	for _, item := range deletes {
+		if _, err := tx.Exec(item.query, id); err != nil {
+			return fmt.Errorf("delete %s: %w", item.label, err)
+		}
 	}
 	return nil
 }

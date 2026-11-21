@@ -16,7 +16,7 @@ func (server *Server) handleSessionMessage(response http.ResponseWriter, request
 	}
 	input, uploads, err := parseCreateSessionRequest(request)
 	if err != nil {
-		writeError(response, http.StatusBadRequest, err.Error())
+		writeRequestBodyError(response, err)
 		return
 	}
 	id := request.PathValue("id")

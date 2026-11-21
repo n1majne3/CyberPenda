@@ -33,6 +33,10 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 			sessionRuntimeInput
 		}
 		if err := decodeOptionalJSON(request, &envelope); err != nil {
+			if errors.Is(err, errRequestBodyTooLarge) {
+				writeError(response, http.StatusRequestEntityTooLarge, err.Error())
+				return
+			}
 			writeError(response, http.StatusBadRequest, "invalid JSON body")
 			return
 		}

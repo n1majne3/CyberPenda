@@ -20,10 +20,36 @@ const (
 	maxAttachmentCount     = 25
 	// maxTotalUploadBytes bounds the whole multipart request so a client cannot
 	// stream unbounded data before per-file checks run.
-	maxTotalUploadBytes = maxAttachmentCount*maxAttachmentFileBytes + (16 << 20)
+	maxTotalUploadBytes     = maxAttachmentCount*maxAttachmentFileBytes + (16 << 20)
+	maxJSONRequestBodyBytes = 4 << 20
 )
 
-var errInvalidTaskBody = errors.New("invalid request body")
+var (
+	errInvalidTaskBody     = errors.New("invalid request body")
+	errRequestBodyTooLarge = errors.New("request body exceeds 4 MiB limit")
+)
+
+func readBoundedJSONBody(body io.Reader, limit int64) ([]byte, error) {
+	if body == nil {
+		return nil, nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, errRequestBodyTooLarge
+	}
+	return raw, nil
+}
+
+func writeRequestBodyError(response http.ResponseWriter, err error) {
+	if errors.Is(err, errRequestBodyTooLarge) {
+		writeError(response, http.StatusRequestEntityTooLarge, err.Error())
+		return
+	}
+	writeError(response, http.StatusBadRequest, err.Error())
+}
 
 // uploadedAttachment is one operator-supplied file staged for projection into
 // the task workdir. open streams the contents on demand so large files never
@@ -67,8 +93,11 @@ func parseCreateTaskRequest(request *http.Request) (createTaskInput, []uploadedA
 	if strings.HasPrefix(request.Header.Get("Content-Type"), "multipart/form-data") {
 		return parseMultipartCreateTaskRequest(request)
 	}
-	raw, err := io.ReadAll(request.Body)
+	raw, err := readBoundedJSONBody(request.Body, maxJSONRequestBodyBytes)
 	if err != nil {
+		if errors.Is(err, errRequestBodyTooLarge) {
+			return createTaskInput{}, nil, err
+		}
 		return createTaskInput{}, nil, errInvalidTaskBody
 	}
 	if err := rejectLegacyBlackboardModeField(raw); err != nil {

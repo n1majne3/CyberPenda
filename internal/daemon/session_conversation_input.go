@@ -35,7 +35,7 @@ func (server *Server) handleSessionQueueSteer(response http.ResponseWriter, requ
 	}
 	input, uploads, err := parseCreateSessionRequest(request)
 	if err != nil {
-		writeError(response, http.StatusBadRequest, err.Error())
+		writeRequestBodyError(response, err)
 		return
 	}
 	id := request.PathValue("id")

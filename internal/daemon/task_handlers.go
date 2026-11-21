@@ -68,7 +68,7 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	}
 	input, attachments, err := parseCreateTaskRequest(request)
 	if err != nil {
-		writeError(response, http.StatusBadRequest, err.Error())
+		writeRequestBodyError(response, err)
 		return
 	}
 	if input.RunControls.Extras == nil && input.Extras != nil {
