@@ -79,9 +79,6 @@ func assertHealthyEmpty(t *testing.T, health blackboardv2.SemanticHealth) {
 	if len(health.Anomalies) != 0 {
 		t.Fatalf("empty anomalies = %#v", health.Anomalies)
 	}
-	if len(health.Proposals) != 0 {
-		t.Fatalf("empty proposals = %#v", health.Proposals)
-	}
 }
 
 func assertNoAuditNoise(t *testing.T, health blackboardv2.SemanticHealth) {

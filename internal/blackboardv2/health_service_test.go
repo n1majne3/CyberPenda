@@ -277,16 +277,10 @@ func TestSemanticHealthAttentionThresholdsOfferConsolidationWithoutBlocking(t *t
 				assertNoAnomalyCode(t, health, "attention_above_target")
 				assertNoAnomalyCode(t, health, "attention_warning")
 				assertNoAnomalyCode(t, health, "attention_required")
-				if len(health.Proposals) != 0 {
-					t.Fatalf("unexpected proposals: %#v", health.Proposals)
-				}
 			} else {
 				anomaly := anomalyByCode(t, health, test.code)
 				if !strings.Contains(strings.ToLower(anomaly.Message), "working graph") && test.offered {
 					t.Fatalf("consolidation offer message missing Working Graph guidance: %#v", anomaly)
-				}
-				if len(health.Proposals) != 0 {
-					t.Fatalf("retired Reason Task proposals remain: %#v", health.Proposals)
 				}
 			}
 			projection, err := fixture.service.ProjectRuntimeSnapshot(context.Background(), fixture.projectID)
@@ -328,9 +322,6 @@ func TestSemanticHealthReportsConsolidationWithoutSchedulingWork(t *testing.T) {
 	if !health.Attention.ConsolidationOffered || health.Attention.ConsolidationRequired {
 		t.Fatalf("expected offered-not-required: %#v", health.Attention)
 	}
-	if len(health.Proposals) != 0 {
-		t.Fatalf("retired Reason Task proposals remain: %#v", health.Proposals)
-	}
 	assertContractJSON(t, mustHarness(t), "semanticHealth", health)
 
 	emptyFixture := newHealthFixture(t, project.KindPentest)
@@ -338,7 +329,5 @@ func TestSemanticHealthReportsConsolidationWithoutSchedulingWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("empty health: %v", err)
 	}
-	if len(empty.Proposals) != 0 {
-		t.Fatalf("empty proposals = %#v", empty.Proposals)
-	}
+	assertHealthyEmpty(t, empty)
 }
