@@ -9,11 +9,6 @@ import (
 	"pentest/internal/session"
 )
 
-// markStoppedSessionBlackboardConclusionsRecoveryRequired closes the durable
-// semantic coordinator after Stop has canceled every provider control. A
-// later message or retry therefore sees explicit owner-local recovery instead
-// of waiting for a conclusion Turn whose provider session was intentionally
-// closed.
 func (server *Server) decorateSession(found session.Session) (session.Session, error) {
 	decorated, err := server.decorateSessions([]session.Session{found})
 	if err != nil {
@@ -136,14 +131,6 @@ func (server *Server) sessionCurrentSelection(continuation session.Continuation)
 		return runtime.ProviderSessionRequest{}, err
 	}
 	return sessionSelection(profile, config, sessionRuntimeInput{})
-}
-
-func (server *Server) sessionProviderPermissions(sessionID string) []session.ProviderPermission {
-	events, err := server.sessions.PermissionEvents(sessionID)
-	if err != nil {
-		return nil
-	}
-	return sessionProviderPermissionsFromEvents(events)
 }
 
 func sessionProviderPermissionsFromEvents(events []session.Event) []session.ProviderPermission {

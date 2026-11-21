@@ -51,13 +51,6 @@ func (input createSessionInput) value() string {
 	return input.InitialInput
 }
 
-func (input createSessionInput) selectedModel() string {
-	if model := strings.TrimSpace(input.Model); model != "" {
-		return model
-	}
-	return strings.TrimSpace(input.ModelOverride)
-}
-
 // parseCreateSessionRequest accepts the JSON surface and the established
 // multipart payload/attachments shape used by Task launch.
 func parseCreateSessionRequest(request *http.Request) (createSessionInput, []uploadedAttachment, error) {

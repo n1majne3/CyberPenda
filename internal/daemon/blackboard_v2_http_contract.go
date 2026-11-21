@@ -21,28 +21,6 @@ func requireBlackboardV2IdempotencyKey(request *http.Request) (string, *blackboa
 	return key, nil
 }
 
-func decodeBlackboardV2JSON(request *http.Request, target any) *blackboardv2.Error {
-	raw, err := io.ReadAll(io.LimitReader(request.Body, blackboardV2HTTPInputLimit+1))
-	if err != nil {
-		return blackboardV2HTTPError("invalid_schema", "read request body: "+err.Error(), "body")
-	}
-	if len(raw) > blackboardV2HTTPInputLimit {
-		return blackboardV2HTTPError("invalid_schema", "request body exceeds 4 MiB", "body")
-	}
-	if len(strings.TrimSpace(string(raw))) == 0 {
-		return blackboardV2HTTPError("invalid_schema", "request body is required", "body")
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return blackboardV2HTTPError("invalid_schema", "invalid JSON body: "+err.Error(), "body")
-	}
-	if decoder.More() {
-		return blackboardV2HTTPError("invalid_schema", "request body must contain a single JSON value", "body")
-	}
-	return nil
-}
-
 func decodeBlackboardV2HTTPContractJSON(request *http.Request, schemaName string, transportFields map[string]string, sessionOwner bool, target any) *blackboardv2.Error {
 	contractRaw, prepareErr := prepareBlackboardV2HTTPContractJSON(request, transportFields)
 	if prepareErr != nil {

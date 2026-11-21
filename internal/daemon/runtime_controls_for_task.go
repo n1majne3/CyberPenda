@@ -346,10 +346,6 @@ func (server *Server) handleStopTask(response http.ResponseWriter, request *http
 	writeJSON(response, http.StatusOK, stopped)
 }
 
-// markStoppedBlackboardConclusionsRecoveryRequired closes the durable semantic
-// coordinator after Stop has canceled every provider control. A later Resume
-// therefore sees explicit operator-recoverable debt instead of waiting forever
-// on a Conclude Turn whose provider session was intentionally closed.
 // settleTaskStopped marks Task and any non-terminal Continuation as stopped.
 // Does not overwrite an existing different terminal Continuation status.
 func (server *Server) settleTaskStopped(taskID string) error {

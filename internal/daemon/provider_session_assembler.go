@@ -68,9 +68,7 @@ type providerSessionSetup struct {
 }
 
 // manifestSessionCapabilities returns the Runtime Plugin manifest capabilities
-// for one provider family. The manifest, not per-call-site structs, is the one
-// capability source; Claude is the deliberate exception whose assisted
-// conclusion capability is proven by its runtime handshake.
+// for one provider family.
 func manifestSessionCapabilities(registry *runtimeplugin.Registry, provider runtimeprofile.Provider) (runtimeplugin.Capabilities, error) {
 	plugin, ok := registry.Get(string(provider))
 	if !ok {

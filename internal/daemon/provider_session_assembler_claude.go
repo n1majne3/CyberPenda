@@ -14,8 +14,7 @@ import (
 // durable process is the version-pinned packaged SDK bridge — never
 // repo-relative Node sources, an on-demand npm install, or the interactive
 // CLI. Projected settings and the durable session ID flow as structured flags;
-// non-conflicting Runtime Custom Args survive argv assembly. Assisted
-// conclusion capability is proven by the runtime handshake, not assumed.
+// non-conflicting Runtime Custom Args survive argv assembly.
 type claudeAssembler struct {
 	plugins    *runtimeplugin.Registry
 	sdkCommand string
