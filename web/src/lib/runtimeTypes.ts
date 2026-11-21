@@ -77,11 +77,6 @@ export interface ModelProviderMigrationPreview {
   }[];
 }
 
-export interface ModelProviderMigrationResult {
-  profile: RuntimeProfile;
-  provider: ModelProvider;
-}
-
 export interface RuntimePluginCapabilities {
   sandbox: boolean;
   host: boolean;

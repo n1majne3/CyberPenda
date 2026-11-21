@@ -126,15 +126,6 @@ export interface RuntimeConfigurationSummary {
   requested_reasoning_effort?: string;
 }
 
-export interface TaskEvent {
-  id: string;
-  task_id: string;
-  seq: number;
-  kind: string;
-  payload: Record<string, unknown>;
-  created_at: string;
-}
-
 export interface TaskTranscriptEntry {
   /** Stable position inside independently paged child history. */
   position?: number;

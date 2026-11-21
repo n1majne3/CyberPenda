@@ -1,11 +1,5 @@
 import type { TaskTimelineItem, TaskTranscriptEntry } from "./api";
 
-export interface ProjectionDelta<T> {
-  items: T[];
-  /** Maximum Seq of the full server projection; never regresses. */
-  cursor: number;
-}
-
 export function mergeTimelineItems(existing: TaskTimelineItem[], delta: TaskTimelineItem[]): TaskTimelineItem[] {
   if (existing.length === 0) return delta;
   if (delta.length === 0) return existing;
