@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -160,10 +161,45 @@ func EnvSecretValues(env map[string]string) []string {
 		return nil
 	}
 	values := make([]string, 0, len(env))
-	for _, value := range env {
+	for key, value := range env {
+		if !isSecretEnvKey(key) {
+			continue
+		}
 		values = append(values, value)
 	}
 	return values
+}
+
+func isSecretEnvKey(key string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(key))
+	if upper == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"SECRET",
+		"TOKEN",
+		"PASSWORD",
+		"PASSWD",
+		"API_KEY",
+		"APIKEY",
+		"PRIVATE_KEY",
+		"ACCESS_KEY",
+		"CREDENTIAL",
+		"AUTH",
+		"COOKIE",
+		"JWT",
+		"BEARER",
+	} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	for _, suffix := range []string{"_KEY", "_PASS", "_PAT"} {
+		if strings.HasSuffix(upper, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // CommandAdapterLaunch returns the host launch config for adapters built by
