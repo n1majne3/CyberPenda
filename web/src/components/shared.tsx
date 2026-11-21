@@ -33,14 +33,6 @@ export function BackLink({ to, children, className }: { to: string; children: Re
   );
 }
 
-export function EmptyState({ className, children, ...props }: HTMLAttributes<HTMLParagraphElement>) {
-  return (
-    <p className={cn("text-sm text-muted-foreground", className)} {...props}>
-      {children}
-    </p>
-  );
-}
-
 export function SettingsPageHeader({
   title,
   description,
@@ -120,15 +112,6 @@ export function SettingsSplitLayout({
         fill && "lg:min-h-0 lg:flex-1 lg:grid-rows-[minmax(0,1fr)] lg:overflow-hidden",
         className,
       )}
-      {...props}
-    />
-  );
-}
-
-export function SettingsListPanel({ className, ...props }: CardProps) {
-  return (
-    <Card
-      className={cn("min-w-0 overflow-hidden p-3", className)}
       {...props}
     />
   );

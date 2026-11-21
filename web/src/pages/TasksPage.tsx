@@ -24,7 +24,6 @@ const STATUS_META: Record<
   interrupted: { variant: "warning", icon: AlertTriangle },
 };
 
-// TaskDetailPage so this list polls with the same gating as the detail view.
 const ACTIVE_STATUS = new Set(["running", "paused"]);
 
 function isTaskActive(task: Task) {
@@ -39,11 +38,8 @@ export function TasksPage() {
   const isVisible = useDocumentVisibility();
   const hasActive = tasks.some(isTaskActive);
 
-  // Ref-backed loader so the poll effect can drive refreshes without re-running
   const loadTasksRef = useRef<(() => void) | null>(null);
 
-  // Eager load + abort/generation bookkeeping, scoped to projectId only. Fires
-  // once on mount / project switch regardless of visibility so the page is never
   useEffect(() => {
     if (!projectId) return;
     let cancelled = false;

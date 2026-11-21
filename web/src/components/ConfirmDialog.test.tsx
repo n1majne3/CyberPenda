@@ -65,6 +65,15 @@ describe("ConfirmDialog", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus();
   });
 
+  it("keeps focus on Confirm when the parent re-renders with a new onCancel", () => {
+    const { rerender } = render(
+      <ConfirmDialog open title="Stop task" confirmLabel="Stop" onConfirm={() => {}} onCancel={() => {}} />,
+    );
+    screen.getByRole("button", { name: "Stop" }).focus();
+    rerender(<ConfirmDialog open title="Stop task" confirmLabel="Stop" onConfirm={() => {}} onCancel={() => {}} />);
+    expect(screen.getByRole("button", { name: "Stop" })).toHaveFocus();
+  });
+
   it("keeps confirm actions reachable when the title is extremely long", () => {
     const longTitle = `Stop task ${"x".repeat(400)} with-no-spaces-${"y".repeat(200)}?`;
     render(
@@ -115,6 +124,15 @@ describe("PromptDialog", () => {
     );
     await user.keyboard("{Escape}");
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps focus on Save when the parent re-renders with a new onCancel", () => {
+    const { rerender } = render(
+      <PromptDialog open title="Rename" label="Name" initialValue="old" onConfirm={() => {}} onCancel={() => {}} />,
+    );
+    screen.getByRole("button", { name: "Save" }).focus();
+    rerender(<PromptDialog open title="Rename" label="Name" initialValue="old" onConfirm={() => {}} onCancel={() => {}} />);
+    expect(screen.getByRole("button", { name: "Save" })).toHaveFocus();
   });
 
   it("focuses and selects the input when opened", () => {

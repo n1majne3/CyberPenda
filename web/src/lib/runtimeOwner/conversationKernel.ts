@@ -44,7 +44,6 @@ export function resolveConversationAction(
     });
 
   if (owner.kind === "session") {
-    // Sessions cannot switch a live provider session; the restart path is
     if (switchingProvider) {
       return {
         run: async (message, selection, adapter, attachments) => {

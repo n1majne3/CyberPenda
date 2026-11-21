@@ -34,6 +34,7 @@ export function ProjectDashboardPage() {
 
   useEffect(() => {
     if (!projectId) return;
+    let cancelled = false;
     (async () => {
       setLoading(true);
       try {
@@ -45,16 +46,20 @@ export function ProjectDashboardPage() {
           // take down the whole dashboard, so degrade to an empty list.
           apiGet<{ tasks: Task[] }>(`/api/projects/${projectId}/tasks`).catch(() => ({ tasks: [] as Task[] })),
         ]);
+        if (cancelled) return;
         setDash(d);
         setProject(p);
         setTasks(t.tasks ?? []);
         setError(null);
       } catch (e) {
-        setError((e as Error).message);
+        if (!cancelled) setError((e as Error).message);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [projectId]);
 
   if (loading) {

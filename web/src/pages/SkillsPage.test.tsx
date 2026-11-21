@@ -558,4 +558,5 @@ describe("SkillsPage", () => {
     expect(uploadCall).toBeDefined();
     expect((uploadCall?.[1]?.body as FormData).get("archive")).toBe(archive);
   });
+
 });

@@ -116,8 +116,6 @@ describe("ModelProviderMigrationPanel", () => {
       </StrictMode>,
     );
 
-    // Each derived endpoint base URL should be reviewable before migrating, so
-    // happened; the shared /v1 value appears for the OpenAI-family protocols.
     expect(await screen.findByText("https://hub.example.test")).toBeInTheDocument();
     expect(screen.getAllByText("https://hub.example.test/v1").length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText("anthropic_messages")).toBeInTheDocument();

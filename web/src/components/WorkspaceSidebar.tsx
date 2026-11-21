@@ -67,11 +67,6 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const currentProjectId = ownerIdFromPath(pathname, "projects");
   const currentTaskId = taskIdFromPath(pathname);
 
-  // One bounded navigation projection replaces the former one-Task-list-fetch-
-  // recent Tasks inlined and a last_activity_at, so the Sidebar makes a single
-  // current the daemon answers changed=false with an empty projection, so
-  // polling never reserializes the Sidebar rows. The revision and the selected
-  // Task live in refs so a response never retriggers the load that produced it.
   const [navigation, setNavigation] = useState<WorkspaceProjectSummary[]>([]);
   const navigationRevisionRef = useRef<string | undefined>(undefined);
   const currentTaskIdRef = useRef<string | null>(currentTaskId);
@@ -87,9 +82,6 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const isVisible = useDocumentVisibility();
-  // already rendered busy — keeps the fast cadence (2s) while a turn can start
-  // at any moment, so a busy/idle transition lands well within ~3s. Once
-  // nothing is active the sidebar backs off to a slow cadence so an
   const hasActive = useMemo(
     () =>
       sessions.some(isSessionActive) ||

@@ -349,7 +349,6 @@ describe("SessionHomePage", () => {
   });
 
   it("navigates to the created session page after creation", async () => {
-    // returns the created Session so the page can navigate to its detail route.
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
       const method = init?.method ?? "GET";

@@ -10,7 +10,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-	"test:browser": "playwright test",
+    "test:browser": "playwright test",
     "test:watch": "vitest"
   },
   "dependencies": {

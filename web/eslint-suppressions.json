@@ -26,7 +26,7 @@
   },
   "src/components/ConfirmDialog.tsx": {
     "local/no-comments": {
-      "count": 4
+      "count": 3
     }
   },
   "src/components/Logo.tsx": {
@@ -34,19 +34,9 @@
       "count": 1
     }
   },
-  "src/components/OperatorCredentialGate.tsx": {
-    "local/no-comments": {
-      "count": 2
-    }
-  },
   "src/components/ProjectNav.tsx": {
     "local/no-comments": {
       "count": 2
-    }
-  },
-  "src/components/ProjectPageShell.test.tsx": {
-    "local/no-comments": {
-      "count": 1
     }
   },
   "src/components/ProjectPageShell.tsx": {
@@ -71,17 +61,12 @@
   },
   "src/components/WorkspaceSidebar.tsx": {
     "local/no-comments": {
-      "count": 30
+      "count": 22
     }
   },
   "src/components/WorkspaceSidebarRows.tsx": {
     "local/no-comments": {
       "count": 11
-    }
-  },
-  "src/components/icon-source.test.ts": {
-    "local/no-comments": {
-      "count": 1
     }
   },
   "src/components/settingsLibrary.tsx": {
@@ -96,7 +81,7 @@
   },
   "src/components/task-transcript/AgentTranscriptView.test.tsx": {
     "local/no-comments": {
-      "count": 5
+      "count": 2
     }
   },
   "src/components/task-transcript/AgentTranscriptView.tsx": {
@@ -106,7 +91,7 @@
   },
   "src/components/task-transcript/SubagentHistory.tsx": {
     "local/no-comments": {
-      "count": 2
+      "count": 1
     }
   },
   "src/components/task-transcript/timeline-utils.test.ts": {
@@ -115,11 +100,6 @@
     }
   },
   "src/components/theme-context.ts": {
-    "local/no-comments": {
-      "count": 1
-    }
-  },
-  "src/components/ui.test.tsx": {
     "local/no-comments": {
       "count": 1
     }
@@ -139,19 +119,14 @@
       "count": 1
     }
   },
-  "src/fontsource.d.ts": {
-    "local/no-comments": {
-      "count": 1
-    }
-  },
   "src/index.css.test.ts": {
     "local/no-comments": {
-      "count": 6
+      "count": 4
     }
   },
   "src/lib/api.test.ts": {
     "local/no-comments": {
-      "count": 2
+      "count": 1
     }
   },
   "src/lib/api.ts": {
@@ -166,17 +141,17 @@
   },
   "src/lib/ownerEvents.ts": {
     "local/no-comments": {
-      "count": 19
+      "count": 15
     }
   },
   "src/lib/runtimeOwner/adapter.ts": {
     "local/no-comments": {
-      "count": 8
+      "count": 7
     }
   },
   "src/lib/runtimeOwner/conversationKernel.ts": {
     "local/no-comments": {
-      "count": 10
+      "count": 9
     }
   },
   "src/lib/runtimeOwner/ids.ts": {
@@ -189,11 +164,6 @@
       "count": 1
     }
   },
-  "src/lib/useDocumentVisibility.test.ts": {
-    "local/no-comments": {
-      "count": 1
-    }
-  },
   "src/lib/useDocumentVisibility.ts": {
     "local/no-comments": {
       "count": 1
@@ -201,12 +171,12 @@
   },
   "src/lib/virtualWindow.test.ts": {
     "local/no-comments": {
-      "count": 13
+      "count": 11
     }
   },
   "src/lib/virtualWindow.ts": {
     "local/no-comments": {
-      "count": 20
+      "count": 8
     }
   },
   "src/pages/BlackboardPage.test.tsx": {
@@ -221,7 +191,7 @@
   },
   "src/pages/CredentialBindingsPage.test.tsx": {
     "local/no-comments": {
-      "count": 6
+      "count": 4
     }
   },
   "src/pages/CredentialBindingsPage.tsx": {
@@ -239,14 +209,9 @@
       "count": 1
     }
   },
-  "src/pages/ModelProviderMigrationPanel.test.tsx": {
-    "local/no-comments": {
-      "count": 2
-    }
-  },
   "src/pages/ModelProviderMigrationPanel.tsx": {
     "local/no-comments": {
-      "count": 2
+      "count": 1
     }
   },
   "src/pages/ModelProvidersPage.test.tsx": {
@@ -261,7 +226,7 @@
   },
   "src/pages/ProjectDashboardPage.test.tsx": {
     "local/no-comments": {
-      "count": 3
+      "count": 2
     }
   },
   "src/pages/ProjectDashboardPage.tsx": {
@@ -304,11 +269,6 @@
       "count": 1
     }
   },
-  "src/pages/SessionHomePage.test.tsx": {
-    "local/no-comments": {
-      "count": 1
-    }
-  },
   "src/pages/SessionHomePage.tsx": {
     "local/no-comments": {
       "count": 1
@@ -339,19 +299,14 @@
       "count": 6
     }
   },
-  "src/pages/TasksPage.test.tsx": {
-    "local/no-comments": {
-      "count": 5
-    }
-  },
   "src/pages/TasksPage.tsx": {
     "local/no-comments": {
-      "count": 8
+      "count": 4
     }
   },
   "src/pages/modelProviderForm.test.ts": {
     "local/no-comments": {
-      "count": 4
+      "count": 2
     }
   },
   "src/pages/runtimeProfileForm.ts": {
@@ -361,7 +316,7 @@
   },
   "src/pages/taskDetailView.ts": {
     "local/no-comments": {
-      "count": 6
+      "count": 5
     }
   },
   "src/test/mockApi.ts": {
@@ -374,11 +329,6 @@
       "count": 1
     }
   },
-  "tailwind.config.test.ts": {
-    "local/no-comments": {
-      "count": 1
-    }
-  },
   "vite.config.ts": {
     "local/no-comments": {
       "count": 1
@@ -386,7 +336,7 @@
   },
   "vitest.config.ts": {
     "local/no-comments": {
-      "count": 2
+      "count": 1
     }
   }
 }

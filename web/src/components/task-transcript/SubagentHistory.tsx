@@ -10,7 +10,6 @@ interface ChildPage {
   has_newer: boolean;
 }
 
-// Keep one bounded child window. A stable item update replaces its earlier
 function appendChildItems(previous: TaskTranscriptEntry[], updates: TaskTranscriptEntry[]) {
   const items = new Map(previous.map((item) => [item.id, item]));
   for (const item of updates) {

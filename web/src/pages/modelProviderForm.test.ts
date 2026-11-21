@@ -7,7 +7,6 @@ import {
   providerToModelProviderForm,
 } from "./modelProviderForm";
 
-// A minimal form for the quick-setup + validation cases, where only the shared
 const quickSetupForm = (
   baseURL: string,
   protocols: string[],
@@ -144,7 +143,6 @@ describe("canSubmitModelProvider", () => {
   });
 
   describe("quick setup endpoint derivation", () => {
-    // URL as-is; Anthropic Messages removes the final non-empty path segment so
     it("uses the shared provider base URL as-is for OpenAI Chat Completions and Responses", () => {
       const form = quickSetupForm("https://hub.example.test/v1", ["openai_chat_completions", "openai_responses"]);
       expect(endpointBaseURLForProtocol(form, "openai_chat_completions")).toBe("https://hub.example.test/v1");

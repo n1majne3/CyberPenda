@@ -2,7 +2,6 @@ import "@testing-library/jest-dom/vitest";
 import { afterEach } from "vitest";
 import { cleanup } from "@testing-library/react";
 
-// global by default. Provide minimal shims so theme and storage tests work.
 const store = new Map<string, string>();
 
 if (typeof globalThis.localStorage === "undefined") {

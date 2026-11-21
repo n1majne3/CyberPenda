@@ -106,8 +106,6 @@ describe("TasksPage", () => {
   });
 
   it("backs off while idle, suspends while hidden, and resumes fast polling when work is active", async () => {
-    // Pure fake timers (no shouldAdvanceTime): waitFor polls on real timers, so
-    // We flush the eager mount load via microtasks instead.
     vi.useFakeTimers();
     try {
       const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -140,7 +138,6 @@ describe("TasksPage", () => {
       });
       expect(fetchMock.mock.calls.length).toBe(callsAfterMount);
 
-      // the refresh lands the page is active, so polls use the fast 2s cadence.
       fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
         const url = typeof input === "string" ? input : input.toString();
         if (url.includes("/api/projects/project-1/tasks")) {
@@ -152,8 +149,6 @@ describe("TasksPage", () => {
         return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
       });
       act(() => setDocumentVisibility("visible"));
-      // Let the eager refresh settle so hasActive flips and the fast interval is
-      // are active, so waitFor's real-timer polling would hang).
       await act(async () => {
         vi.advanceTimersByTimeAsync(0);
       });

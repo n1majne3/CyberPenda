@@ -18,8 +18,6 @@ import {
   Label,
 } from "@/components/ui";
 
-// Full-page gate for the operator credential. When the daemon cannot authorize
-// replaced by the sign-in form. A successful submit flips the credential state,
 export function OperatorCredentialGate({ children }: { children: ReactNode }) {
   const needed = useSyncExternalStore(subscribeOperatorCredentialState, operatorCredentialIsNeeded);
   useEffect(() => {

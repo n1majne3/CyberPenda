@@ -45,7 +45,6 @@ export type RuntimeOwnerAdapter = {
   remove(): Promise<unknown>;
 };
 
-// an empty initial read so synthetic seq-0 content is never resent.
 function timelineURL(base: string, mode: "initial" | "poll", cursor: number): string {
   return mode === "initial" ? `${base}/timeline` : `${base}/timeline?after=${cursor}`;
 }

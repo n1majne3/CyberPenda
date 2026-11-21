@@ -95,8 +95,6 @@ describe("AgentTranscriptView", () => {
 
     expect(screen.getByRole("button", { name: /Jump to shell event/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Jump to Error event/i })).toBeInTheDocument();
-    // The virtual window's measured coverage pass needs real row heights, so
-    // rows must not carry content-visibility size hints that report phantom
     expect(screen.getAllByTestId("transcript-event-row")[0]).not.toHaveClass("[content-visibility:auto]");
   });
 
@@ -205,7 +203,6 @@ describe("AgentTranscriptView history window (#202)", () => {
       />,
     );
 
-    // Default newest-first sort puts older rows at the bottom, so the footer
     const rows = screen.getAllByTestId("transcript-event-row");
     const footer = screen.getByRole("button", { name: "Load older events" });
     expect(rows[0].compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
