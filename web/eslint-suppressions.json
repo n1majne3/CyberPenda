@@ -134,9 +134,34 @@
       "count": 34
     }
   },
+  "src/lib/blackboardEntries.ts": {
+    "local/no-comments": {
+      "count": 5
+    }
+  },
+  "src/lib/blackboardHealth.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/lib/blackboardReports.ts": {
+    "local/no-comments": {
+      "count": 3
+    }
+  },
+  "src/lib/blackboardTypes.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
+  "src/lib/blackboardValidation.ts": {
+    "local/no-comments": {
+      "count": 2
+    }
+  },
   "src/lib/blackboardv2.ts": {
     "local/no-comments": {
-      "count": 19
+      "count": 5
     }
   },
   "src/lib/ownerEvents.ts": {
