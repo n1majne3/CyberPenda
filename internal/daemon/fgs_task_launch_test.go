@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"pentest/internal/project"
-	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
@@ -64,12 +63,12 @@ func TestFGSTaskBoundLaunchKeepsInstructionsAndSchema(t *testing.T) {
 			if err != nil || json.Unmarshal(rawScope, &scope) != nil || len(scope.Domains) != 1 || scope.Domains[0] != "example.test" {
 				t.Fatalf("final Scope Snapshot was lost: %s (%v)", rawScope, err)
 			}
-			args, ok := runtime.DockerSandboxCreateArgs(bound.Adapter)
-			if !ok {
-				t.Fatal("missing sandbox adapter")
+			args := bound.Facts.SandboxCreateArgs
+			if len(args) == 0 {
+				t.Fatal("missing sandbox create args")
 			}
-			createEnv, ok := runtime.DockerSandboxCreateEnv(bound.Adapter)
-			if !ok {
+			createEnv := bound.Facts.SandboxCreateEnv
+			if len(createEnv) == 0 {
 				t.Fatal("missing sandbox create env")
 			}
 			if !strings.Contains(strings.Join(args, "\n"), "PENTEST_BLACKBOARD_PROTOCOL") || createEnv["PENTEST_BLACKBOARD_PROTOCOL"] != "fgs" {

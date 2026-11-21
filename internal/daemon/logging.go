@@ -8,7 +8,6 @@ import (
 
 	"pentest/internal/adapters"
 	"pentest/internal/preflight"
-	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
@@ -111,27 +110,6 @@ func (server *Server) logTaskLaunchStage(t task.Task, stage string) {
 		return
 	}
 	server.logger.Printf("task launch stage=%s runner=%s profile=%s id=%s", stage, t.Runner, t.RuntimeProfileID, t.ID)
-}
-
-func (server *Server) logDockerSandboxEvent(t task.Task, event runtime.DockerSandboxLogEvent) {
-	if server.logger == nil {
-		return
-	}
-	safe := adapters.Redact(map[string]any{
-		"phase":  event.Phase,
-		"image":  event.Image,
-		"stream": event.Stream,
-		"text":   event.Text,
-	})
-	phase, _ := safe["phase"].(string)
-	image, _ := safe["image"].(string)
-	stream, _ := safe["stream"].(string)
-	detail, _ := safe["text"].(string)
-	if detail == "" {
-		server.logger.Printf("task sandbox phase=%s runner=%s profile=%s id=%s image=%q", phase, t.Runner, t.RuntimeProfileID, t.ID, image)
-		return
-	}
-	server.logger.Printf("task sandbox phase=%s runner=%s profile=%s id=%s image=%q stream=%s detail=%q", phase, t.Runner, t.RuntimeProfileID, t.ID, image, stream, detail)
 }
 
 // logCustomArgConflict writes a diagnostic line naming the complete offending
