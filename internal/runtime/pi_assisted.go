@@ -112,6 +112,7 @@ func (s *PiProviderSession) projectPiTerminalLifecycle(event SandboxBridgeEvent,
 		s.mu.Unlock()
 	}
 	projected := false
+	errMsg, hasErr := piTerminalError(params)
 	s.providerSessionAdapter.HandleEvent(event, func(kind task.EventKind, payload task.EventPayload) {
 		projected = true
 		method := strings.ToLower(event.Method)
@@ -121,6 +122,9 @@ func (s *PiProviderSession) projectPiTerminalLifecycle(event SandboxBridgeEvent,
 		// terminal status.
 		if !strings.Contains(method, "abort") && !strings.Contains(method, "cancel") && !strings.Contains(method, "interrupt") {
 			payload["outcome"] = outcome
+		}
+		if hasErr && errMsg != "" {
+			payload["error"] = errMsg
 		}
 		if lineage, _, _, ok := s.piEventLineage(params); ok {
 			payload["request_id"] = lineage.RequestID
@@ -214,12 +218,16 @@ func (s *PiProviderSession) emitPiLifecycle(providerEvent string, params map[str
 		s.mu.Unlock()
 	}
 	if emit != nil {
-		emit(task.EventKindLifecycle, task.EventPayload{
+		payload := task.EventPayload{
 			"provider": "pi", "provider_event": providerEvent,
 			"request_id": lineage.RequestID, "session_id": sessionID,
 			"provider_turn_id": turnID, "mode": string(ProviderSessionModeSendTurn),
 			"outcome": outcome,
-		})
+		}
+		if errMsg, hasErr := piTerminalError(params); hasErr && errMsg != "" {
+			payload["error"] = errMsg
+		}
+		emit(task.EventKindLifecycle, payload)
 	}
 }
 
@@ -387,6 +395,9 @@ func piTerminalStatus(method string, params map[string]any) string {
 	case "completed", "complete", "succeeded", "success":
 		return "completed"
 	}
+	if _, hasErr := piTerminalError(params); hasErr {
+		return "failed"
+	}
 	if strings.Contains(method, "abort") || strings.Contains(method, "cancel") || strings.Contains(method, "interrupt") {
 		return "interrupted"
 	}
@@ -394,6 +405,43 @@ func piTerminalStatus(method string, params map[string]any) string {
 		return "failed"
 	}
 	return "completed"
+}
+
+func piTerminalError(params map[string]any) (string, bool) {
+	if errMsg := strings.TrimSpace(providerJSONValue(params, "errorMessage", "error_message", "error")); errMsg != "" {
+		return errMsg, true
+	}
+	if message, ok := params["message"].(map[string]any); ok {
+		if errMsg, hasErr := piMessageError(message); hasErr {
+			return errMsg, true
+		}
+	}
+	if messages, ok := params["messages"].([]any); ok {
+		for index := len(messages) - 1; index >= 0; index-- {
+			message, ok := messages[index].(map[string]any)
+			if !ok {
+				continue
+			}
+			role := strings.ToLower(strings.TrimSpace(providerJSONValue(message, "role")))
+			if role != "" && role != "assistant" {
+				continue
+			}
+			if errMsg, hasErr := piMessageError(message); hasErr {
+				return errMsg, true
+			}
+			break
+		}
+	}
+	return "", false
+}
+
+func piMessageError(message map[string]any) (string, bool) {
+	stopReason := strings.ToLower(strings.TrimSpace(providerJSONValue(message, "stopReason", "stop_reason")))
+	errMsg := strings.TrimSpace(providerJSONValue(message, "errorMessage", "error_message"))
+	if stopReason == "error" || errMsg != "" {
+		return errMsg, true
+	}
+	return "", false
 }
 
 func piToolIdentity(params map[string]any) (string, string) {
