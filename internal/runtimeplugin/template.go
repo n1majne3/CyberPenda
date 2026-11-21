@@ -128,19 +128,22 @@ func placeholderEmpty(name string, ctx RenderContext) bool {
 }
 
 func renderScalarString(input string, values map[string]string) (string, error) {
-	output := input
+	var output strings.Builder
+	rest := input
 	for {
-		start := strings.Index(output, "{{")
+		start := strings.Index(rest, "{{")
 		if start < 0 {
-			return output, nil
+			output.WriteString(rest)
+			return output.String(), nil
 		}
-		end := strings.Index(output[start+2:], "}}")
+		end := strings.Index(rest[start+2:], "}}")
 		if end < 0 {
 			return "", fmt.Errorf("%w: unterminated template in %q", ErrInvalidPlugin, input)
 		}
 		end += start + 2
-		name := strings.TrimSpace(output[start+2 : end])
-		output = output[:start] + values[name] + output[end+2:]
+		output.WriteString(rest[:start])
+		output.WriteString(values[strings.TrimSpace(rest[start+2:end])])
+		rest = rest[end+2:]
 	}
 }
 
