@@ -52,10 +52,17 @@ export function ModelProvidersPage() {
     ? `${selected.id}:${selected.updated_at ?? ""}:${selectedBinding?.updated_at ?? ""}`
     : "";
   const [lastFormKey, setLastFormKey] = useState("");
+  const [unsavedApiKey, setUnsavedApiKey] = useState<{ providerId: string; value: string } | null>(null);
   if (lastFormKey !== formSelectionKey) {
     setLastFormKey(formSelectionKey);
     if (selected && !creating) {
-      setForm(providerToModelProviderForm(selected, selectedBinding));
+      const next = providerToModelProviderForm(selected, selectedBinding);
+      if (unsavedApiKey?.providerId === selected.id) {
+        setForm({ ...next, api_key: unsavedApiKey.value });
+      } else {
+        if (unsavedApiKey) setUnsavedApiKey(null);
+        setForm(next);
+      }
     } else if (formSelectionKey === "" && form !== emptyForm) {
       setForm(emptyForm);
     }
@@ -195,6 +202,7 @@ export function ModelProvidersPage() {
     } catch (e) {
       const message = (e as Error).message;
       if (created) {
+        setUnsavedApiKey({ providerId: created.id, value: form.api_key });
         setCreating(false);
         await load().catch(() => {});
         setSelectedId(created.id);
@@ -213,6 +221,7 @@ export function ModelProvidersPage() {
     try {
       await apiPatch<ModelProvider>(`/api/model-providers/${encodeURIComponent(selected.id)}`, buildModelProviderPayload(form));
       await saveCredentialSource(selected, form);
+      setUnsavedApiKey(null);
       await load();
       showSavedNotice();
     } catch (e) {

@@ -20,6 +20,7 @@ it("does not create a second provider after the API key save fails", async () =>
     updated_at: "2026-07-08T00:00:00Z",
   };
   let providers: unknown[] = [];
+  let bindingSaveFails = true;
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("/api/model-providers") && init?.method === "POST") {
@@ -27,7 +28,7 @@ it("does not create a second provider after the API key save fails", async () =>
       return json(created);
     }
     if (url.includes("/api/model-providers")) return json(init?.method === "PATCH" ? created : { providers });
-    if (url.includes("/api/credential-bindings") && init?.method === "PUT") return json({ error: "vault locked" }, 500);
+    if (url.includes("/api/credential-bindings") && init?.method === "PUT") return bindingSaveFails ? json({ error: "vault locked" }, 500) : json({});
     if (url.includes("/api/credential-bindings")) return json({ bindings: [] });
     return json({});
   });
@@ -46,4 +47,13 @@ it("does not create a second provider after the API key save fails", async () =>
   await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("Hub"));
   const posts = fetchMock.mock.calls.filter(([input, init]) => String(input).includes("/api/model-providers") && init?.method === "POST");
   expect(posts).toHaveLength(1);
+  expect(screen.getByLabelText("API key")).toHaveValue("sk-test");
+
+  bindingSaveFails = false;
+  await userEvent.click(screen.getByRole("button", { name: "Save provider" }));
+  await waitFor(() => {
+    const puts = fetchMock.mock.calls.filter(([input, init]) => String(input).includes("/api/credential-bindings") && init?.method === "PUT");
+    expect(puts).toHaveLength(2);
+    expect(JSON.parse(String(puts[1]![1]!.body)).source.value).toBe("sk-test");
+  });
 });
