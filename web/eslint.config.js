@@ -27,10 +27,4 @@ export default defineConfig([
       'local/no-comments': 'error',
     },
   },
-  {
-    files: ['src/components/ui.tsx'],
-    rules: {
-      'react-refresh/only-export-components': 'off',
-    },
-  },
 ])

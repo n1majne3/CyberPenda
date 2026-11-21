@@ -15,7 +15,6 @@ import (
 
 	"pentest/internal/fgs"
 	"pentest/internal/project"
-	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
@@ -88,13 +87,13 @@ func TestSandboxFGSOutboxLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	createArgs, ok := runtime.DockerSandboxCreateArgs(bound.Adapter)
-	if !ok {
-		t.Fatal("missing sandbox adapter")
+	createArgs := bound.Facts.SandboxCreateArgs
+	if len(createArgs) == 0 {
+		t.Fatal("missing sandbox create args")
 	}
-	processEnv, ok := runtime.DockerSandboxCreateEnv(bound.Adapter)
-	if !ok {
-		t.Fatal("missing sandbox adapter env")
+	processEnv := bound.Facts.SandboxCreateEnv
+	if len(processEnv) == 0 {
+		t.Fatal("missing sandbox create env")
 	}
 	token := processEnv["PENTEST_INTERFACE_TOKEN"]
 	if token == "" || processEnv["PENTEST_CONTINUATION_ID"] != cont.ID {

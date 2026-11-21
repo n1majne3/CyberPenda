@@ -9,7 +9,6 @@ import (
 
 	"pentest/internal/project"
 	"pentest/internal/runner"
-	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
@@ -91,12 +90,8 @@ func TestTaskLaunchPlanCanOmitBlackboardProjection(t *testing.T) {
 		plan.Facts.Workdir != filepath.Join(fixture.runtimeRoot, fixture.created.ID, "workdir") {
 		t.Fatalf("ordinary Task launch context changed: %#v", plan)
 	}
-	launch, ok := runtime.CommandAdapterLaunch(plan.Adapter)
-	if !ok {
-		t.Fatalf("Task host adapter = %T", plan.Adapter)
-	}
 	for _, forbidden := range []string{"PENTEST_PROJECT_ID", "PENTEST_TASK_ID", "PENTEST_MCP_URL", "PENTEST_API_URL", "PENTEST_INTERFACE_TOKEN"} {
-		if value := launch.Env[forbidden]; value != "" {
+		if value := plan.Facts.Env[forbidden]; value != "" {
 			t.Fatalf("Task launch environment retained %s=%q", forbidden, value)
 		}
 	}
@@ -159,20 +154,16 @@ func TestFGSTaskLaunchProjectsContinuationScopedMailboxEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	launch, ok := runtime.CommandAdapterLaunch(bound.Adapter)
-	if !ok {
-		t.Fatalf("adapter = %T", bound.Adapter)
-	}
-	if launch.Env["PENTEST_CONTINUATION_ID"] != continuation.ID ||
-		launch.Env["PENTEST_BLACKBOARD_MODE"] != "working_graph" ||
-		launch.Env["PENTEST_INTERFACE_TOKEN"] == "" || launch.Env["PENTEST_API_URL"] == "" {
-		t.Fatalf("Working Graph launch env = %#v", launch.Env)
+	if bound.Facts.Env["PENTEST_CONTINUATION_ID"] != continuation.ID ||
+		bound.Facts.Env["PENTEST_BLACKBOARD_MODE"] != "working_graph" ||
+		bound.Facts.Env["PENTEST_INTERFACE_TOKEN"] == "" || bound.Facts.Env["PENTEST_API_URL"] == "" {
+		t.Fatalf("Working Graph launch env = %#v", bound.Facts.Env)
 	}
 	wantOutbox := filepath.ToSlash(filepath.Join("graph", "outbox", continuation.ID))
-	if launch.Env["PENTEST_WORKING_GRAPH_ROOT"] != "." ||
-		launch.Env["PENTEST_WORKING_GRAPH_OUTBOX"] != wantOutbox ||
-		launch.Env["PENTEST_WORKING_GRAPH_RECEIPTS"] != filepath.ToSlash(filepath.Join("graph", "receipts", continuation.ID)) {
-		t.Fatalf("Working Graph mailbox env = %#v", launch.Env)
+	if bound.Facts.Env["PENTEST_WORKING_GRAPH_ROOT"] != "." ||
+		bound.Facts.Env["PENTEST_WORKING_GRAPH_OUTBOX"] != wantOutbox ||
+		bound.Facts.Env["PENTEST_WORKING_GRAPH_RECEIPTS"] != filepath.ToSlash(filepath.Join("graph", "receipts", continuation.ID)) {
+		t.Fatalf("Working Graph mailbox env = %#v", bound.Facts.Env)
 	}
 }
 

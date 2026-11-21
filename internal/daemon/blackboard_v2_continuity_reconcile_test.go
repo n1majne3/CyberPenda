@@ -1,0 +1,335 @@
+package daemon
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"pentest/internal/blackboardv2"
+	"pentest/internal/project"
+	"pentest/internal/runtime"
+	"pentest/internal/runtimeprofile"
+	"pentest/internal/task"
+)
+
+func TestBlackboardV2DaemonOwnsUnexpectedAttemptReconciliationAcrossRestart(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "daemon-reconciliation.db")
+	server, err := NewServer(Config{Version: "test", DBPath: dbPath, RuntimeRoot: filepath.Join(root, "runs"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("start Blackboard v2 daemon: %v", err)
+	}
+	createdProject, err := server.projects.Create("Daemon reconciliation", "", project.Scope{}, project.Defaults{})
+	if err != nil {
+		_ = server.Close()
+		t.Fatalf("create Project: %v", err)
+	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := server.profiles.Create("Codex reconciliation", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-test"})
+	if err != nil {
+		_ = server.Close()
+		t.Fatalf("create Runtime Profile: %v", err)
+	}
+	createdTask, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "exercise daemon reconciliation", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
+	})
+	if err != nil {
+		_ = server.Close()
+		t.Fatalf("create Task: %v", err)
+	}
+	launch, err := server.blackboardV2Continuity.CreateContinuation(context.Background(), blackboardv2.ContinuationLaunchRequest{
+		ProjectID: createdProject.ID, TaskID: createdTask.ID, RuntimeProfileID: profile.ID,
+		RuntimeProvider: string(runtimeprofile.ProviderCodex), Runner: task.RunnerSandbox,
+		RuntimeConfig: map[string]any{"provider": "codex", "model": "gpt-test"},
+	})
+	if err != nil {
+		_ = server.Close()
+		t.Fatalf("create Continuation: %v", err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(launch.Continuation.ID, task.StatusRunning); err != nil {
+		_ = server.Close()
+		t.Fatalf("start Continuation: %v", err)
+	}
+	if _, err := server.blackboardV2.ApplyForContinuation(context.Background(), createdProject.ID, launch.Continuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "daemon-reconciliation-work",
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "objective:daemon-reconciliation", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Prove daemon authority"}},
+			{Op: "create", Key: "attempt:daemon-reconciliation", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Runtime work remained open"}},
+			{Op: "relate", From: "attempt:daemon-reconciliation", Relation: "tests", To: "objective:daemon-reconciliation"},
+		},
+	}); err != nil {
+		_ = server.Close()
+		t.Fatalf("create owned Attempt: %v", err)
+	}
+	if _, err := server.blackboardV2.CheckpointAttemptForContinuation(context.Background(), createdProject.ID, launch.Continuation.ID, blackboardv2.CheckpointAttemptRequest{
+		IdempotencyKey: "daemon-reconciliation-checkpoint", Key: "attempt:daemon-reconciliation", Version: 1,
+		Summary: "Checkpoint retained before daemon-observed failure",
+	}); err != nil {
+		_ = server.Close()
+		t.Fatalf("checkpoint Attempt: %v", err)
+	}
+	if _, err := server.tasks.UpdateContinuationStatus(launch.Continuation.ID, task.StatusFailed); err != nil {
+		_ = server.Close()
+		t.Fatalf("reconcile unexpected Continuation end: %v", err)
+	}
+	before, err := server.blackboardV2.ReadHistory(context.Background(), createdProject.ID, "attempt:daemon-reconciliation", blackboardv2.HistoryOptions{})
+	if err != nil {
+		_ = server.Close()
+		t.Fatalf("read reconciled Attempt: %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("close daemon before restart: %v", err)
+	}
+
+	restarted, err := NewServer(Config{Version: "test", DBPath: dbPath, RuntimeRoot: filepath.Join(root, "runs"), DisableBuiltinSkills: true})
+	if err != nil {
+		t.Fatalf("restart Blackboard v2 daemon: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+	after, err := restarted.blackboardV2.ReadHistory(context.Background(), createdProject.ID, "attempt:daemon-reconciliation", blackboardv2.HistoryOptions{})
+	if err != nil {
+		t.Fatalf("read reconciled Attempt after restart: %v", err)
+	}
+	beforeJSON, err := json.Marshal(before)
+	if err != nil {
+		t.Fatalf("encode pre-restart history: %v", err)
+	}
+	afterJSON, err := json.Marshal(after)
+	if err != nil {
+		t.Fatalf("encode post-restart history: %v", err)
+	}
+	if !bytes.Equal(beforeJSON, afterJSON) {
+		t.Fatalf("restart changed reconciled Attempt history\nbefore=%s\nafter=%s", beforeJSON, afterJSON)
+	}
+	marked, err := restarted.tasks.Continuation(launch.Continuation.ID)
+	if err != nil {
+		t.Fatalf("read reconciliation marker after restart: %v", err)
+	}
+	if marked.BlackboardReconciliationStatus != task.ReconciliationCompleted {
+		t.Fatalf("reconciliation marker after restart = %q", marked.BlackboardReconciliationStatus)
+	}
+}
+
+func TestCodexV2LaunchExcludesIdentityMetadataAndOperatorCredentialSurface(t *testing.T) {
+	root := t.TempDir()
+	const operatorToken = "operator-token-must-never-reach-codex"
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(root, "metadata.db"), RuntimeRoot: filepath.Join(root, "runs"),
+		AuthToken: operatorToken, DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("start v2 daemon: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	projectA, err := server.projects.Create("A", "", project.Scope{Domains: []string{"a.example"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create Project A: %v", err)
+	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, projectA.ID); err != nil {
+		t.Fatal(err)
+	}
+	projectB, err := server.projects.Create("B", "", project.Scope{Domains: []string{"b.example"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create Project B: %v", err)
+	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, projectB.ID); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := server.profiles.Create("Codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{BinaryPath: "/usr/local/bin/codex", Model: "gpt-test"})
+	if err != nil {
+		t.Fatalf("create Codex profile: %v", err)
+	}
+	createdTask, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: projectA.ID, Type: task.TypePentest, Goal: "inspect a.example", RuntimeProfileID: profile.ID, Runner: task.RunnerSandbox,
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerSandbox),
+	})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
+	if err != nil {
+		t.Fatalf("build initial plan: %v", err)
+	}
+	_, bound, err := server.prepareBlackboardV2ContinuationLaunch(createdTask, plan, createdTask.Goal)
+	if err != nil {
+		t.Fatalf("prepare bound plan: %v", err)
+	}
+	runtimeConfig, err := json.Marshal(bound.RuntimeConfig)
+	if err != nil {
+		t.Fatalf("encode runtime config: %v", err)
+	}
+	configTOML, err := os.ReadFile(filepath.Join(root, "runs", createdTask.ID, "runtime-home", "codex", "config.toml"))
+	if err != nil {
+		t.Fatalf("read Codex config: %v", err)
+	}
+	agents, err := os.ReadFile(filepath.Join(root, "runs", createdTask.ID, "workdir", "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	visible := strings.Join([]string{bound.LaunchGoal, string(runtimeConfig), string(configTOML), string(agents)}, "\n")
+	for _, forbidden := range []string{
+		projectB.ID, profile.ID, operatorToken,
+		"runtime_profile_id", "runtime_plugin_id",
+		"PENTEST_MCP_URL", "PENTEST_AUTH_TOKEN",
+		"[mcp_servers.pentest]", "/mcp?token=", "projection_hash", "estimated_tokens", "protocol_rule_digest",
+	} {
+		if strings.Contains(visible, forbidden) {
+			t.Fatalf("Codex v2 launch surface leaked %q:\n%s", forbidden, visible)
+		}
+	}
+
+	for _, request := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/api/projects", nil),
+		httptest.NewRequest(http.MethodGet, "/api/projects/"+projectB.ID+"/tasks", nil),
+		httptest.NewRequest(http.MethodPost, "/api/projects/"+projectB.ID+"/blackboard/mutations", strings.NewReader(`{}`)),
+		httptest.NewRequest(http.MethodPost, "/mcp?token=continuation-capability-not-issued", nil),
+	} {
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("networkless Codex request %s %s status = %d, want 401", request.Method, request.URL, response.Code)
+		}
+	}
+}
+
+func TestRealCodexAdapterHarnessRereadsAcknowledgedSnapshotAfterContextLoss(t *testing.T) {
+	root := t.TempDir()
+	shim := filepath.Join(root, "codex-shim")
+	shimScript := `#!/bin/sh
+set -eu
+printf '%s\n' "$@" > .shim-args
+env > .shim-env
+cat .pentest/blackboard.json > .shim-discarded
+: > .shim-discarded
+: > .shim-ready
+while [ ! -f .shim-continue ]; do sleep 0.05; done
+cat .pentest/blackboard.json > .shim-reread
+cat .pentest/blackboard.json
+`
+	if err := os.WriteFile(shim, []byte(shimScript), 0o700); err != nil {
+		t.Fatalf("write Codex shim: %v", err)
+	}
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(root, "harness.db"), RuntimeRoot: filepath.Join(root, "runs"), DisableBuiltinSkills: true,
+	})
+	if err != nil {
+		t.Fatalf("start v2 daemon: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	createdProject, err := server.projects.Create("Harness", "", project.Scope{Domains: []string{"harness.example"}}, project.Defaults{})
+	if err != nil {
+		t.Fatalf("create Project: %v", err)
+	}
+	if _, err := server.db.Exec(`UPDATE projects SET blackboard_protocol='legacy' WHERE id=?`, createdProject.ID); err != nil {
+		t.Fatal(err)
+	}
+	profile, err := server.profiles.Create("Codex shim", runtimeprofile.ProviderCodex, runtimeprofile.Fields{BinaryPath: shim, Model: "gpt-test"})
+	if err != nil {
+		t.Fatalf("create Codex profile: %v", err)
+	}
+	createdTask, err := server.tasks.Create(task.CreateRequest{
+		ProjectID: createdProject.ID,
+		Type:      task.TypePentest, Goal: "exercise long Codex continuation", RuntimeProfileID: profile.ID,
+		Runner: task.RunnerHost, RunControls: task.RunControls{HostActivated: true},
+		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
+	})
+	if err != nil {
+		t.Fatalf("create Task: %v", err)
+	}
+	plan, err := server.buildTaskLaunchPlan(createdTask, createdTask.Goal, "", "", "")
+	if err != nil {
+		t.Fatalf("build Codex plan: %v", err)
+	}
+	continuation, bound, err := server.prepareBlackboardV2ContinuationLaunch(createdTask, plan, createdTask.Goal)
+	if err != nil {
+		t.Fatalf("prepare Codex Continuation: %v", err)
+	}
+	workdir := filepath.Join(root, "runs", createdTask.ID, "workdir")
+	shimAdapter := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+		Name:    string(runtimeprofile.ProviderCodex),
+		Program: bound.Facts.ProviderBinary,
+		Args:    []string{bound.LaunchGoal},
+		Workdir: bound.Facts.Workdir,
+		Env:     bound.Facts.Env,
+	})
+	launchDone := make(chan error, 1)
+	go func() {
+		launchDone <- server.harness.Launch(context.Background(), runtime.LaunchRequest{
+			TaskID: createdTask.ID, Goal: bound.LaunchGoal, Adapter: shimAdapter, ContinuationID: continuation.ID,
+		})
+	}()
+	waitForLocalFile(t, filepath.Join(workdir, ".shim-ready"), 5*time.Second)
+	_, err = server.blackboardV2.ApplyForContinuation(context.Background(), createdProject.ID, continuation.ID, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "harness-acknowledged-write",
+		Changes: []blackboardv2.Change{{
+			Op: "create", Key: "entity:harness-current", Type: "entity",
+			Record: blackboardv2.EntityRecord{Status: "active", Kind: "host", Name: "Current after compaction", ScopeStatus: "in_scope"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("acknowledge Runtime write: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workdir, ".shim-continue"), []byte("continue"), 0o600); err != nil {
+		t.Fatalf("release Codex shim: %v", err)
+	}
+	select {
+	case err := <-launchDone:
+		if err != nil {
+			t.Fatalf("production Codex harness launch: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		server.harness.Stop(createdTask.ID)
+		t.Fatal("Codex shim did not finish after acknowledged replacement")
+	}
+	current, err := server.blackboardV2.ProjectRuntimeSnapshot(context.Background(), createdProject.ID)
+	if err != nil {
+		t.Fatalf("project current Snapshot: %v", err)
+	}
+	reread, err := os.ReadFile(filepath.Join(workdir, ".shim-reread"))
+	if err != nil {
+		t.Fatalf("read Codex shim reread: %v", err)
+	}
+	if !bytes.Equal(reread, current.Bytes) {
+		t.Fatalf("Codex shim reread stale bytes\ngot=%s\nwant=%s", reread, current.Bytes)
+	}
+	discarded, err := os.ReadFile(filepath.Join(workdir, ".shim-discarded"))
+	if err != nil || len(discarded) != 0 {
+		t.Fatalf("context-loss simulation retained prior Snapshot: %q, %v", discarded, err)
+	}
+	args, err := os.ReadFile(filepath.Join(workdir, ".shim-args"))
+	if err != nil {
+		t.Fatalf("read Codex shim args: %v", err)
+	}
+	env, err := os.ReadFile(filepath.Join(workdir, ".shim-env"))
+	if err != nil {
+		t.Fatalf("read Codex shim env: %v", err)
+	}
+	agents, err := os.ReadFile(filepath.Join(workdir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read Codex checklist: %v", err)
+	}
+	for _, label := range []string{"Runner:", "Scope:", "Blackboard:", "Schema:", "Revision:"} {
+		if strings.Count(string(args), label) != 1 {
+			t.Fatalf("Codex argv header label %q count = %d:\n%s", label, strings.Count(string(args), label), args)
+		}
+	}
+	if strings.Count(string(args)+string(agents), blackboardv2.CodexChecklist()) != 1 {
+		t.Fatalf("checklist repeated across Codex argv/instructions\nargs=%s\nagents=%s", args, agents)
+	}
+	if leak := firstBlackboardV2ProcessLeak(args, env,
+		[]string{profile.ID},
+		[]string{"PENTEST_MCP_URL=", "PENTEST_AUTH_TOKEN=", "/mcp?token="},
+	); leak != "" {
+		t.Fatalf("production Codex process received forbidden metadata %q\nargs=%s\nenv=%s", leak, args, env)
+	}
+}
