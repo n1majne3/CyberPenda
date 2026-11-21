@@ -58,9 +58,9 @@ func TestBuildTaskLaunchPlanPiSandboxKeepsBarePiWhenFactoryPresent(t *testing.T)
 	if err != nil {
 		t.Fatalf("prepare continuation: %v", err)
 	}
-	createArgs, ok := runtime.DockerSandboxCreateArgs(bound.Adapter)
-	if !ok {
-		t.Fatal("expected docker sandbox adapter")
+	createArgs := bound.Facts.SandboxCreateArgs
+	if len(createArgs) == 0 {
+		t.Fatal("expected sandbox create args")
 	}
 	imageIdx := -1
 	for i, arg := range createArgs {
@@ -91,7 +91,7 @@ func TestBuildTaskLaunchPlanPiSandboxKeepsBarePiWhenFactoryPresent(t *testing.T)
 	}
 }
 
-func TestBuildTaskLaunchPlanPiSandboxWrapsWithoutFactory(t *testing.T) {
+func TestBuildTaskLaunchPlanPiSandboxAlwaysKeepsBarePi(t *testing.T) {
 	root := t.TempDir()
 	server, err := NewServer(Config{
 		Version: "test", DBPath: filepath.Join(root, "pi-wrap.db"),
@@ -131,9 +131,9 @@ func TestBuildTaskLaunchPlanPiSandboxWrapsWithoutFactory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare continuation: %v", err)
 	}
-	createArgs, ok := runtime.DockerSandboxCreateArgs(bound.Adapter)
-	if !ok {
-		t.Fatal("expected docker sandbox adapter")
+	createArgs := bound.Facts.SandboxCreateArgs
+	if len(createArgs) == 0 {
+		t.Fatal("expected sandbox create args")
 	}
 	imageIdx := -1
 	for i, arg := range createArgs {
@@ -145,7 +145,7 @@ func TestBuildTaskLaunchPlanPiSandboxWrapsWithoutFactory(t *testing.T) {
 	if imageIdx < 0 || imageIdx+1 >= len(createArgs) {
 		t.Fatalf("sandbox image not found in create args: %#v", createArgs)
 	}
-	if createArgs[imageIdx+1] != "sh" {
-		t.Fatalf("expected one-shot pi bootstrap wrapper without factory, got %#v", createArgs[imageIdx+1:])
+	if filepath.Base(createArgs[imageIdx+1]) != "pi" {
+		t.Fatalf("expected bare pi image command, got %#v", createArgs[imageIdx+1:])
 	}
 }
