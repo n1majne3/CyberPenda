@@ -60,28 +60,15 @@ export function TaskLaunchPage() {
     <ProjectPageShell
       title={
         <h1 className="flex items-center gap-2 text-xl font-semibold tracking-tight">
-          <Rocket className="h-5 w-5 text-signal" /> Launch task
+          <Rocket className="h-5 w-5 text-signal" /> New task
         </h1>
       }
-      bodyClassName="mx-auto grid w-full max-w-[1080px] grid-cols-1 gap-6 lg:grid-cols-[1fr_300px]"
+      description="Start with a goal. Change the configuration only when needed."
+      bodyClassName="grid w-full grid-cols-1 gap-[35px] lg:grid-cols-[minmax(0,1fr)_258px]"
     >
       <div className="space-y-5">
+        <section className="border-b border-border pb-6">
           <div>
-            <Label htmlFor="task-type">Task type</Label>
-            <Select id="task-type" name="task_type" value={taskType} onChange={(event) => setTaskType(event.target.value)}>
-              <option value="" disabled>Select task type…</option>
-              <option value="pentest">Pentest</option>
-              <option value="ctf_challenge">CTF Challenge</option>
-            </Select>
-            <p className="mt-1 text-xs text-muted-foreground">The selected type becomes an immutable Task Type Snapshot.</p>
-            {taskType !== "" && !taskTypeMatchesProject && (
-              <p role="alert" className="mt-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
-                Task Type must match this Project&apos;s kind. <Link className="underline underline-offset-2" to={`/projects/${projectId}`}>Convert the Project first.</Link>
-              </p>
-            )}
-          </div>
-        <section className="rounded-lg border border-border bg-card shadow-sm">
-          <div className="p-4">
             <Label htmlFor="goal" className="text-sm font-medium">What do you want to explore?</Label>
             <Textarea
               id="goal"
@@ -105,6 +92,21 @@ export function TaskLaunchPage() {
             </div>
           </div>
         </section>
+
+          <div>
+            <Label htmlFor="task-type">Task type</Label>
+            <Select id="task-type" name="task_type" value={taskType} onChange={(event) => setTaskType(event.target.value)}>
+              <option value="" disabled>Select task type…</option>
+              <option value="pentest">Pentest</option>
+              <option value="ctf_challenge">CTF Challenge</option>
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">Task Type must match the Project kind and cannot change after launch.</p>
+            {taskType !== "" && !taskTypeMatchesProject && (
+              <p role="alert" className="mt-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm text-warning">
+                Task Type must match this Project&apos;s kind. <Link className="underline underline-offset-2" to={`/projects/${projectId}`}>Convert the Project first.</Link>
+              </p>
+            )}
+          </div>
 
         <RuntimeLaunchControls controller={launchControls} ownerLabel="task" initialInput={goal} />
 

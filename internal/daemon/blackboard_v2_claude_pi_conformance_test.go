@@ -412,10 +412,17 @@ cat .pentest/blackboard.json
 				t.Fatalf("prepare Continuation: %v", err)
 			}
 			workdir := filepath.Join(root, "runs", createdTask.ID, "workdir")
+			shimAdapter := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
+				Name:    string(tc.provider),
+				Program: bound.Facts.ProviderBinary,
+				Args:    []string{bound.LaunchGoal},
+				Workdir: bound.Facts.Workdir,
+				Env:     bound.Facts.Env,
+			})
 			launchDone := make(chan error, 1)
 			go func() {
 				launchDone <- server.harness.Launch(context.Background(), runtime.LaunchRequest{
-					TaskID: createdTask.ID, Goal: bound.LaunchGoal, Adapter: bound.Adapter, ContinuationID: continuation.ID,
+					TaskID: createdTask.ID, Goal: bound.LaunchGoal, Adapter: shimAdapter, ContinuationID: continuation.ID,
 				})
 			}()
 			waitForLocalFile(t, filepath.Join(workdir, ".shim-ready"), 5*time.Second)

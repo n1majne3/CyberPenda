@@ -292,7 +292,7 @@ export function ModelProvidersPage() {
       <SettingsPageHeader
         className="mb-4 shrink-0"
         title="Model providers"
-        eyebrow="Configuration"
+        description="Connect a Model Provider once. Reuse it across Runtime Profiles."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" onClick={() => void load()} aria-label="Refresh model providers">

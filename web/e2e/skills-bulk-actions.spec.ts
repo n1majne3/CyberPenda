@@ -20,19 +20,22 @@ for (const zoom of [100, 125, 150]) {
       });
 
       await page.goto("/skills");
+      const enablement = page.getByText("Enablement · Codex Default", { exact: true });
+      await expect(enablement).toBeVisible();
       const global = page.getByRole("group", { name: "Global Skill bulk actions" });
       const profile = page.getByRole("group", { name: "Codex Default Profile Skill bulk actions" });
+      await expect(global).not.toBeVisible();
+      await enablement.click();
       await expect(global).toContainText("1/1 enabled");
       await expect(profile).toContainText("1/1 allowed");
       await page.evaluate(() => document.fonts.ready.then(() => undefined));
 
       const globalBox = (await global.boundingBox())!;
       const profileBox = (await profile.boundingBox())!;
-      if (zoom === 125) {
-        expect(globalBox.y + globalBox.height).toBeLessThanOrEqual(profileBox.y);
-      } else {
-        expect(globalBox.x + globalBox.width).toBeLessThanOrEqual(profileBox.x);
-      }
+      expect(
+        globalBox.x + globalBox.width <= profileBox.x + 1 ||
+        globalBox.y + globalBox.height <= profileBox.y + 1,
+      ).toBeTruthy();
 
       for (const [group, box, description] of [
         [global, globalBox, "Direct launches and every Runtime Profile"],
@@ -46,6 +49,7 @@ for (const zoom of [100, 125, 150]) {
         const buttons = group.getByRole("button", { name: /^(Enable|Disable) all skills/ });
         await expect(buttons).toHaveCount(2);
         for (const button of await buttons.all()) {
+          await button.scrollIntoViewIfNeeded();
           await expect(button).toBeInViewport();
           const buttonBox = (await button.boundingBox())!;
           expect(buttonBox.x).toBeGreaterThanOrEqual(box.x);

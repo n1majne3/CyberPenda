@@ -193,6 +193,7 @@ test("a page-long final message stays at its beginning when a live Transcript en
   await page.goto("/projects/project-0/tasks/task-0");
   const viewport = page.getByTestId("conversation-workspace");
   const message = page.getByTestId("transcript-message-bubble").filter({ hasText: "Page-long message line 1" });
+  const messageStart = page.getByTestId("transcript-row").filter({ hasText: "Page-long message line 1" });
   await expect(message).toContainText("Page-long message line 180");
   await expect.poll(() => message.evaluate((element) => element.scrollHeight)).toBeGreaterThan(
     await viewport.evaluate((element) => element.clientHeight),
@@ -223,7 +224,7 @@ test("a page-long final message stays at its beginning when a live Transcript en
   for (let step = 0; step < 20; step += 1) {
     const atMessageStart = await Promise.all([
       viewport.boundingBox(),
-      message.boundingBox(),
+      messageStart.boundingBox(),
     ]).then(([viewportBox, messageBox]) =>
       viewportBox !== null && messageBox !== null && messageBox.y >= viewportBox.y - 2,
     );
@@ -232,7 +233,7 @@ test("a page-long final message stays at its beginning when a live Transcript en
   }
 
   const readingPosition = await viewport.evaluate((element) => element.scrollTop);
-  const [viewportBox, messageBox] = await Promise.all([viewport.boundingBox(), message.boundingBox()]);
+  const [viewportBox, messageBox] = await Promise.all([viewport.boundingBox(), messageStart.boundingBox()]);
   expect(viewportBox).not.toBeNull();
   expect(messageBox).not.toBeNull();
   expect(Math.abs(messageBox!.y - viewportBox!.y)).toBeLessThan(40);

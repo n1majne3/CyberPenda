@@ -320,6 +320,7 @@ const readRoutes: Array<[RegExp, unknown | ((path: string) => unknown)]> = [
   [/^\/api\/workspace\/navigation(?:\?.*)?$/, { revision: "demo-12", changed: true, projects: [{ ...project, tasks: [task] }] }],
   [/^\/api\/sessions(?:\?.*)?$/, { sessions: [] }],
   [new RegExp(`^/api/projects/${PROJECT_ID}$`), project],
+  [new RegExp(`^/api/projects/${PROJECT_ID}/scope-expansions$`), { expansions: [] }],
   [new RegExp(`^/api/projects/${PROJECT_ID}/dashboard$`), {
     project_id: PROJECT_ID,
     name: project.name,
@@ -351,6 +352,7 @@ const readRoutes: Array<[RegExp, unknown | ((path: string) => unknown)]> = [
   [new RegExp(`^/api/v2/projects/${PROJECT_ID}/reports/pentest\\?format=json$`), report],
   [new RegExp(`^/api/v2/projects/${PROJECT_ID}/reports/pentest\\?format=markdown$`), { schema: "report-markdown/v2", markdown: reportMarkdown }],
   [/^\/api\/runtime-profiles$/, { profiles: [runtimeProfile] }],
+  [new RegExp(`^/api/runtime-profiles/${runtimeProfile.id}/model-provider-migration-preview$`), { eligible: false, reason: "Profile already uses a Model Provider.", matches: [], api_key_sources: [] }],
   [new RegExp(`^/api/runtime-profiles/${runtimeProfile.id}/merged-config-preview$`), {
     provider: runtimeProfile.provider,
     merged: {

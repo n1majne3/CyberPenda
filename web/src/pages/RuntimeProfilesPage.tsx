@@ -7,6 +7,7 @@ import { RuntimeProfileConfig } from "@/pages/RuntimeProfileConfig";
 import { buildProfileFields, profileListModelHint } from "@/pages/runtimeProfileForm";
 import { cn } from "@/lib/utils";
 import { Button, Chip } from "@/components/ui";
+import { ActionMenu } from "@/components/ActionMenu";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { SaveActionButton } from "@/components/SaveActionButton";
 import { SectionLabel, SettingsAlert, SettingsPageHeader, SettingsPanel, SettingsSplitLayout, SettingsPageShell } from "@/components/shared";
@@ -32,8 +33,8 @@ function ProfileListButton({
       onClick={onSelect}
       aria-current={selected ? "true" : undefined}
       className={cn(
-        "block w-full rounded-md px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-        selected ? "border border-primary/20 bg-primary/[0.03]" : "hover:bg-muted/50",
+        "block w-full rounded-md px-3 py-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        selected ? "border border-signal/15 bg-signal/5" : "border border-transparent hover:bg-muted/50",
       )}
     >
       <div className="flex items-center gap-2">
@@ -250,12 +251,12 @@ export function RuntimeProfilesPage() {
   }
 
   return (
-    <SettingsPageShell data-testid="runtime-profiles-page" className="mx-auto max-w-6xl gap-0 p-0 lg:overflow-hidden lg:p-0">
-      <header className="flex-none border-b border-border px-6 py-5 lg:px-8">
+    <SettingsPageShell data-testid="runtime-profiles-page" className="gap-0">
+      <header className="flex-none pb-7">
         <SettingsPageHeader
           className="mb-0"
         title="Runtime profiles"
-        eyebrow="Configuration"
+        description="Reusable Runtime configuration. Launch choices remain explicit."
         actions={
           <Button
             size="sm"
@@ -272,15 +273,15 @@ export function RuntimeProfilesPage() {
       />
       </header>
 
-      {error && <SettingsAlert className="mx-4 my-3 shrink-0 lg:mx-6">{error}</SettingsAlert>}
+      {error && <SettingsAlert className="my-3 shrink-0">{error}</SettingsAlert>}
 
       <SettingsSplitLayout
         data-testid="runtime-profiles-settings-layout"
-        className="gap-0 lg:grid-cols-[320px_minmax(0,1fr)]"
+        className="gap-8 lg:grid-cols-[240px_minmax(0,1fr)]"
         fill
       >
-        <SettingsListColumn className="gap-0 border-r border-border bg-card" data-testid="runtime-profiles-settings-list">
-          <SettingsPanel className="gap-2 rounded-none border-0 border-b border-border p-4 shadow-none lg:shrink-0">
+        <SettingsListColumn className="gap-4" data-testid="runtime-profiles-settings-list">
+          <SettingsPanel className="gap-2 pb-4 lg:shrink-0">
             <div className="flex items-center justify-between gap-2">
               <p className="text-[13px] font-medium">Profiles</p>
               <p className="text-[11px] text-muted-foreground tabular-nums">
@@ -343,7 +344,7 @@ export function RuntimeProfilesPage() {
           <SettingsDetailPane
             data-testid="runtime-profiles-settings-detail"
             className="rounded-none border-0 shadow-none"
-            bodyClassName="px-6 py-5"
+            bodyClassName="p-0"
             header={
               <div className="min-w-0">
                 <h3 className="font-medium">New profile</h3>
@@ -379,7 +380,8 @@ export function RuntimeProfilesPage() {
           <SettingsDetailPane
             data-testid="runtime-profiles-settings-detail"
             className="rounded-none border-0 shadow-none"
-            bodyClassName="px-6 py-5"
+            bodyClassName="p-0"
+            footer={<div className="flex w-full items-center justify-between gap-4"><span className="text-[11px] text-muted-foreground">Changes apply to future launches.</span><SaveActionButton pending={saving} saved={savedNotice} onClick={() => void saveSelected()} /></div>}
             header={
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div className="min-w-0">
@@ -389,21 +391,16 @@ export function RuntimeProfilesPage() {
                   </div>
                   <p className="mt-0.5 truncate font-mono text-xs text-muted-foreground">{selected.id}</p>
                 </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <ActionMenu label="More">
                   <Button
                     size="sm"
                     variant="outline"
                     aria-label={`Delete ${selected.name} runtime profile`}
                     onClick={() => setConfirmDeleteId(selected.id)}
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
+                    <Trash2 className="h-3.5 w-3.5" /> Delete profile
                   </Button>
-                  <SaveActionButton
-                    pending={saving}
-                    saved={savedNotice}
-                    onClick={() => void saveSelected()}
-                  />
-                </div>
+                </ActionMenu>
               </div>
             }
           >

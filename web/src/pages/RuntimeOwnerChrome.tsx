@@ -27,7 +27,7 @@ export function RuntimeOwnerShell({ projectChrome, children, bodyClassName, cont
   return (
     <PageContainer
       data-testid={props["data-testid"]}
-      className={cn("mx-auto flex w-full max-w-6xl min-w-0 flex-col p-0 lg:p-0", props.className)}
+      className={cn("mx-auto flex w-full max-w-[1280px] min-w-0 flex-col", props.className)}
     >
       <div className={cn("flex min-h-0 min-w-0 w-full flex-1 flex-col", contentClassName, bodyClassName)}>{children}</div>
     </PageContainer>
@@ -49,13 +49,13 @@ export function FloatingScrollControls({
 
   return (
     <div className="flex items-center gap-1">
-      <Button size="sm" variant="outline" className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none" onClick={onTop} aria-label="Scroll to top" title="Top">
+      <Button size="sm" variant="outline" className="h-8 w-8 p-0 shadow-none transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none" onClick={onTop} aria-label="Scroll to top" title="Top">
         <ArrowUp className="h-4 w-4" />
       </Button>
       <Button
         size="sm"
         variant={autoFollow ? "secondary" : "outline"}
-        className="relative h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
+        className="relative h-8 w-8 p-0 shadow-none transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
         onClick={onBottom}
         aria-label={latestLabel}
         title={latestLabel}
@@ -81,7 +81,7 @@ export function TimelineScrollControls({
       <Button
         size="sm"
         variant="outline"
-        className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
+        className="h-8 w-8 p-0 shadow-none transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
         onClick={onTop}
         aria-label="Scroll Timeline to top"
         title="Timeline top"
@@ -91,7 +91,7 @@ export function TimelineScrollControls({
       <Button
         size="sm"
         variant="outline"
-        className="h-10 w-10 p-0 shadow-md transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
+        className="h-8 w-8 p-0 shadow-none transition-transform duration-150 active:scale-[0.96] motion-reduce:transform-none"
         onClick={onBottom}
         aria-label="Scroll Timeline to bottom"
         title="Timeline bottom"

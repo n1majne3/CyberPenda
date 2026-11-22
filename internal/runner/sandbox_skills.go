@@ -5,11 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"pentest/internal/runtimeprofile"
 )
-
-const sandboxSkillsImagePath = "/opt/pentest/skills"
 
 // sandboxTaskSkillsPath is the sandbox-side path of Layout.SkillsRoot: a sandbox
 // launch mounts the task root at /task.
@@ -26,10 +25,10 @@ func SkillsWorkdirRelPath(provider runtimeprofile.Provider) string {
 	}
 }
 
-func PrepareSandboxSkills(layout Layout, provider runtimeprofile.Provider, targets ...string) error {
-	target := sandboxSkillsImagePath
-	if len(targets) > 0 && targets[0] != "" {
-		target = targets[0]
+func PrepareSandboxSkills(layout Layout, provider runtimeprofile.Provider, target string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return fmt.Errorf("skills target is required")
 	}
 	source := skillsSource(layout, target)
 
@@ -83,17 +82,11 @@ func PrepareSandboxSkills(layout Layout, provider runtimeprofile.Provider, targe
 	return nil
 }
 
-// skillsSource returns the host directory whose content a discovery path must
-// expose, or "" when the target exists only inside the sandbox image.
 func skillsSource(layout Layout, target string) string {
-	switch target {
-	case sandboxSkillsImagePath:
-		return ""
-	case sandboxTaskSkillsPath:
+	if target == sandboxTaskSkillsPath {
 		return layout.SkillsRoot
-	default:
-		return target
 	}
+	return target
 }
 
 // exposeSkillsDir makes Skills reachable at a Runtime discovery path. A host that
@@ -132,11 +125,8 @@ func materializeSkillsDir(discovery, source string) error {
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect %s: %w", discovery, err)
 	}
-	if source == "" {
-		if err := os.MkdirAll(discovery, 0o700); err != nil {
-			return fmt.Errorf("prepare skills discovery path %s: %w", discovery, err)
-		}
-		return nil
+	if strings.TrimSpace(source) == "" {
+		return fmt.Errorf("skills source directory is required for %s", discovery)
 	}
 	if err := copyRuntimeExtensionDir(source, discovery); err != nil {
 		return fmt.Errorf("materialize skills at %s: %w", discovery, err)

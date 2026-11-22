@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/runner"
@@ -31,10 +32,11 @@ func TestProjectRuntimeConfigWritesScopeSnapshot(t *testing.T) {
 		Provider: runtimeprofile.ProviderClaudeCode,
 		Fields:   runtimeprofile.Fields{Model: "claude-sonnet-4"},
 	}, runner.ProjectionRequest{
-		Owner:         owner.NewTaskContract("task-scope", "project-1", layout.Workdir),
-		DaemonAddr:    "127.0.0.1:8787",
-		Sandbox:       true,
-		ScopeSnapshot: snapshot,
+		BlackboardMode: modeskill.ModeDisabled,
+		Owner:          owner.NewTaskContract("task-scope", "project-1", layout.Workdir),
+		DaemonAddr:     "127.0.0.1:8787",
+		Sandbox:        true,
+		ScopeSnapshot:  snapshot,
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)

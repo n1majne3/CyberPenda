@@ -82,16 +82,16 @@ func TestPrepareSandboxSkillsLinksClaudeWorkdirAndProviderHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare layout: %v", err)
 	}
-	if err := runner.PrepareSandboxSkills(layout, runtimeprofile.ProviderClaudeCode); err != nil {
+	if err := runner.PrepareSandboxSkills(layout, runtimeprofile.ProviderClaudeCode, sandboxTaskSkillsDir); err != nil {
 		t.Fatalf("prepare sandbox skills: %v", err)
 	}
 
 	workdirLink := filepath.Join(layout.Workdir, ".claude", "skills")
-	requireSkillsDiscovery(t, workdirLink, "/opt/pentest/skills")
+	requireSkillsDiscovery(t, workdirLink, sandboxTaskSkillsDir)
 	if _, err := os.Lstat(filepath.Join(layout.Workdir, ".agents", "skills")); !os.IsNotExist(err) {
 		t.Fatalf("expected no .agents/skills link for claude code, err=%v", err)
 	}
-	requireSkillsDiscovery(t, filepath.Join(layout.ProviderHome, "skills"), "/opt/pentest/skills")
+	requireSkillsDiscovery(t, filepath.Join(layout.ProviderHome, "skills"), sandboxTaskSkillsDir)
 }
 
 func TestPrepareSandboxSkillsLinksCodexWorkdirAndProviderHome(t *testing.T) {
@@ -100,12 +100,22 @@ func TestPrepareSandboxSkillsLinksCodexWorkdirAndProviderHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare layout: %v", err)
 	}
-	if err := runner.PrepareSandboxSkills(layout, runtimeprofile.ProviderCodex); err != nil {
+	if err := runner.PrepareSandboxSkills(layout, runtimeprofile.ProviderCodex, sandboxTaskSkillsDir); err != nil {
 		t.Fatalf("prepare sandbox skills: %v", err)
 	}
 
 	workdirLink := filepath.Join(layout.Workdir, ".agents", "skills")
-	requireSkillsDiscovery(t, workdirLink, "/opt/pentest/skills")
+	requireSkillsDiscovery(t, workdirLink, sandboxTaskSkillsDir)
+}
+
+func TestPrepareSandboxSkillsRejectsEmptyTarget(t *testing.T) {
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-empty", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatalf("prepare layout: %v", err)
+	}
+	if err := runner.PrepareSandboxSkills(layout, runtimeprofile.ProviderCodex, ""); err == nil {
+		t.Fatal("expected empty skills target to fail closed")
+	}
 }
 
 // A Windows daemon cannot create the symbolic links that expose task Skills to a
@@ -128,15 +138,6 @@ func TestPrepareSandboxSkillsWithoutSymlinkPrivilege(t *testing.T) {
 			}
 			requireSkillsDiscovery(t, workdirSkills, sandboxTaskSkillsDir)
 			requireSkillsDiscovery(t, homeSkills, sandboxTaskSkillsDir)
-
-			imageLayout, err := runner.PrepareTaskLayout(t.TempDir(), "task-2", provider)
-			if err != nil {
-				t.Fatalf("prepare image layout: %v", err)
-			}
-			if err := runner.PrepareSandboxSkills(imageLayout, provider); err != nil {
-				t.Fatalf("prepare sandbox skills for the image-baked target: %v", err)
-			}
-			requireSkillsDiscovery(t, filepath.Join(imageLayout.Workdir, filepath.FromSlash(runner.SkillsWorkdirRelPath(provider))), "/opt/pentest/skills")
 
 			const skillID = "recon-helper"
 			const doc = "# Recon\n"

@@ -13,6 +13,9 @@ import {
   Network,
   Plus,
   Search,
+  LayoutGrid,
+  MessageSquare,
+  CircleUserRound,
 } from "lucide-react";
 import {
   apiGet,
@@ -27,7 +30,6 @@ import {
   type WorkspaceNavigation,
   type WorkspaceProjectSummary,
 } from "@/lib/api";
-import { ThemeToggle } from "@/components/ThemeProvider";
 import { PromptDialog } from "@/components/ConfirmDialog";
 import { useDocumentVisibility } from "@/lib/useDocumentVisibility";
 import { WORKSPACE_NAVIGATION_CHANGED_EVENT } from "@/lib/workspaceNavigation";
@@ -80,6 +82,7 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
   const [sessionActionId, setSessionActionId] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<Session | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
+  const [showFilter, setShowFilter] = useState(false);
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const isVisible = useDocumentVisibility();
   const hasActive = useMemo(
@@ -284,177 +287,86 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
 
   return (
     <>
-      <div className="shrink-0 px-3 pt-3">
-        <div className="flex h-8 items-center gap-2 rounded-md border border-input bg-background px-2">
-          <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-          <input
-            type="search"
-            aria-label="Filter sessions and projects"
-            placeholder="Filter…"
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            className="w-full bg-transparent text-xs outline-none placeholder:text-muted-foreground"
-          />
+      <nav aria-label="Primary routes" className="min-h-0 flex-1 overflow-y-auto px-[15px] pb-3">
+        <div className="space-y-0.5">
+          <NavItem to="/" end onNavigate={onNavigate}><LayoutGrid className="size-4" />Projects</NavItem>
+          <NavItem to="/sessions" onNavigate={onNavigate}><MessageSquare className="size-4" />Sessions</NavItem>
         </div>
-      </div>
-      <nav aria-label="Primary routes" className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-        <section aria-labelledby="non-project-navigation" className="border-b border-sidebar-border/70 pb-3">
-          <div className="mb-1 flex items-center gap-1">
-            <NavLink
-              to="/sessions"
-              onClick={onNavigate}
-              id="non-project-navigation"
-              className={cn(
-                "inline-flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
-                sidebarFocusClass,
-              )}
-            >
-              Non-project
-            </NavLink>
-            <span className="shrink-0 px-1 text-xs tabular-nums text-muted-foreground">{filteredSessions.length}</span>
-            <NavLink
-              to="/sessions#new-session"
-              aria-label="New session"
-              onClick={onNavigate}
-              className={cn(
-                "inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
-                sidebarFocusClass,
-              )}
-            >
-              <Plus className="size-4" aria-hidden="true" />
+        <div className="mb-2 mt-6 flex items-center justify-between px-3">
+          <span id="projects-navigation" className="text-[10px] uppercase tracking-[1.2px] text-muted-foreground">Your projects</span>
+          <div className="flex items-center gap-1">
+            <button type="button" aria-label="Search workspace" aria-expanded={showFilter}
+              onClick={() => { setShowFilter(!showFilter); if (showFilter) setSearchQuery(""); }}
+              className="inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-sidebar-accent">
+              <Search className="size-3" />
+            </button>
+            <NavLink to="/?new=1" aria-label="New project" onClick={onNavigate}
+              className={cn("inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-sidebar-accent", sidebarFocusClass)}>
+              <Plus className="size-3.5" />
             </NavLink>
           </div>
-          <div id="non-project-work" className="space-y-1">
-            {sessionLoading ? (
-              <SidebarStatus label="Loading sessions" />
-            ) : sessionError ? (
-              <SidebarError message={sessionError} />
-            ) : sessions.length === 0 ? (
-              <SidebarEmpty message="No open sessions" link={{ to: "/sessions#new-session", label: "New session" }} onNavigate={onNavigate} />
-            ) : visibleSessions.length === 0 ? (
-              <SidebarStatus label={`No sessions match "${searchQuery.trim()}"`} />
-            ) : (
-              <>
-                {visibleSessions.map((session) => (
-                  <SessionRow
-                    key={session.id}
-                    session={session}
-                    current={session.id === currentSessionId}
-                    busy={sessionActionId === session.id}
-                    onNavigate={onNavigate}
-                    onRename={(session) => setRenameTarget(session)}
-                    onArchive={handleSessionArchive}
-                  />
-                ))}
-                <NavLink
-                  to="/sessions"
-                  onClick={onNavigate}
-                  className={cn(
-                    "inline-flex h-8 w-full items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
-                    sidebarFocusClass,
-                  )}
-                >
-                  Show more
-                </NavLink>
-              </>
-            )}
+        </div>
+        {showFilter && (
+          <div className="mb-3 px-2">
+            <input type="search" aria-label="Filter sessions and projects" placeholder="Filter…"
+              value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)}
+              className="h-8 w-full rounded-md border border-input bg-card px-2 text-xs placeholder:text-muted-foreground" />
           </div>
-        </section>
-
-        <section aria-labelledby="projects-navigation" className="pt-3">
-          <div className="mb-1 flex items-center gap-1">
-            <NavItem to="/" end onNavigate={onNavigate} className="min-w-0 flex-1 font-medium">
-              <span id="projects-navigation" className="truncate">
-                Projects
-              </span>
-            </NavItem>
-            <span className="shrink-0 px-1 text-xs tabular-nums text-muted-foreground">{visibleProjects.length}</span>
-            <NavLink
-              to="/?new=1"
-              aria-label="New project"
-              onClick={onNavigate}
-              className={cn(
-                "inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground transition-colors hover:border-sidebar-border hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
-                sidebarFocusClass,
-              )}
-            >
-              <Plus className="size-4" aria-hidden="true" />
-            </NavLink>
-          </div>
-
-          {projectLoading ? (
-            <SidebarStatus label="Loading projects" />
-          ) : projectError ? (
-            <SidebarError message={projectError} />
-          ) : sortedProjects.length === 0 ? (
+        )}
+        <section aria-labelledby="projects-navigation">
+          {projectLoading ? <SidebarStatus label="Loading projects" /> : projectError ? <SidebarError message={projectError} /> : sortedProjects.length === 0 ? (
             <SidebarEmpty message="No projects" link={{ to: "/?new=1", label: "New project" }} onNavigate={onNavigate} />
-          ) : visibleProjects.length === 0 ? (
-            <SidebarStatus label={`No projects match "${searchQuery.trim()}"`} />
-          ) : (
-            <div className="space-y-1">
+          ) : visibleProjects.length === 0 ? <SidebarStatus label={`No projects match "${searchQuery.trim()}"`} /> : (
+            <div className="space-y-0.5">
               {visibleProjects.map((project) => {
                 const summary = navigation.find((entry) => entry.id === project.id);
-                const defaultOpen = project.id === currentProjectId;
+                const defaultOpen = project.id === currentProjectId && Boolean(currentTaskId);
                 const open = projectDisclosure[project.id] ?? readDisclosure(projectDisclosureKey(project.id), defaultOpen);
-                return (
-                  <ProjectRow
-                    key={project.id}
-                    project={project}
-                    // The current Project renders its inlined Tasks immediately;
-                    // other Projects load their full list on demand when opened.
-                    tasks={summary?.tasks ?? []}
-                    onDemandTasks={expandedTasks[project.id]?.tasks ?? []}
-                    tasksLoading={expandedTasks[project.id]?.loading ?? false}
-                    tasksError={expandedTasks[project.id]?.error ?? null}
-                    useOnDemandTasks={project.id !== currentProjectId && (projectDisclosure[project.id] ?? readDisclosure(projectDisclosureKey(project.id), defaultOpen))}
-                    open={open}
-                    currentTaskId={currentTaskId}
-                    currentProject={project.id === currentProjectId}
-                    onToggle={() => toggleProject(project.id, defaultOpen)}
-                    onNavigate={onNavigate}
-                  />
-                );
+                return <ProjectRow key={project.id} project={project} tasks={summary?.tasks ?? []}
+                  onDemandTasks={expandedTasks[project.id]?.tasks ?? []} tasksLoading={expandedTasks[project.id]?.loading ?? false}
+                  tasksError={expandedTasks[project.id]?.error ?? null} useOnDemandTasks={project.id !== currentProjectId && open}
+                  open={open} currentTaskId={currentTaskId} currentProject={project.id === currentProjectId}
+                  onToggle={() => toggleProject(project.id, defaultOpen)} onNavigate={onNavigate} />;
               })}
             </div>
           )}
         </section>
-      </nav>
-
-      <aside aria-label="Global settings" className="shrink-0 border-t border-sidebar-border bg-sidebar p-3">
-        <div className="mb-2 px-2 text-xs font-medium text-muted-foreground/80">Settings</div>
-        <div className="space-y-1">
-          <SettingsLink to="/profiles" icon={<Cpu className="size-4" />} onNavigate={onNavigate}>
-            Runtime profiles
-          </SettingsLink>
-          <SettingsLink to="/model-providers" icon={<Network className="size-4" />} onNavigate={onNavigate}>
-            Model providers
-          </SettingsLink>
-          <SettingsLink to="/credentials" icon={<KeyRound className="size-4" />} onNavigate={onNavigate}>
-            Credentials
-          </SettingsLink>
-          <SettingsLink to="/skills" icon={<BookOpen className="size-4" />} onNavigate={onNavigate}>
-            Skills
-          </SettingsLink>
-        </div>
-        <div className="mt-2 flex items-center justify-between border-t border-sidebar-border/70 pt-2">
-          <span className="px-2 text-xs text-muted-foreground">Theme</span>
-          <ThemeToggle />
-        </div>
-        {import.meta.env.VITE_DEMO_MODE !== "true" && (
-          <div className="mt-1 flex items-center justify-between">
-            <span className="px-2 text-xs text-muted-foreground">Operator session</span>
-            <button
-              type="button"
-              onClick={() => void clearOperatorCredential()}
-              className={cn(
-                "inline-flex h-7 items-center rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
-                sidebarFocusClass,
-              )}
-            >
-              Sign out
-            </button>
+        <details role="region" aria-labelledby="non-project-navigation" className="mt-5 px-2" open={currentSessionId || normalizedQuery ? true : undefined}>
+          <summary id="non-project-navigation" className="cursor-pointer text-[11px] text-muted-foreground">
+            Recent sessions <span className="ml-1 tabular-nums">{filteredSessions.length}</span>
+          </summary>
+          <div id="non-project-work" className="mt-2 space-y-1">
+            {sessionLoading ? <SidebarStatus label="Loading sessions" /> : sessionError ? <SidebarError message={sessionError} /> : sessions.length === 0 ? (
+              <SidebarEmpty message="No open sessions" link={{ to: "/sessions#new-session", label: "New session" }} onNavigate={onNavigate} />
+            ) : visibleSessions.length === 0 ? <SidebarStatus label={`No sessions match "${searchQuery.trim()}"`} /> : (
+              <>
+                {visibleSessions.map((session) => (
+                  <SessionRow key={session.id} session={session} current={session.id === currentSessionId}
+                    busy={sessionActionId === session.id} onNavigate={onNavigate}
+                    onRename={(session) => setRenameTarget(session)} onArchive={handleSessionArchive} />
+                ))}
+                <NavLink to="/sessions" onClick={onNavigate} className={cn("inline-flex h-8 w-full items-center px-2 text-xs text-muted-foreground hover:text-foreground", sidebarFocusClass)}>Show more</NavLink>
+              </>
+            )}
           </div>
-        )}
+        </details>
+      </nav>
+      <aside aria-label="Global settings" className="shrink-0 bg-sidebar px-[15px] pb-4 pt-5">
+        <div className="mb-2 px-3 text-[10px] uppercase tracking-[1.2px] text-muted-foreground">Configuration</div>
+        <div className="space-y-0.5">
+          <SettingsLink to="/profiles" icon={<Cpu className="size-4" />} onNavigate={onNavigate}>Runtime profiles</SettingsLink>
+          <SettingsLink to="/model-providers" icon={<Network className="size-4" />} onNavigate={onNavigate}>Model providers</SettingsLink>
+          <SettingsLink to="/credentials" icon={<KeyRound className="size-4" />} onNavigate={onNavigate}>Credentials</SettingsLink>
+          <SettingsLink to="/skills" icon={<BookOpen className="size-4" />} onNavigate={onNavigate}>Skills</SettingsLink>
+        </div>
+        <div className="mt-4 flex items-center gap-2.5 border-t border-sidebar-border px-2 pt-4">
+          <CircleUserRound className="size-7 shrink-0 text-muted-foreground" strokeWidth={1} />
+          <div className="min-w-0 flex-1"><div className="text-xs">Local workspace</div><div className="text-[10px] text-muted-foreground">On this device</div></div>
+          {import.meta.env.VITE_DEMO_MODE !== "true" && (
+            <button type="button" onClick={() => void clearOperatorCredential()}
+              className={cn("rounded px-1 py-2 text-[10px] text-muted-foreground hover:text-foreground", sidebarFocusClass)}>Sign out</button>
+          )}
+        </div>
       </aside>
       <PromptDialog
         open={renameTarget !== null}

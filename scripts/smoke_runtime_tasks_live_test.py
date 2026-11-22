@@ -85,6 +85,28 @@ class SmokeRuntimeTasksLiveTest(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(reason, "fact")
 
+    def test_project_and_task_payloads_include_required_daemon_fields(self) -> None:
+        project_body = SMOKE.build_smoke_project_payload()
+        self.assertEqual(project_body["kind"], "pentest")
+        self.assertEqual(project_body["name"], "Runtime FGS Live Smoke")
+
+        sandbox_task = SMOKE.build_smoke_task_payload("goal", "prof-1", "sandbox")
+        self.assertEqual(sandbox_task["type"], "pentest")
+        self.assertEqual(sandbox_task["runner"], "sandbox")
+        self.assertEqual(sandbox_task["run_controls"], {"blackboard_mode": "working_graph"})
+
+        host_task = SMOKE.build_smoke_task_payload("goal", "prof-2", "host")
+        self.assertEqual(host_task["type"], "pentest")
+        self.assertEqual(host_task["runner"], "host")
+        self.assertTrue(host_task["run_controls"]["host_activated"])
+
+    def test_pi_profile_custom_args_do_not_redefine_structured_provider(self) -> None:
+        profiles = SMOKE.build_smoke_profiles("https://example.invalid", "tok", "oa")
+        _, provider, fields = profiles["pi"]
+        self.assertEqual(provider, "pi")
+        self.assertNotIn("--provider", fields["custom_args"])
+        self.assertNotIn("--model", fields["custom_args"])
+
 
 if __name__ == "__main__":
     unittest.main()

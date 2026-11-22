@@ -22,6 +22,7 @@ const (
 	KindToolResult    = "tool_result"
 	KindRuntimeOutput = "runtime_output"
 	KindContinuation  = "continuation"
+	KindError         = "error"
 	// KindSubagentBlock is the one collapsed, attributed conversation block a
 	// child agent projects as, anchored at the spawning tool-call row.
 	KindSubagentBlock = "subagent_block"
@@ -39,11 +40,6 @@ const (
 	// through an adapter whose name ("provider-session:<id>") resolves to no
 	// plugin parser, so the stream identifies the underlying provider instead.
 	PiSessionStream = "pi_session"
-
-	// HermesACPStream marks runtime_output events from the Hermes ACP session
-	// bridge. Each agent_message_chunk is one token, so the transcript joins
-	// adjacent chunks from the same Continuation into one sentence.
-	HermesACPStream = "hermes_acp"
 )
 
 // Entry is one projected transcript row. Truncated marks a bounded preview of
@@ -147,8 +143,6 @@ func lastEntryID(entries []Entry) string {
 	return entries[len(entries)-1].ID
 }
 
-// appendOrCoalesceTranscript joins adjacent assistant message chunks from one
-// Continuation so a streamed sentence is one row, not one row per token.
 func collapseStreamingReasoning(entries []Entry, continuation int) {
 	for index := range entries {
 		if entries[index].Continuation == continuation && entries[index].Kind == KindReasoning && entries[index].Status == runtimeoutput.ReasoningPhaseStreaming {
@@ -181,22 +175,9 @@ func appendOrCoalesceTranscript(entries, next []Entry) []Entry {
 				continue
 			}
 		}
-		if n := len(entries); n > 0 && canMergeAssistantMessage(entries[n-1], entry) {
-			entries[n-1].Text += entry.Text
-			entries[n-1].Seq = entry.Seq
-			entries[n-1].CreatedAt = entry.CreatedAt
-			continue
-		}
 		entries = append(entries, entry)
 	}
 	return entries
-}
-
-func canMergeAssistantMessage(prev, next Entry) bool {
-	return prev.Kind == KindMessage && next.Kind == KindMessage &&
-		prev.Role == RoleAssistant && next.Role == RoleAssistant &&
-		prev.Continuation == next.Continuation &&
-		prev.Stream == HermesACPStream && next.Stream == HermesACPStream
 }
 
 func lifecycleEntry(event Event, continuation int) (Entry, bool) {
@@ -265,6 +246,17 @@ func lifecycleEntry(event Event, continuation int) (Entry, bool) {
 		entry.Status = "failed"
 		entry.Details = compactPayload(event.Payload, "phase")
 		return entry, true
+	case "provider_turn_failed":
+		entry.ID = event.ID + "-error"
+		entry.Kind = KindError
+		entry.Role = RoleRuntime
+		entry.Status = "failed"
+		entry.Text = firstText(event.Payload, "error", "error_message", "message")
+		if entry.Text == "" {
+			entry.Text = "Provider turn failed"
+		}
+		entry.Details = compactPayload(event.Payload, "phase", "error")
+		return entry, true
 	default:
 		entry.Text = "Runtime lifecycle: " + phase
 		entry.Status = StatusCollapsed
@@ -328,8 +320,6 @@ func entriesForEvent(event Event, continuation int, adapter string, children *ch
 		parseAdapter := adapter
 		if stream == PiSessionStream {
 			parseAdapter = string(runtimeprofile.ProviderPi)
-		} else if stream == HermesACPStream {
-			parseAdapter = string(runtimeprofile.ProviderHermes)
 		} else if strings.HasPrefix(parseAdapter, "provider-session:") {
 			if provider := stringValue(event.Payload, "provider"); provider != "" {
 				parseAdapter = provider
@@ -399,7 +389,7 @@ func parseRuntimeOutput(event Event, continuation int, adapter, text string, chi
 	}
 	turns := runtimeoutput.ParseRecordWithMeta(record, runtimeoutput.RecordMeta{
 		ProviderEvent: stringValue(event.Payload, "provider_event"),
-	}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true, AttributeChildStreams: event.Payload["child_history_v1"] == true}, base.CreatedAt)
+	}, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true, IncludeErrors: true, AttributeChildStreams: event.Payload["child_history_v1"] == true}, base.CreatedAt)
 	if len(turns) == 0 {
 		return nil, false
 	}
@@ -409,10 +399,6 @@ func parseRuntimeOutput(event Event, continuation int, adapter, text string, chi
 // ParserForAdapter returns the manifest-selected transcript parser for a runtime
 // adapter. Unknown adapters intentionally fall back to plain runtime output.
 func ParserForAdapter(adapter string, registry *runtimeplugin.Registry) string {
-	// Retained Hermes events must remain readable after Runtime retirement.
-	if adapter == string(runtimeprofile.ProviderHermes) {
-		return HermesACPStream
-	}
 	if registry == nil {
 		registry = runtimeplugin.MustBuiltinRegistry()
 	}
@@ -429,7 +415,7 @@ func ParserForAdapter(adapter string, registry *runtimeplugin.Registry) string {
 // derived entries inherit. It is exported so runtime tails can reuse the same
 // parsing as the post-hoc transcript builder.
 func ParseRecord(record map[string]any, base Entry) []Entry {
-	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true}, base.CreatedAt)
+	turns := runtimeoutput.ParseRecord(record, runtimeoutput.ParseOptions{IncludeReasoningSummaries: true, IncludeThinking: true, IncludeErrors: true}, base.CreatedAt)
 	return turnsToEntries(turns, base)
 }
 
@@ -460,243 +446,4 @@ func splitTurns(turns []runtimeoutput.Turn, base Entry, children *childBlocks) [
 		entries = append(entries, entry)
 	}
 	return entries
-}
-
-func entryFromTurn(turn runtimeoutput.Turn, base Entry) (Entry, bool) {
-	switch turn.Kind {
-	case runtimeoutput.KindReasoning:
-		return reasoningEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "reasoning")), true
-	case runtimeoutput.KindText:
-		// Provider user records are internal prompt/session frames. Operator
-		// text is projected only from durable conversation or steering Events.
-		if turn.Role == "user" {
-			return Entry{}, false
-		}
-		return messageEntry(base, entryID(base.ID, "-message", turn.ContentIndex), mapRuntimeRole(turn.Role), turn.Text), true
-	case runtimeoutput.KindToolUse:
-		return toolCallEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-call")), true
-	case runtimeoutput.KindToolResult:
-		return toolResultEntryFromTurn(turn, base, stableTurnEntryID(turn, base, "tool-result")), true
-	default:
-		return Entry{}, false
-	}
-}
-
-func stableTurnEntryID(turn runtimeoutput.Turn, base Entry, kind string) string {
-	if stable := runtimeoutput.StableProviderItemID(turn.ProviderItemID, kind); stable != "" {
-		return fmt.Sprintf("continuation-%d-%s", base.Continuation, stable)
-	}
-	return entryID(base.ID, "-"+kind, turn.ContentIndex)
-}
-
-func entryID(baseID, suffix string, index int) string {
-	if index < 0 {
-		return baseID + suffix
-	}
-	return fmt.Sprintf("%s%s-%d", baseID, suffix, index)
-}
-
-func mapRuntimeRole(role string) string {
-	switch role {
-	case "user":
-		return RoleUser
-	case "system":
-		return RoleSystem
-	case "tool":
-		return RoleTool
-	default:
-		return RoleAssistant
-	}
-}
-
-func messageEntry(base Entry, id, role, text string) Entry {
-	return Entry{
-		ID:           id,
-		Seq:          base.Seq,
-		Continuation: base.Continuation,
-		Kind:         KindMessage,
-		Role:         role,
-		Text:         text,
-		Stream:       base.Stream,
-		CreatedAt:    base.CreatedAt,
-	}
-}
-
-func reasoningEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry {
-	return Entry{
-		ID:           id,
-		Seq:          base.Seq,
-		Continuation: base.Continuation,
-		Kind:         KindReasoning,
-		Role:         RoleAssistant,
-		Text:         turn.Text,
-		Status:       reasoningEntryStatus(turn),
-		Incremental:  turn.Incremental,
-		CreatedAt:    base.CreatedAt,
-	}
-}
-
-func reasoningEntryStatus(turn runtimeoutput.Turn) string {
-	if turn.LifecyclePhase == runtimeoutput.ReasoningPhaseStreaming {
-		return runtimeoutput.ReasoningPhaseStreaming
-	}
-	return StatusCollapsed
-}
-
-func toolCallEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry {
-	details := turn.Details
-	if len(turn.Input) > 0 {
-		cloned := make(map[string]any, len(details)+1)
-		for key, value := range details {
-			cloned[key] = value
-		}
-		if _, ok := cloned["input"]; !ok {
-			cloned["input"] = turn.Input
-		}
-		details = cloned
-	}
-	return Entry{
-		ID:           id,
-		Seq:          base.Seq,
-		Continuation: base.Continuation,
-		Kind:         KindToolCall,
-		Role:         RoleAssistant,
-		ToolCallID:   turn.ToolCallID,
-		ToolName:     turn.Tool,
-		Details:      details,
-		Status:       StatusCollapsed,
-		CreatedAt:    base.CreatedAt,
-	}
-}
-
-func toolResultEntryFromTurn(turn runtimeoutput.Turn, base Entry, id string) Entry {
-	return Entry{
-		ID:           id,
-		Seq:          base.Seq,
-		Continuation: base.Continuation,
-		Kind:         KindToolResult,
-		Role:         RoleTool,
-		Text:         turn.Output,
-		ToolCallID:   turn.ToolCallID,
-		ToolName:     turn.Tool,
-		Details:      turn.Details,
-		Status:       StatusCollapsed,
-		CreatedAt:    base.CreatedAt,
-	}
-}
-
-// IsIgnorableRuntimeLine reports whether a raw runtime stdout/stderr line is
-// provider metadata that should not be stored or shown in the task conversation transcript.
-func IsIgnorableRuntimeLine(text string) bool {
-	return runtimeoutput.ShouldIgnoreForStorage(text)
-}
-
-func isIgnorableUnparsedRuntimeLine(text string) bool {
-	return runtimeoutput.IsThinkingOnlyAssistantLine(text)
-}
-
-func runtimeFallback(event Event, continuation int, text, stream string) Entry {
-	return Entry{
-		ID:           event.ID + "-runtime",
-		Seq:          event.Seq,
-		Continuation: continuation,
-		Kind:         KindRuntimeOutput,
-		Role:         RoleRuntime,
-		Text:         text,
-		Stream:       stream,
-		Status:       StatusCollapsed,
-		CreatedAt:    event.CreatedAt,
-	}
-}
-
-func firstText(record map[string]any, keys ...string) string {
-	for _, key := range keys {
-		value, ok := record[key]
-		if !ok {
-			continue
-		}
-		if text := valueToText(value); text != "" {
-			return text
-		}
-	}
-	return ""
-}
-
-func stringValue(record map[string]any, key string) string {
-	value, ok := record[key]
-	if !ok {
-		return ""
-	}
-	text, _ := value.(string)
-	return text
-}
-
-func valueToText(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return typed
-	case []any:
-		parts := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if text := valueToText(item); text != "" {
-				parts = append(parts, text)
-			}
-		}
-		return strings.Join(parts, "\n")
-	case map[string]any:
-		if text := firstText(typed, "text", "content", "message", "output"); text != "" {
-			return text
-		}
-		data, err := json.Marshal(typed)
-		if err != nil {
-			return fmt.Sprint(typed)
-		}
-		return string(data)
-	case nil:
-		return ""
-	default:
-		return fmt.Sprint(typed)
-	}
-}
-
-func mapValue(record map[string]any, key string) (map[string]any, bool) {
-	value, ok := record[key]
-	if !ok {
-		return nil, false
-	}
-	typed, ok := value.(map[string]any)
-	return typed, ok
-}
-
-func sliceValue(record map[string]any, key string) ([]any, bool) {
-	value, ok := record[key]
-	if !ok {
-		return nil, false
-	}
-	typed, ok := value.([]any)
-	return typed, ok
-}
-
-func compactPayload(payload map[string]any, skipKeys ...string) map[string]any {
-	if len(payload) == 0 {
-		return nil
-	}
-	skip := map[string]bool{}
-	for _, key := range skipKeys {
-		skip[key] = true
-	}
-	details := map[string]any{}
-	for key, value := range payload {
-		if !skip[key] {
-			details[key] = value
-		}
-	}
-	return nilIfEmpty(details)
-}
-
-func nilIfEmpty(values map[string]any) map[string]any {
-	if len(values) == 0 {
-		return nil
-	}
-	return values
 }
