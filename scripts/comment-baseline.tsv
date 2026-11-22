@@ -255,7 +255,7 @@ internal/preflight/preflight_test.go	27
 internal/project/project.go	34
 internal/project/project_test.go	2
 internal/projectinterface/bearer.go	2
-internal/projectinterface/errors.go	42
+internal/projectinterface/errors.go	40
 internal/projectinterface/grant.go	64
 internal/projectinterface/grant_queries.go	27
 internal/runner/blackboard_projection_preflight.go	4
