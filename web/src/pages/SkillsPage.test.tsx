@@ -1,22 +1,12 @@
-import { render, screen, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { StrictMode } from "react";
-import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import { mockApi } from "@/test/mockApi";
-import { SkillsPage } from "./SkillsPage";
-
-function renderPage() {
-  return render(
-    <StrictMode>
-      <MemoryRouter>
-        <SkillsPage />
-      </MemoryRouter>
-    </StrictMode>,
-  );
-}
+import { renderPage } from "./SkillsPage.testSupport";
 
 describe("SkillsPage", () => {
+
+
   it("uses a library-first layout with compact skill rows and a management panel", async () => {
     mockApi({
       "/api/runtime-profiles": {
@@ -52,7 +42,7 @@ describe("SkillsPage", () => {
     expect(layout).toHaveClass(
       "grid",
       "min-w-0",
-      "lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]",
+      "lg:grid-cols-[240px_minmax(0,1fr)]",
     );
     expect(screen.getByTestId("skills-settings-list")).toHaveClass(
       "min-w-0",
@@ -60,7 +50,7 @@ describe("SkillsPage", () => {
       "lg:min-h-0",
       "lg:overflow-hidden",
     );
-    expect(layout).toHaveClass("lg:min-h-0", "lg:flex-1");
+    expect(layout).toHaveClass("gap-8");
     expect(await screen.findByTestId("skills-library-list")).toBeInTheDocument();
     expect(screen.getByTestId("skills-form-panel")).toHaveClass(
       "flex",
@@ -72,6 +62,7 @@ describe("SkillsPage", () => {
     expect(screen.getByLabelText("Search skills")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Filter by status" })).toBeInTheDocument();
   });
+
 
   it("lists global skills with source provenance and profile opt-out controls", async () => {
     const fetchMock = mockApi({
@@ -131,6 +122,7 @@ describe("SkillsPage", () => {
       expect.objectContaining({ method: "PUT" }),
     );
   });
+
 
   it("supports global Skill Opt-Out independently of the selected Runtime Profile", async () => {
     const fetchMock = mockApi({
@@ -200,6 +192,7 @@ describe("SkillsPage", () => {
       expect.objectContaining({ method: "DELETE" }),
     );
   });
+
 
   it("offers separate bulk controls for Global and Profile Skill Opt-Outs", async () => {
     const fetchMock = mockApi({
@@ -296,6 +289,7 @@ describe("SkillsPage", () => {
     );
   });
 
+
   it("filters the skill library by search and status", async () => {
     mockApi({
       "/api/runtime-profiles": {
@@ -349,6 +343,7 @@ describe("SkillsPage", () => {
     expect(screen.queryByText("Auth Bypass")).not.toBeInTheDocument();
   });
 
+
   it("explains user-created Runtime Profile scope for Skill Opt-Outs", async () => {
     mockApi({
       "/api/runtime-profiles": {
@@ -374,6 +369,7 @@ describe("SkillsPage", () => {
     expect(screen.getByText(/Profile Skill Opt-Outs apply only when this Runtime Profile/i)).toBeInTheDocument();
     expect(screen.getByText(/new Task or Session/i)).toBeInTheDocument();
   });
+
 
   it("strips source prefixes from built-in skill names, ids, and descriptions", async () => {
     const fetchMock = mockApi({
@@ -417,7 +413,8 @@ describe("SkillsPage", () => {
     renderPage();
 
     const builtinRow = await screen.findByTestId("skill-card-cyberstrikeai-vulnerabilities-xss");
-    expect(within(builtinRow).getAllByText("vulnerabilities-xss")).toHaveLength(2);
+    expect(within(builtinRow).getAllByText("vulnerabilities-xss")).toHaveLength(1);
+    expect(within(builtinRow).getByTitle("vulnerabilities-xss")).toBeInTheDocument();
     expect(screen.getByText("XSS testing methodology")).toBeInTheDocument();
     expect(within(builtinRow).getByText("builtin")).toBeInTheDocument();
     expect(screen.queryByText(/cyberstrikeai/i)).not.toBeInTheDocument();
@@ -432,6 +429,7 @@ describe("SkillsPage", () => {
       expect.objectContaining({ method: "PUT" }),
     );
   });
+
 
   it("keeps the Global Skill control active when no Runtime Profile exists", async () => {
     const fetchMock = mockApi({
@@ -488,6 +486,7 @@ describe("SkillsPage", () => {
     );
   });
 
+
   it("keeps the create form collapsed until New skill is chosen", async () => {
     mockApi({
       "/api/runtime-profiles": {
@@ -507,16 +506,17 @@ describe("SkillsPage", () => {
 
     renderPage();
 
-    expect(await screen.findByRole("heading", { name: "Upload / edit Skill" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Select a Skill" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Skill ID")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getAllByRole("button", { name: /new skill/i })[0]!);
     expect(await screen.findByLabelText("Skill ID")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Upload / edit Skill" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Select a Skill" })).toBeInTheDocument();
 
     const formPanel = screen.getByTestId("skills-form-panel");
     expect(within(formPanel).getByRole("button", { name: /publish skill/i })).toBeInTheDocument();
   });
+
 
   it("uploads a ZIP or TAR Skill bundle as multipart form data", async () => {
     const fetchMock = mockApi({
@@ -538,7 +538,7 @@ describe("SkillsPage", () => {
 
     renderPage();
 
-    await screen.findByRole("heading", { name: "Upload / edit Skill" });
+    await screen.findByRole("heading", { name: "Select a Skill" });
     const archiveInput = screen.getByLabelText("Skill bundle archive");
     expect(archiveInput).toHaveClass("sr-only");
     expect(screen.getByText("Choose file")).toBeInTheDocument();
@@ -558,5 +558,4 @@ describe("SkillsPage", () => {
     expect(uploadCall).toBeDefined();
     expect((uploadCall?.[1]?.body as FormData).get("archive")).toBe(archive);
   });
-
 });

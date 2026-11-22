@@ -103,6 +103,15 @@ go run ./scripts/verify-go-moves.go --self-test
 
 Exit code 0 is pass, 1 is a verification failure, and 2 is a git, read, or parse error.
 
+### Web regression fixtures
+
+- Web test modules group one behavior and share setup through named support modules. Route controls stay in a component-only module so Fast Refresh does not mix components and setup functions.
+- `mockApi` matches routes in insertion order. Put a detail or query route before its broader list route, or the list response can hide the requested detail.
+- jsdom does not measure layout. `mockConversationViewport` supplies geometry for history and auto-follow tests. Browser tests separately check measured layout and reading position.
+- History replacement tests hold the next owner's response until the old rows are gone. Fake timers remain inside the polling tests; unrelated tests use real timers.
+- The Runtime Profile save-feedback test holds its response until the Saving state is asserted. It does not depend on a short response timer.
+- Provider endpoint composition keeps destination environment references with its credential binding. Provider-native config import follows ADR 0028; projected Pi selection follows ADR 0015. These are not visual layout changes.
+
 ## Consequences
 
 - Code has no comments that record decisions. Read this ADR and the linked ADRs instead.

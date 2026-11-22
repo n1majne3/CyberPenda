@@ -6,10 +6,10 @@ export const sidebarFocusClass =
 
 export function navItemClasses(isActive: boolean, className?: string) {
   return cn(
-    "group relative inline-flex h-9 w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm transition-colors",
+    "group relative inline-flex h-[37px] w-full items-center gap-2.5 rounded-md px-3 py-2 text-xs transition-colors",
     sidebarFocusClass,
     isActive
-      ? "bg-signal/5 font-semibold text-sidebar-accent-foreground"
+      ? "bg-card font-medium text-signal"
       : "text-muted-foreground hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground",
     className,
   );
