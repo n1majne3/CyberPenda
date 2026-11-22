@@ -129,8 +129,8 @@ func TestContainsGeneratedBlackboardInstructionsDetectsCLIFormat(t *testing.T) {
 	}
 
 	legacy := []byte("# Non-Project Session context\n\nTrusted MCP is pre-configured\n## Required workflow\nblackboard_finish\n.pentest/context.json\n")
-	if !containsGeneratedBlackboardInstructions(legacy) {
-		t.Fatal("stale-projection preflight no longer detects legacy generated AGENTS.md")
+	if containsGeneratedBlackboardInstructions(legacy) {
+		t.Fatal("stale-projection preflight still matches removed legacy pre-pentestctl AGENTS.md heuristic")
 	}
 
 	operator := []byte("# Operator notes\n\nWe prefer pentestctl blackboard today; the Mode Skill may change. This is operator content, not generated instructions.\n")

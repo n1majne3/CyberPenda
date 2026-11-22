@@ -12,7 +12,7 @@ import {
 import { SettingsListColumn } from "@/components/settingsLibrary";
 import { SkillBulkActions, type DisableAllTarget } from "./SkillBulkActions";
 import { SkillEditorPanel, type FormMode, type SkillForm } from "./SkillEditorPanel";
-import { SkillsLibraryList, type StatusFilter } from "./SkillsLibraryList";
+import { SkillsLibraryList, SkillsLibraryToolbar, type StatusFilter } from "./SkillsLibraryList";
 import {
   displaySkillDescription,
   displaySkillId,
@@ -34,6 +34,7 @@ export function SkillsPage() {
   const [profileId, setProfileId] = useState("");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [form, setForm] = useState<SkillForm>(emptySkillForm);
+  const [viewedForm, setViewedForm] = useState<SkillForm | null>(null);
   const [formMode, setFormMode] = useState<FormMode>("idle");
   const [importPackage, setImportPackage] = useState("");
   const [archiveFile, setArchiveFile] = useState<File | null>(null);
@@ -108,8 +109,8 @@ export function SkillsPage() {
   }
 
   function cancelForm() {
-    setForm(emptySkillForm);
-    setFormMode("idle");
+    setForm(viewedForm ?? emptySkillForm);
+    setFormMode(viewedForm ? "view" : "idle");
   }
 
   async function publishSkill() {
@@ -124,8 +125,10 @@ export function SkillsPage() {
         source_provenance: form.source_provenance,
         files: { ...parseExtraFiles(form.extra_files), "SKILL.md": form.instruction },
       });
-      setForm(emptySkillForm);
-      setFormMode("idle");
+      const savedForm = { ...form, storage_id: targetID };
+      setForm(savedForm);
+      setViewedForm(savedForm);
+      setFormMode("view");
       await loadSkills();
     } catch (e) {
       setError((e as Error).message);
@@ -242,13 +245,13 @@ export function SkillsPage() {
     }
   }
 
-  async function editSkill(skill: Skill) {
+  async function editSkill(skill: Skill, viewOnly = false) {
     setError(null);
     try {
       const loaded = await apiGet<Skill>(`/api/skills/${encodeURIComponent(skill.id)}`);
       const files = loaded.files ?? {};
       const { ["SKILL.md"]: instruction, ...extraFiles } = files;
-      setForm({
+      const loadedForm: SkillForm = {
         id: displaySkillId(loaded),
         storage_id: loaded.id,
         name: displaySkillName(loaded),
@@ -256,8 +259,10 @@ export function SkillsPage() {
         instruction: instruction ?? "# " + displaySkillName(loaded),
         extra_files: JSON.stringify(extraFiles, null, 2),
         source_provenance: loaded.source_provenance,
-      });
-      setFormMode("edit");
+      };
+      setForm(loadedForm);
+      setViewedForm(loadedForm);
+      setFormMode(viewOnly ? "view" : "edit");
       setImportOpen(false);
     } catch (e) {
       setError((e as Error).message);
@@ -269,7 +274,9 @@ export function SkillsPage() {
     try {
       await apiDelete(`/api/skills/${encodeURIComponent(skill.id)}?force_disable=true`);
       if (form.storage_id === skill.id || form.id === displaySkillId(skill)) {
-        cancelForm();
+        setForm(emptySkillForm);
+        setViewedForm(null);
+        setFormMode("idle");
       }
       await loadSkills();
     } catch (e) {
@@ -308,14 +315,14 @@ export function SkillsPage() {
     });
   }, [skills, query, statusFilter]);
 
-  const editingId = formMode === "edit" ? form.storage_id : undefined;
+  const editingId = formMode === "edit" || formMode === "view" ? form.storage_id : undefined;
 
   return (
     <SettingsPageShell>
       <SettingsPageHeader
         className="mb-4 shrink-0"
         title="Skills"
-        eyebrow="Library"
+        description="Focused instructions, enabled only where you need them."
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -336,8 +343,9 @@ export function SkillsPage() {
 
       {error && <SettingsAlert className="mb-3 shrink-0">{error}</SettingsAlert>}
 
-      <SettingsSplitLayout data-testid="skills-settings-layout" variant="management" fill>
-        <SettingsListColumn data-testid="skills-settings-list">
+      <details className="mb-5 border-b border-border pb-4">
+        <summary className="cursor-pointer text-xs text-muted-foreground">Enablement · {selectedProfile?.name || "Global defaults"}</summary>
+        <div className="mt-4 space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-card p-4 shadow-sm lg:shrink-0">
             <div className="min-w-0">
               <Label htmlFor="skills-runtime-profile" className="text-xs font-medium">
@@ -380,15 +388,18 @@ export function SkillsPage() {
             setConfirmDisableAllTarget={setConfirmDisableAllTarget}
           />
 
+
+        </div>
+      </details>
+      <SkillsLibraryToolbar skillsCount={skills.length} enabledCount={enabledCount} optedOutCount={optedOutCount}
+        statusFilter={statusFilter} query={query} setStatusFilter={setStatusFilter} setQuery={setQuery} />
+      <SettingsSplitLayout data-testid="skills-settings-layout" className="lg:grid-cols-[240px_minmax(0,1fr)]">
+        <SettingsListColumn data-testid="skills-settings-list">
           <SkillsLibraryList
             skills={skills}
             filteredSkills={filteredSkills}
             selectedProfile={selectedProfile}
             editingId={editingId}
-            enabledCount={enabledCount}
-            optedOutCount={optedOutCount}
-            statusFilter={statusFilter}
-            query={query}
             skillsLoading={skillsLoading}
             setStatusFilter={setStatusFilter}
             setQuery={setQuery}
@@ -396,12 +407,16 @@ export function SkillsPage() {
             setImportOpen={setImportOpen}
             toggleGlobalOptOut={toggleGlobalOptOut}
             toggleOptOut={toggleOptOut}
+            onSelect={(skill) => editSkill(skill, true)}
             editSkill={editSkill}
             setConfirmDeleteSkill={setConfirmDeleteSkill}
           />
         </SettingsListColumn>
 
         <SkillEditorPanel
+          startEdit={() => setFormMode("edit")}
+          showImport={() => { setForm(emptySkillForm); setFormMode("idle"); }}
+          deleteSelected={() => { const selected = skills.find((skill) => skill.id === form.storage_id); if (selected) setConfirmDeleteSkill(selected); }}
           form={form}
           formMode={formMode}
           archiveFile={archiveFile}

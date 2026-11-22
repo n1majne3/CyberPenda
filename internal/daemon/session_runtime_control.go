@@ -130,13 +130,17 @@ func (server *Server) stopSessionRuntime(sessionID string) error {
 	if err != nil {
 		return err
 	}
+	stoppedActiveContinuation := false
 	if active != nil {
 		_, err = server.sessions.UpdateContinuationStatus(active.ID, session.RuntimeStatusStopped)
 		if err != nil && !errors.Is(err, session.ErrContinuationStatusConflict) {
 			return err
 		}
+		stoppedActiveContinuation = err == nil
 	}
 	server.settleSessionAcceptedSteering(sessionID, owner.SteeringReasonOwnerStopped, "Session stopped with queued accepted steering")
-	_, _ = server.sessions.AppendEvent(sessionID, session.EventKindLifecycle, session.EventPayload{"phase": "stopped"})
+	if stoppedActiveContinuation {
+		_, _ = server.sessions.AppendEvent(sessionID, session.EventKindLifecycle, session.EventPayload{"phase": "stopped"})
+	}
 	return nil
 }

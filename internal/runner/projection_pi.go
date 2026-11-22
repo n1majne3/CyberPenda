@@ -23,6 +23,9 @@ func piAPIForProtocol(protocol modelprovider.Protocol) string {
 }
 
 func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req ProjectionRequest) (ConfigProjection, error) {
+	if req.GlobalModelProviderSnapshot == nil {
+		return ConfigProjection{}, fmt.Errorf("global Model Provider snapshot is required for Pi projection")
+	}
 	materialized, err := resolveMaterializedCredentials(profile, req)
 	if err != nil {
 		return ConfigProjection{}, err
@@ -74,20 +77,8 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 		return ConfigProjection{}, fmt.Errorf("apply custom config file: %w", err)
 	}
 	modelsPath := filepath.Join(agentDir, "models.json")
-	globalProjection := piGlobalProjectionAvailable(req)
-	hostModelsFallback := !globalProjection && len(projected) == 0
-	if hostModelsFallback {
-		if copiedModels, err := copyHostPiModels(agentDir); err != nil {
-			return ConfigProjection{}, err
-		} else if !copiedModels {
-			if err := writeJSONConfigFile(modelsPath, modelsDoc); err != nil {
-				return ConfigProjection{}, err
-			}
-		}
-	} else {
-		if err := writeJSONConfigFile(modelsPath, modelsDoc); err != nil {
-			return ConfigProjection{}, err
-		}
+	if err := writeJSONConfigFile(modelsPath, modelsDoc); err != nil {
+		return ConfigProjection{}, err
 	}
 
 	authPath := ""
@@ -98,13 +89,6 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 			return ConfigProjection{}, err
 		}
 		authPreview = redactPiAuth(authDoc)
-	} else if hostModelsFallback {
-		if copied, err := copyHostPiAuth(agentDir); err != nil {
-			return ConfigProjection{}, err
-		} else if copied {
-			authPath = filepath.Join(agentDir, "auth.json")
-			authPreview = map[string]any{"source": "host_pi_auth"}
-		}
 	}
 
 	// settings.json is projection-owned: packages come from catalog-sourced
@@ -154,33 +138,17 @@ func projectPiConfig(layout Layout, profile runtimeprofile.Profile, req Projecti
 	if len(packages) > 0 {
 		preview["packages"] = packages
 	}
-	// Always record the evaluated projected set when global projection ran,
-	// including an empty list. Daemon native cross-provider turns fail closed
-	// without this field (fixed-at-restart semantics).
-	if globalProjection {
-		ids := make([]string, 0, len(projected))
-		for _, entry := range projected {
-			ids = append(ids, entry.Provider.ID)
-		}
-		preview["projected_model_provider_ids"] = ids
+	// Always record the evaluated projected set, including an empty list.
+	// Daemon native cross-provider turns fail closed without this field
+	// (fixed-at-restart semantics).
+	ids := make([]string, 0, len(projected))
+	for _, entry := range projected {
+		ids = append(ids, entry.Provider.ID)
 	}
+	preview["projected_model_provider_ids"] = ids
 	addModelSnapshotPreview(preview, req.ModelSnapshot)
 
 	return ConfigProjection{ConfigPath: modelsPath, Config: preview}, nil
-}
-
-// piGlobalProjectionAvailable is true when Config Projection owns the global
-// Model Provider set for Pi — either via a pre-TX snapshot or a lister used
-// only outside Store transactions (unit tests).
-func piGlobalProjectionAvailable(req ProjectionRequest) bool {
-	if req.GlobalModelProviderSnapshot != nil {
-		return true
-	}
-	if req.ModelProviders == nil {
-		return false
-	}
-	_, ok := req.ModelProviders.(modelprovider.ProviderLister)
-	return ok
 }
 
 // piModelEntry projects one models.json model entry. Pi clamps
@@ -350,40 +318,6 @@ func piAPIKeyEnv(profile runtimeprofile.Profile, materialized map[string]string,
 		return ""
 	}
 	return keys[0]
-}
-
-func copyHostPiModels(agentDir string) (bool, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false, nil
-	}
-	src := filepath.Join(home, ".pi", "agent", "models.json")
-	raw, err := os.ReadFile(src)
-	if err != nil {
-		return false, nil
-	}
-	dst := filepath.Join(agentDir, "models.json")
-	if err := os.WriteFile(dst, raw, 0o600); err != nil {
-		return false, fmt.Errorf("copy host pi models: %w", err)
-	}
-	return true, nil
-}
-
-func copyHostPiAuth(agentDir string) (bool, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false, nil
-	}
-	src := filepath.Join(home, ".pi", "agent", "auth.json")
-	raw, err := os.ReadFile(src)
-	if err != nil {
-		return false, nil
-	}
-	dst := filepath.Join(agentDir, "auth.json")
-	if err := os.WriteFile(dst, raw, 0o600); err != nil {
-		return false, fmt.Errorf("copy host pi auth: %w", err)
-	}
-	return true, nil
 }
 
 // projectPiSettings writes the task-local settings.json from projection-owned

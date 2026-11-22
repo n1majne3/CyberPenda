@@ -1,43 +1,33 @@
 package daemon
 
 import (
+	"fmt"
 	"os"
-	"path/filepath"
+	"strings"
 
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
 
-// The launch-plan tail below is the owner-neutral part of every Runtime
-// launch: the sandbox Pi bootstrap rule, the Pi session tailer, the native
-// session metadata collector, and the container stop confirmation. Task and
-// Session launch plans share these steps verbatim (ADR 0020); owners keep only
-// their plan middles (Project binding, Scope, captured replay).
-
-// sandboxPiRuntimeCommand applies the one-shot Pi bootstrap wrapper unless this
-// launch will open a persistent provider session: the provider-session bridge
-// rewrites the image command itself and needs a bare "pi" token in the docker
-// create argv.
-func (server *Server) sandboxPiRuntimeCommand(providerCommand []string, profile runtimeprofile.Profile, run task.Runner) ([]string, error) {
-	usePersistentSession := server.providerSessionFactory != nil &&
-		supportsPersistentProviderSession(run, profile.Provider)
-	if usePersistentSession {
-		return providerCommand, nil
+func resolveProviderBinary(registry *runtimeplugin.Registry, profile runtimeprofile.Profile) (string, error) {
+	if registry == nil {
+		registry = runtimeplugin.MustBuiltinRegistry()
 	}
-	return runner.WrapSandboxPiCommand(providerCommand, profile.Fields.Env)
-}
-
-// withPiSessionTail wraps a sandboxed Pi adapter with the session-file tailer.
-// Pi writes its real-time progress to a session jsonl file instead of stdout,
-// so a sandboxed Pi timeline is empty until exit; the tailer re-emits appended
-// lines as runtime_output events the transcript parser already understands.
-func withPiSessionTail(adapter runtime.Adapter, sandbox bool, provider runtimeprofile.Provider, layout runner.Layout) runtime.Adapter {
-	if sandbox && provider == runtimeprofile.ProviderPi {
-		return runtime.NewPiSessionTailAdapter(adapter, filepath.Join(layout.ProviderHome, "agent", "sessions"))
+	plugin, ok := registry.Get(string(profile.Provider))
+	if !ok {
+		return "", fmt.Errorf("unsupported provider %q", profile.Provider)
 	}
-	return adapter
+	binary := strings.TrimSpace(profile.Fields.BinaryPath)
+	if binary == "" {
+		binary = strings.TrimSpace(plugin.Binary.Default)
+	}
+	if binary == "" {
+		return "", fmt.Errorf("no binary path configured for provider %q", profile.Provider)
+	}
+	return binary, nil
 }
 
 // providerNativeSessionMetadata builds the post-launch native session metadata

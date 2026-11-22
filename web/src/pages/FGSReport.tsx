@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { apiGet, type Project } from "@/lib/api";
 import { ProjectPageShell } from "@/components/ProjectPageShell";
+import { Button, Card } from "@/components/ui";
 import { downloadMarkdown } from "@/lib/download";
 
 export function ProjectReportProtocol({ legacy, fgs }: { legacy: ReactNode; fgs?: ReactNode }) {
@@ -30,9 +31,20 @@ function FGSReport({ projectId }: { projectId: string }) {
     if (!report) return;
     downloadMarkdown(report.markdown, "fgs-report.md");
   };
-  return <ProjectPageShell title="Report" bodyClassName="space-y-4">
-    <p className="text-sm text-muted-foreground">Accepted Goals, Steps, and Facts from one Blackboard revision.</p>
-    {error && <p role="alert">{error}</p>}
-    {report ? <><button className="rounded border px-3 py-2 text-sm" onClick={download}>Download Markdown</button><pre className="overflow-auto whitespace-pre-wrap rounded-lg border bg-card p-6 text-sm leading-7">{report.markdown}</pre></> : !error && <p>Loading report…</p>}
-  </ProjectPageShell>;
+  return (
+    <ProjectPageShell
+      title="Report"
+      description="Accepted Goals, Steps, and Facts from one Blackboard revision."
+      actions={report && <Button variant="outline" size="sm" onClick={download}>Download Markdown</Button>}
+      bodyClassName="space-y-6"
+    >
+      {error && <p role="alert">{error}</p>}
+      {report ? (
+        <Card as="section" className="mx-auto max-w-4xl gap-6 p-6 sm:p-10">
+          <p className="text-xs text-muted-foreground">Blackboard revision {report.revision}</p>
+          <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7">{report.markdown}</pre>
+        </Card>
+      ) : !error && <p>Loading report…</p>}
+    </ProjectPageShell>
+  );
 }

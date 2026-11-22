@@ -1,5 +1,7 @@
 import { Download, Plus, X } from "lucide-react";
-import { Button, Input, Label, Textarea, buttonVariants } from "@/components/ui";
+import { buttonVariants } from "@/components/buttonVariants";
+import { ActionMenu } from "@/components/ActionMenu";
+import { Button, Input, Label, Textarea } from "@/components/ui";
 import type { Skill } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -13,7 +15,7 @@ export type SkillForm = {
   source_provenance?: Skill["source_provenance"];
 };
 
-export type FormMode = "idle" | "create" | "edit";
+export type FormMode = "idle" | "create" | "view" | "edit";
 
 export function SkillEditorPanel({
   form,
@@ -31,6 +33,9 @@ export function SkillEditorPanel({
   setImportPackage,
   toggleImportOpen,
   startCreate,
+  startEdit,
+  showImport,
+  deleteSelected,
 }: {
   form: SkillForm;
   formMode: FormMode;
@@ -47,16 +52,29 @@ export function SkillEditorPanel({
   setImportPackage: (source: string) => void;
   toggleImportOpen: () => void;
   startCreate: () => void;
+  startEdit: () => void;
+  showImport: () => void;
+  deleteSelected: () => void;
 }) {
+  if (formMode === "view") return (
+    <aside data-testid="skills-form-panel" className="flex min-w-0 flex-col gap-6 lg:min-h-0 lg:overflow-y-auto">
+      <header className="flex items-start justify-between gap-4 border-b border-border pb-6">
+        <div className="min-w-0"><h2 className="text-[15px] font-semibold">{form.name}</h2><p className="mt-2 text-xs leading-6 text-muted-foreground">{form.description}</p><p className="mt-2 font-mono text-[10px] text-muted-foreground">{form.id}</p></div>
+        <ActionMenu label="More"><Button variant="ghost" onClick={startEdit}>Edit Skill</Button><Button variant="ghost" onClick={showImport}>Import a bundle</Button><Button variant="ghost" className="text-destructive" onClick={deleteSelected}>Delete Skill</Button></ActionMenu>
+      </header>
+      <article aria-label="Skill instructions" className="whitespace-pre-wrap break-words text-[13px] leading-7">{form.instruction}</article>
+      <p className="border-t border-border pt-4 text-[10px] text-muted-foreground">Read-only preview. Use More to edit this Skill.</p>
+    </aside>
+  );
   return (
     <aside
       data-testid="skills-form-panel"
       className="flex min-w-0 flex-col gap-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain"
     >
-      <div className="rounded-lg border border-border bg-card p-4 shadow-sm">
+      <div className="border-b border-border pb-6">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-medium">
-            {formMode === "edit" ? "Edit Skill" : "Upload / edit Skill"}
+            {formMode === "edit" ? "Edit Skill" : "Select a Skill"}
           </h3>
           {formMode !== "idle" && (
             <Button
@@ -70,7 +88,7 @@ export function SkillEditorPanel({
           )}
         </div>
         <p className="mt-1 text-xs text-muted-foreground">
-          Publish one canonical bundle atomically. Reusing a Skill ID updates it.
+          {formMode === "idle" ? "Open a Skill to inspect its instructions, or import a Skill bundle." : "Publish one canonical bundle atomically. Reusing a Skill ID updates it."}
         </p>
 
         {formMode === "idle" ? (

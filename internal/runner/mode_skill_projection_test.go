@@ -63,3 +63,21 @@ func TestProjectRuntimeConfigDisabledModeProjectsNoModeSkill(t *testing.T) {
 		t.Fatalf("Disabled projection kept a Mode Skill preview: %#v", projection.Config["mode_skill"])
 	}
 }
+
+func TestProjectRuntimeConfigRejectsEmptyBlackboardMode(t *testing.T) {
+	layout, err := runner.PrepareTaskLayout(t.TempDir(), "task-empty-mode", runtimeprofile.ProviderCodex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderCodex}
+	req := runner.ProjectionRequest{Owner: owner.NewTaskContract("task-empty-mode", "project-1", layout.Workdir)}
+	if _, err := runner.ProjectRuntimeConfig(layout, profile, req); err == nil {
+		t.Fatal("expected ProjectRuntimeConfig to reject empty Blackboard Mode")
+	}
+	if _, err := runner.ProjectBlackboardV2RuntimeConfig(layout, profile, req); err == nil {
+		t.Fatal("expected ProjectBlackboardV2RuntimeConfig to reject empty Blackboard Mode")
+	}
+	if _, err := runner.PrepareConfigProjection(profile, runner.ConfigProjectionInput{ProjectionRequest: req}); err == nil {
+		t.Fatal("expected PrepareConfigProjection to reject empty Blackboard Mode")
+	}
+}

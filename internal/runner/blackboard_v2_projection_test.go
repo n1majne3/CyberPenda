@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"pentest/internal/blackboardv2"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/project"
 	"pentest/internal/runner"
@@ -122,7 +123,8 @@ func TestExternalMCPServerNamedPentestIsPreserved(t *testing.T) {
 		},
 	}
 	if _, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		Owner: owner.NewTaskContract("task-claude-external-pentest", "project-1", layout.Workdir),
+		BlackboardMode: modeskill.ModeDisabled,
+		Owner:          owner.NewTaskContract("task-claude-external-pentest", "project-1", layout.Workdir),
 	}); err != nil {
 		t.Fatalf("external pentest MCP should be preserved: %v", err)
 	}

@@ -32,12 +32,9 @@ export function RuntimeProfileBasicsSection({
   legacyModelFields: boolean;
 }) {
   return (
-    <section className="rounded-lg border border-border bg-card shadow-sm">
-      <div className="border-b border-border px-4 py-3">
-        <span className="text-sm font-medium">Basics and model</span>
-      </div>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-4 p-4">
-      <div>
+    <section aria-label="Runtime profile basics">
+      <div className="grid grid-cols-1 gap-x-4 gap-y-5 sm:grid-cols-2">
+      <div className="sm:col-span-2">
         <Label htmlFor="profile-name">Name</Label>
         <Input
           id="profile-name"
@@ -50,7 +47,7 @@ export function RuntimeProfileBasicsSection({
         />
       </div>
       <div>
-        <Label htmlFor="profile-provider">Provider</Label>
+        <Label htmlFor="profile-provider">Runtime</Label>
         <Select
           id="profile-provider"
           name="provider"
@@ -99,6 +96,28 @@ export function RuntimeProfileBasicsSection({
           </p>
         )}
       </div>
+      <div className="sm:col-span-2">
+        <Label htmlFor="profile-model-override">Model override</Label>
+        <Select
+          id="profile-model-override"
+          name="model_override"
+          value={form.model_override}
+          onChange={(e) => onChange({ ...form, model_override: e.target.value })}
+          disabled={!form.model_provider_id}
+        >
+          <option value="">Use provider default</option>
+          {providerModels.map((model) => (
+            <option key={model} value={model}>{model}</option>
+          ))}
+          {form.model_override && !providerModels.includes(form.model_override) && (
+            <option value={form.model_override}>{form.model_override} (stale)</option>
+          )}
+        </Select>
+      </div>
+      </div>
+      <details className="mt-6 border-y border-border">
+        <summary className="cursor-pointer py-4 text-xs">Model and launch options</summary>
+        <div className="grid grid-cols-1 gap-4 pb-5 sm:grid-cols-2">
       <div>
         <Label htmlFor="profile-model-provider-protocol">Model protocol</Label>
         <Select
@@ -114,24 +133,6 @@ export function RuntimeProfileBasicsSection({
           ))}
           {form.model_provider_protocol && !compatibleProtocols.includes(form.model_provider_protocol) && (
             <option value={form.model_provider_protocol}>{form.model_provider_protocol} (stale)</option>
-          )}
-        </Select>
-      </div>
-      <div>
-        <Label htmlFor="profile-model-override">Model override</Label>
-        <Select
-          id="profile-model-override"
-          name="model_override"
-          value={form.model_override}
-          onChange={(e) => onChange({ ...form, model_override: e.target.value })}
-          disabled={!form.model_provider_id}
-        >
-          <option value="">Use provider default</option>
-          {providerModels.map((model) => (
-            <option key={model} value={model}>{model}</option>
-          ))}
-          {form.model_override && !providerModels.includes(form.model_override) && (
-            <option value={form.model_override}>{form.model_override} (stale)</option>
           )}
         </Select>
       </div>
@@ -213,9 +214,8 @@ export function RuntimeProfileBasicsSection({
           ))}
         </Select>
       </div>}
-      </div>
       {plugin && (
-        <div className="border-t border-border px-4 py-3">
+        <div className="col-span-full">
           <div className="flex flex-wrap gap-1.5">
             <Chip variant="neutral">{plugin.id}</Chip>
             <Chip variant="neutral">{plugin.config_projection.primitive}</Chip>
@@ -232,6 +232,8 @@ export function RuntimeProfileBasicsSection({
           </div>
         </div>
       )}
+        </div>
+      </details>
     </section>
   );
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"pentest/internal/project"
+	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
@@ -17,7 +18,7 @@ import (
 // is not trusted with either authority, so neither token may reach a launch
 // plan, a projected config file, or a Runtime process environment. Only a
 // Continuation Interface Grant may authenticate Runtime traffic.
-func TestLegacyLaunchPlanNeverProjectsOperatorToken(t *testing.T) {
+func TestLaunchPlanRejectsRequiredProjectionWithoutBindingAndOmittedNeverProjectsOperatorToken(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		authToken string
@@ -47,7 +48,7 @@ func TestLegacyLaunchPlanNeverProjectsOperatorToken(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			profile, err := server.profiles.Create("Claude legacy boundary", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{Model: "test-model"})
+			profile, err := server.profiles.Create("Claude boundary", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{Model: "test-model"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -60,7 +61,13 @@ func TestLegacyLaunchPlanNeverProjectsOperatorToken(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			plan, err := server.buildTaskLaunchPlanWithBinding(created, "inspect boundary", "", "", "", nil, nil)
+			if _, err := server.buildTaskLaunchPlanWithBinding(created, "inspect boundary", "", "", "", nil, nil); err == nil {
+				t.Fatal("expected Required Blackboard projection without a v2 binding to fail closed")
+			}
+
+			plan, err := server.buildTaskLaunchPlanWithBinding(created, "inspect boundary", "", "", "", nil, &taskLaunchPlan{
+				BlackboardProjection: runner.BlackboardProjectionOmitted,
+			})
 			if err != nil {
 				t.Fatal(err)
 			}

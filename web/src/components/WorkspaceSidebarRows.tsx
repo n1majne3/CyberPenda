@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
-import { Archive, ChevronRight, FolderKanban, MoreHorizontal } from "lucide-react";
+import { Archive, ChevronRight, MoreHorizontal } from "lucide-react";
 import { type Project, type RuntimeActivity, type Session, type Task } from "@/lib/api";
 import { sessionContinuationStatus } from "@/lib/runtimeOwner/status";
 import { cn } from "@/lib/utils";
@@ -59,6 +59,21 @@ export function ProjectRow({
   return (
     <section aria-labelledby={`project-name-${project.id}`} aria-current={currentProject ? "location" : undefined}>
       <div className="group flex items-center gap-1">
+        <NavLink
+          id={`project-name-${project.id}`}
+          to={`/projects/${encodeURIComponent(project.id)}`}
+          aria-label={`Open ${project.name} project dashboard`}
+          // Pass false (not undefined): NavLink defaults missing aria-current to
+          // "page" whenever the path prefix matches, including nested Task routes.
+          aria-current={projectSelected ? "page" : false}
+          onClick={onNavigate}
+          className={navItemClasses(projectSelected, "min-w-0 flex-1")}
+        >
+          <span className="flex size-[17px] shrink-0 items-center justify-center rounded border border-signal/15 bg-signal/5 text-[9px] text-signal" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</span>
+          <span className="truncate">{project.name}</span>
+          <span className="sr-only"> project dashboard</span>
+          <ActiveIndicator active={projectSelected} />
+        </NavLink>
         <button
           type="button"
           aria-label={`${open ? "Collapse" : "Expand"} ${project.name}`}
@@ -72,21 +87,6 @@ export function ProjectRow({
         >
           <ChevronRight className={cn("size-3.5 transition-transform", open && "rotate-90")} aria-hidden="true" />
         </button>
-        <NavLink
-          id={`project-name-${project.id}`}
-          to={`/projects/${encodeURIComponent(project.id)}`}
-          aria-label={`Open ${project.name} project dashboard`}
-          // Pass false (not undefined): NavLink defaults missing aria-current to
-          // "page" whenever the path prefix matches, including nested Task routes.
-          aria-current={projectSelected ? "page" : false}
-          onClick={onNavigate}
-          className={navItemClasses(projectSelected, "min-w-0 flex-1")}
-        >
-          <FolderKanban className="size-4 shrink-0" aria-hidden="true" />
-          <span className="truncate">{project.name}</span>
-          <span className="sr-only"> project dashboard</span>
-          <ActiveIndicator active={projectSelected} />
-        </NavLink>
       </div>
 
       <div id={taskPanelId} hidden={!open} className="mt-0.5 space-y-0.5">

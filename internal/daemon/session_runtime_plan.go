@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"pentest/internal/adapters"
 	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtime"
@@ -133,22 +132,16 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		launchProfile = projection.ResolvedProfile
 	}
 	configPath := runner.LaunchConfigPath(layout, launchProfile.Provider, projection.ConfigPath, run == session.RunnerSandbox)
-	mcpConfigPath := runner.LaunchMCPConfigPath(layout, launchProfile.Provider, run == session.RunnerSandbox, projection)
-	providerCommand, err := adapters.BuildLaunchOrResumeArgs(adapters.LaunchArgsRequest{
-		Provider: launchProfile.Provider, Profile: launchProfile, Goal: launchGoal,
-		ConfigPath: configPath, MCPConfigPath: mcpConfigPath, Sandbox: run == session.RunnerSandbox,
-	}, nativeResumeSessionID)
+	providerBinary, err := resolveProviderBinary(server.runtimePlugins, launchProfile)
 	if err != nil {
 		return sessionRuntimePlan{}, err
 	}
-	// Structured launch facts for the provider-session factory: family
-	// assemblers consume these instead of re-parsing the rendered one-shot
-	// argv.
 	launchFacts := ProviderSessionLaunchFacts{
-		ProviderBinary: providerCommand[0],
+		ProviderBinary: providerBinary,
 		CustomArgs:     append([]string(nil), launchProfile.Fields.CustomArgs...),
 		SettingsPath:   configPath,
 		Workdir:        "/task/workdir",
+		Env:            processEnv,
 	}
 	if run != session.RunnerSandbox {
 		launchFacts.Workdir = found.Workdir
@@ -158,7 +151,6 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 	} else {
 		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.Model)
 	}
-	adapter := runtime.Adapter(nil)
 	containerIDFile := ""
 	if run == session.RunnerSandbox {
 		containerIDFile = filepath.Join(layout.Logs, "container.cid")
@@ -172,13 +164,6 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		if image == "" {
 			image = "kalilinux/kali-rolling"
 		}
-		sandboxRuntime := providerCommand
-		if profile.Provider == runtimeprofile.ProviderPi {
-			sandboxRuntime, err = server.sandboxPiRuntimeCommand(providerCommand, launchProfile, task.Runner(run))
-			if err != nil {
-				return sessionRuntimePlan{}, err
-			}
-		}
 		containerCLI := task.ResolveContainerCLI(input.ContainerCLI, server.containerCLI)
 		networkMode := runner.SandboxNetworkDefault
 		if strings.TrimSpace(input.SandboxNetwork) == string(runner.SandboxNetworkHostProxyOnly) {
@@ -187,7 +172,7 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		command, err := runner.BuildSandboxCommand(runner.SandboxCommandRequest{
 			Layout: layout, Provider: profile.Provider, Image: image,
 			ContainerCLI: containerCLI, ContainerIDFile: containerIDFile,
-			RuntimeCommand: sandboxRuntime, ProcessEnv: processEnv,
+			RuntimeCommand: []string{providerBinary}, ProcessEnv: processEnv,
 			NetworkMode: networkMode,
 			VPNTun:      input.SandboxVPNTun,
 			TaskVolume:  server.taskVolume, TaskVolumeRoot: server.taskVolumeRoot,
@@ -195,22 +180,15 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		if err != nil {
 			return sessionRuntimePlan{}, err
 		}
-		adapter = runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{
-			Name: string(profile.Provider), ContainerCLI: command.Program, Image: image,
-			CreateArgs: command.Args, CreateEnv: command.Env, SecretValues: runtime.SecretValuesFromEnv(processEnv, prepared.Credentials()),
-		})
-	} else {
-		adapter = runtime.NewCommandAdapter(runtime.CommandAdapterConfig{
-			Name: string(profile.Provider), Program: providerCommand[0], Args: providerCommand[1:],
-			Workdir: found.Workdir, Env: processEnv, SecretValues: runtime.SecretValuesFromEnv(processEnv, prepared.Credentials()),
-		})
+		launchFacts.SandboxContainerCLI = command.Program
+		launchFacts.SandboxCreateArgs = command.Args
+		launchFacts.SandboxCreateEnv = command.Env
 	}
-	adapter = withPiSessionTail(adapter, run == session.RunnerSandbox, profile.Provider, layout)
 
 	metadata := providerNativeSessionMetadata(run == session.RunnerSandbox, profile.Provider, layout, containerIDFile)
 	stopConfirmation := dockerStopConfirmation(input.ContainerCLI, server.containerCLI, containerIDFile)
 	return sessionRuntimePlan{
-		Adapter: adapter, Profile: launchProfile, Runner: run, LaunchGoal: launchGoal, RuntimeConfig: config, Selection: selection,
+		Profile: launchProfile, Runner: run, LaunchGoal: launchGoal, RuntimeConfig: config, Selection: selection,
 		BlackboardProjection: blackboardProjection,
 		Metadata:             metadata, StopConfirmation: stopConfirmation, ProviderHome: layout.ProviderHome, Facts: launchFacts,
 	}, nil

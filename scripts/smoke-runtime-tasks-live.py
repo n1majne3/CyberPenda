@@ -321,6 +321,71 @@ def preflight_claude_sandbox(image: str, endpoint: str, token: str, model: str =
     return None
 
 
+def build_smoke_project_payload() -> dict:
+    return {
+        "name": "Runtime FGS Live Smoke",
+        "kind": "pentest",
+        "scope": {"domains": ["example.com"], "notes": "automated runtime smoke"},
+    }
+
+
+def build_smoke_task_payload(goal: str, profile_id: str, runner: str) -> dict:
+    run_controls: dict[str, object] = {"blackboard_mode": "working_graph"}
+    if runner == "host":
+        run_controls["host_activated"] = True
+    return {
+        "type": "pentest",
+        "goal": goal,
+        "runtime_profile_id": profile_id,
+        "runner": runner,
+        "run_controls": run_controls,
+    }
+
+
+def build_smoke_profiles(
+    zhipu_endpoint: str,
+    anthropic: str,
+    openai: str | None = None,
+) -> dict[str, tuple[str, str, dict]]:
+    codex_fields: dict[str, object] = {
+        "model": "gpt-5.5",
+        "default_runner": "sandbox",
+        "env": {"PENTEST_CODEX_SUBCOMMAND": "exec"},
+        "custom_args": ["--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"],
+    }
+    if openai:
+        codex_fields["api_keys"] = {"OPENAI_API_KEY": openai}
+    claude_fields: dict[str, object] = {
+        "model": "glm-5.2",
+        "endpoint": zhipu_endpoint,
+        "default_runner": "sandbox",
+        "env": {"ANTHROPIC_BASE_URL": zhipu_endpoint},
+        "custom_args": [
+            "-p",
+            "--dangerously-skip-permissions",
+            "--permission-mode",
+            "bypassPermissions",
+        ],
+        "api_keys": {"ANTHROPIC_AUTH_TOKEN": anthropic},
+    }
+    pi_fields: dict[str, object] = {
+        "model": "mimo-v2.5-pro",
+        "default_runner": "host",
+        "env": {
+            "PI_PROVIDER_ID": "xiaomi-token-plan-cn",
+            "PI_API": "openai-completions",
+            "PENTEST_PI_NPM_VERSION": "0.78.0",
+        },
+        "custom_args": ["-p"],
+        "binary_path": "pi",
+    }
+    return {
+        "codex": ("Smoke Codex", "codex", codex_fields),
+        "claude_code": ("Smoke Claude", "claude_code", claude_fields),
+        "pi": ("Smoke Pi", "pi", pi_fields),
+    }
+
+
 def launch_case(
     project_id: str,
     provider: str,
@@ -342,12 +407,7 @@ def launch_case(
     created = request(
         "POST",
         f"/api/projects/{project_id}/tasks",
-        {
-            "goal": goal,
-            "runtime_profile_id": profile_id,
-            "runner": runner,
-            "run_controls": {"blackboard_mode": "working_graph"},
-        },
+        build_smoke_task_payload(goal, profile_id, runner),
     )
     task_id = created["id"]
     print(f"  task {task_id} status={created.get('status')}")
@@ -411,59 +471,18 @@ def main() -> int:
         "https://open.bigmodel.cn/api/anthropic",
     ).strip()
 
-    project = request(
-        "POST",
-        "/api/projects",
-        {
-            "name": "Runtime FGS Live Smoke",
-            "scope": {"domains": ["example.com"], "notes": "automated runtime smoke"},
-        },
-    )
+    project = request("POST", "/api/projects", build_smoke_project_payload())
     project_id = project["id"]
     print(f"project: {project_id}")
 
-    codex_fields = {
-        "model": "gpt-5.5",
-        "default_runner": "sandbox",
-        "env": {"PENTEST_CODEX_SUBCOMMAND": "exec"},
-        "custom_args": ["--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"],
-    }
-    openai = load_secret_env("OPENAI_API_KEY")
-    if openai:
-        codex_fields["api_keys"] = {"OPENAI_API_KEY": openai}
-    codex_profile = upsert_profile("Smoke Codex", "codex", codex_fields)
-    claude_profile = upsert_profile(
-        "Smoke Claude",
-        "claude_code",
-        {
-            "model": "glm-5.2",
-            "endpoint": zhipu_endpoint,
-            "default_runner": "sandbox",
-            "env": {"ANTHROPIC_BASE_URL": zhipu_endpoint},
-            "custom_args": [
-                "-p",
-                "--dangerously-skip-permissions",
-                "--permission-mode",
-                "bypassPermissions",
-            ],
-            "api_keys": {"ANTHROPIC_AUTH_TOKEN": anthropic},
-        },
+    profiles = build_smoke_profiles(
+        zhipu_endpoint,
+        anthropic,
+        load_secret_env("OPENAI_API_KEY"),
     )
-    pi_profile = upsert_profile(
-        "Smoke Pi",
-        "pi",
-        {
-            "model": "mimo-v2.5-pro",
-            "default_runner": "host",
-            "env": {
-                "PI_PROVIDER_ID": "xiaomi-token-plan-cn",
-                "PI_API": "openai-completions",
-                "PENTEST_PI_NPM_VERSION": "0.78.0",
-            },
-            "custom_args": ["-p", "--provider", "xiaomi-token-plan-cn"],
-            "binary_path": "pi",
-        },
-    )
+    codex_profile = upsert_profile(*profiles["codex"])
+    claude_profile = upsert_profile(*profiles["claude_code"])
+    pi_profile = upsert_profile(*profiles["pi"])
 
     claude_preflight_error = None
     if sandbox_image:

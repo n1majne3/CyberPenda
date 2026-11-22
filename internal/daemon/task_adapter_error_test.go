@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +13,7 @@ import (
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
+	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/skill"
 	"pentest/internal/task"
@@ -26,7 +26,7 @@ func TestBuildTaskAdapterReturnsActionableErrorForClaudeGLMProfile(t *testing.T)
 	proj := createAdapterErrorTestProject(t, server)
 	created := createAdapterErrorTestTask(t, server, proj.ID, profile.ID)
 
-	_, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
+	_, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, &taskLaunchPlan{BlackboardProjection: runner.BlackboardProjectionOmitted})
 	if err == nil {
 		t.Fatal("expected buildTaskLaunchPlanWithBinding to fail")
 	}
@@ -148,7 +148,7 @@ func TestBuildTaskAdapterAppliesHostProxyOnlySandboxNetworkFromRunControls(t *te
 		t.Fatalf("create task: %v", err)
 	}
 
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, &taskLaunchPlan{BlackboardProjection: runner.BlackboardProjectionOmitted})
 	if err != nil {
 		t.Fatalf("build adapter: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestBuildTaskAdapterAppliesSandboxVPNTunFromRunControls(t *testing.T) {
 		t.Fatalf("create task: %v", err)
 	}
 
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, &taskLaunchPlan{BlackboardProjection: runner.BlackboardProjectionOmitted})
 	if err != nil {
 		t.Fatalf("build adapter: %v", err)
 	}
@@ -230,29 +230,15 @@ func TestBuildTaskAdapterAppliesSandboxVPNTunFromRunControls(t *testing.T) {
 	}
 }
 
-func TestSandboxLaunchPlanWiresImagePullProgressToDaemonLogger(t *testing.T) {
+func TestSandboxLaunchPlanUsesProfileImageAndContainerCLI(t *testing.T) {
 	dir := t.TempDir()
-	logPath := filepath.Join(dir, "docker.log")
 	containerCLI := filepath.Join(dir, "fake-docker")
-	var captured bytes.Buffer
-	script := "#!/bin/sh\n" +
-		"echo \"$*\" >> " + shellQuoteAdapterTest(logPath) + "\n" +
-		"if [ \"$1 $2\" = \"image inspect\" ]; then echo 'Error response from daemon: No such image: profile-image:test' >&2; exit 1; fi\n" +
-		"if [ \"$1\" = \"pull\" ]; then echo daemon-pull-progress; exit 0; fi\n" +
-		"if [ \"$1\" = \"create\" ]; then echo ctr-daemon; exit 0; fi\n" +
-		"if [ \"$1\" = \"start\" ]; then echo sandbox-started; exit 0; fi\n" +
-		"if [ \"$1\" = \"rm\" ]; then exit 0; fi\n" +
-		"exit 1\n"
-	if err := os.WriteFile(containerCLI, []byte(script), 0o700); err != nil {
-		t.Fatalf("write fake container cli: %v", err)
-	}
 	server, err := NewServer(Config{
 		Version:              "test-version",
 		DBPath:               filepath.Join(dir, "pentest.db"),
 		RuntimeRoot:          filepath.Join(dir, "runtime"),
 		SandboxImage:         "daemon-default:test",
 		ContainerCLI:         containerCLI,
-		Logger:               log.New(&captured, "", 0),
 		DisableBuiltinSkills: true,
 	})
 	if err != nil {
@@ -276,39 +262,19 @@ func TestSandboxLaunchPlanWiresImagePullProgressToDaemonLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, nil)
+	plan, err := server.buildTaskLaunchPlanWithBinding(created, created.Goal, "", "", "", nil, &taskLaunchPlan{BlackboardProjection: runner.BlackboardProjectionOmitted})
 	if err != nil {
-		t.Fatalf("build task adapter: %v", err)
+		t.Fatalf("build task plan: %v", err)
 	}
-	if err := plan.Adapter.Run(context.Background(), created.Goal, func(task.EventKind, task.EventPayload) {}); err != nil {
-		t.Fatalf("run task adapter: %v", err)
+	if plan.Facts.SandboxContainerCLI != containerCLI {
+		t.Fatalf("SandboxContainerCLI = %q, want %q", plan.Facts.SandboxContainerCLI, containerCLI)
 	}
-
-	raw, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read docker log: %v", err)
+	joined := strings.Join(plan.Facts.SandboxCreateArgs, " ")
+	if !strings.Contains(joined, "profile-image:test") {
+		t.Fatalf("expected profile image in SandboxCreateArgs, got:\n%s", joined)
 	}
-	commands := string(raw)
-	inspectAt := strings.Index(commands, "image inspect profile-image:test")
-	pullAt := strings.Index(commands, "pull profile-image:test")
-	createAt := strings.Index(commands, "create --cidfile")
-	if inspectAt < 0 || pullAt < 0 || createAt < 0 || !(inspectAt < pullAt && pullAt < createAt) {
-		t.Fatalf("expected profile image inspect/pull before create, got:\n%s", commands)
-	}
-	if strings.Contains(commands, "daemon-default:test") {
-		t.Fatalf("daemon default image should not be used when profile overrides it, got:\n%s", commands)
-	}
-	output := captured.String()
-	for _, expected := range []string{
-		"task sandbox phase=image_pull_started",
-		"task sandbox phase=image_pull_progress",
-		"profile-image:test",
-		"daemon-pull-progress",
-		"task sandbox phase=image_pull_completed",
-	} {
-		if !strings.Contains(output, expected) {
-			t.Fatalf("expected daemon logger output to contain %q, got:\n%s", expected, output)
-		}
+	if strings.Contains(joined, "daemon-default:test") {
+		t.Fatalf("daemon default image should not be used when profile overrides it, got:\n%s", joined)
 	}
 }
 

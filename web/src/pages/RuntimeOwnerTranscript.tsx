@@ -93,7 +93,7 @@ export function TranscriptTurnGroup({
           {lane === "system" && <GitBranch className="h-2.5 w-2.5" aria-hidden="true" />}
         </span>
       )}
-      <div className="border-l border-border pl-4">
+      <div className="pl-2">
         {showMarker && (
           <div data-testid="transcript-turn-header" className="mb-1 flex items-center gap-2 text-xs">
             <span className={cn("font-medium", lane === "runtime" && "text-signal")}>{label}</span>
@@ -153,6 +153,19 @@ export function TranscriptRow({
     return <CollapsedTranscriptRow entry={entry} autoExpand={autoExpandReasoning && entry.kind === "reasoning"} />;
   }
 
+  if (entry.kind === "error") {
+    return (
+      <div
+        role="alert"
+        data-testid="transcript-error-row"
+        className="flex min-w-0 items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3.5 py-2.5 text-sm leading-6 text-destructive"
+      >
+        <CircleX className="mt-1 h-4 w-4 shrink-0" aria-hidden="true" />
+        <div className="min-w-0 whitespace-pre-wrap break-words">{entry.text || "Runtime turn failed"}</div>
+      </div>
+    );
+  }
+
   const isUser = entry.role === "user";
   const isAssistant = entry.role === "assistant" || entry.role === "runtime";
   return (
@@ -160,8 +173,8 @@ export function TranscriptRow({
       data-testid="transcript-message-bubble"
       className={cn(
         "min-w-0 whitespace-pre-wrap break-words text-sm leading-6 text-foreground",
-        isUser && "rounded-lg border border-border bg-card px-3.5 py-3",
-        isAssistant && "border-l-2 border-signal/40 py-1 pl-4",
+        isUser && "rounded-lg bg-muted/40 px-4 py-4",
+        isAssistant && "py-1",
         !isUser && !isAssistant && "rounded-md border border-border bg-muted/30 px-3 py-2",
       )}
     >

@@ -16,9 +16,9 @@ import {
 } from "./ui";
 
 describe("Card", () => {
-  it("uses a neutral bordered surface with restrained shadow", () => {
+  it("uses a quiet bordered surface without a default shadow", () => {
     const { container } = render(<Card>x</Card>);
-    expect(container.firstChild).toHaveClass("border", "bg-card", "shadow-sm");
+    expect(container.firstChild).toHaveClass("border", "bg-card");
     expect(container.firstChild).not.toHaveClass("ring-1");
   });
 
@@ -66,9 +66,9 @@ describe("Card", () => {
 });
 
 describe("Button", () => {
-  it("defaults to a 4px-rhythm height", () => {
+  it("uses the prototype primary control height", () => {
     const { getByRole } = render(<Button>x</Button>);
-    expect(getByRole("button")).toHaveClass("h-8");
+    expect(getByRole("button")).toHaveClass("h-[35px]");
   });
 
   it("uses a tight control radius", () => {
@@ -115,7 +115,7 @@ describe("Button", () => {
 
   it("forwards extra className and merges", () => {
     const { getByRole } = render(<Button className="w-full">x</Button>);
-    expect(getByRole("button")).toHaveClass("w-full", "h-8");
+    expect(getByRole("button")).toHaveClass("w-full", "h-[35px]");
   });
 });
 

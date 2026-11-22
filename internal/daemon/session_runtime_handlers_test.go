@@ -14,7 +14,6 @@ import (
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/runner"
-	"pentest/internal/runtime"
 	"pentest/internal/runtimeconfig"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
@@ -219,13 +218,8 @@ func TestSessionRuntimePlanUsesNativeResumeArgvWithoutAProviderBridge(t *testing
 	if err != nil {
 		t.Fatalf("build Session Runtime plan: %v", err)
 	}
-	launch, ok := runtime.CommandAdapterLaunch(plan.Adapter)
-	if !ok {
-		t.Fatalf("Session host adapter = %T", plan.Adapter)
-	}
-	joined := strings.Join(append([]string{launch.Program}, launch.Args...), " ")
-	if !strings.Contains(joined, "resume") || !strings.Contains(joined, "native-session-1") {
-		t.Fatalf("Session native resume argv = %q", joined)
+	if plan.Facts.ProviderBinary != "codex" || plan.Facts.Workdir != found.Workdir {
+		t.Fatalf("Session host launch facts = %#v", plan.Facts)
 	}
 }
 
@@ -252,7 +246,7 @@ func TestSessionPiProjectedProviderAllowedUsesLatestRuntimeConfig(t *testing.T) 
 	}
 }
 
-func TestSessionPiSandboxUsesTheSharedBootstrapWrapper(t *testing.T) {
+func TestSessionPiSandboxKeepsBarePiCommand(t *testing.T) {
 	server, err := NewServer(Config{
 		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"), RuntimeRoot: t.TempDir(), DisableBuiltinSkills: true,
 	})
@@ -274,13 +268,12 @@ func TestSessionPiSandboxUsesTheSharedBootstrapWrapper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build Session Pi plan: %v", err)
 	}
-	args, ok := runtime.DockerSandboxCreateArgs(plan.Adapter)
-	if !ok {
-		t.Fatalf("Session sandbox adapter = %T", plan.Adapter)
+	args := plan.Facts.SandboxCreateArgs
+	if len(args) == 0 {
+		t.Fatalf("Session sandbox create args are empty")
 	}
-	joined := strings.Join(args, " ")
-	if !strings.Contains(joined, "command -v pi") {
-		t.Fatalf("Session Pi sandbox argv lacks bootstrap wrapper: %q", joined)
+	if filepath.Base(args[len(args)-1]) != "pi" {
+		t.Fatalf("Session Pi sandbox argv = %#v, want trailing bare pi", args)
 	}
 }
 
@@ -363,13 +356,13 @@ func TestSessionSandboxProjectsWorkingGraphPathsThroughWorkdirMount(t *testing.T
 	if !strings.Contains(plan.LaunchGoal, runner.FGSLaunchInstruction) || !strings.Contains(plan.LaunchGoal, "inspect") {
 		t.Fatalf("Session launch goal did not require FGS instructions: %s", plan.LaunchGoal)
 	}
-	args, ok := runtime.DockerSandboxCreateArgs(plan.Adapter)
-	if !ok {
-		t.Fatalf("Session sandbox adapter = %T", plan.Adapter)
+	args := plan.Facts.SandboxCreateArgs
+	if len(args) == 0 {
+		t.Fatalf("Session sandbox create args are empty")
 	}
-	createEnv, ok := runtime.DockerSandboxCreateEnv(plan.Adapter)
-	if !ok {
-		t.Fatalf("Session sandbox create env unavailable for %T", plan.Adapter)
+	createEnv := plan.Facts.SandboxCreateEnv
+	if len(createEnv) == 0 {
+		t.Fatalf("Session sandbox create env is empty")
 	}
 	env := map[string]string{}
 	for index := 0; index < len(args)-1; index++ {

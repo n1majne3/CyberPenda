@@ -1,7 +1,7 @@
 import { ProjectReportProtocol } from "./FGSReport";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Flag, Download } from "lucide-react";
+import { Download } from "lucide-react";
 import {
   formatBlackboardV2Error,
   readCTFSolution,
@@ -60,99 +60,91 @@ function LegacySolutionPage() {
   }
 
   return (
-    <ProjectPageShell title="Solution" bodyClassName="space-y-4">
-      <Card as="section" className="space-y-3">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Flag className="h-4 w-4" aria-hidden="true" />
-            CTF Solution
-          </CardTitle>
-        </CardHeader>
-        <p className="text-sm text-muted-foreground">
-          Deterministic CTF solution from current verified flag Solutions. Solved
-          reverses when no verified flags remain. Keys link to current detail/history.
-        </p>
-        {markdown && (
-          <Button size="sm" variant="outline" onClick={download}>
-            <Download className="mr-1 h-4 w-4" /> Download .md
-          </Button>
-        )}
-      </Card>
-
+    <ProjectPageShell
+      title="Solution"
+      description="Verified Flags and candidate Flags remain separate."
+      actions={
+        <div className="flex items-center gap-3">
+          {solution && <Badge variant={solution.solved ? "success" : "outline"}>{solution.solved ? "Solved" : "Unsolved"}</Badge>}
+          {markdown && <Button size="sm" variant="outline" onClick={download}><Download className="h-4 w-4" /> Download .md</Button>}
+        </div>
+      }
+      bodyClassName="space-y-6"
+    >
       {loading && <LoadingState label="Loading solution" minHeight="min-h-20" />}
       {error && <ErrorState error={error} title="Couldn't load solution" />}
 
-      {solution && (
-        <Card as="section" className="space-y-4">
-          <CardHeader>
-            <CardTitle className="flex flex-wrap items-center gap-2">
-              {solution.project.name}
-              <Badge variant={solution.solved ? "success" : "outline"}>
-                {solution.solved ? "Solved" : "Unsolved"}
-              </Badge>
-            </CardTitle>
-          </CardHeader>
-          <SolutionSection
-            projectId={projectId}
-            title="Verified Flags"
-            items={solution.verified_flags}
-          />
-          <SolutionSection
-            projectId={projectId}
-            title="Candidate Flags"
-            items={solution.candidate_flags}
-            muted
-          />
-          <SolutionSection projectId={projectId} title="Answers" items={solution.answers} />
-          <SolutionSection
-            projectId={projectId}
-            title="Procedures"
-            items={solution.procedures}
-          />
-          <FactSection
-            projectId={projectId}
-            title="Confirmed Facts"
-            items={solution.confirmed_facts}
-          />
-          <FactSection
-            projectId={projectId}
-            title="Tentative Facts"
-            items={solution.tentative_facts}
-            muted
-          />
-          <section className="space-y-2">
-            <SectionHeading count={solution.evidence.length}>Evidence</SectionHeading>
-            {solution.evidence.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No records.</p>
-            ) : (
-              <ul className="divide-y divide-border border-y border-border" role="list">
-                {solution.evidence.map((item) => (
-                  <li key={item.key} className="p-3">
-                    <Link
-                      to={recordHref(projectId, item.key)}
-                      className="text-sm font-medium underline-offset-2 hover:underline"
-                    >
-                      {item.summary}
-                    </Link>
-                    <p className="font-mono text-xs text-muted-foreground">{item.key}</p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </Card>
-      )}
-
       {markdown && (
-        <Card as="section" className="overflow-hidden">
+        <Card as="section" className="mx-auto max-w-4xl gap-6 p-6 sm:p-10">
           <CardHeader>
             <CardTitle>Solution preview</CardTitle>
           </CardHeader>
-          <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/30 p-3 font-mono text-xs">
+          <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7">
             {markdown}
           </pre>
         </Card>
       )}
+      {solution && (
+        <details className="rounded-lg border border-border">
+          <summary className="cursor-pointer px-5 py-4 text-sm font-medium">Supporting records</summary>
+          <Card as="section" className="space-y-6 rounded-none border-0 border-t border-border">
+            <CardHeader>
+              <CardTitle className="flex flex-wrap items-center gap-2">
+                {solution.project.name}
+              </CardTitle>
+            </CardHeader>
+            <SolutionSection
+              projectId={projectId}
+              title="Verified Flags"
+              items={solution.verified_flags}
+            />
+            <SolutionSection
+              projectId={projectId}
+              title="Candidate Flags"
+              items={solution.candidate_flags}
+              muted
+            />
+            <SolutionSection projectId={projectId} title="Answers" items={solution.answers} />
+            <SolutionSection
+              projectId={projectId}
+              title="Procedures"
+              items={solution.procedures}
+            />
+            <FactSection
+              projectId={projectId}
+              title="Confirmed Facts"
+              items={solution.confirmed_facts}
+            />
+            <FactSection
+              projectId={projectId}
+              title="Tentative Facts"
+              items={solution.tentative_facts}
+              muted
+            />
+            <section className="space-y-2">
+              <SectionHeading count={solution.evidence.length}>Evidence</SectionHeading>
+              {solution.evidence.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No records.</p>
+              ) : (
+                <ul className="divide-y divide-border border-y border-border" role="list">
+                  {solution.evidence.map((item) => (
+                    <li key={item.key} className="p-3">
+                      <Link
+                        to={recordHref(projectId, item.key)}
+                        className="text-sm font-medium underline-offset-2 hover:underline"
+                      >
+                        {item.summary}
+                      </Link>
+                      <p className="font-mono text-xs text-muted-foreground">{item.key}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </Card>
+        </details>
+      )}
+
     </ProjectPageShell>
   );
 }

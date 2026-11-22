@@ -1,25 +1,18 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ModelProvidersPage } from "./ModelProvidersPage";
-
-function renderPage() {
-  return render(
-    <StrictMode>
-      <MemoryRouter>
-        <ModelProvidersPage />
-      </MemoryRouter>
-    </StrictMode>,
-  );
-}
+import { renderPage } from "./ModelProvidersPage.testSupport";
 
 describe("ModelProvidersPage", () => {
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
+
 
   it("enables Save provider without a configured API key binding", async () => {
     vi.stubGlobal(
@@ -86,6 +79,7 @@ describe("ModelProvidersPage", () => {
     });
   });
 
+
   it("uses the shared Geist settings layout for provider selection and details", async () => {
     vi.stubGlobal(
       "fetch",
@@ -135,7 +129,7 @@ describe("ModelProvidersPage", () => {
     expect(layout).toHaveClass(
       "grid",
       "min-w-0",
-      "lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
+      "lg:grid-cols-[240px_minmax(0,1fr)]",
     );
     expect(screen.getByTestId("model-providers-settings-list")).toHaveClass(
       "min-w-0",
@@ -155,6 +149,7 @@ describe("ModelProvidersPage", () => {
     expect(providerButton).toHaveAttribute("aria-current", "true");
     expect(providerButton).toHaveClass("rounded-md", "focus-visible:ring-2");
   });
+
 
   it("associates labels with named provider form controls", async () => {
     vi.stubGlobal(
@@ -179,6 +174,7 @@ describe("ModelProvidersPage", () => {
     expect(screen.getByLabelText("API key")).toHaveAttribute("autocomplete", "off");
   });
 
+
   it("groups supported protocol checkboxes under a named fieldset", async () => {
     vi.stubGlobal(
       "fetch",
@@ -200,406 +196,6 @@ describe("ModelProvidersPage", () => {
     expect(group).toContainElement(screen.getByRole("checkbox", { name: "openai_responses" }));
   });
 
-  it("renders and submits endpoint-backed provider payloads", async () => {
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/api/model-providers") && init?.method === "PATCH") {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              id: "split",
-              name: "Split",
-              base_url: "https://api.example.test/v1",
-              endpoints: [
-                { protocol: "openai_responses", base_url: "https://api.example.test/api/coding/paas/v4" },
-                { protocol: "anthropic_messages", base_url: "https://api.example.test/api/anthropic" },
-              ],
-              api_key_env: "SPLIT_API_KEY",
-              catalog: { manual: ["gpt"], default_model: "gpt" },
-              created_at: "2026-06-25T00:00:00Z",
-              updated_at: "2026-06-25T00:00:01Z",
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-        );
-      }
-      if (url.includes("/api/model-providers")) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              providers: [
-                {
-                  id: "split",
-                  name: "Split",
-                  base_url: "",
-                  endpoints: [
-                    { protocol: "openai_responses", base_url: "https://api.example.test/v1" },
-                    { protocol: "anthropic_messages", base_url: "https://api.example.test/api/anthropic" },
-                  ],
-                  api_key_env: "SPLIT_API_KEY",
-                  catalog: { manual: ["gpt"], default_model: "gpt" },
-                  created_at: "2026-06-25T00:00:00Z",
-                  updated_at: "2026-06-25T00:00:00Z",
-                },
-              ],
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-        );
-      }
-      if (url.includes("/api/credential-bindings")) {
-        return Promise.resolve(new Response(JSON.stringify({ bindings: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderPage();
-
-    const responsesEndpoint = await screen.findByLabelText("openai_responses endpoint base URL");
-    expect(responsesEndpoint).toHaveValue("https://api.example.test/v1");
-    fireEvent.change(responsesEndpoint, { target: { value: "https://api.example.test/api/coding/paas/v4/" } });
-    await userEvent.click(screen.getByRole("button", { name: "Save provider" }));
-
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([input, init]) => {
-          if (!String(input).includes("/api/model-providers/split") || init?.method !== "PATCH") return false;
-          const body = JSON.parse(String(init.body));
-          return body.endpoints?.[0]?.base_url === "https://api.example.test/api/coding/paas/v4";
-        }),
-      ).toBe(true);
-    });
-  });
-
-  it("keeps an edited shared base URL after save reloads the provider", async () => {
-    let provider = {
-      id: "mimo",
-      name: "MiMo",
-      base_url: "https://old.example.test/v1",
-      endpoints: [
-        { protocol: "openai_responses", base_url: "https://old.example.test/v1" },
-      ],
-      api_key_env: "MIMO_API_KEY",
-      catalog: { manual: ["mimo-v2"], default_model: "mimo-v2" },
-      created_at: "2026-06-25T00:00:00Z",
-      updated_at: "2026-06-25T00:00:00Z",
-    };
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/api/model-providers/mimo") && init?.method === "PATCH") {
-        const body = JSON.parse(String(init.body));
-        provider = {
-          ...provider,
-          ...body,
-          // the first endpoint as the compatibility provider-level base URL.
-          base_url: body.endpoints[0]?.base_url ?? "",
-          updated_at: "2026-06-25T00:00:01Z",
-        };
-        return Promise.resolve(
-          new Response(JSON.stringify(provider), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
-      }
-      if (url.includes("/api/model-providers")) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ providers: [provider] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
-      }
-      if (url.includes("/api/credential-bindings")) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ bindings: [] }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          }),
-        );
-      }
-      return Promise.resolve(
-        new Response(JSON.stringify({}), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderPage();
-
-    const baseURL = await screen.findByLabelText("Base URL");
-    expect(baseURL).toHaveValue("https://old.example.test/v1");
-
-    await userEvent.clear(baseURL);
-    await userEvent.type(baseURL, "https://new.example.test/v2");
-    await userEvent.click(screen.getByRole("button", { name: "Save provider" }));
-
-    await waitFor(() => {
-      expect(baseURL).toHaveValue("https://new.example.test/v2");
-    });
-  });
-
-  it("derives composed endpoints from a shared base URL in the quick setup flow", async () => {
-    // drops the final /v1 segment. The saved payload holds composed endpoint
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/api/model-providers") && init?.method === "POST") {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              id: "hub",
-              name: "Hub",
-              base_url: "https://hub.example.test/v1",
-              endpoints: [
-                { protocol: "openai_chat_completions", base_url: "https://hub.example.test/v1" },
-                { protocol: "openai_responses", base_url: "https://hub.example.test/v1" },
-                { protocol: "anthropic_messages", base_url: "https://hub.example.test" },
-              ],
-              api_key_env: "HUB_API_KEY",
-              catalog: {},
-              created_at: "2026-07-08T00:00:00Z",
-              updated_at: "2026-07-08T00:00:00Z",
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-        );
-      }
-      if (url.includes("/api/model-providers")) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ providers: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
-        );
-      }
-      if (url.includes("/api/credential-bindings")) {
-        return Promise.resolve(new Response(JSON.stringify({ bindings: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderPage();
-
-    await screen.findByText("No model providers yet.");
-    expect(screen.getByRole("button", { name: "Create provider" })).toBeDisabled();
-
-    await userEvent.type(await screen.findByLabelText("Name"), "Hub");
-    await userEvent.type(screen.getByLabelText("Base URL"), "https://hub.example.test/v1");
-    await userEvent.type(screen.getByLabelText("API key"), "sk-test");
-
-    await userEvent.click(screen.getByRole("checkbox", { name: "openai_responses" }));
-    await userEvent.click(screen.getByRole("checkbox", { name: "openai_chat_completions" }));
-    await userEvent.click(screen.getByRole("checkbox", { name: "anthropic_messages" }));
-
-    expect(screen.getByLabelText("openai_chat_completions endpoint base URL")).toHaveValue("https://hub.example.test/v1");
-    expect(screen.getByLabelText("openai_responses endpoint base URL")).toHaveValue("https://hub.example.test/v1");
-    expect(screen.getByLabelText("anthropic_messages endpoint base URL")).toHaveValue("https://hub.example.test");
-
-    await userEvent.click(screen.getByRole("button", { name: "Create provider" }));
-
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([input, init]) => {
-          if (!String(input).includes("/api/model-providers") || init?.method !== "POST") return false;
-          const body = JSON.parse(String(init.body));
-          if (body.shared_base_url !== undefined) return false;
-          const byProtocol = Object.fromEntries(body.endpoints.map((e: { protocol: string; base_url: string }) => [e.protocol, e.base_url]));
-          return (
-            byProtocol.openai_chat_completions === "https://hub.example.test/v1" &&
-            byProtocol.openai_responses === "https://hub.example.test/v1" &&
-            byProtocol.anthropic_messages === "https://hub.example.test"
-          );
-        }),
-      ).toBe(true);
-    });
-
-    // Saving the provider with an API key must also create the credential
-    // binding with destination_env equal to the generated env var name, so the
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([input, init]) => {
-          if (!String(input).includes("/api/credential-bindings") || init?.method !== "PUT") return false;
-          const body = JSON.parse(String(init.body));
-          return (
-            body.credential_ref === "HUB_API_KEY" &&
-            body.source.kind === "literal" &&
-            body.source.destination_env === "HUB_API_KEY"
-          );
-        }),
-      ).toBe(true);
-    });
-  });
-
-  it("creates a draft provider without endpoint records", async () => {
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/api/model-providers") && init?.method === "POST") {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              id: "draft",
-              name: "Draft",
-              base_url: "",
-              endpoints: [],
-              api_key_env: "DRAFT_API_KEY",
-              catalog: {},
-              created_at: "2026-07-08T00:00:00Z",
-              updated_at: "2026-07-08T00:00:00Z",
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-        );
-      }
-      if (url.includes("/api/model-providers")) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ providers: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
-        );
-      }
-      if (url.includes("/api/credential-bindings")) {
-        return Promise.resolve(new Response(JSON.stringify({ bindings: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderPage();
-
-    await screen.findByText("No model providers yet.");
-    // Protocol rows keep every endpoint input mounted; unselected protocols
-    // render disabled with no value instead of disappearing.
-    const draftEndpoint = screen.getByLabelText("openai_responses endpoint base URL");
-    expect(draftEndpoint).toBeDisabled();
-    expect(draftEndpoint).toHaveValue("");
-
-    await userEvent.type(await screen.findByLabelText("Name"), "Draft");
-    await userEvent.type(screen.getByLabelText("API key"), "sk-test");
-    await userEvent.click(screen.getByRole("button", { name: "Create provider" }));
-
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([input, init]) => {
-          if (!String(input).includes("/api/model-providers") || init?.method !== "POST") return false;
-          const body = JSON.parse(String(init.body));
-          return body.name === "Draft" && body.base_url === "" && Array.isArray(body.endpoints) && body.endpoints.length === 0;
-        }),
-      ).toBe(true);
-    });
-  });
-
-  it("requires confirmation before deleting a model provider", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/api/model-providers")) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              providers: [
-                {
-                  id: "mimo",
-                  name: "MiMo",
-                  base_url: "https://api.example.test/v1",
-                  protocols: ["openai_responses"],
-                  api_key_env: "MIMO_API_KEY",
-                  catalog: { manual: ["mimo-v2"], default_model: "mimo-v2" },
-                  created_at: "",
-                  updated_at: "",
-                },
-              ],
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-        );
-      }
-      if (url.includes("/api/credential-bindings")) {
-        return Promise.resolve(new Response(JSON.stringify({ bindings: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: /Delete/i }));
-
-    expect(confirm).not.toHaveBeenCalled();
-    expect(screen.getByRole("alertdialog", { name: /Delete model provider MiMo/ })).toBeInTheDocument();
-    expect(
-      fetchMock.mock.calls.some(([input, init]) =>
-        String(input).includes("/api/model-providers/mimo") && init?.method === "DELETE",
-      ),
-    ).toBe(false);
-  });
-
-  it("offers an explicit detach delete when the provider is referenced by runtime profiles", async () => {
-    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if (url.includes("/api/model-providers/mimo") && init?.method === "DELETE" && url.includes("detach=true")) {
-        return Promise.resolve(new Response(null, { status: 204 }));
-      }
-      if (url.includes("/api/model-providers/mimo") && init?.method === "DELETE") {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              error: "model provider is referenced by a runtime profile",
-              profiles: ["Pi Preset"],
-            }),
-            { status: 409, headers: { "Content-Type": "application/json" } },
-          ),
-        );
-      }
-      if (url.includes("/api/model-providers")) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              providers: [
-                {
-                  id: "mimo",
-                  name: "MiMo",
-                  base_url: "https://api.example.test/v1",
-                  protocols: ["openai_responses"],
-                  api_key_env: "MIMO_API_KEY",
-                  catalog: { manual: ["mimo-v2"], default_model: "mimo-v2" },
-                  created_at: "",
-                  updated_at: "",
-                },
-              ],
-            }),
-            { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-        );
-      }
-      if (url.includes("/api/credential-bindings")) {
-        return Promise.resolve(new Response(JSON.stringify({ bindings: [] }), { status: 200, headers: { "Content-Type": "application/json" } }));
-      }
-      return Promise.resolve(new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } }));
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    renderPage();
-    await userEvent.click(await screen.findByRole("button", { name: /Delete/i }));
-    // scoped to the dialog because the detail pane has its own Delete button.
-    const firstDialog = await screen.findByRole("alertdialog", { name: /Delete model provider MiMo/ });
-    await userEvent.click(within(firstDialog).getByRole("button", { name: "Delete" }));
-
-    const dialog = await screen.findByRole("alertdialog", { name: /Delete model provider MiMo/ });
-    expect(dialog).toHaveTextContent("Pi Preset");
-    expect(
-      fetchMock.mock.calls.some(([input, init]) =>
-        String(input).includes("/api/model-providers/mimo?detach=true") && init?.method === "DELETE",
-      ),
-    ).toBe(false);
-
-    await userEvent.click(screen.getByRole("button", { name: "Clear references and delete" }));
-
-    await waitFor(() => {
-      expect(
-        fetchMock.mock.calls.some(([input, init]) =>
-          String(input).includes("/api/model-providers/mimo?detach=true") && init?.method === "DELETE",
-        ),
-      ).toBe(true);
-    });
-  });
 
   it("filters the provider library by search", async () => {
     vi.stubGlobal(
@@ -686,6 +282,7 @@ describe("ModelProvidersPage", () => {
     expect(screen.getByRole("button", { name: /MiMo/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /OpenAI/i })).toBeInTheDocument();
   });
+
 
   it("preselects the provider named by the selected search param", async () => {
     vi.stubGlobal(

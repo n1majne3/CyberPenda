@@ -33,7 +33,7 @@ func launchProcessEnv(layout Layout, profile runtimeprofile.Profile, sandbox boo
 		// Claude Code allows --dangerously-skip-permissions in sandboxed containers
 		// when IS_SANDBOX=1, even if the process runs as root inside Docker.
 		env["IS_SANDBOX"] = "1"
-		env["PENTEST_SKILLS_DIR"] = sandboxSkillsImagePath
+		env["PENTEST_SKILLS_DIR"] = sandboxTaskSkillsPath
 	}
 	if ctx.Owner.ProjectID != "" {
 		env["PENTEST_PROJECT_ID"] = ctx.Owner.ProjectID
@@ -152,9 +152,6 @@ func processEnvRenderContext(layout Layout, profile runtimeprofile.Profile, sand
 // runtimes that interpolate env references from their generated config.
 func LaunchProcessEnvWithCredentials(layout Layout, profile runtimeprofile.Profile, sandbox bool, ctx RuntimeOwnerContext, req ProjectionRequest) (map[string]string, error) {
 	env := launchProcessEnv(layout, profile, sandbox, ctx, req.RuntimePlugins)
-	if sandbox && len(req.SkillBundles) > 0 {
-		env["PENTEST_SKILLS_DIR"] = "/task/skills"
-	}
 	for key, value := range profile.Fields.Env {
 		env[key] = value
 	}

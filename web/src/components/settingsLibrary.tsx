@@ -26,7 +26,7 @@ export function SettingsScrollPanel({
   return (
     <SettingsPanel
       className={cn(
-        "gap-0 p-2 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain",
+        "gap-0 p-0 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain",
         className,
       )}
       {...props}
@@ -161,20 +161,20 @@ export function SettingsDetailPane({
       ) : (
         <>
           {header != null && (
-            <div className="border-b border-border px-4 py-3 lg:shrink-0">
+            <div className="pb-5 lg:shrink-0">
               {header}
             </div>
           )}
           <div
             className={cn(
-              "space-y-4 px-4 py-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain",
+              "space-y-6 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overscroll-contain",
               bodyClassName,
             )}
           >
             {children}
           </div>
           {footer != null && (
-            <div className="flex flex-wrap items-center gap-2 border-t border-border bg-card/95 px-4 py-3 backdrop-blur supports-[backdrop-filter]:bg-card/80 lg:shrink-0">
+            <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-border py-4 lg:shrink-0">
               {footer}
             </div>
           )}

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"pentest/internal/modeskill"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
 )
@@ -20,7 +21,7 @@ func TestHostBrowserCannotBeEnabledByRuntimeProfile(t *testing.T) {
 				{Name: "host_browser", URL: "http://host.docker.internal:9999/mcp"},
 				{Name: "reference", URL: "http://reference.test/mcp"},
 			}}}
-			projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{})
+			projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -47,7 +48,7 @@ func TestHostBrowserUsesManagedNativeMCPProjection(t *testing.T) {
 				t.Fatal(err)
 			}
 			profile := runtimeprofile.Profile{Provider: provider}
-			projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{Sandbox: true, HostBrowserMCPURL: "http://host.docker.internal:8931/mcp"})
+			projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(nil), Sandbox: true, HostBrowserMCPURL: "http://host.docker.internal:8931/mcp"})
 			if err != nil {
 				t.Fatal(err)
 			}
