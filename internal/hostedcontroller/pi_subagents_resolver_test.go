@@ -18,6 +18,7 @@ import (
 	"pentest/internal/credential"
 	"pentest/internal/hostedcontroller"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -274,14 +275,17 @@ func projectResolverFixture(t *testing.T) (string, string) {
 	}
 	ownerContract := owner.NewTaskContract("task-resolver-fixture", "project-1", layout.Workdir)
 	materialized, err := runner.MaterializeLaunchCredentials(capturedProfile, runner.ProjectionRequest{
-		Owner:          ownerContract,
-		Credentials:    credentials,
-		ModelProviders: providers,
+		BlackboardMode:              modeskill.ModeDisabled,
+		Owner:                       ownerContract,
+		Credentials:                 credentials,
+		ModelProviders:              providers,
+		GlobalModelProviderSnapshot: runner.CloneGlobalModelProviderSnapshot(created),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, capturedProfile, runner.ProjectionRequest{
+		BlackboardMode:              modeskill.ModeDisabled,
 		Owner:                       ownerContract,
 		Credentials:                 credentials,
 		ModelProviders:              providers,

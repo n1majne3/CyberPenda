@@ -4,8 +4,8 @@ import { type RuntimeOwnerView } from "@/lib/runtimeOwner/types";
 
 export function tabClass(active: boolean) {
   return [
-    "inline-flex h-full items-center border-b-2 px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-    active ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+    "inline-flex h-8 items-center rounded px-3 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+    active ? "bg-card font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
   ].join(" ");
 }
 

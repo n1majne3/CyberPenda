@@ -59,9 +59,6 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 			return turns
 		}
 	}
-	if turns := parseHermesACPRecord(record, opts, createdAt); len(turns) > 0 || isHermesACPRecord(record) {
-		return turns
-	}
 	recordType := strings.ToLower(stringValue(record, "type"))
 	// Subagent activity is recognized before the generic message and item
 	// handling so a wrapped {"item": {...}} record dispatches on its inner type.
@@ -112,7 +109,7 @@ func ParseRecordWithMeta(record map[string]any, meta RecordMeta, opts ParseOptio
 			return nil
 		}
 		return parseMessageRecord(record, opts, roleFromType(recordType), createdAt)
-	case "assistant", "user", "message", "assistant_message", "agent_message", "agentmessage", "response.output_text", "output_text", "message_delta", "content_block_delta", "toolresult":
+	case "assistant", "user", "message", "message_end", "assistant_message", "agent_message", "agentmessage", "response.output_text", "output_text", "message_delta", "content_block_delta", "toolresult":
 		// "toolresult" is the pi-subagents child transcript spelling; its
 		// message role ("toolResult") selects the tool-result projection.
 		return stampAgentIdentity(parseMessageRecord(record, opts, roleFromType(recordType), createdAt), record)
@@ -178,32 +175,99 @@ func stampAgentIdentity(turns []Turn, record map[string]any) []Turn {
 
 func parseMessageRecord(record map[string]any, opts ParseOptions, role string, createdAt time.Time) []Turn {
 	if message, ok := mapValue(record, "message"); ok {
-		if mr := stringValue(message, "role"); mr == "toolResult" || mr == "tool" {
+		mr := stringValue(message, "role")
+		if mr == "toolResult" || mr == "tool" {
 			if turn := toolResultTurn(message, createdAt); turn.Output != "" || turn.ToolCallID != "" || turn.Tool != "" {
 				return []Turn{turn}
 			}
 		}
+		messageRole := normalizeMessageRole(mr, role)
 		if content, ok := sliceValue(message, "content"); ok {
-			turns := parseContentBlocks(content, opts, role, createdAt)
+			turns := parseContentBlocks(content, opts, messageRole, createdAt)
 			messageID := firstText(record, "uuid", "message_id", "messageId", "id")
 			if messageID == "" {
 				messageID = firstText(message, "uuid", "message_id", "messageId", "id")
 			}
-			return assignReasoningBlockIDs(turns, messageID)
+			turns = assignReasoningBlockIDs(turns, messageID)
+			if errTurn, hasErr := piMessageErrorTurn(record, message, opts, messageRole, createdAt); hasErr {
+				turns = append(turns, errTurn)
+			}
+			return turns
 		}
 		if text := firstText(message, "text", "content", "message"); text != "" {
-			return []Turn{{Kind: KindText, Role: role, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+			turns := []Turn{{Kind: KindText, Role: messageRole, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+			if errTurn, hasErr := piMessageErrorTurn(record, message, opts, messageRole, createdAt); hasErr {
+				turns = append(turns, errTurn)
+			}
+			return turns
+		}
+		if errTurn, hasErr := piMessageErrorTurn(record, message, opts, messageRole, createdAt); hasErr {
+			return []Turn{errTurn}
 		}
 	}
+	recordRole := normalizeMessageRole(stringValue(record, "role"), role)
 	if content, ok := sliceValue(record, "content"); ok {
-		return assignReasoningBlockIDs(parseContentBlocks(content, opts, role, createdAt), firstText(record, "uuid", "message_id", "messageId", "id"))
+		turns := assignReasoningBlockIDs(parseContentBlocks(content, opts, recordRole, createdAt), firstText(record, "uuid", "message_id", "messageId", "id"))
+		if errTurn, hasErr := piMessageErrorTurn(record, nil, opts, recordRole, createdAt); hasErr {
+			turns = append(turns, errTurn)
+		}
+		return turns
 	}
 	if text := firstText(record, "text", "content", "message"); text != "" {
-		return []Turn{{Kind: KindText, Role: role, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+		turns := []Turn{{Kind: KindText, Role: recordRole, Text: text, ContentIndex: -1, CreatedAt: createdAt}}
+		if errTurn, hasErr := piMessageErrorTurn(record, nil, opts, recordRole, createdAt); hasErr {
+			turns = append(turns, errTurn)
+		}
+		return turns
+	}
+	if errTurn, hasErr := piMessageErrorTurn(record, nil, opts, recordRole, createdAt); hasErr {
+		return []Turn{errTurn}
 	}
 	return nil
 }
 
+func normalizeMessageRole(raw, fallback string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "user":
+		return roleUser
+	case "system":
+		return roleSystem
+	case "assistant":
+		return roleAssistant
+	default:
+		return fallback
+	}
+}
+
+func piMessageErrorTurn(record, message map[string]any, opts ParseOptions, role string, createdAt time.Time) (Turn, bool) {
+	if !opts.IncludeErrors {
+		return Turn{}, false
+	}
+	var stopReason, errText string
+	if message != nil {
+		stopReason = strings.ToLower(strings.TrimSpace(firstText(message, "stopReason", "stop_reason")))
+		errText = strings.TrimSpace(firstText(message, "errorMessage", "error_message"))
+	}
+	if stopReason == "" {
+		stopReason = strings.ToLower(strings.TrimSpace(firstText(record, "stopReason", "stop_reason")))
+	}
+	if errText == "" {
+		errText = strings.TrimSpace(firstText(record, "errorMessage", "error_message"))
+	}
+	if stopReason != "error" && errText == "" {
+		return Turn{}, false
+	}
+	if errText == "" {
+		errText = "provider returned an error"
+	}
+	return Turn{
+		Kind:         KindError,
+		Role:         role,
+		Text:         errText,
+		ContentIndex: -1,
+		CreatedAt:    createdAt,
+	}, true
+}
 func assignReasoningBlockIDs(turns []Turn, messageID string) []Turn {
 	if messageID == "" {
 		return turns
@@ -255,117 +319,6 @@ func parseContentBlocks(content []any, opts ParseOptions, role string, createdAt
 		}
 	}
 	return turns
-}
-
-func parseCodexCommandExecution(record map[string]any, meta RecordMeta, createdAt time.Time) []Turn {
-	command := firstText(record, "command")
-	output := firstText(record, "aggregatedOutput", "aggregated_output", "output")
-	id := firstText(record, "id")
-	if command == "" && output == "" && id == "" {
-		return nil
-	}
-	use := Turn{
-		ProviderItemID: id,
-		LifecyclePhase: codexLifecyclePhase(meta.ProviderEvent),
-		Kind:           KindToolUse,
-		Role:           roleAssistant,
-		Tool:           "command_execution",
-		ToolCallID:     id,
-		Input:          nilIfEmpty(map[string]any{"command": command}),
-		Details:        nilIfEmpty(map[string]any{"command": command}),
-		ContentIndex:   -1,
-		CreatedAt:      createdAt,
-	}
-	status := strings.ToLower(firstText(record, "status"))
-	if output == "" && (status == "" || status == "inprogress" || status == "in_progress") {
-		return []Turn{use}
-	}
-	return []Turn{use, Turn{
-		ProviderItemID: id,
-		LifecyclePhase: codexLifecyclePhase(meta.ProviderEvent),
-		Kind:           KindToolResult,
-		Role:           roleTool,
-		Tool:           "command_execution",
-		ToolCallID:     id,
-		Output:         output,
-		ContentIndex:   -1,
-		CreatedAt:      createdAt,
-	}}
-}
-
-func parseCodexMCPToolCall(record map[string]any, meta RecordMeta, createdAt time.Time) []Turn {
-	name := firstText(record, "tool", "toolName", "tool_name", "name")
-	if name == "" {
-		return nil
-	}
-	if !strings.HasPrefix(name, "mcp__") {
-		if server := firstText(record, "server", "serverName", "server_name"); server != "" {
-			name = "mcp__" + server + "__" + name
-		}
-	}
-	id := firstText(record, "id")
-	use := Turn{
-		ProviderItemID: id,
-		LifecyclePhase: codexLifecyclePhase(meta.ProviderEvent),
-		Kind:           KindToolUse,
-		Role:           roleAssistant,
-		Tool:           name,
-		ToolCallID:     id,
-		ContentIndex:   -1,
-		CreatedAt:      createdAt,
-	}
-	status := strings.ToLower(firstText(record, "status"))
-	if status == "" || status == "inprogress" || status == "in_progress" {
-		return []Turn{use}
-	}
-	return []Turn{use, Turn{
-		ProviderItemID: id,
-		LifecyclePhase: codexLifecyclePhase(meta.ProviderEvent),
-		Kind:           KindToolResult,
-		Role:           roleTool,
-		Tool:           name,
-		ToolCallID:     id,
-		Output:         firstText(record, "aggregatedOutput", "aggregated_output", "output", "result", "content"),
-		ContentIndex:   -1,
-		CreatedAt:      createdAt,
-	}}
-}
-
-func parseCodexReasoning(record map[string]any, meta RecordMeta, opts ParseOptions, createdAt time.Time) []Turn {
-	if !opts.IncludeReasoningSummaries {
-		return nil
-	}
-	id := firstText(record, "id")
-	phase := codexLifecyclePhase(meta.ProviderEvent)
-	if phase == "started" {
-		return nil
-	}
-	text := stripANSI(firstText(record, "content", "summary"))
-	if text == "" {
-		return nil
-	}
-	return []Turn{{
-		ProviderItemID: id,
-		LifecyclePhase: phase,
-		Kind:           KindReasoning,
-		Role:           roleAssistant,
-		Text:           text,
-		ContentIndex:   -1,
-		CreatedAt:      createdAt,
-	}}
-}
-
-func codexLifecyclePhase(providerEvent string) string {
-	switch strings.ToLower(strings.TrimSpace(providerEvent)) {
-	case "item/started":
-		return "started"
-	case "item/completed":
-		return ReasoningPhaseCompleted
-	case "item/reasoning/summarytextdelta":
-		return ReasoningPhaseStreaming
-	default:
-		return ""
-	}
 }
 
 func toolUseTurn(record map[string]any, createdAt time.Time) Turn {
@@ -530,129 +483,6 @@ func nilIfEmpty(values map[string]any) map[string]any {
 		return nil
 	}
 	return values
-}
-
-func isHermesACPRecord(record map[string]any) bool {
-	method := strings.ToLower(strings.TrimSpace(stringValue(record, "method")))
-	if method == "session/update" || strings.HasPrefix(method, "session/") {
-		return true
-	}
-	if update, ok := mapValue(record, "update"); ok && firstText(update, "sessionUpdate", "session_update") != "" {
-		return true
-	}
-	return firstText(record, "sessionUpdate", "session_update") != ""
-}
-
-func parseHermesACPRecord(record map[string]any, opts ParseOptions, createdAt time.Time) []Turn {
-	if !isHermesACPRecord(record) {
-		return nil
-	}
-	update := record
-	if params, ok := mapValue(record, "params"); ok {
-		if nested, ok := mapValue(params, "update"); ok {
-			update = nested
-		} else {
-			update = params
-		}
-	} else if nested, ok := mapValue(record, "update"); ok {
-		update = nested
-	}
-	kind := strings.ToLower(strings.TrimSpace(firstText(update, "sessionUpdate", "session_update")))
-	switch kind {
-	case "agent_message_chunk", "agent_thought_chunk":
-		if kind == "agent_thought_chunk" && !opts.IncludeThinking {
-			return nil
-		}
-		text := firstText(update, "text")
-		if text == "" {
-			if content, ok := mapValue(update, "content"); ok {
-				text = firstText(content, "text", "content")
-			}
-		}
-		if text == "" {
-			return nil
-		}
-		turnKind := KindText
-		if kind == "agent_thought_chunk" {
-			turnKind = KindReasoning
-			text = stripANSI(text)
-		}
-		phase := ""
-		if kind == "agent_thought_chunk" {
-			phase = firstText(update, "phase")
-			if phase == "" {
-				phase = ReasoningPhaseStreaming
-			}
-		}
-		return []Turn{{Kind: turnKind, Role: roleAssistant, Text: text, ProviderItemID: firstText(update, "item_id", "itemId", "provider_item_id"), LifecyclePhase: phase, ContentIndex: -1, CreatedAt: createdAt}}
-	case "tool_call":
-		turn := toolUseTurn(update, createdAt)
-		if turn.Tool == "" {
-			turn.Tool = firstText(update, "title")
-		}
-		if turn.ToolCallID == "" {
-			turn.ToolCallID = firstText(update, "toolCallId", "tool_call_id")
-		}
-		if input, ok := mapValue(update, "rawInput"); ok {
-			turn.Input = input
-		} else if input, ok := mapValue(update, "raw_input"); ok {
-			turn.Input = input
-		}
-		if len(turn.Input) == 0 {
-			turn.Input = hermesToolInputFallback(update)
-		}
-		if len(turn.Input) > 0 {
-			details := turn.Details
-			if details == nil {
-				details = map[string]any{}
-			}
-			if _, ok := details["input"]; !ok {
-				details["input"] = turn.Input
-			}
-			turn.Details = details
-		}
-		return []Turn{turn}
-	case "tool_call_update":
-		turn := toolResultTurn(update, createdAt)
-		if turn.Tool == "" {
-			turn.Tool = firstText(update, "title")
-		}
-		if turn.ToolCallID == "" {
-			turn.ToolCallID = firstText(update, "toolCallId", "tool_call_id")
-		}
-		if turn.Output == "" {
-			turn.Output = firstText(update, "content", "rawOutput", "raw_output")
-		}
-		return []Turn{turn}
-	default:
-		return nil
-	}
-}
-
-func hermesToolInputFallback(update map[string]any) map[string]any {
-	if locs, ok := sliceValue(update, "locations"); ok {
-		paths := make([]string, 0, len(locs))
-		for _, loc := range locs {
-			typed, ok := loc.(map[string]any)
-			if !ok {
-				continue
-			}
-			if path := firstText(typed, "path"); path != "" {
-				paths = append(paths, path)
-			}
-		}
-		if len(paths) == 1 {
-			return map[string]any{"path": paths[0]}
-		}
-		if len(paths) > 1 {
-			return map[string]any{"paths": paths}
-		}
-	}
-	text := strings.TrimSpace(firstText(update, "content", "text"))
-	if strings.HasPrefix(text, "$ ") {
-		return map[string]any{"command": strings.TrimPrefix(text, "$ ")}
-	}
-	return nil
 }
 
 func isTruthy(value any) bool {

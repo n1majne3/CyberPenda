@@ -61,9 +61,9 @@ export function LaunchSummaryRail({
 
   return (
     <aside className="h-fit lg:sticky lg:top-6">
-      <div className="rounded-lg border border-border bg-card shadow-sm">
-        <div className="border-b border-border px-4 py-3"><span className="text-sm font-medium">Launch summary</span></div>
-        <dl className="space-y-2.5 px-4 py-3.5 text-xs">
+      <div className="rounded-lg border border-border bg-card p-[19px]">
+        <div className="mb-4"><span className="text-sm font-medium">Launch summary</span></div>
+        <dl className="space-y-3 text-[11px]">
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Runtime</dt><dd className="min-w-0 truncate font-medium">{runtimeDisplay}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Model</dt><dd className="min-w-0 truncate font-mono">{modelDisplay}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Effort</dt><dd className="font-medium">{displayReasoningEffort(form.reasoningEffort)}</dd></div>
@@ -71,14 +71,14 @@ export function LaunchSummaryRail({
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Blackboard</dt><dd className="font-medium">{blackboardDisplay}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Skills</dt><dd className="font-medium">{enabledSkillsPreview.length} enabled</dd></div>
         </dl>
-        <div className="border-t border-border p-3.5">
+        <div className="mt-5 border-t border-border pt-4">
           <Button type={submit ? "submit" : "button"} onClick={onClick} disabled={disabled} className="w-full">
             <Rocket className="h-4 w-4" /> {busy ? busyLabel : label}
           </Button>
           <p className="mt-2 text-center text-xs text-muted-foreground">Preflight checks run automatically before launch.</p>
         </div>
       </div>
-      <div className="mt-3 rounded-lg border border-dashed border-border p-3.5 text-xs text-muted-foreground">
+      <div className="mt-5 text-[11px] leading-5 text-muted-foreground">
         <div className="flex items-center gap-2 font-medium text-foreground"><ShieldCheck className="h-4 w-4 text-success" />Preflight preview</div>
         <p className="mt-1">
           {profileDisplay}

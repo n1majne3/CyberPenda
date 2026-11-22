@@ -14,11 +14,13 @@ export function HealthPanel({
   const tokens = health.attention.estimated_tokens;
 
   return (
-    <section
+    <section aria-label="Semantic health">
+    <details
+      open={health.status !== "healthy" || anomalies.length > 0 || !health.attention.complete}
       className="min-w-0 space-y-3 border-b border-border p-4"
-      aria-label="Semantic health"
       data-testid="blackboard-health"
     >
+      <summary className="cursor-pointer text-sm text-muted-foreground">Semantic health · {health.status} · {anomalies.length} anomalies</summary>
       <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <SectionHeading
@@ -57,6 +59,7 @@ export function HealthPanel({
           ))}
         </ul>
       )}
+    </details>
     </section>
   );
 }

@@ -83,6 +83,8 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	for _, required := range []string{
 		"@earendil-works/pi-coding-agent@latest",
 		"@tintinweb/pi-subagents@latest",
+		"pi-rtk-optimizer@latest",
+		`"npm:pi-rtk-optimizer"`,
 		"@openai/codex@latest",
 		"@anthropic-ai/claude-code@latest",
 		"agent-browser@latest",
@@ -141,7 +143,7 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	}
 
 	for _, executable := range []string{
-		"pi", "codex", "claude", "bash", "git", "curl", "jq", "rg", "tmux",
+		"pi", "codex", "claude", "rtk", "bash", "git", "curl", "jq", "rg", "tmux",
 		"python3", "go", "gcc", "g++", "make", "gdb", "radare2", "strace",
 		"ltrace", "patchelf", "checksec", "nmap", "nc", "socat", "dig", "ip",
 		"ss", "ping", "ssh", "openssl", "chromium", "agent-browser", "tesseract", "java", "jadx", "apktool", "column",

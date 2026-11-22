@@ -56,9 +56,9 @@ func TestCreateSandboxSessionMountsExternalManagedWorkdirThroughPublicHTTP(t *te
 	if len(requests) != 1 {
 		t.Fatalf("provider launch requests = %d, want 1", len(requests))
 	}
-	args, ok := runtime.DockerSandboxCreateArgs(requests[0].LegacyAdapter)
-	if !ok {
-		t.Fatalf("Session sandbox adapter = %T", requests[0].LegacyAdapter)
+	args := requests[0].Facts.SandboxCreateArgs
+	if len(args) == 0 {
+		t.Fatalf("Session sandbox create args are empty")
 	}
 	joined := strings.Join(args, " ")
 	found, err := server.sessions.Get(requests[0].Owner.ID)
@@ -69,8 +69,8 @@ func TestCreateSandboxSessionMountsExternalManagedWorkdirThroughPublicHTTP(t *te
 	if !strings.Contains(joined, wantMount) {
 		t.Fatalf("Session sandbox does not mount its managed Workdir at /task/workdir: %q", joined)
 	}
-	if !strings.Contains(joined, "ATTACHED FILES:") || !strings.Contains(joined, "/task/workdir/sample.bin") {
-		t.Fatalf("Session sandbox Runtime goal does not identify its uploaded file: %q", joined)
+	if !strings.Contains(requests[0].LaunchGoal, "ATTACHED FILES:") || !strings.Contains(requests[0].LaunchGoal, "/task/workdir/sample.bin") {
+		t.Fatalf("Session sandbox Runtime goal does not identify its uploaded file: %q", requests[0].LaunchGoal)
 	}
 }
 

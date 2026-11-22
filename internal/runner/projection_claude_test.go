@@ -9,6 +9,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -48,8 +49,9 @@ func TestProjectClaudeSettingsWritesEnvAndMaterializedCredentials(t *testing.T) 
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		Owner:       owner.NewTaskContract("task-claude", "project-1", layout.Workdir),
-		Credentials: creds,
+		BlackboardMode: modeskill.ModeDisabled,
+		Owner:          owner.NewTaskContract("task-claude", "project-1", layout.Workdir),
+		Credentials:    creds,
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)
@@ -100,7 +102,7 @@ func TestProjectClaudeSettingsWritesResolvedModelLimits(t *testing.T) {
 	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderClaudeCode,
 		Fields:   runtimeprofile.Fields{Model: "custom-model"},
-	}, runner.ProjectionRequest{CapabilityCache: cache}); err != nil {
+	}, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, CapabilityCache: cache}); err != nil {
 		t.Fatalf("project: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "settings.json"))
@@ -133,7 +135,7 @@ func TestClaudeProcessEnvMaterializesInlineAPIKeys(t *testing.T) {
 		},
 	}
 
-	env, err := runner.ClaudeProcessEnv(profile, runner.ProjectionRequest{})
+	env, err := runner.ClaudeProcessEnv(profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled})
 	if err != nil {
 		t.Fatalf("claude process env: %v", err)
 	}
@@ -184,7 +186,8 @@ func TestProjectClaudeSettingsWritesCatalogExtensionPlugins(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		Owner: owner.NewTaskContract("task-claude", "project-1", layout.Workdir),
+		BlackboardMode: modeskill.ModeDisabled,
+		Owner:          owner.NewTaskContract("task-claude", "project-1", layout.Workdir),
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)
@@ -240,7 +243,7 @@ func TestClaudeModelLimitsKeepNativeEnvAndUnknownDefaults(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			profile := runtimeprofile.Profile{Provider: runtimeprofile.ProviderClaudeCode, Fields: runtimeprofile.Fields{Model: "custom-model", Env: tc.env}}
-			env, err := runner.ClaudeProcessEnv(profile, runner.ProjectionRequest{CapabilityCache: modelprovider.NewCapabilityCache(tc.cache, "", nil)})
+			env, err := runner.ClaudeProcessEnv(profile, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, CapabilityCache: modelprovider.NewCapabilityCache(tc.cache, "", nil)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -276,7 +279,8 @@ func TestProjectClaudeSettingsWritesExecuteSubagentType(t *testing.T) {
 		},
 	}
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		Owner: owner.NewTaskContract("task-claude-execute", "project-1", layout.Workdir),
+		BlackboardMode: modeskill.ModeDisabled,
+		Owner:          owner.NewTaskContract("task-claude-execute", "project-1", layout.Workdir),
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)

@@ -75,11 +75,7 @@ describe("App", () => {
 
     expect(screen.getByRole("link", { name: "Skip to main content" })).toHaveAttribute("href", "#main-content");
     expect(document.querySelector("main")).toHaveAttribute("id", "main-content");
-    const newSessionLink = (await screen.findAllByRole("link", { name: /new session/i })).find((link) =>
-      link.getAttribute("href") === "/sessions#new-session",
-    );
-    expect(newSessionLink).toHaveClass("focus-visible:ring-2");
-    expect(screen.getByRole("link", { name: /non-project/i })).toHaveClass("focus-visible:ring-2");
+    expect(screen.getByRole("link", { name: "Sessions" })).toHaveClass("focus-visible:ring-2");
   });
 
   it("renders Geist-styled shell landmarks with active navigation that is not color-only", async () => {
@@ -102,12 +98,12 @@ describe("App", () => {
       "bg-sidebar",
       "text-sidebar-foreground",
     );
-    expect(screen.getByRole("navigation", { name: /primary routes/i })).toHaveClass("px-3");
-    expect(screen.getByRole("heading", { name: "CyberPenda" })).toHaveClass("text-sm", "font-semibold");
+    expect(screen.getByRole("navigation", { name: /primary routes/i })).toHaveClass("px-[15px]");
+    expect(screen.getByRole("heading", { name: "CyberPenda" })).toHaveClass("text-[17px]", "font-semibold");
 
     const skillsLink = screen.getByRole("link", { name: /skills/i });
     expect(skillsLink).toHaveAttribute("aria-current", "page");
-    expect(skillsLink).toHaveClass("bg-signal/5", "font-semibold");
+    expect(skillsLink).toHaveClass("bg-card", "font-medium");
     expect(skillsLink.querySelector('[data-nav-indicator="active"]')).not.toBeNull();
     expect(skillsLink).toHaveClass("focus-visible:ring-inset");
     expect(skillsLink.className).not.toMatch(/ring-offset-2/);
@@ -137,8 +133,8 @@ describe("App", () => {
     expect(screen.getByRole("link", { name: /skills/i })).toHaveAttribute("href", "/skills");
 
     expect(screen.queryByRole("button", { name: /collapse non-project/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /non-project/i })).toHaveAttribute("href", "/sessions");
-    expect(screen.getByRole("link", { name: /new session/i })).toHaveAttribute("href", "/sessions#new-session");
+    expect(screen.getByRole("link", { name: /^sessions$/i })).toHaveAttribute("href", "/sessions");
+    expect(screen.getByRole("region", { name: /recent sessions/i })).not.toHaveAttribute("open");
   });
 
   it("applies the shell primitive styling to skip link and theme toggle", async () => {
@@ -212,8 +208,8 @@ describe("App", () => {
 
     const sidebar = document.getElementById("workspace-sidebar");
     expect(sidebar).not.toBeNull();
-    // Off-canvas below md so main can use the full 390px viewport; desktop keeps w-72 in flow.
-    expect(sidebar).toHaveClass("fixed", "inset-y-0", "left-0", "w-72", "md:static");
+    // Off-canvas below md so main can use the full 390px viewport; desktop keeps w-64 in flow.
+    expect(sidebar).toHaveClass("fixed", "inset-y-0", "left-0", "w-[222px]", "md:static");
     expect(sidebar!.className.split(/\s+/)).toEqual(
       expect.arrayContaining(["-translate-x-full", "md:translate-x-0"]),
     );

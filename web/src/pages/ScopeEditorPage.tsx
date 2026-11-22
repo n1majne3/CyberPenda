@@ -189,7 +189,8 @@ export function ScopeEditorPage() {
 
   return (
     <ProjectPageShell
-      title={`Scope & defaults — ${project.name}`}
+      title="Scope"
+      description="Define the authorization boundary before testing. Exclusions and Testing limits apply to every Task."
       actions={
         <Button size="sm" onClick={save} disabled={saving}>
           <Save className="h-4 w-4 mr-1" /> {saving ? "Saving…" : "Save"}
@@ -197,30 +198,55 @@ export function ScopeEditorPage() {
       }
       bodyClassName="space-y-6"
     >
-      <Card as="section">
-        <CardHeader>
-          <CardTitle>Project defaults</CardTitle>
-        </CardHeader>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <Label htmlFor="scope-default-runner">Default runner</Label>
-            <Select
-              id="scope-default-runner"
-              name="default_runner"
-              value={defaultRunner}
-              onChange={(e) => setDefaultRunner(e.target.value)}
-            >
-              <option value="sandbox">sandbox</option>
-              <option value="host">host</option>
-            </Select>
-          </div>
-        </div>
-      </Card>
 
-      <Card as="section" aria-label="Scope Expansion proposals">
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {field("capabilities", "Authorized capabilities", "challenge_platform\nnetwork_access")}
+        {field("domains", "Domains", "example.com\napi.example.com")}
+        {field("ips", "IP addresses", "203.0.113.5")}
+        {field("cidrs", "CIDRs", "203.0.113.0/24")}
+        {field("urls", "URLs", "https://example.com/admin")}
+        {field("ports", "Ports", "443\n8443")}
+      </section>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Card as="section" className="rounded-none border-0 border-t border-border bg-transparent px-0 pt-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-warning">
+              <AlertTriangle className="h-4 w-4" /> Exclusions
+              <Badge variant="warning">non-actionable</Badge>
+            </CardTitle>
+          </CardHeader>
+          <div>{field("excluded", "Out-of-scope assets", "admin.example.com\nmail.example.com")}</div>
+        </Card>
+        <Card as="section" className="rounded-none border-0 border-t border-border bg-transparent px-0 pt-6">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-warning">
+              <AlertTriangle className="h-4 w-4" /> Testing limits
+            </CardTitle>
+          </CardHeader>
+          <div>{field("testing_limits", "Authorized limits", "No destructive payloads\nBusiness hours only", true)}</div>
+        </Card>
+      </div>
+
+      <section className="space-y-2">
+          <Label htmlFor="scope-notes">Scope notes</Label>
+          <Textarea
+            id="scope-notes"
+            name="notes"
+            value={draft.notes}
+            onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
+            placeholder="Free-form context for the runtime…"
+            autoComplete="off"
+          />
+      </section>
+
+      <Card as="section" aria-label="Scope Expansion proposals" className="rounded-none border-0 border-t border-border bg-transparent px-0 pt-6">
         <CardHeader>
           <CardTitle>Scope Expansion proposals</CardTitle>
         </CardHeader>
+        <details>
+          <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground">New Scope Expansion</summary>
+          <div className="mt-4">
         <p className="mb-4 text-sm text-muted-foreground">
           Propose a discovered addition. It does not become authorized Scope until an operator approves it.
         </p>
@@ -260,6 +286,8 @@ export function ScopeEditorPage() {
             <Plus className="mr-1 h-4 w-4" /> {proposing ? "Proposing…" : "Propose Scope Expansion"}
           </Button>
         </div>
+          </div>
+        </details>
         {expansions.length > 0 && (
           <ul className="mt-4 divide-y divide-border border-y border-border">
             {expansions.map((expansion) => (
@@ -283,46 +311,26 @@ export function ScopeEditorPage() {
         )}
       </Card>
 
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        {field("capabilities", "Authorized capabilities", "challenge_platform\nnetwork_access")}
-        {field("domains", "Domains", "example.com\napi.example.com")}
-        {field("ips", "IP addresses", "203.0.113.5")}
-        {field("cidrs", "CIDRs", "203.0.113.0/24")}
-        {field("urls", "URLs", "https://example.com/admin")}
-        {field("ports", "Ports", "443\n8443")}
-      </section>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card as="section" className="border-warning/25 bg-warning/5">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-warning">
-              <AlertTriangle className="h-4 w-4" /> Exclusions
-              <Badge variant="warning">non-actionable</Badge>
-            </CardTitle>
-          </CardHeader>
-          <div>{field("excluded", "Out-of-scope assets", "admin.example.com\nmail.example.com")}</div>
-        </Card>
-        <Card as="section" className="border-warning/25 bg-warning/5">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-warning">
-              <AlertTriangle className="h-4 w-4" /> Testing limits
-            </CardTitle>
-          </CardHeader>
-          <div>{field("testing_limits", "Authorized limits", "No destructive payloads\nBusiness hours only", true)}</div>
-        </Card>
-      </div>
-
-      <section className="space-y-2">
-          <Label htmlFor="scope-notes">Scope notes</Label>
-          <Textarea
-            id="scope-notes"
-            name="notes"
-            value={draft.notes}
-            onChange={(e) => setDraft({ ...draft, notes: e.target.value })}
-            placeholder="Free-form context for the runtime…"
-            autoComplete="off"
-          />
-      </section>
+      <details className="rounded-lg border border-border p-4">
+        <summary className="cursor-pointer text-sm font-medium">Project defaults</summary>
+        <div className="mt-4">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div>
+            <Label htmlFor="scope-default-runner">Default runner</Label>
+            <Select
+              id="scope-default-runner"
+              name="default_runner"
+              value={defaultRunner}
+              onChange={(e) => setDefaultRunner(e.target.value)}
+            >
+              <option value="sandbox">sandbox</option>
+              <option value="host">host</option>
+            </Select>
+          </div>
+        </div>
+        </div>
+      </details>
     </ProjectPageShell>
   );
 }

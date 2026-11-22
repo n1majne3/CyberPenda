@@ -1,10 +1,11 @@
 import { Outlet, useRouteError } from "react-router-dom";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ShieldAlert, Menu, X } from "lucide-react";
+import { ShieldAlert } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { OperatorCredentialGate } from "@/components/OperatorCredentialGate";
 import { WorkspaceSidebar } from "@/components/WorkspaceSidebar";
+import { WorkspaceTopbar } from "@/components/WorkspaceTopbar";
 import { cn } from "@/lib/utils";
 
 const ProjectListPage = lazy(() =>
@@ -159,27 +160,6 @@ export function ShellLayout() {
         Skip to main content
       </a>
       <div className="flex h-svh w-screen overflow-hidden bg-background text-foreground">
-        {/* Mobile top bar: primary nav is off-canvas so it cannot squeeze main at ~390px. */}
-        <header className="fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-background/95 px-3 backdrop-blur-sm md:hidden">
-          <button
-            ref={menuButtonRef}
-            type="button"
-            aria-label={mobileNavOpen ? "Close navigation" : "Open navigation"}
-            aria-expanded={mobileNavOpen}
-            aria-controls="workspace-sidebar"
-            onClick={toggleMobileNav}
-            className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-background text-foreground shadow-sm transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:hidden"
-          >
-            {mobileNavOpen ? (
-              <X className="size-4" aria-hidden="true" />
-            ) : (
-              <Menu className="size-4" aria-hidden="true" />
-            )}
-          </button>
-          <Logo className="h-5 w-5" spin />
-          <span className="text-sm font-semibold">CyberPenda</span>
-        </header>
-
         {mobileNavOpen && !isDesktop && (
           <button
             type="button"
@@ -196,27 +176,30 @@ export function ShellLayout() {
           aria-hidden={sidebarAvailable ? undefined : true}
           inert={sidebarAvailable ? undefined : true}
           className={cn(
-            "flex w-72 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground shadow-sm",
+            "flex w-[222px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground",
             // Off-canvas below md: out of document flow so main uses full viewport width.
             "fixed inset-y-0 left-0 z-50 transition-transform duration-200 ease-geist md:static md:z-auto md:translate-x-0",
             mobileNavOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0",
           )}
         >
-          <div className="flex h-14 items-center gap-2 border-b border-sidebar-border px-4">
-            <Logo className="h-5 w-5" spin />
-            <h2 className="text-sm font-semibold">CyberPenda</h2>
+          <div className="flex h-[93px] shrink-0 items-center gap-2.5 px-[27px]">
+            <Logo className="h-7 w-7" />
+            <h2 className="text-[17px] font-semibold tracking-[-0.6px]">CyberPenda</h2>
           </div>
           <WorkspaceSidebar onNavigate={() => closeMobileNav({ restoreFocus: false })} />
         </aside>
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <WorkspaceTopbar navigationOpen={mobileNavOpen} onToggleNavigation={toggleMobileNav} menuButtonRef={menuButtonRef} />
         <main
           id="main-content"
           tabIndex={-1}
-          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-background pt-14 md:pt-0"
+          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-x-hidden overflow-y-auto bg-background"
         >
           <Suspense fallback={<div role="status" className="p-6 text-sm text-muted-foreground">Loading…</div>}>
             <Outlet />
           </Suspense>
         </main>
+        </div>
       </div>
     </>
   );

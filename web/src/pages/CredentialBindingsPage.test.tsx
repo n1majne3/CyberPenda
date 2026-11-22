@@ -42,7 +42,7 @@ describe("CredentialBindingsPage", () => {
     expect(layout).toHaveClass(
       "grid",
       "min-w-0",
-      "lg:grid-cols-[minmax(0,1fr)_minmax(320px,380px)]",
+      "lg:grid-cols-[240px_minmax(0,1fr)]",
     );
     expect(screen.getByTestId("credential-bindings-settings-list")).toHaveClass(
       "min-w-0",
@@ -50,20 +50,14 @@ describe("CredentialBindingsPage", () => {
       "lg:min-h-0",
       "lg:overflow-hidden",
     );
-    expect(layout).toHaveClass("lg:min-h-0", "lg:flex-1");
+    expect(layout).toHaveClass("gap-8");
     expect(await screen.findByTestId("credentials-library-list")).toBeInTheDocument();
     expect(await screen.findByTestId("credential-row-binding-1")).toBeInTheDocument();
     expect(screen.getByLabelText("Search credentials")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Filter by status" })).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Filter by source kind" })).toBeInTheDocument();
 
-    expect(screen.getByTestId("credential-binding-create-panel")).toHaveClass(
-      "rounded-lg",
-      "border",
-      "bg-card",
-      "shadow-sm",
-    );
-    expect(screen.getByRole("heading", { name: "Library actions" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Credential details" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Credential reference")).not.toBeInTheDocument();
 
     await userEvent.click(screen.getAllByRole("button", { name: /New binding/i })[0]!);
@@ -209,8 +203,8 @@ describe("CredentialBindingsPage", () => {
 
     renderPage();
 
-    expect(await screen.findByText("stored-secret")).toBeInTheDocument();
-    expect(screen.getByText("••••••••")).toBeInTheDocument();
+    expect(await screen.findByTestId("credential-row-binding-1")).toHaveTextContent("stored-secret");
+    expect(screen.getByRole("region", { name: "Credential details" })).toHaveTextContent("Secret value (hidden)");
     expect(screen.queryByText("sk-super-secret")).not.toBeInTheDocument();
   });
 

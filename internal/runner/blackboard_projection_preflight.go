@@ -92,12 +92,6 @@ func containsGeneratedBlackboardInstructions(raw []byte) bool {
 	if bytes.Contains(raw, []byte("# Blackboard workflow\n\n")) {
 		return true
 	}
-	if bytes.Contains(raw, []byte("Trusted MCP is pre-configured")) &&
-		bytes.Contains(raw, []byte("## Required workflow")) &&
-		bytes.Contains(raw, []byte("blackboard_finish")) &&
-		bytes.Contains(raw, []byte(".pentest/context.json")) {
-		return true
-	}
 	return (bytes.Contains(raw, []byte("# Pentest task context")) ||
 		bytes.Contains(raw, []byte("# Non-Project Session context"))) &&
 		bytes.Contains(raw, []byte("pentestctl blackboard")) &&

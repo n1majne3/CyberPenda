@@ -10,7 +10,6 @@ import (
 
 	"pentest/internal/blackboardv2"
 	"pentest/internal/project"
-	"pentest/internal/runtime"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
 )
@@ -120,7 +119,7 @@ func TestClaudeAndPiV2PostGrantProjectionFailureRollsBackDurableLaunchAndGrantCo
 			if err != nil {
 				t.Fatalf("retry after rolled-back post-grant failure: %v", err)
 			}
-			if continuation.ID == "" || bound.Adapter == nil {
+			if continuation.ID == "" || len(bound.Facts.SandboxCreateArgs) == 0 {
 				t.Fatalf("retry returned empty launch: %#v %#v", continuation, bound)
 			}
 			if _, err := os.Stat(tc.mcpPath(runtimeRoot, createdTask.ID)); !os.IsNotExist(err) {
@@ -177,7 +176,7 @@ func TestCodexV2LaunchStillSucceedsWithoutBindGrantSideEffects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Codex v2 launch: %v", err)
 	}
-	if continuation.ID == "" || bound.Adapter == nil {
+	if continuation.ID == "" || len(bound.Facts.SandboxCreateArgs) == 0 {
 		t.Fatalf("Codex launch incomplete: %#v %#v", continuation, bound)
 	}
 	// Codex must not project grant-bearing MCP config.
@@ -244,13 +243,13 @@ func TestClaudeAndPiV2SandboxArgvAndEnvOmitIdentityAndHostTaskRoots(t *testing.T
 			if err != nil {
 				t.Fatalf("prepare Continuation: %v", err)
 			}
-			createArgs, ok := runtime.DockerSandboxCreateArgs(bound.Adapter)
-			if !ok {
-				t.Fatal("expected Docker sandbox adapter with inspectable create argv")
+			createArgs := bound.Facts.SandboxCreateArgs
+			if len(createArgs) == 0 {
+				t.Fatal("expected sandbox create argv")
 			}
-			createEnv, ok := runtime.DockerSandboxCreateEnv(bound.Adapter)
-			if !ok {
-				t.Fatal("expected Docker sandbox adapter with inspectable create env")
+			createEnv := bound.Facts.SandboxCreateEnv
+			if len(createEnv) == 0 {
+				t.Fatal("expected sandbox create env")
 			}
 			taskRoot := filepath.Join(runtimeRoot, createdTask.ID)
 

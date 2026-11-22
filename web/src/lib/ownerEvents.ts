@@ -46,7 +46,7 @@ export function mergeTimelineItems(existing: TaskTimelineItem[], delta: TaskTime
 
 /** mergeTranscriptEntries appends new rows and updates growing stable rows in place. */
 export function mergeTranscriptEntries(existing: TaskTranscriptEntry[], delta: TaskTranscriptEntry[]): TaskTranscriptEntry[] {
-  if (existing.length === 0) return coalesceAssistantChunks(delta);
+  if (existing.length === 0) return delta;
   if (delta.length === 0) return existing;
   const maxSeq = Math.max(...existing.map((entry) => entry.seq));
   const updated = [...existing];
@@ -96,7 +96,7 @@ export function mergeTranscriptEntries(existing: TaskTranscriptEntry[], delta: T
     appended.push(entry);
   }
   if (!changed && appended.length === 0) return existing;
-  return anchorSubagentBlocks(appendCoalescedTranscript(updated, appended));
+  return anchorSubagentBlocks([...updated, ...appended]);
 }
 
 // mergeSubagentBlock unions a rebuilt block's items with the loaded ones. Each
@@ -127,52 +127,6 @@ function mergeSubagentBlock(previous: TaskTranscriptEntry, next: TaskTranscriptE
 function blockItems(entry: TaskTranscriptEntry): Array<Record<string, unknown>> {
   const items = entry.details?.items;
   return Array.isArray(items) ? (items as Array<Record<string, unknown>>) : [];
-}
-
-function appendCoalescedTranscript(existing: TaskTranscriptEntry[], delta: TaskTranscriptEntry[]): TaskTranscriptEntry[] {
-  const next = coalesceAssistantChunks(delta);
-  if (next.length === 0) return existing;
-  const last = existing[existing.length - 1]!;
-  if (canMergeAssistantChunk(last, next[0]!)) {
-    const joined: TaskTranscriptEntry = {
-      ...last,
-      text: `${last.text ?? ""}${next[0]!.text ?? ""}`,
-      seq: next[0]!.seq,
-      created_at: next[0]!.created_at ?? last.created_at,
-    };
-    return [...existing.slice(0, -1), joined, ...next.slice(1)];
-  }
-  return [...existing, ...next];
-}
-
-function coalesceAssistantChunks(entries: TaskTranscriptEntry[]): TaskTranscriptEntry[] {
-  const out: TaskTranscriptEntry[] = [];
-  for (const entry of entries) {
-    const prev = out[out.length - 1];
-    if (prev && canMergeAssistantChunk(prev, entry)) {
-      out[out.length - 1] = {
-        ...prev,
-        text: `${prev.text ?? ""}${entry.text ?? ""}`,
-        seq: entry.seq,
-        created_at: entry.created_at ?? prev.created_at,
-      };
-      continue;
-    }
-    out.push(entry);
-  }
-  return out;
-}
-
-function canMergeAssistantChunk(prev: TaskTranscriptEntry, next: TaskTranscriptEntry): boolean {
-  return (
-    prev.kind === "message" &&
-    next.kind === "message" &&
-    prev.role === "assistant" &&
-    next.role === "assistant" &&
-    prev.continuation === next.continuation &&
-    prev.stream === "hermes_acp" &&
-    next.stream === "hermes_acp"
-  );
 }
 
 /**
