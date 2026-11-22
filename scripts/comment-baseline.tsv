@@ -323,7 +323,7 @@ internal/runtime/provider_bridge_adapter.go	13
 internal/runtime/provider_bridge_adapter_test.go	3
 internal/runtime/provider_bridge_command.go	4
 internal/runtime/provider_bridge_command_test.go	2
-internal/runtime/provider_observation.go	24
+internal/runtime/provider_observation.go	22
 internal/runtime/provider_session.go	52
 internal/runtime/reasoning_batcher.go	33
 internal/runtime/reasoning_batcher_test.go	7
