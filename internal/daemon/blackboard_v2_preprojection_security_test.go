@@ -17,8 +17,11 @@ import (
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/project"
+	"pentest/internal/runtime"
+	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/task"
+	"pentest/internal/testsupport/fakeprovider"
 )
 
 const codexV2SymlinkOperatorSecret = "operator-secret-must-not-be-projected"
@@ -89,9 +92,16 @@ func newCodexV2ResumeSecurityFixture(t *testing.T) codexV2ResumeSecurityFixture 
 	if err := os.Chmod(shim, 0o700); err != nil {
 		t.Fatalf("make Codex shim executable: %v", err)
 	}
+	factory := &recordingProviderSessionFactory{
+		session: fakeprovider.New(fakeprovider.Config{
+			Capabilities: runtimeplugin.Capabilities{PersistentSession: true, SendTurn: true},
+		}),
+		adapter: runtime.NewFakeAdapter(),
+	}
 	server, err := NewServer(Config{
 		Version: "test", DBPath: filepath.Join(root, "security.db"), RuntimeRoot: runtimeRoot,
 		AuthToken: codexV2SymlinkOperatorSecret, DisableBuiltinSkills: true,
+		ProviderSessionFactory: factory,
 	})
 	if err != nil {
 		t.Fatalf("start Codex v2 daemon: %v", err)

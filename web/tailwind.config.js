@@ -8,6 +8,11 @@ export default {
       screens: { "2xl": "1400px" },
     },
     extend: {
+      fontSize: {
+        xs: ["11px", "1.55"],
+        sm: ["12px", "1.6"],
+        base: ["13px", "1.55"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

@@ -34,11 +34,13 @@ func (server *Server) buildTaskLaunchPlanForBlackboardProjection(created task.Ta
 		seed := &taskLaunchPlan{ResolvedProfile: profile, BlackboardProjection: blackboardProjection}
 		return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, seed)
 	}
-	if server.blackboardV2Continuity != nil && runner.BlackboardV2SupportsProvider(profile.Provider) {
-		return server.prepareBlackboardV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, profile)
+	if server.blackboardV2Continuity == nil {
+		return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 continuity is required for Blackboard projection")
 	}
-	seed := &taskLaunchPlan{ResolvedProfile: profile, BlackboardProjection: runner.BlackboardProjectionRequired}
-	return server.buildTaskLaunchPlanWithBinding(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, nil, seed)
+	if !runner.BlackboardV2SupportsProvider(profile.Provider) {
+		return taskLaunchPlan{}, fmt.Errorf("Blackboard v2 launch projection is unsupported for provider %q", profile.Provider)
+	}
+	return server.prepareBlackboardV2TaskLaunchPlan(created, goal, launchModelOverride, nativeResumeSessionID, launchReasoningEffort, profile)
 }
 
 func (server *Server) prepareBlackboardV2TaskLaunchPlan(created task.Task, goal string, launchModelOverride string, nativeResumeSessionID string, launchReasoningEffort string, profile runtimeprofile.Profile) (taskLaunchPlan, error) {

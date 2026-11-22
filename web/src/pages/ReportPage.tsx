@@ -1,7 +1,7 @@
 import { ProjectReportProtocol } from "./FGSReport";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ClipboardList, Download } from "lucide-react";
+import { Download } from "lucide-react";
 import {
   formatBlackboardV2Error,
   readPentestReport,
@@ -72,70 +72,21 @@ function LegacyReportPage() {
   }
 
   return (
-    <ProjectPageShell title="Generate report" bodyClassName="space-y-4">
-      <Card as="section" className="space-y-3">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ClipboardList className="h-4 w-4" aria-hidden="true" />
-            Deterministic Pentest report
-          </CardTitle>
-        </CardHeader>
-        <p className="text-sm text-muted-foreground">
-          Rendered from current Blackboard v2 conclusions: confirmed Findings and Facts
-          are listed separately from unconfirmed Findings and tentative Facts. Each key
-          links to current detail/history.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {markdown && (
-            <Button size="sm" variant="outline" onClick={download}>
-              <Download className="mr-1 h-4 w-4" /> Download .md
-            </Button>
-          )}
-        </div>
-      </Card>
-
+    <ProjectPageShell
+      title="Report"
+      description="Confirmed Findings and Facts are separate from unconfirmed Findings and tentative Facts."
+      actions={markdown && <Button size="sm" variant="outline" onClick={download}><Download className="h-4 w-4" /> Download .md</Button>}
+      bodyClassName="space-y-6"
+    >
       {loading && <LoadingState label="Generating report" minHeight="min-h-20" />}
       {error && <ErrorState error={error} title="Couldn't generate report" />}
 
-      {report && (
-        <Card as="section" className="space-y-4">
-          <CardHeader>
-            <CardTitle>{report.project.name} — structured report</CardTitle>
-          </CardHeader>
-          {report.project.description && (
-            <p className="text-sm text-muted-foreground">{report.project.description}</p>
-          )}
-          <FindingSection
-            projectId={projectId}
-            title="Confirmed Findings"
-            items={report.confirmed_findings}
-          />
-          <FindingSection
-            projectId={projectId}
-            title="Unconfirmed Findings"
-            items={report.unconfirmed_findings}
-            muted
-          />
-          <FactSection
-            projectId={projectId}
-            title="Confirmed Facts"
-            items={report.confirmed_facts}
-          />
-          <FactSection
-            projectId={projectId}
-            title="Tentative Facts"
-            items={report.tentative_facts}
-            muted
-          />
-        </Card>
-      )}
-
       {markdown ? (
-        <Card as="section" className="overflow-hidden">
+        <Card as="section" className="mx-auto max-w-4xl gap-6 p-6 sm:p-10">
           <CardHeader>
             <CardTitle>Report preview</CardTitle>
           </CardHeader>
-          <pre className="max-h-[32rem] overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/30 p-3 font-mono text-xs">
+          <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-7">
             {markdown}
           </pre>
         </Card>
@@ -147,6 +98,42 @@ function LegacyReportPage() {
           </Card>
         )
       )}
+      {report && (
+        <details className="rounded-lg border border-border">
+          <summary className="cursor-pointer px-5 py-4 text-sm font-medium">Supporting records</summary>
+          <Card as="section" className="space-y-6 rounded-none border-0 border-t border-border">
+            <CardHeader>
+              <CardTitle>{report.project.name} — structured report</CardTitle>
+            </CardHeader>
+            {report.project.description && (
+              <p className="text-sm text-muted-foreground">{report.project.description}</p>
+            )}
+            <FindingSection
+              projectId={projectId}
+              title="Confirmed Findings"
+              items={report.confirmed_findings}
+            />
+            <FindingSection
+              projectId={projectId}
+              title="Unconfirmed Findings"
+              items={report.unconfirmed_findings}
+              muted
+            />
+            <FactSection
+              projectId={projectId}
+              title="Confirmed Facts"
+              items={report.confirmed_facts}
+            />
+            <FactSection
+              projectId={projectId}
+              title="Tentative Facts"
+              items={report.tentative_facts}
+              muted
+            />
+          </Card>
+        </details>
+      )}
+
     </ProjectPageShell>
   );
 }

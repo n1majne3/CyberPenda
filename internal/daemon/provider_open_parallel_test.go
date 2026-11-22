@@ -50,7 +50,7 @@ func TestProviderFactoryOpensUnrelatedOwnersDuringHeldSetup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	makeRequest := func(id string) ProviderSessionLaunchRequest {
-		return ProviderSessionLaunchRequest{Owner: owner.NewTaskContract(id, "project", ""), Continuation: owner.Continuation{ID: id + "-c1", OwnerID: id}, Provider: runtimeprofile.Provider("fake"), Runner: task.RunnerHost, LegacyAdapter: runtime.NewCommandAdapter(runtime.CommandAdapterConfig{Name: "fake", Program: "fake", Workdir: "/work"}), Facts: ProviderSessionLaunchFacts{Workdir: "/work"}}
+		return ProviderSessionLaunchRequest{Owner: owner.NewTaskContract(id, "project", ""), Continuation: owner.Continuation{ID: id + "-c1", OwnerID: id}, Provider: runtimeprofile.Provider("fake"), Runner: task.RunnerHost, Facts: ProviderSessionLaunchFacts{Workdir: "/work"}}
 	}
 	held := make(chan error, 1)
 	go func() {
@@ -92,7 +92,7 @@ func TestProviderFactoryRetriesOwnerAfterSetupFailure(t *testing.T) {
 	factory := NewProductionProviderSessionFactory(ProductionProviderSessionFactoryConfig{HostStarter: starter})
 	asm := &fakeAssembler{program: "fake", setupErr: fmt.Errorf("setup failed")}
 	factory.assemblers[runtimeprofile.Provider("fake")] = asm
-	request := ProviderSessionLaunchRequest{Owner: owner.NewTaskContract("retry", "project", ""), Continuation: owner.Continuation{ID: "retry-c1", OwnerID: "retry"}, Provider: runtimeprofile.Provider("fake"), Runner: task.RunnerHost, LegacyAdapter: runtime.NewCommandAdapter(runtime.CommandAdapterConfig{Name: "fake", Program: "fake", Workdir: "/work"}), Facts: ProviderSessionLaunchFacts{Workdir: "/work"}}
+	request := ProviderSessionLaunchRequest{Owner: owner.NewTaskContract("retry", "project", ""), Continuation: owner.Continuation{ID: "retry-c1", OwnerID: "retry"}, Provider: runtimeprofile.Provider("fake"), Runner: task.RunnerHost, Facts: ProviderSessionLaunchFacts{Workdir: "/work"}}
 	if _, err := factory.Open(context.Background(), request); err == nil {
 		t.Fatal("setup failure was ignored")
 	}
@@ -127,7 +127,7 @@ func TestProviderFactoryConcurrentOwnerStartsOnce(t *testing.T) {
 	factory.assemblers[runtimeprofile.Provider("fake")] = asm
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	request := ProviderSessionLaunchRequest{Owner: owner.NewTaskContract("held", "project", ""), Continuation: owner.Continuation{ID: "held-c1", OwnerID: "held"}, Provider: runtimeprofile.Provider("fake"), Runner: task.RunnerHost, LegacyAdapter: runtime.NewCommandAdapter(runtime.CommandAdapterConfig{Name: "fake", Program: "fake", Workdir: "/work"}), Facts: ProviderSessionLaunchFacts{Workdir: "/work"}}
+	request := ProviderSessionLaunchRequest{Owner: owner.NewTaskContract("held", "project", ""), Continuation: owner.Continuation{ID: "held-c1", OwnerID: "held"}, Provider: runtimeprofile.Provider("fake"), Runner: task.RunnerHost, Facts: ProviderSessionLaunchFacts{Workdir: "/work"}}
 	type result struct {
 		binding ProviderSessionBinding
 		err     error

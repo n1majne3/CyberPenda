@@ -1,6 +1,6 @@
 import { forwardRef, type HTMLAttributes, type ReactNode } from "react";
 import { ProjectNav } from "@/components/ProjectNav";
-import { BackLink, PageContainer } from "@/components/shared";
+import { PageContainer } from "@/components/shared";
 import { cn } from "@/lib/utils";
 
 export type ProjectPageShellProps = {
@@ -38,26 +38,21 @@ export const ProjectPageShell = forwardRef<HTMLDivElement, ProjectPageShellProps
     return (
       <PageContainer
         ref={ref}
-        className={cn("flex w-full max-w-full min-w-0 flex-col p-0 lg:p-0", className)}
+        className={cn("flex min-h-0 w-full min-w-0 flex-col", hideChrome && "max-w-none flex-1 p-0 sm:p-0 lg:p-0", className)}
         {...props}
       >
         {!hideChrome && (
           <div
             data-testid="project-page-shell-chrome"
-            className="sticky top-0 z-20 mb-6 w-full border-b border-border bg-background/90 px-6 py-3 backdrop-blur-sm supports-[backdrop-filter]:bg-background/80 lg:px-8"
+            className="mb-[30px] w-full border-b border-border"
           >
-            <div className="mx-auto w-full max-w-6xl space-y-2">
-              <BackLink to="/" className="mb-0">
-                All projects
-              </BackLink>
-              <ProjectNav />
-            </div>
+            <ProjectNav />
           </div>
         )}
 
         <div
           className={cn(
-            "mx-auto flex w-full max-w-6xl min-w-0 flex-1 flex-col min-h-0 px-6 pb-6 lg:px-8 lg:pb-8",
+            "flex min-h-0 w-full min-w-0 flex-1 flex-col",
             hideChrome && "max-w-none p-0 lg:p-0",
             contentClassName,
           )}
@@ -65,17 +60,17 @@ export const ProjectPageShell = forwardRef<HTMLDivElement, ProjectPageShellProps
           {hasHeader && (
             <div
               data-testid="project-page-shell-header"
-              className="mb-6 flex min-w-0 w-full max-w-full flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"
+              className="mb-7 flex w-full min-w-0 flex-row items-start justify-between gap-4 [&_h1]:text-[29px] [&_h1]:font-semibold [&_h1]:leading-[1.3] [&_h1]:tracking-[-1px] [&_h1>svg]:hidden"
             >
               <div className="min-w-0 flex-1">
                 {title != null &&
                   (typeof title === "string" || typeof title === "number" ? (
-                    <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
+                    <h1 className="text-[29px] font-semibold leading-[1.3] tracking-[-1px]">{title}</h1>
                   ) : (
                     title
                   ))}
                 {description != null && (
-                  <div className="mt-1 text-sm leading-6 text-muted-foreground">
+                  <div className="mt-2 max-w-2xl text-xs leading-6 text-muted-foreground">
                     {description}
                   </div>
                 )}

@@ -8,7 +8,6 @@ import (
 
 	"pentest/internal/modelprovider"
 	"pentest/internal/runner"
-	"pentest/internal/runtime"
 	"pentest/internal/runtimeplugin"
 	"pentest/internal/runtimeprofile"
 	"pentest/internal/session"
@@ -111,12 +110,8 @@ func TestSessionLaunchPlanCanOmitBlackboardProjection(t *testing.T) {
 	if plan.Facts.Workdir != fixture.found.Workdir || provenance["id"] != fixture.profile.ID {
 		t.Fatalf("ordinary Session Runtime configuration is incomplete: %#v", plan)
 	}
-	launch, ok := runtime.CommandAdapterLaunch(plan.Adapter)
-	if !ok {
-		t.Fatalf("Session host adapter = %T", plan.Adapter)
-	}
 	for _, forbidden := range []string{"PENTEST_SESSION_ID", "PENTEST_MCP_URL", "PENTEST_API_URL", "PENTEST_INTERFACE_TOKEN"} {
-		if value := launch.Env[forbidden]; value != "" {
+		if value := plan.Facts.Env[forbidden]; value != "" {
 			t.Fatalf("Session launch environment retained %s=%q", forbidden, value)
 		}
 	}

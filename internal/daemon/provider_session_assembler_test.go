@@ -158,12 +158,14 @@ func TestProviderSessionAssemblerSandboxConformance(t *testing.T) {
 				providerToken = "claude"
 			}
 			request := ProviderSessionLaunchRequest{
-				Owner:         owner.NewTaskContract("conformance-"+string(tc.provider), "project-test", ""),
-				Continuation:  owner.Continuation{ID: "c1", OwnerID: "conformance-" + string(tc.provider)},
-				Provider:      tc.provider,
-				Runner:        task.RunnerSandbox,
-				LegacyAdapter: runtime.NewDockerSandboxAdapter(runtime.DockerSandboxConfig{Name: string(tc.provider), Image: "sandbox:test", CreateArgs: []string{"create", "sandbox:test", providerToken, "goal"}}),
-				Facts:         ProviderSessionLaunchFacts{Workdir: "/task/workdir"},
+				Owner:        owner.NewTaskContract("conformance-"+string(tc.provider), "project-test", ""),
+				Continuation: owner.Continuation{ID: "c1", OwnerID: "conformance-" + string(tc.provider)},
+				Provider:     tc.provider,
+				Runner:       task.RunnerSandbox,
+				Facts: ProviderSessionLaunchFacts{
+					Workdir:           "/task/workdir",
+					SandboxCreateArgs: []string{"create", "sandbox:test", providerToken, "goal"},
+				},
 			}
 			binding, err := factory.Open(context.Background(), request)
 			if err != nil {
@@ -277,15 +279,13 @@ func TestProviderSessionAssemblerFakeDrivesSharedFinish(t *testing.T) {
 	fake := &fakeAssembler{program: "fake-asm", args: []string{"--persistent"}}
 	factory.assemblers[runtimeprofile.Provider("fake-asm")] = fake
 
-	legacy := runtime.NewCommandAdapter(runtime.CommandAdapterConfig{Name: "fake-asm", Program: "fake-asm", Args: []string{"goal"}, Workdir: "/work"})
 	makeRequest := func(continuationID string) ProviderSessionLaunchRequest {
 		return ProviderSessionLaunchRequest{
-			Owner:         owner.NewTaskContract("fake-asm-task", "project-test", ""),
-			Continuation:  owner.Continuation{ID: continuationID, OwnerID: "fake-asm-task"},
-			Provider:      runtimeprofile.Provider("fake-asm"),
-			Runner:        task.RunnerHost,
-			LegacyAdapter: legacy,
-			Facts:         ProviderSessionLaunchFacts{Workdir: "/work"},
+			Owner:        owner.NewTaskContract("fake-asm-task", "project-test", ""),
+			Continuation: owner.Continuation{ID: continuationID, OwnerID: "fake-asm-task"},
+			Provider:     runtimeprofile.Provider("fake-asm"),
+			Runner:       task.RunnerHost,
+			Facts:        ProviderSessionLaunchFacts{Workdir: "/work"},
 		}
 	}
 	binding, err := factory.Open(context.Background(), makeRequest("c1"))

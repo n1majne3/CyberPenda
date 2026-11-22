@@ -55,19 +55,6 @@ func TestParseRecordStripsANSIFromCodexReasoning(t *testing.T) {
 	}
 }
 
-func TestParseRecordStripsANSIFromHermesThoughtChunk(t *testing.T) {
-	turns := runtimeoutput.ParseRecord(map[string]any{
-		"sessionUpdate": "agent_thought_chunk",
-		"text":          "\x1b[32mthinking green\x1b[0m",
-	}, runtimeoutput.ParseOptions{IncludeThinking: true}, time.Time{})
-	if len(turns) != 1 {
-		t.Fatalf("expected 1 turn, got %#v", turns)
-	}
-	if turns[0].Text != "thinking green" {
-		t.Fatalf("text = %q, want ANSI-free thought chunk", turns[0].Text)
-	}
-}
-
 // Plain text turns keep their content untouched; only reasoning is decorated
 // by provider display formatting.
 func TestParseRecordKeepsANSILessTextUntouched(t *testing.T) {

@@ -11,6 +11,7 @@ import (
 
 	"pentest/internal/credential"
 	"pentest/internal/modelprovider"
+	"pentest/internal/modeskill"
 	"pentest/internal/owner"
 	"pentest/internal/runner"
 	"pentest/internal/runtimeprofile"
@@ -49,8 +50,9 @@ func TestProjectCodexConfigWritesConfigTomlAndAuth(t *testing.T) {
 	}
 
 	projection, err := runner.ProjectRuntimeConfig(layout, profile, runner.ProjectionRequest{
-		Owner:       owner.NewTaskContract("task-codex", "project-1", layout.Workdir),
-		Credentials: creds,
+		BlackboardMode: modeskill.ModeDisabled,
+		Owner:          owner.NewTaskContract("task-codex", "project-1", layout.Workdir),
+		Credentials:    creds,
 	})
 	if err != nil {
 		t.Fatalf("project config: %v", err)
@@ -125,7 +127,7 @@ func TestProjectCodexConfigWritesResolvedModelLimits(t *testing.T) {
 	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderCodex,
 		Fields:   runtimeprofile.Fields{Model: "gpt-strong"},
-	}, runner.ProjectionRequest{CapabilityCache: cache}); err != nil {
+	}, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, CapabilityCache: cache}); err != nil {
 		t.Fatalf("project: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "config.toml"))
@@ -219,7 +221,7 @@ func TestProjectCodexConfigUsesSandboxModelCatalogPath(t *testing.T) {
 	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderCodex,
 		Fields:   runtimeprofile.Fields{Model: "x-preview-f-free"},
-	}, runner.ProjectionRequest{Sandbox: true, CapabilityCache: cache}); err != nil {
+	}, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled, Sandbox: true, CapabilityCache: cache}); err != nil {
 		t.Fatalf("project: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "config.toml"))
@@ -241,7 +243,7 @@ func projectCodexMultiAgentConfig(t *testing.T, fields runtimeprofile.Fields) st
 	if _, err := runner.ProjectRuntimeConfig(layout, runtimeprofile.Profile{
 		Provider: runtimeprofile.ProviderCodex,
 		Fields:   fields,
-	}, runner.ProjectionRequest{}); err != nil {
+	}, runner.ProjectionRequest{BlackboardMode: modeskill.ModeDisabled}); err != nil {
 		t.Fatalf("project: %v", err)
 	}
 	raw, err := os.ReadFile(filepath.Join(layout.ProviderHome, "config.toml"))

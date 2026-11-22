@@ -63,8 +63,8 @@ describe("settings helpers", () => {
     );
 
     expect(getByRole("heading", { name: "Model providers" })).toHaveClass(
-      "text-lg",
-      "tracking-tight",
+      "text-[29px]",
+      "tracking-[-1px]",
     );
     expect(getByText("Reusable endpoints.")).toHaveClass("max-w-3xl", "text-muted-foreground");
     expect(getByRole("button", { name: "Add" })).toBeInTheDocument();
@@ -80,9 +80,9 @@ describe("settings helpers", () => {
     expect(getByTestId("layout")).toHaveClass(
       "grid",
       "min-w-0",
-      "lg:grid-cols-[minmax(220px,280px)_minmax(0,1fr)]",
+      "lg:grid-cols-[240px_minmax(0,1fr)]",
     );
-    expect(getByTestId("detail")).toHaveClass("rounded-lg", "border", "bg-card", "p-4");
+    expect(getByTestId("detail")).toHaveClass("rounded-none", "border-0", "bg-transparent", "p-0");
   });
 
   it("uses concise alert copy on a destructive token surface", () => {
@@ -95,7 +95,7 @@ describe("settings helpers", () => {
 });
 
 describe("RichEmptyState", () => {
-  it("renders a centered dashed card with icon, title, description, and action", () => {
+  it("renders a quiet centered empty state with icon, title, description, and action", () => {
     const { getByRole, getByText, container } = render(
       <RichEmptyState
         icon={<span data-testid="icon" />}
@@ -106,7 +106,7 @@ describe("RichEmptyState", () => {
     );
 
     const status = getByRole("status");
-    expect(status).toHaveClass("border-dashed", "py-14", "text-center");
+    expect(status).toHaveClass("border-0", "py-12", "text-center");
     expect(getByText("No sessions")).toHaveClass("font-medium");
     expect(getByText("Create one to start.")).toHaveClass("text-muted-foreground");
     expect(getByRole("button", { name: "New session" })).toBeInTheDocument();

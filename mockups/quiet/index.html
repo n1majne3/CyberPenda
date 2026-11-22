@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>CyberPenda — Quiet UI prototype</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="sr-only" href="#main">Skip to content</a>
+<div class="frame"><aside class="sidebar" aria-label="Workspace navigation" id="sidebar"></aside><div class="workspace"><header class="topbar" id="topbar"></header><main class="content" id="main" tabindex="-1"></main></div></div>
+<dialog class="dialog" id="dialog" aria-labelledby="dialog-title"><div class="dialog-head"><h2 id="dialog-title"></h2><button class="icon-btn" data-action="close-dialog" aria-label="Close dialog">✕</button></div><div class="dialog-body" id="dialog-body"></div></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+<script defer src="ui.js"></script>
+<script defer src="navigation.js"></script>
+<script defer src="work-pages.js"></script>
+<script defer src="workspace-pages.js"></script>
+<script defer src="knowledge-pages.js"></script>
+<script defer src="settings-pages.js"></script>
+<script defer src="application.js"></script>
+<script defer src="actions.js"></script>
+<script defer src="forms.js"></script>
+</body>
+</html>

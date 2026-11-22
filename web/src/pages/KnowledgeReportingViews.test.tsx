@@ -57,14 +57,13 @@ describe("knowledge and reporting views", () => {
 
     renderRoute("/projects/project-1/scope", <ScopeEditorPage />, "/projects/:projectId/scope");
 
-    expect(await screen.findByRole("heading", { name: /Scope & defaults/i })).toHaveClass(
-      "tracking-tight",
+    expect(await screen.findByRole("heading", { name: /^Scope$/i })).toHaveClass(
+      "tracking-[-1px]",
     );
-    expect(screen.getByText("Project defaults").closest("section")).toHaveClass(
+    expect(screen.getByText("Project defaults").closest("details")).toHaveClass(
       "rounded-lg",
       "border",
-      "bg-card",
-      "shadow-sm",
+      "p-4",
     );
     expect(screen.getByText("Out-of-scope assets")).toBeInTheDocument();
     expect(screen.getByText("non-actionable")).toHaveClass("border-warning/25", "bg-warning/10");
@@ -378,7 +377,8 @@ describe("knowledge and reporting views", () => {
 
     renderRoute("/projects/project-1/report", <ReportPage />, "/projects/:projectId/report");
 
-    expect(await screen.findByText("Deterministic Pentest report")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Report", level: 1 })).toBeInTheDocument();
+    await userEvent.click(await screen.findByText("Supporting records"));
     const findingLink = await screen.findByRole("link", { name: /Admin panel exposed/i });
     expect(findingLink).toHaveAttribute(
       "href",
