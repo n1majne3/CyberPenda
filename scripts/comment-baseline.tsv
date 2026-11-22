@@ -32,7 +32,7 @@ internal/blackboardv2/health_service_test.go	7
 internal/blackboardv2/health_test_support_test.go	1
 internal/blackboardv2/json_decode.go	2
 internal/blackboardv2/operator_authority.go	4
-internal/blackboardv2/owner_adapter.go	9
+internal/blackboardv2/owner_adapter.go	3
 internal/blackboardv2/projection.go	13
 internal/blackboardv2/replacement_proof_test.go	2
 internal/blackboardv2/report.go	27
