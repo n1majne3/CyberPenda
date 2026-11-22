@@ -176,7 +176,7 @@
   },
   "src/lib/ownerEvents.ts": {
     "local/no-comments": {
-      "count": 15
+      "count": 14
     }
   },
   "src/lib/runtimeOwner/adapter.ts": {

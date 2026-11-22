@@ -20,17 +20,6 @@ export interface Session {
   last_activity_at: string;
 }
 
-export type SessionEventKind = "conversation" | "attachment" | "lifecycle" | string;
-
-export interface SessionEvent {
-  id: string;
-  session_id: string;
-  seq: number;
-  kind: SessionEventKind;
-  payload: Record<string, unknown>;
-  created_at: string;
-}
-
 export interface SessionContinuation {
   id: string;
   session_id: string;
