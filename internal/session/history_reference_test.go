@@ -14,6 +14,16 @@ func TestHistoryReferenceCandidatesPreserveEveryDashPrefix(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("candidates = %#v, want %#v", got, want)
 	}
+	if got := historyReferenceCandidates(""); got != nil {
+		t.Fatalf("empty candidates = %#v, want nil", got)
+	}
+	if got := historyReferenceCandidates(strings.Repeat("a-", maxHistoryReferenceLength)); got != nil {
+		t.Fatalf("oversized candidates = %#v, want nil", got)
+	}
+	dashHeavy := strings.Repeat("a-", maxHistoryReferenceCandidates+10)
+	if got := historyReferenceCandidates(dashHeavy); len(got) != maxHistoryReferenceCandidates {
+		t.Fatalf("dash-heavy candidate count = %d, want %d", len(got), maxHistoryReferenceCandidates)
+	}
 }
 
 func TestHistoryEventSeqByRefKeepsEarliestMatchingEventAndOwner(t *testing.T) {

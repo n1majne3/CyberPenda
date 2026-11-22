@@ -163,6 +163,11 @@ func (s *Service) HistoryEventWindow(id string, query EventWindowQuery) (EventWi
 	return window, nil
 }
 
+const (
+	maxHistoryReferenceLength     = 256
+	maxHistoryReferenceCandidates = 16
+)
+
 // HistoryEventSeqByRef resolves one Runtime Owner history detail reference
 // (a stable timeline item ID or transcript entry ID) to the Seq of the first
 // retained Event whose ID the reference embeds. Projection-derived IDs append
@@ -173,6 +178,9 @@ func (s *Service) HistoryEventSeqByRef(id string, ref string) (int, bool, error)
 		return 0, false, err
 	}
 	candidates := historyReferenceCandidates(ref)
+	if len(candidates) == 0 {
+		return 0, false, nil
+	}
 	args := make([]any, 0, len(candidates)+1)
 	args = append(args, id)
 	for _, candidate := range candidates {
@@ -198,10 +206,16 @@ func historyEventSeqByRefQuery(candidateCount int) string {
 }
 
 func historyReferenceCandidates(ref string) []string {
+	if ref == "" || len(ref) > maxHistoryReferenceLength {
+		return nil
+	}
 	candidates := []string{ref}
 	for index := range ref {
 		if ref[index] == '-' {
 			candidates = append(candidates, ref[:index])
+			if len(candidates) >= maxHistoryReferenceCandidates {
+				break
+			}
 		}
 	}
 	return candidates
