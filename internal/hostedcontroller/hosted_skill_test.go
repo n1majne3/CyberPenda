@@ -450,3 +450,32 @@ func TestBuiltinCTFOrchestratorPinsExecuteSubagentTypeForPiAndClaudeCode(t *test
 		}
 	}
 }
+
+func TestTSecBenchSkillBoundsWaitAndRefreshesLeaderLock(t *testing.T) {
+	files := captureHostedSkillFiles(t)
+	instruction := files["SKILL.md"]
+	graphProtocol := files["references/graph-protocol.md"]
+	for _, required := range []string{
+		"单次等待硬上限 90 秒",
+		"无通知也执行",
+		"owner_nonce",
+		"该槽留空",
+		"get_subagent_result",
+		"steer_subagent",
+		"禁止 `wait: true`",
+	} {
+		if !strings.Contains(instruction, required) {
+			t.Errorf("hosted SKILL.md missing autonomous-run guard %q", required)
+		}
+	}
+	for _, required := range []string{"owner_nonce", "单次等待不得超过 90 秒"} {
+		if !strings.Contains(graphProtocol, required) {
+			t.Errorf("hosted graph-protocol.md missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"零进展题（仅 1、2 都空）", "5-8min", "≤15min"} {
+		if strings.Contains(instruction, forbidden) {
+			t.Errorf("hosted SKILL.md still contains %q", forbidden)
+		}
+	}
+}
