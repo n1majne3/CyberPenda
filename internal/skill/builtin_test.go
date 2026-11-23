@@ -28,10 +28,6 @@ func TestBuiltinBundlesIncludeRequestedProjects(t *testing.T) {
 		byID[bundle.Metadata.ID] = bundle
 	}
 
-	// The minimal curated builtin set: only the benchmark/multi-target
-	// orchestration skill stays built-in; generic CLI cheat-sheets and
-	// obsolete Blackboard MCP skills are pruned to reduce per-task prompt
-	// and projection overhead.
 	want := []string{
 		"ctf-orchestrator",
 	}

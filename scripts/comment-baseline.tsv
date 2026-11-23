@@ -382,7 +382,7 @@ internal/session/session.go	18
 internal/session/session_continuation_race_test.go	10
 internal/session/types.go	58
 internal/skill/builtin.go	3
-internal/skill/builtin_test.go	14
+internal/skill/builtin_test.go	11
 internal/skill/display.go	4
 internal/skill/importer.go	28
 internal/skill/importer_test.go	10
