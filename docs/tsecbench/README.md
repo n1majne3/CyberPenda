@@ -152,7 +152,10 @@ acts as Decide; a session that wakes without a fresh lock degrades to an
 Execute worker, and a stale lock is taken over with a `ledger.tsv` watchdog
 pass. Every dispatch expects the child's fact skeleton within 90 seconds and
 re-dispatches on a miss. The lead never ends its turn while `ledger.tsv` has
-unsettled agents. The real-Codex acceptance test
+unsettled agents. One wait is 90 seconds at most, and the lead also rotates on
+a timer, so the heartbeat stays fresh when no notification arrives. The lock
+holds an owner nonce, and a lead that finds a different nonce stops acting as
+Decide. The real-Codex acceptance test
 (`hosted_real_codex_acceptance_test.go`) probes spawn delivery and the
 acknowledgement loop against each image build's Codex CLI.
 

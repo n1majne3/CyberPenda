@@ -12,8 +12,7 @@ Runtime 投影同一 Execute 类型，身份与收束纪律已内置），派发
 你只负责下面这【一个 step】，预算 {N} 分钟，到点必须收束并结束。
 
 【背景知识图】
-{该题相关 facts 全文 + 全局可复用技巧摘要（主动维护一个 skills-notes 类摘要文件）}
-{不要全量粘贴所有 facts——图超过 ~30 条后按题过滤，控制 prompt 尺寸}
+{只贴与本 step 直接相关的 facts（超 5 条时用 title 索引 + 关键 fact 正文，其余按需读文件），控制 prompt 尺寸}
 {steps.yaml 中与该题相关的 open/dispatched 条目}
 
 【你负责的 step】step_{XXX}：{action 一句话}
@@ -26,8 +25,8 @@ Runtime 投影同一 Execute 类型，身份与收束纪律已内置），派发
    agent 可能随时被 infra 中断，任何时刻死亡都要有留痕可收割；这比结尾一次性写盘优先级更高。
 2. 结束前把结论补全到 {$WS}/graph/facts/{NNN}-{主题}.md，front-matter：
    id: fact_{NNN} / step: step_{XXX} / challenge: {code} / title: 一句话结论
-   content 只写新增客观事实，新凭证新端点加粗；大输出写
-   {$WS}/graph/data/stepXXX-*.{txt,json} 并在 content 引用文件名。
+   content 只写新增客观事实，新凭证新端点加粗；大输出（扫描/爆破/源码/大响应）先重定向到
+   {$WS}/graph/data/stepXXX-*.{txt,json} 再用 head/tail/rg 抽取要点，避免刷爆上下文，并在 content 引用文件名。
    没有结果就如实记"已试X、观察到Y、未达成Z"；
    禁止"此路不通/已穷尽/勿再试"等否定或绝对结论。
 3. 拿到 flag 立即{提交方式：平台命令/报告格式}并核对结果，**提交返回的 JSON 原文回写 fact**
