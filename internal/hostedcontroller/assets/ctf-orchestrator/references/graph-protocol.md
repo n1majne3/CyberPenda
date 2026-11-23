@@ -10,7 +10,7 @@ $WS/
   deadline                # 仅在任务说明给出总时限时存在
   state.md
   graph/
-    leader.lock           # 主控心跳：单行 epoch；≤300 秒新鲜（见下方 schema）
+    leader.lock           # 主控心跳：epoch<TAB>owner_nonce；≤300 秒新鲜（见下方 schema）
     facts/                # 每条事实一个文件，只追加不修改
       001-端口面.md
     data/                 # 大块输出（扫描/源码/dump），fact 里引用文件名
@@ -21,10 +21,14 @@ $WS/
 
 ## leader.lock（主控单例）
 
-单行 epoch（`date +%s`），代表主控最近一次心跳。
+两字段单行 `epoch<TAB>owner_nonce`：`epoch`（`date +%s`）= 主控最近一次心跳；
+`owner_nonce` = 接管时生成的随机串，用于 compare-and-swap 识别锁的所有者。
 
-- 主控在主循环每次轮转（≤2 分钟）重写该文件。
-- 开机会话（含 spawn 子线程与后续唤醒线程）：锁缺失或心跳距今 >300 秒 → 接管（写入当前 epoch）；
+- 主控每次轮转（≤90 秒）重写该文件；**重写前先读回，确认 `owner_nonce` 仍是自己的，
+  若已被他人覆盖立即降级为 Execute 退出**，不得继续当主控（防双主控）。
+- **单次等待不得超过 90 秒**，确保心跳刷新间隔远小于 300 秒接管阈值。
+- 开机会话（含 spawn 子线程与后续唤醒线程）：锁缺失或心跳距今 >300 秒 → 接管
+  （先读旧值，写入 `当前epoch<TAB>自己的 nonce`，再读回确认 nonce 未被抢占）；
   锁新鲜 → 降级为 Execute，从 steps.yaml 认领 open step。
 - spawn 消息可能投递失败：空白唤醒的线程**没有默认身份**，一切以上述分支为准。
 - 任何会话不得删除或绕过该文件；接管时原样覆盖，不追加历史。

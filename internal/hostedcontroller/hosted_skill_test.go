@@ -302,9 +302,14 @@ func TestBuiltinCTFOrchestratorPinsBackgroundAsyncDispatch(t *testing.T) {
 	if strings.TrimSpace(instruction) == "" {
 		t.Fatal("normal ctf-orchestrator Built-in Skill is missing")
 	}
-	for _, required := range []string{"后台异步", "禁止同步等", "fork_context: false", "同一回合内批量派发", "禁止结束当前回合"} {
+	for _, required := range []string{"后台异步", "禁止同步等", "fork_context: false", "同一回合内批量派发"} {
 		if !strings.Contains(instruction, required) {
-			t.Errorf("builtin Skill missing dispatch/turn rule %q", required)
+			t.Errorf("builtin Skill missing dispatch rule %q", required)
+		}
+	}
+	for _, hostedOnly := range []string{"禁止结束当前回合", "投递失败", "90 秒", "leader.lock"} {
+		if strings.Contains(instruction, hostedOnly) {
+			t.Errorf("builtin Skill contains hosted-only guard %q (ADR 0034)", hostedOnly)
 		}
 	}
 	for _, stale := range []string{"TaskStop", "/workdir/run", "弃题唯一判据是任务/平台的结束信号"} {
@@ -447,6 +452,35 @@ func TestBuiltinCTFOrchestratorPinsExecuteSubagentTypeForPiAndClaudeCode(t *test
 		}
 		if !strings.Contains(files["references/execute-prompt.md"], required) {
 			t.Errorf("builtin execute-prompt.md missing execute dispatch rule %q", required)
+		}
+	}
+}
+
+func TestTSecBenchSkillBoundsWaitAndRefreshesLeaderLock(t *testing.T) {
+	files := captureHostedSkillFiles(t)
+	instruction := files["SKILL.md"]
+	graphProtocol := files["references/graph-protocol.md"]
+	for _, required := range []string{
+		"单次等待硬上限 90 秒",
+		"无通知也执行",
+		"owner_nonce",
+		"该槽留空",
+		"get_subagent_result",
+		"steer_subagent",
+		"禁止 `wait: true`",
+	} {
+		if !strings.Contains(instruction, required) {
+			t.Errorf("hosted SKILL.md missing autonomous-run guard %q", required)
+		}
+	}
+	for _, required := range []string{"owner_nonce", "单次等待不得超过 90 秒"} {
+		if !strings.Contains(graphProtocol, required) {
+			t.Errorf("hosted graph-protocol.md missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{"零进展题（仅 1、2 都空）", "5-8min", "≤15min"} {
+		if strings.Contains(instruction, forbidden) {
+			t.Errorf("hosted SKILL.md still contains %q", forbidden)
 		}
 	}
 }
