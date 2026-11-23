@@ -58,12 +58,9 @@ CyberPenda 已为这两个 Runtime 投影同一 Execute 类型，身份与收束
 5. **看门狗**：核对 `ledger.tsv` 里 `hard_stop < now` 的 agent → 用当前 Runtime 的停止工具 + 资源轮转；
    核对“资源已分配但无活跃 agent”的漏派槽位 → 立即补。
 
-### 回合纪律（硬性）
-
-只要 `ledger.tsv` 存在未收束的 agent，**禁止结束当前回合**（主控空闲退出 = 看门狗失效）。
 **禁止一次等待全部**子线程——只等待即将到期或刚有通知的子集，到期即收割、停止并补位。
 派发时把 `code, agent_id, budget_min, hard_stop` 追加进 `$WS/ledger.tsv`（TSV），这是唯一时间事实源；
-**只记实际派发的 agent**，禁止占位行/预登记。每个 Execute 开工 90 秒内写 fact 骨架，超时未出现视为投递失败并重派。
+**只记实际派发的 agent**，禁止占位行/预登记。
 
 ## 调度策略
 

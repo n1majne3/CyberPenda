@@ -302,9 +302,14 @@ func TestBuiltinCTFOrchestratorPinsBackgroundAsyncDispatch(t *testing.T) {
 	if strings.TrimSpace(instruction) == "" {
 		t.Fatal("normal ctf-orchestrator Built-in Skill is missing")
 	}
-	for _, required := range []string{"后台异步", "禁止同步等", "fork_context: false", "同一回合内批量派发", "禁止结束当前回合"} {
+	for _, required := range []string{"后台异步", "禁止同步等", "fork_context: false", "同一回合内批量派发"} {
 		if !strings.Contains(instruction, required) {
-			t.Errorf("builtin Skill missing dispatch/turn rule %q", required)
+			t.Errorf("builtin Skill missing dispatch rule %q", required)
+		}
+	}
+	for _, hostedOnly := range []string{"禁止结束当前回合", "投递失败", "90 秒", "leader.lock"} {
+		if strings.Contains(instruction, hostedOnly) {
+			t.Errorf("builtin Skill contains hosted-only guard %q (ADR 0034)", hostedOnly)
 		}
 	}
 	for _, stale := range []string{"TaskStop", "/workdir/run", "弃题唯一判据是任务/平台的结束信号"} {
