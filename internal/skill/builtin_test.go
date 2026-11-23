@@ -28,20 +28,12 @@ func TestBuiltinBundlesIncludeRequestedProjects(t *testing.T) {
 		byID[bundle.Metadata.ID] = bundle
 	}
 
-	// The curated builtin set: sandbox tooling discipline the model cannot know
-	// from pretraining, the product-integrated scoreboard flow, and the
-	// operator-authored benchmark orchestration skill.
+	// The minimal curated builtin set: only the benchmark/multi-target
+	// orchestration skill stays built-in; generic CLI cheat-sheets and
+	// obsolete Blackboard MCP skills are pruned to reduce per-task prompt
+	// and projection overhead.
 	want := []string{
-		"scoreboard-driven-web-challenge",
 		"ctf-orchestrator",
-		"tooling-ffuf",
-		"tooling-httpx",
-		"tooling-katana",
-		"tooling-naabu",
-		"tooling-nmap",
-		"tooling-nuclei",
-		"tooling-sqlmap",
-		"tooling-subfinder",
 	}
 	for _, id := range want {
 		assertBuiltinBundle(t, byID, id)
@@ -102,7 +94,7 @@ func TestInstallBuiltinSkillsSeedsMissingBundlesWithoutOverwritingUserEdits(t *t
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("install builtins: %v", err)
 	}
-	seeded, err := svc.Get("tooling-nmap")
+	seeded, err := svc.Get("ctf-orchestrator")
 	if err != nil {
 		t.Fatalf("get seeded builtin: %v", err)
 	}
@@ -111,7 +103,7 @@ func TestInstallBuiltinSkillsSeedsMissingBundlesWithoutOverwritingUserEdits(t *t
 	}
 
 	if _, err := svc.Publish(ctx, skill.PublishRequest{
-		Metadata: skill.Metadata{ID: "tooling-nmap", Name: "User Edited XSS"},
+		Metadata: skill.Metadata{ID: "ctf-orchestrator", Name: "User Edited Orchestrator"},
 		Files:    map[string]string{"SKILL.md": "# user edit"},
 	}); err != nil {
 		t.Fatalf("user edit builtin skill: %v", err)
@@ -119,7 +111,7 @@ func TestInstallBuiltinSkillsSeedsMissingBundlesWithoutOverwritingUserEdits(t *t
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("reinstall builtins: %v", err)
 	}
-	files, err := svc.Files("tooling-nmap")
+	files, err := svc.Files("ctf-orchestrator")
 	if err != nil {
 		t.Fatalf("read edited builtin files: %v", err)
 	}
@@ -133,13 +125,13 @@ func TestInstallBuiltinSkillsSanitizesOldBuiltinSourceDetails(t *testing.T) {
 	skillsRoot := filepath.Join(t.TempDir(), "skills")
 	svc := skill.NewService(db, skillsRoot)
 	ctx := context.Background()
-	expected := builtinBundleByID(t, "tooling-nmap").Metadata
+	expected := builtinBundleByID(t, "ctf-orchestrator").Metadata
 
 	if _, err := svc.Publish(ctx, skill.PublishRequest{
 		Metadata: skill.Metadata{
-			ID:          "cyberstrikeai-tooling-nmap",
-			Name:        "cyberstrikeai-tooling-nmap",
-			Description: "XSS testing",
+			ID:          "cyberstrikeai-ctf-orchestrator",
+			Name:        "cyberstrikeai-ctf-orchestrator",
+			Description: "Legacy orchestrator",
 			Source: skill.SourceProvenance{
 				Kind:      "builtin",
 				Package:   "Ed1s0nZ/CyberStrikeAI",
@@ -158,11 +150,11 @@ func TestInstallBuiltinSkillsSanitizesOldBuiltinSourceDetails(t *testing.T) {
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("install builtins: %v", err)
 	}
-	got, err := svc.Get("tooling-nmap")
+	got, err := svc.Get("ctf-orchestrator")
 	if err != nil {
 		t.Fatalf("get sanitized builtin: %v", err)
 	}
-	if _, err := svc.Get("cyberstrikeai-tooling-nmap"); err == nil {
+	if _, err := svc.Get("cyberstrikeai-ctf-orchestrator"); err == nil {
 		t.Fatalf("expected legacy source-prefixed builtin ID to be removed")
 	}
 	if got.Source.Kind != "builtin" || got.Source.Package != "" || got.Source.Ref != "" || got.Source.SourceURL != "" {
@@ -171,17 +163,17 @@ func TestInstallBuiltinSkillsSanitizesOldBuiltinSourceDetails(t *testing.T) {
 	if got.Name != expected.Name || got.Description != expected.Description {
 		t.Fatalf("expected builtin metadata to be refreshed from embedded bundle, got name=%q description=%q", got.Name, got.Description)
 	}
-	files, err := svc.Files("tooling-nmap")
+	files, err := svc.Files("ctf-orchestrator")
 	if err != nil {
 		t.Fatalf("read sanitized files: %v", err)
 	}
 	if files["SKILL.md"] != "# user edit" {
 		t.Fatalf("sanitize overwrote user edit: %q", files["SKILL.md"])
 	}
-	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "cyberstrikeai-tooling-nmap")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "cyberstrikeai-ctf-orchestrator")); !os.IsNotExist(err) {
 		t.Fatalf("expected legacy source-prefixed bundle folder to be removed, stat err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "tooling-nmap", "SKILL.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(skillsRoot, "bundles", "ctf-orchestrator", "SKILL.md")); err != nil {
 		t.Fatalf("expected source-free builtin bundle folder, stat err=%v", err)
 	}
 	if _, ok := files["UPSTREAM.md"]; ok {
@@ -341,27 +333,27 @@ func TestInstallBuiltinSkillsRepairsMissingBuiltinBundleFiles(t *testing.T) {
 	svc := skill.NewService(db, skillsRoot)
 	ctx := context.Background()
 
-	if err := os.MkdirAll(filepath.Join(skillsRoot, "bundles", "tooling-nmap"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(skillsRoot, "bundles", "ctf-orchestrator"), 0o700); err != nil {
 		t.Fatalf("create stale bundle dir: %v", err)
 	}
 	if _, err := svc.Publish(ctx, skill.PublishRequest{
 		Metadata: skill.Metadata{
-			ID:     "tooling-nmap",
-			Name:   "XSS",
+			ID:     "ctf-orchestrator",
+			Name:   "CTF Orchestrator",
 			Source: skill.SourceProvenance{Kind: "builtin"},
 		},
 		Files: map[string]string{"SKILL.md": "# stale"},
 	}); err != nil {
 		t.Fatalf("publish stale builtin: %v", err)
 	}
-	if err := os.RemoveAll(filepath.Join(skillsRoot, "bundles", "tooling-nmap")); err != nil {
+	if err := os.RemoveAll(filepath.Join(skillsRoot, "bundles", "ctf-orchestrator")); err != nil {
 		t.Fatalf("remove stale bundle files: %v", err)
 	}
 
 	if err := svc.InstallBuiltinSkills(ctx); err != nil {
 		t.Fatalf("install builtins: %v", err)
 	}
-	files, err := svc.Files("tooling-nmap")
+	files, err := svc.Files("ctf-orchestrator")
 	if err != nil {
 		t.Fatalf("expected missing builtin bundle files to be repaired: %v", err)
 	}

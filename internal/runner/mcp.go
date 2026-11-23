@@ -226,7 +226,7 @@ func writeRuntimeSmokeInstructions(workdir string, ctx RuntimeOwnerContext) erro
 	if ctx.Sandbox {
 		b.WriteString("\n## Sandbox skills and browser\n\n")
 		fmt.Fprintf(&b, "Enabled task skills are linked at `%s/` and materialized under the task-local skills root.\n", SkillsWorkdirRelPath(ctx.Provider))
-		b.WriteString("For web testing, read the `agent-browser` skill and use the `agent-browser` CLI.\n")
+		b.WriteString("For interactive web testing, use the `agent-browser` CLI.\n")
 		b.WriteString("\n## Host-reachable targets\n\n")
 		b.WriteString("Loopback targets (`127.0.0.1`, `localhost`) in your task goal have been rewritten to `host.docker.internal` so you can reach services running on the host. Use the `host.docker.internal` addresses exactly as given; do not try to reinstall or relaunch the target service yourself.\n")
 	}

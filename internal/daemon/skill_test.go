@@ -377,11 +377,11 @@ func TestDaemonSeedsBuiltinSkills(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
 		t.Fatalf("decode builtin skills list: %v", err)
 	}
-	if !hasBuiltinSkill(listed.Skills, "tooling-nmap") {
-		t.Fatalf("expected Strix builtin skill, got %#v", listed.Skills)
+	if !hasBuiltinSkill(listed.Skills, "ctf-orchestrator") {
+		t.Fatalf("expected ctf-orchestrator builtin skill, got %#v", listed.Skills)
 	}
-	if !hasBuiltinSkill(listed.Skills, "scoreboard-driven-web-challenge") {
-		t.Fatalf("expected scoreboard-driven web challenge builtin skill, got %#v", listed.Skills)
+	if hasBuiltinSkill(listed.Skills, "tooling-nmap") || hasBuiltinSkill(listed.Skills, "scoreboard-driven-web-challenge") {
+		t.Fatalf("expected pruned builtin skills to be absent, got %#v", listed.Skills)
 	}
 	detailReq := httptest.NewRequest(http.MethodGet, "/api/skills/"+listed.Skills[0].ID, nil)
 	detailResp := httptest.NewRecorder()

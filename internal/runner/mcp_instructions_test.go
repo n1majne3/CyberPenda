@@ -69,6 +69,9 @@ func TestRuntimeSmokeInstructionsDescribeCLIBlackboardInterface(t *testing.T) {
 					t.Fatalf("generated AGENTS.md still describes the removed Blackboard MCP interface %q:\n%s", forbidden, generated)
 				}
 			}
+			if strings.Contains(generated, "read the `agent-browser` skill") {
+				t.Fatalf("generated AGENTS.md still points to the removed agent-browser skill:\n%s", generated)
+			}
 			for _, want := range append([]string{
 				"pentestctl blackboard",
 				"only Blackboard interface",
