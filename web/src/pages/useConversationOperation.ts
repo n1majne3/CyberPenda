@@ -39,10 +39,6 @@ function createConversationOperation(ownerKey: string) {
     accepted: (id: string) => dispatch({ type: "accepted", ownerKey, id }),
     refreshed: (id: string) => dispatch({ type: "refreshed", ownerKey, id }),
     rejected: (id: string, error: string) => dispatch({ type: "rejected", ownerKey, id, error }),
-    observe: (owner: RuntimeOwnerView | null, refreshError?: string | null) => dispatch({
-      type: "observed", ownerKey,
-      runtime: { turn: runtimeTurnPhase(owner ?? {}, refreshError), steering: steeringPhase(owner?.runtimeControls?.native_steer_state) },
-    }),
   };
 }
 
@@ -53,6 +49,10 @@ export function useConversationOperation(ownerKey: string, owner: RuntimeOwnerVi
     operation.activate();
     return operation.deactivate;
   }, [operation]);
-  useEffect(() => { operation.observe(owner, refreshError); }, [operation, owner, refreshError]);
-  return { operation, state };
+  const turn = runtimeTurnPhase(owner ?? {}, refreshError);
+  const steering = steeringPhase(owner?.runtimeControls?.native_steer_state);
+  const observedState = useMemo(() => transitionConversation(state, {
+    type: "observed", ownerKey, runtime: { turn, steering },
+  }), [state, ownerKey, turn, steering]);
+  return { operation, state: observedState };
 }
