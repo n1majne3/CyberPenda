@@ -136,8 +136,16 @@ func isMirroredRepoPath(path string) bool {
 	segments := strings.Split(strings.Trim(strings.ToLower(path), "/"), "/")
 	for index, segment := range segments {
 		host := strings.TrimPrefix(segment, "www.")
-		if (host == "github.com" || host == "gitlab.com") && index+2 < len(segments) {
-			return true
+		rest := segments[index+1:]
+		switch host {
+		case "github.com":
+			if len(rest) == 2 || len(rest) >= 4 && rest[2] == "tree" && rest[3] != "" {
+				return true
+			}
+		case "gitlab.com":
+			if len(rest) >= 2 {
+				return true
+			}
 		}
 	}
 	return false

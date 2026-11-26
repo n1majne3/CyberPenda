@@ -228,18 +228,23 @@ func TestImportRejectsSeparateRefWhenAzureURLSelectsRevision(t *testing.T) {
 }
 
 func TestImportRejectsRefForWellKnownHTTPSSource(t *testing.T) {
-	runner := &fakeRunner{}
-	imp := skill.NPXSkillsImporter{Runner: runner}
-	_, err := imp.ImportSkill(context.Background(), skill.ImportRequest{
-		SourceKind: "well-known",
-		SourceURL:  "https://www.nssctf.cn/skills/@nssctf/nssctf-agent-arena",
-		Ref:        "v1.2.3",
-	})
-	if !errors.Is(err, skill.ErrInvalidSkill) {
-		t.Fatalf("expected ErrInvalidSkill for unsupported well-known ref, got %v", err)
-	}
-	if len(runner.recorded) != 0 {
-		t.Fatalf("unsupported ref must not execute npx, ran %#v", runner.recorded)
+	for _, source := range []string{
+		"https://www.nssctf.cn/skills/@nssctf/nssctf-agent-arena",
+		"https://mirror.example/github.com/acme/recon-skills/raw/main/SKILL.md",
+	} {
+		runner := &fakeRunner{}
+		imp := skill.NPXSkillsImporter{Runner: runner}
+		_, err := imp.ImportSkill(context.Background(), skill.ImportRequest{
+			SourceKind: "well-known",
+			SourceURL:  source,
+			Ref:        "v1.2.3",
+		})
+		if !errors.Is(err, skill.ErrInvalidSkill) {
+			t.Errorf("source %q: expected ErrInvalidSkill for unsupported ref, got %v", source, err)
+		}
+		if len(runner.recorded) != 0 {
+			t.Errorf("source %q: unsupported ref must not execute npx, ran %#v", source, runner.recorded)
+		}
 	}
 }
 
