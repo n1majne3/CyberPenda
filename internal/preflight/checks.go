@@ -400,15 +400,15 @@ func mergedCodexMultiAgentPreview(profile runtimeprofile.Profile) (*CodexMultiAg
 
 	if preview.State == "on" {
 		if v2Active {
+			if _, legacyCap := agents["max_concurrent_threads_per_session"]; legacyCap {
+				return nil, fmt.Errorf(
+					"agents.max_concurrent_threads_per_session is legacy when features.multi_agent_v2 is enabled; move it to features.multi_agent_v2.max_concurrent_threads_per_session or remove it",
+				)
+			}
 			if v2Config, ok := v2Value.(map[string]any); ok {
 				preview.MaxConcurrentThreadsPerSession, err = positiveConfigInt(
 					"features.multi_agent_v2.max_concurrent_threads_per_session",
 					v2Config["max_concurrent_threads_per_session"],
-				)
-			} else {
-				preview.MaxConcurrentThreadsPerSession, err = positiveConfigInt(
-					"agents.max_concurrent_threads_per_session",
-					agents["max_concurrent_threads_per_session"],
 				)
 			}
 		} else {

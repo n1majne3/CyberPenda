@@ -258,6 +258,76 @@ max_depth = 5
 	}
 }
 
+func TestRunRejectsLegacyAgentsThreadCapWhenMultiAgentV2IsActive(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config string
+	}{
+		{
+			name: "boolean v2",
+			config: `
+[features]
+multi_agent_v2 = true
+
+[agents]
+max_concurrent_threads_per_session = 7
+`,
+		},
+		{
+			name: "table v2 without native cap",
+			config: `
+[features.multi_agent_v2]
+enabled = true
+
+[agents]
+max_concurrent_threads_per_session = 7
+`,
+		},
+		{
+			name: "table v2 with native cap",
+			config: `
+[features.multi_agent_v2]
+enabled = true
+max_concurrent_threads_per_session = 11
+
+[agents]
+max_concurrent_threads_per_session = 7
+`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newTestServices(t)
+			profile := newCodexMultiAgentProfile(t, svc, nil)
+			profile, err := svc.profiles.Update(profile.ID, "", "", runtimeprofile.Fields{
+				ModelProviderID:  profile.Fields.ModelProviderID,
+				CustomConfigFile: tc.config,
+			}, true, false)
+			if err != nil {
+				t.Fatalf("add custom config: %v", err)
+			}
+
+			result := svc.preflight.Run(context.Background(), preflight.Request{
+				RuntimeProfileID: profile.ID,
+				ProjectID:        "p1",
+			})
+
+			if result.Pass {
+				t.Fatalf("legacy agents thread cap under active V2 must block launch, got %#v", result.Checks)
+			}
+			for _, check := range result.Checks {
+				if check.Name == "custom_config_file" && check.Status == preflight.CheckFail {
+					if !strings.Contains(check.Detail, "agents.max_concurrent_threads_per_session") ||
+						!strings.Contains(check.Detail, "features.multi_agent_v2.max_concurrent_threads_per_session") {
+						t.Fatalf("failure must name the legacy and replacement keys, got %q", check.Detail)
+					}
+					return
+				}
+			}
+			t.Fatalf("expected custom_config_file failure, got %#v", result.Checks)
+		})
+	}
+}
+
 func TestRunDoesNotEnableMultiAgentV2FromCapsAlone(t *testing.T) {
 	svc := newTestServices(t)
 	profile := newCodexMultiAgentProfile(t, svc, nil)
