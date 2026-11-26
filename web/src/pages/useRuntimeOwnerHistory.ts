@@ -52,6 +52,7 @@ export function useRuntimeOwnerHistory({
   const loadGeneration = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const ownerIDRef = useRef(ownerID);
+  const lastSavedTitle = useRef<{ ownerID: string; title: string } | null>(null);
   const activeViewRef = useRef(activeView);
   const timelineAtTailRef = useRef(true);
   const timelineViewport = useRef<HTMLDivElement>(null);
@@ -82,7 +83,12 @@ export function useRuntimeOwnerHistory({
       }
       setOwner(loaded.owner);
       setFinishReadiness(loaded.finishReadiness ?? null);
-      if (loaded.owner.kind === "session") setTitleDraft(loaded.owner.title);
+      if (loaded.owner.kind === "session") {
+        const previous = lastSavedTitle.current;
+        const title = loaded.owner.title;
+        setTitleDraft((draft) => previous?.ownerID === requestOwner && draft !== previous.title ? draft : title);
+        lastSavedTitle.current = { ownerID: requestOwner, title };
+      }
       // Merge into the latest state at commit time, not the pre-request
       // snapshot, so a backward page (or any other concurrent history
       // change) committed while this request was in flight is preserved
