@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -26,8 +25,8 @@ func blackboardGrantAccessForSessionMode(mode session.BlackboardMode) projectint
 
 func (server *Server) handleSessionPreflight(response http.ResponseWriter, request *http.Request) {
 	var launch createSessionInput
-	if err := json.NewDecoder(request.Body).Decode(&launch); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	if err := decodeOptionalJSON(request, &launch); err != nil {
+		writeRequestBodyError(response, err)
 		return
 	}
 	input := sessionRuntimeInputFromCreate(launch)

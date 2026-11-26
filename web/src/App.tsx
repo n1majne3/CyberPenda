@@ -47,9 +47,6 @@ const TaskDetailPage = lazy(() =>
 const ChallengeWorkflowPage = lazy(() =>
   import("@/pages/ChallengeWorkflowPage").then(({ ChallengeWorkflowPage }) => ({ default: ChallengeWorkflowPage })),
 );
-const FactsPage = lazy(() =>
-  import("@/pages/FactsPage").then(({ FactsPage }) => ({ default: FactsPage })),
-);
 const FGSSessionPage = lazy(() => import("@/pages/FGSPage").then(({ FGSSessionPage }) => ({ default: FGSSessionPage })));
 const BlackboardPage = lazy(() =>
   import("@/pages/BlackboardPage").then(({ BlackboardPage }) => ({ default: BlackboardPage })),
@@ -226,7 +223,6 @@ function createAppRouter() {
         { path: "/projects/:projectId/tasks/new", element: <TaskLaunchPage /> },
         { path: "/projects/:projectId/tasks/:taskId", element: <TaskDetailPage /> },
         { path: "/projects/:projectId/tasks/:taskId/challenges", element: <ChallengeWorkflowPage /> },
-        { path: "/projects/:projectId/facts", element: <FactsPage /> },
         { path: "/projects/:projectId/blackboard/*", element: <BlackboardPage /> },
         { path: "/projects/:projectId/blackboard", element: <BlackboardPage /> },
         { path: "/projects/:projectId/findings", element: <FindingsPage /> },

@@ -25,7 +25,6 @@ type sessionRuntimeInput struct {
 	RuntimeProvider    string         `json:"runtime_provider"`
 	ModelProviderID    string         `json:"model_provider_id"`
 	Model              string         `json:"model"`
-	ModelOverride      string         `json:"model_override"`
 	ReasoningEffort    string         `json:"reasoning_effort"`
 	ForceReplace       bool           `json:"force_replace,omitempty"`
 	Runner             string         `json:"runner"`
@@ -40,10 +39,7 @@ type sessionRuntimeInput struct {
 }
 
 func (input sessionRuntimeInput) selectedModel() string {
-	if model := strings.TrimSpace(input.Model); model != "" {
-		return model
-	}
-	return strings.TrimSpace(input.ModelOverride)
+	return strings.TrimSpace(input.Model)
 }
 
 func (input sessionRuntimeInput) provider() runtimeprofile.Provider {
@@ -196,8 +192,6 @@ func sessionRuntimeConfig(profile runtimeprofile.Profile, run session.Runner, in
 		config["model"] = model
 	} else if model := strings.TrimSpace(profile.Fields.ModelOverride); model != "" {
 		config["model"] = model
-	} else if model := strings.TrimSpace(profile.Fields.Model); model != "" {
-		config["model"] = model
 	}
 	if effort := strings.TrimSpace(input.ReasoningEffort); effort != "" {
 		config["reasoning_effort"] = effort
@@ -216,9 +210,6 @@ func sessionSelection(profile runtimeprofile.Profile, config map[string]any, inp
 	selection.Model = stringConfig(config, "model")
 	if selection.Model == "" {
 		selection.Model = strings.TrimSpace(profile.Fields.ModelOverride)
-	}
-	if selection.Model == "" {
-		selection.Model = strings.TrimSpace(profile.Fields.Model)
 	}
 	if model := input.selectedModel(); model != "" {
 		selection.Model = model

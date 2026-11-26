@@ -93,7 +93,6 @@ internal/daemon/browser_operator_session_test.go	7
 internal/daemon/build_task_launch_plan_for_blackboard_projection.go	2
 internal/daemon/build_task_launch_plan_with_binding.go	6
 internal/daemon/captured_task_runtime_config.go	22
-internal/daemon/child_history_test.go	3
 internal/daemon/config_preview_handlers.go	15
 internal/daemon/continuation_after_blackboard_finish_test.go	10
 internal/daemon/create_writable_continuation_for_live_session.go	29
@@ -195,7 +194,7 @@ internal/daemon/steer_executor.go	41
 internal/daemon/steer_executor_turn_kind_test.go	3
 internal/daemon/steering.go	82
 internal/daemon/task_attachments.go	35
-internal/daemon/task_handlers.go	16
+internal/daemon/task_handlers.go	14
 internal/daemon/task_helpers_test.go	5
 internal/daemon/task_launch_deadlock_test.go	7
 internal/daemon/task_orphan_recovery_test.go	4

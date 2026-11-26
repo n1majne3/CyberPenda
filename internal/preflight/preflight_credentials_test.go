@@ -33,7 +33,7 @@ func TestRunFailsWhenProfileMissing(t *testing.T) {
 
 func TestRunPassesWhenProfileHasNoCredentials(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestRunPassesWhenProfileHasNoCredentials(t *testing.T) {
 
 func TestRunPassesWithInlineProfileAPIKeys(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create(
+	profile, err := svc.createProfile(t,
 		"codex-inline",
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.Fields{
@@ -82,7 +82,7 @@ func TestRunPassesWithInlineProfileAPIKeys(t *testing.T) {
 
 func TestRunFailsWhenCredentialReferenceUnresolved(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create(
+	profile, err := svc.createProfile(t,
 		"codex",
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
@@ -106,7 +106,7 @@ func TestRunFailsWhenCredentialReferenceUnresolved(t *testing.T) {
 
 func TestRunPassesWhenCredentialResolvedGlobally(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create(
+	profile, err := svc.createProfile(t,
 		"codex",
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
@@ -131,7 +131,7 @@ func TestRunPassesWhenCredentialResolvedGlobally(t *testing.T) {
 
 func TestRunFailsWhenEnvCredentialNotSet(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create(
+	profile, err := svc.createProfile(t,
 		"codex",
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
@@ -159,7 +159,7 @@ func TestRunFailsWhenEnvCredentialNotSet(t *testing.T) {
 
 func TestRunFailsWhenEnvCredentialUnset(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create(
+	profile, err := svc.createProfile(t,
 		"codex",
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
@@ -187,7 +187,7 @@ func TestRunFailsWhenEnvCredentialUnset(t *testing.T) {
 
 func TestRunFailsWhenGlobalEnvBindingUnmaterializable(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
@@ -215,7 +215,7 @@ func TestRunFailsWhenGlobalEnvBindingUnmaterializable(t *testing.T) {
 
 func TestRunPassesWithMaterializableGlobalEnvBinding(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestRunPassesWithMaterializableGlobalEnvBinding(t *testing.T) {
 
 func TestRunPassesWhenAllCredentialsMaterialize(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create(
+	profile, err := svc.createProfile(t,
 		"codex",
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key", "extra-key"}},
@@ -270,7 +270,7 @@ func TestRunPassesWhenAllCredentialsMaterialize(t *testing.T) {
 
 func TestRunPassesWhenLiteralCredentialBackfillsDestinationEnv(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create(
+	profile, err := svc.createProfile(t,
 		"codex",
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
@@ -300,7 +300,7 @@ func TestRunPassesWhenLiteralCredentialBackfillsDestinationEnv(t *testing.T) {
 
 func TestRunFailsWhenCredentialDisabledForProject(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create(
+	profile, err := svc.createProfile(t,
 		"codex",
 		runtimeprofile.ProviderCodex,
 		runtimeprofile.Fields{CredentialRefs: []string{"codex-api-key"}},
@@ -330,7 +330,7 @@ func TestRunFailsWhenCredentialDisabledForProject(t *testing.T) {
 
 func TestRunRejectsUnsupportedRunner(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestRunRejectsUnsupportedRunner(t *testing.T) {
 
 func TestRunAcceptsSandboxAndHostRunners(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestRunAcceptsSandboxAndHostRunners(t *testing.T) {
 
 func TestRunIncludesExtraRefsFromRequest(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
@@ -398,7 +398,7 @@ func TestRunFailsWhenEnabledSkillBundleIsMissing(t *testing.T) {
 	skillsRoot := filepath.Join(t.TempDir(), "skills")
 	skills := skill.NewService(svc.db, skillsRoot)
 	svc.preflight = svc.newPreflight(skills)
-	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestRunFGSOmitsLegacyModeSkillAndRejectsDisabledOnlySkill(t *testing.T) {
 	svc := newTestServices(t)
 	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
 	svc.preflight = svc.newPreflight(skills)
-	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -459,7 +459,7 @@ func TestRunDisabledModeNeedsNoModeSkill(t *testing.T) {
 	svc := newTestServices(t)
 	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
 	svc.preflight = svc.newPreflight(skills)
-	profile, err := svc.profiles.Create("fake-disabled", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake-disabled", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +490,7 @@ func TestRunSkipsUnavailableCapturedSkills(t *testing.T) {
 	skillsRoot := filepath.Join(t.TempDir(), "skills")
 	skills := skill.NewService(svc.db, skillsRoot)
 	svc.preflight = svc.newPreflight(skills)
-	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
@@ -533,7 +533,7 @@ func TestRunListsEnabledSkillsWithoutAddingCredentialRequirements(t *testing.T) 
 	svc := newTestServices(t)
 	skills := skill.NewService(svc.db, filepath.Join(t.TempDir(), "skills"))
 	svc.preflight = svc.newPreflight(skills)
-	profile, err := svc.profiles.Create("fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
+	profile, err := svc.createProfile(t, "fake", runtimeprofile.ProviderFake, runtimeprofile.Fields{})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}

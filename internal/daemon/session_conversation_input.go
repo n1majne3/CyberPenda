@@ -24,7 +24,7 @@ func createSessionInputFromRuntime(message string, input sessionRuntimeInput) cr
 	return createSessionInput{
 		Input: message, RuntimeProfileID: input.RuntimeProfileID, Provider: input.Provider,
 		RuntimeProvider: input.RuntimeProvider, ModelProviderID: input.ModelProviderID,
-		Model: input.Model, ModelOverride: input.ModelOverride, ReasoningEffort: input.ReasoningEffort,
+		Model: input.Model, ReasoningEffort: input.ReasoningEffort,
 		Runner: input.Runner, HostActivated: input.HostActivated, RuntimeConfig: input.RuntimeConfig,
 	}
 }

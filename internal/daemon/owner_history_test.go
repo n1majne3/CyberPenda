@@ -243,12 +243,11 @@ func TestOwnerHistoryDetailLookupReadsBoundedWindowsOnly(t *testing.T) {
 	}
 
 	store.resetQueries()
-	numeric, found, err := history.TimelineItem("3")
-	if err != nil || !found || numeric.Seq != 3 {
-		t.Fatalf("numeric lookup = (%v, %v, %v), want the seq-3 item", numeric, found, err)
+	if numeric, found, err := history.TimelineItem("3"); err != nil || found || numeric.ID != "" {
+		t.Fatalf("numeric lookup = (%v, %v, %v), want refusal as not found", numeric, found, err)
 	}
-	if len(store.queries) != 1 || !store.queries[0].BeforeSet || store.queries[0].Before != 4 {
-		t.Fatalf("numeric lookup queries = %+v, want one bounded backward window", store.queries)
+	if len(store.queries) != 0 {
+		t.Fatalf("numeric lookup issued %d window queries, want no legacy Seq lookup", len(store.queries))
 	}
 
 	if _, found, err := history.TimelineItem("evt-does-not-exist"); err != nil || found {
@@ -351,14 +350,14 @@ func parseHistoryRequestFromCursors(beforeSet bool, before int, afterSet bool, a
 	return historyRequest{beforeSet: beforeSet, before: before, afterSet: afterSet, after: after}
 }
 
-func TestOwnerHistoryTimelineItemMatchesLegacyNumericSeq(t *testing.T) {
+func TestOwnerHistoryTimelineItemRefusesLegacyNumericSeq(t *testing.T) {
 	store := &fakeOwnerHistoryStore{}
 	appendOwnerLifecycleEvents(store, 5, 0)
 	history := newTestOwnerHistory(store)
 
 	item, found, err := history.TimelineItem("2")
-	if err != nil || !found || item.Seq != 2 || item.ID != "evt-000002" {
-		t.Fatalf("numeric detail = (%#v, %v, %v), want the seq-2 item", item, found, err)
+	if err != nil || found || item.ID != "" {
+		t.Fatalf("numeric detail = (%#v, %v, %v), want refusal as not found", item, found, err)
 	}
 }
 

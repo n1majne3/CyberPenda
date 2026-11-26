@@ -25,9 +25,39 @@ const (
 )
 
 var (
-	errInvalidTaskBody     = errors.New("invalid request body")
-	errRequestBodyTooLarge = errors.New("request body exceeds 4 MiB limit")
+	errInvalidTaskBody          = errors.New("invalid request body")
+	errRequestBodyTooLarge      = errors.New("request body exceeds 4 MiB limit")
+	errLegacyModelOverrideField = errors.New("model_override is no longer accepted; use model")
 )
+
+func rejectLegacyModelOverride(raw []byte) error {
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil
+	}
+	if containsLegacyModelOverride(value) {
+		return errLegacyModelOverrideField
+	}
+	return nil
+}
+
+func containsLegacyModelOverride(value any) bool {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			if strings.EqualFold(key, "model_override") || containsLegacyModelOverride(nested) {
+				return true
+			}
+		}
+	case []any:
+		for _, nested := range typed {
+			if containsLegacyModelOverride(nested) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 func readBoundedJSONBody(body io.Reader, limit int64) ([]byte, error) {
 	if body == nil {
@@ -76,7 +106,6 @@ type createTaskInput struct {
 	RuntimePluginID    string            `json:"runtime_plugin_id,omitempty"`
 	ModelProviderID    string            `json:"model_provider_id,omitempty"`
 	Model              string            `json:"model,omitempty"`
-	ModelOverride      string            `json:"model_override,omitempty"`
 	ReasoningEffort    string            `json:"reasoning_effort,omitempty"`
 	Runner             task.Runner       `json:"runner"`
 	HostBrowserEnabled bool              `json:"host_browser_enabled"`
@@ -107,6 +136,9 @@ func parseCreateTaskRequest(request *http.Request) (createTaskInput, []uploadedA
 		return createTaskInput{}, nil, errInvalidTaskBody
 	}
 	var input createTaskInput
+	if err := rejectLegacyModelOverride(raw); err != nil {
+		return input, nil, err
+	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return createTaskInput{}, nil, errInvalidTaskBody
 	}
@@ -130,6 +162,9 @@ func parseMultipartCreateTaskRequest(request *http.Request) (createTaskInput, []
 		return createTaskInput{}, nil, errInvalidTaskBody
 	}
 	var input createTaskInput
+	if err := rejectLegacyModelOverride([]byte(payload)); err != nil {
+		return createTaskInput{}, nil, err
+	}
 	if err := json.Unmarshal([]byte(payload), &input); err != nil {
 		return createTaskInput{}, nil, errInvalidTaskBody
 	}

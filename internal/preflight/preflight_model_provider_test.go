@@ -72,7 +72,7 @@ func TestRunUsesLaunchModelOverrideWithoutMutatingProfile(t *testing.T) {
 		t.Fatalf("create provider: %v", err)
 	}
 	t.Setenv(provider.APIKeyEnv, "sk-test")
-	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		ModelProviderID: provider.ID,
 		ModelOverride:   "mimo-v2-flash",
 	})
@@ -113,7 +113,7 @@ func TestRunPassesWhenModelProviderConfigured(t *testing.T) {
 		t.Fatalf("create provider: %v", err)
 	}
 	t.Setenv(provider.APIKeyEnv, "sk-test")
-	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		ModelProviderID: provider.ID,
 	})
 	if err != nil {
@@ -139,7 +139,7 @@ func TestRunPassesWhenModelProviderConfigured(t *testing.T) {
 func TestRunPassesCatalogRuntimeExtensionForPi(t *testing.T) {
 	svc := newTestServices(t)
 	enabled := true
-	profile, err := svc.profiles.Create("Pi Catalog", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "Pi Catalog", runtimeprofile.ProviderPi, runtimeprofile.Fields{
 		Model:    "claude-sonnet-4",
 		Endpoint: "https://api.example.test/anthropic",
 		APIKeys:  map[string]string{"ANTHROPIC_API_KEY": "sk-test"},
@@ -179,7 +179,7 @@ func TestRunPassesCatalogRuntimeExtensionForPi(t *testing.T) {
 func TestRunFailsUnresolvedManualRuntimeExtension(t *testing.T) {
 	svc := newTestServices(t)
 	enabled := true
-	profile, err := svc.profiles.Create("Pi Manual", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "Pi Manual", runtimeprofile.ProviderPi, runtimeprofile.Fields{
 		Model:    "claude-sonnet-4",
 		Endpoint: "https://api.example.test/anthropic",
 		APIKeys:  map[string]string{"ANTHROPIC_API_KEY": "sk-test"},
@@ -210,7 +210,7 @@ func TestRunFailsIncompatibleRegistryRuntimeExtension(t *testing.T) {
 	svc.preflight = svc.preflight.WithRuntimeExtensions(registry)
 
 	enabled := true
-	profile, err := svc.profiles.Create("Codex Incompatible", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "Codex Incompatible", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{
 			{ID: "pi_browser_tools", Enabled: &enabled},
 		},
@@ -238,7 +238,7 @@ func TestRunPassesRegistryRuntimeExtension(t *testing.T) {
 	svc.preflight = svc.preflight.WithRuntimeExtensions(registry)
 
 	enabled := true
-	profile, err := svc.profiles.Create("Pi Registry", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "Pi Registry", runtimeprofile.ProviderPi, runtimeprofile.Fields{
 		Model:    "claude-sonnet-4",
 		Endpoint: "https://api.example.test/anthropic",
 		APIKeys:  map[string]string{"ANTHROPIC_API_KEY": "sk-test"},
@@ -283,7 +283,7 @@ func TestRunEnforcesRuntimeExtensionProjectAndScopeRequirements(t *testing.T) {
 		t.Fatalf("new registry: %v", err)
 	}
 	svc.preflight = svc.preflight.WithRuntimeExtensions(registry)
-	profile, err := svc.profiles.Create("CTF", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "CTF", runtimeprofile.ProviderPi, runtimeprofile.Fields{
 		Model: "claude-sonnet-4", Endpoint: "https://api.example.test/anthropic",
 		APIKeys:           map[string]string{"ANTHROPIC_API_KEY": "sk-test"},
 		RuntimeExtensions: []runtimeprofile.RuntimeExtensionRef{{ID: extension.ID, Enabled: &enabled}},
@@ -322,34 +322,20 @@ func TestRunEnforcesRuntimeExtensionProjectAndScopeRequirements(t *testing.T) {
 	}
 }
 
-func TestRunSkipsModelProviderCheckForLegacyConfig(t *testing.T) {
+func TestRunFailsClosedForLegacyProfileConfig(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create(
-		"codex-inline",
-		runtimeprofile.ProviderCodex,
-		runtimeprofile.Fields{
-			Model: "gpt-5",
-			APIKeys: map[string]string{
-				"OPENAI_API_KEY": "sk-inline",
-			},
-		},
-	)
-	if err != nil {
-		t.Fatalf("create profile: %v", err)
-	}
+	profileID := insertLegacyProfile(t, svc.db, "codex-inline", "codex", `{"model":"gpt-5","api_keys":{"OPENAI_API_KEY":"sk-inline"}}`)
 
 	result := svc.preflight.Run(context.Background(), preflight.Request{
-		RuntimeProfileID: profile.ID,
+		RuntimeProfileID: profileID,
 		ProjectID:        "p1",
 	})
 
-	if !result.Pass {
-		t.Fatalf("expected legacy inline config to pass without model provider check, got %#v", result.Checks)
+	if result.Pass {
+		t.Fatal("expected legacy inline config to fail closed")
 	}
-	for _, check := range result.Checks {
-		if check.Name == "model_provider" {
-			t.Fatalf("expected no model_provider check for legacy config, got %#v", check)
-		}
+	if !checkFailed(result, "model_provider") {
+		t.Fatalf("expected model_provider check to fail, got %#v", result.Checks)
 	}
 }
 
@@ -367,7 +353,7 @@ func TestRunPreviewsSelectedEndpointBaseURLWithoutSecrets(t *testing.T) {
 		t.Fatalf("create provider: %v", err)
 	}
 	t.Setenv(provider.APIKeyEnv, "sk-preview-secret-value")
-	profile, err := svc.profiles.Create("claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
 		ModelProviderID: provider.ID,
 	})
 	if err != nil {
@@ -436,7 +422,7 @@ func TestRunReportsCatalogAndCacheLimitSourcesWithoutFailing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create provider: %v", err)
 	}
-	profile, err := svc.profiles.Create("Claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "Claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
 		ModelProviderID: provider.ID,
 	})
 	if err != nil {
@@ -476,7 +462,7 @@ func TestRunFailsWhenProtocolPinHasNoCompatibleEndpoint(t *testing.T) {
 		t.Fatalf("create provider: %v", err)
 	}
 	t.Setenv(provider.APIKeyEnv, "sk-test")
-	profile, err := svc.profiles.Create("claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "claude", runtimeprofile.ProviderClaudeCode, runtimeprofile.Fields{
 		ModelProviderID:       provider.ID,
 		ModelProviderProtocol: string(modelprovider.ProtocolOpenAIResponses),
 	})
@@ -493,5 +479,24 @@ func TestRunFailsWhenProtocolPinHasNoCompatibleEndpoint(t *testing.T) {
 	}
 	if !checkFailed(result, "model_provider") {
 		t.Fatalf("expected model_provider check to fail, got %#v", result.Checks)
+	}
+}
+
+func TestRunRejectsEmptyCapturedModelProviderSnapshot(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.createProfile(t, "codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	empty := modelprovider.Snapshot{}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID:      profile.ID,
+		ProjectID:             "p1",
+		ModelProviderSnapshot: &empty,
+	})
+
+	if result.Pass || !checkFailed(result, "model_provider") {
+		t.Fatalf("empty captured Model Provider Snapshot passed preflight: %#v", result.Checks)
 	}
 }

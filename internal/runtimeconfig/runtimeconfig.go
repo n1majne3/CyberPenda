@@ -25,7 +25,6 @@ type LaunchSelection struct {
 	RuntimePluginID    string `json:"runtime_plugin_id,omitempty"`
 	ModelProviderID    string `json:"model_provider_id,omitempty"`
 	Model              string `json:"model,omitempty"`
-	ModelOverride      string `json:"model_override,omitempty"`
 	ReasoningEffort    string `json:"reasoning_effort,omitempty"`
 	Runner             string `json:"runner,omitempty"`
 	HostBrowserEnabled bool   `json:"host_browser_enabled,omitempty"`
@@ -175,7 +174,7 @@ func CloneForTurn(prior RuntimeConfigurationSnapshot, turn RuntimeTurnSelection,
 	turn.ModelProviderID = strings.TrimSpace(turn.ModelProviderID)
 	turn.Model = strings.TrimSpace(turn.Model)
 	turn.ReasoningEffort = strings.TrimSpace(turn.ReasoningEffort)
-	if cloned.RuntimeProfile == nil && (turn.Model == "" || (turn.ModelProviderID == "" && !hasProviderNativeSettings(cloned.Settings))) {
+	if cloned.RuntimeProfile == nil && (turn.Model == "" || turn.ModelProviderID == "") {
 		return RuntimeConfigurationSnapshot{}, ErrInvalidLaunchSelection
 	}
 	cloned.TurnSelection = turn
@@ -187,8 +186,7 @@ func normalizeSelection(selection LaunchSelection) LaunchSelection {
 	selection.RuntimeProfileID = strings.TrimSpace(selection.RuntimeProfileID)
 	selection.RuntimePluginID = strings.TrimSpace(selection.RuntimePluginID)
 	selection.ModelProviderID = strings.TrimSpace(selection.ModelProviderID)
-	selection.Model = firstNonEmpty(selection.Model, selection.ModelOverride)
-	selection.ModelOverride = ""
+	selection.Model = strings.TrimSpace(selection.Model)
 	selection.ReasoningEffort = strings.TrimSpace(selection.ReasoningEffort)
 	selection.Runner = strings.TrimSpace(selection.Runner)
 	return selection
@@ -201,27 +199,10 @@ func validate(snapshot RuntimeConfigurationSnapshot) error {
 	if snapshot.RuntimeProfile == nil && strings.TrimSpace(snapshot.TurnSelection.Model) == "" {
 		return ErrInvalidSnapshot
 	}
-	if snapshot.RuntimeProfile == nil && strings.TrimSpace(snapshot.TurnSelection.ModelProviderID) == "" && !hasProviderNativeSettings(snapshot.Settings) {
+	if snapshot.RuntimeProfile == nil && strings.TrimSpace(snapshot.TurnSelection.ModelProviderID) == "" {
 		return ErrInvalidSnapshot
 	}
 	return nil
-}
-
-func hasProviderNativeSettings(settings map[string]any) bool {
-	for _, key := range []string{"model", "model_override", "endpoint"} {
-		if value, ok := settings[key].(string); ok && strings.TrimSpace(value) != "" {
-			return true
-		}
-	}
-	generated, _ := settings["generated_config"].(map[string]any)
-	if len(generated) == 0 {
-		return false
-	}
-	if value, ok := generated["model"].(string); ok && strings.TrimSpace(value) != "" {
-		return true
-	}
-	_, hasAuthReference := generated["auth_json"]
-	return hasAuthReference
 }
 
 func cloneSnapshot(snapshot RuntimeConfigurationSnapshot) (RuntimeConfigurationSnapshot, error) {

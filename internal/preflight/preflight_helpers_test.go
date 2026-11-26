@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"pentest/internal/credential"
@@ -125,4 +126,38 @@ func checkDetail(result preflight.Result, name string) string {
 		}
 	}
 	return ""
+}
+
+func (svc services) createProfile(t *testing.T, name string, provider runtimeprofile.Provider, fields runtimeprofile.Fields) (runtimeprofile.Profile, error) {
+	t.Helper()
+	if provider == runtimeprofile.ProviderFake || strings.TrimSpace(fields.ModelProviderID) != "" {
+		return svc.profiles.Create(name, provider, fields)
+	}
+	model := strings.TrimSpace(fields.ModelOverride)
+	if model == "" {
+		model = strings.TrimSpace(fields.Model)
+	}
+	if model == "" {
+		model = "gpt-test"
+	}
+	modelProvider, err := svc.modelProviders.Create(modelprovider.CreateRequest{
+		Name: name + " provider",
+		Endpoints: []modelprovider.Endpoint{
+			{Protocol: modelprovider.ProtocolOpenAIResponses, BaseURL: "https://api.example.test/v1"},
+			{Protocol: modelprovider.ProtocolOpenAIChatCompletions, BaseURL: "https://api.example.test/v1"},
+			{Protocol: modelprovider.ProtocolAnthropicMessages, BaseURL: "https://api.example.test/anthropic"},
+		},
+		Catalog: modelprovider.Catalog{Manual: []string{model}, DefaultModel: model},
+	})
+	if err != nil {
+		t.Fatalf("create model provider fixture: %v", err)
+	}
+	t.Setenv(modelProvider.APIKeyEnv, "sk-test")
+	fields.Model = ""
+	fields.Endpoint = ""
+	if fields.ModelOverride == "" {
+		fields.ModelOverride = model
+	}
+	fields.ModelProviderID = modelProvider.ID
+	return svc.profiles.Create(name, provider, fields)
 }

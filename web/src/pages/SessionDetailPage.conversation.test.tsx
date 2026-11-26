@@ -164,7 +164,6 @@ describe("SessionDetailPage", () => {
             reasoning_effort: "high",
             model_provider_id: "mimo",
             model: "mimo-v2",
-            model_override: "mimo-v2",
           }),
         }),
       );
@@ -347,7 +346,6 @@ describe("SessionDetailPage", () => {
         reasoning_effort: "high",
         model_provider_id: "mimo",
         model: "mimo-v2",
-        model_override: "mimo-v2",
       }));
       expect((form.get("attachments") as File).name).toBe("evidence.txt");
     });

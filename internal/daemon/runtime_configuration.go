@@ -43,9 +43,6 @@ func (server *Server) resolveLaunchConfiguration(selection runtimeconfig.LaunchS
 		}
 	} else {
 		model := strings.TrimSpace(selection.Model)
-		if model == "" {
-			model = strings.TrimSpace(selection.ModelOverride)
-		}
 		profile = runtimeprofile.Profile{Provider: runtimeprofile.Provider(strings.TrimSpace(selection.RuntimePluginID)), Fields: runtimeprofile.Fields{
 			ModelProviderID: strings.TrimSpace(selection.ModelProviderID), ModelOverride: model,
 			ReasoningEffort: strings.TrimSpace(selection.ReasoningEffort), DefaultRunner: strings.TrimSpace(selection.Runner),
@@ -54,21 +51,14 @@ func (server *Server) resolveLaunchConfiguration(selection runtimeconfig.LaunchS
 		configProjection = server.runtimePluginConfigProjection(string(profile.Provider))
 	}
 
-	var modelSnapshot modelprovider.Snapshot
-	resolveStructuredProvider := profileID == "" || strings.TrimSpace(profile.Fields.ModelProviderID) != ""
-	if resolveStructuredProvider {
-		var err error
-		modelSnapshot, err = modelprovider.Resolve(modelprovider.ResolveRequest{
-			Profile: profile, Providers: server.modelProviders, Plugins: server.runtimePlugins,
-			Credentials: server.creds, ProjectID: projectID, CheckEnv: false,
-			LaunchModelOverride: firstNonBlank(selection.Model, selection.ModelOverride),
-			CapabilityCache:     server.capabilityCache,
-		})
-		if err != nil {
-			return resolvedLaunchConfiguration{}, err
-		}
-	} else {
-		modelSnapshot.Model = firstNonBlank(selection.Model, selection.ModelOverride, firstRuntimeModel(profile.Fields))
+	modelSnapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+		Profile: profile, Providers: server.modelProviders, Plugins: server.runtimePlugins,
+		Credentials: server.creds, ProjectID: projectID, CheckEnv: false,
+		LaunchModelOverride: selection.Model,
+		CapabilityCache:     server.capabilityCache,
+	})
+	if err != nil {
+		return resolvedLaunchConfiguration{}, err
 	}
 	if profile.Provider == runtimeprofile.ProviderFake {
 		modelSnapshot.ModelProviderID = "none"
@@ -190,7 +180,7 @@ func decodeRuntimeSnapshot(config map[string]any) (runtimeconfig.RuntimeConfigur
 }
 
 func firstRuntimeModel(fields runtimeprofile.Fields) string {
-	return firstNonBlank(fields.ModelOverride, fields.Model)
+	return strings.TrimSpace(fields.ModelOverride)
 }
 
 func firstNonBlank(values ...string) string {
@@ -205,7 +195,7 @@ func firstNonBlank(values ...string) string {
 func (server *Server) resolveSessionSnapshot(profile runtimeprofile.Profile, run session.Runner, input sessionRuntimeInput, provider modelprovider.Snapshot, previous *session.Continuation) (map[string]any, error) {
 	turn := runtimeconfig.RuntimeTurnSelection{
 		ModelProviderID: firstNonBlank(input.ModelProviderID, profile.Fields.ModelProviderID, provider.ModelProviderID),
-		Model:           firstNonBlank(input.selectedModel(), profile.Fields.ModelOverride, profile.Fields.Model, provider.Model),
+		Model:           firstNonBlank(input.selectedModel(), profile.Fields.ModelOverride, provider.Model),
 		ReasoningEffort: firstNonBlank(input.ReasoningEffort, profile.Fields.ReasoningEffort),
 	}
 	if profile.Provider == runtimeprofile.ProviderFake {
@@ -323,6 +313,15 @@ func (server *Server) cloneSnapshotForTurn(prior runtimeconfig.RuntimeConfigurat
 	profile.Fields.ModelProviderID = turn.ModelProviderID
 	profile.Fields.ModelOverride = turn.Model
 	profile.Fields.ReasoningEffort = turn.ReasoningEffort
+	if turn.ModelProviderID == "" {
+		if _, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+			Profile: profile, Plugins: server.runtimePlugins,
+			Credentials: server.creds, ProjectID: projectID, CheckEnv: false,
+			CapabilityCache: server.capabilityCache,
+		}); err != nil {
+			return runtimeconfig.RuntimeConfigurationSnapshot{}, err
+		}
+	}
 	if turn.ModelProviderID == prior.TurnSelection.ModelProviderID {
 		provider := prior.ModelProvider
 		provider.Model = turn.Model

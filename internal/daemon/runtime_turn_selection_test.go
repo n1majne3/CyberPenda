@@ -378,7 +378,7 @@ func TestCodexNativeSteerRejectsProviderChangeWithoutRecordingConversation(t *te
 		"request_id":"provider-switch-1",
 		"message":"switch provider",
 		"model_provider_id":` + quoteJSON(alternate.ID) + `,
-		"model_override":"m2",
+		"model":"m2",
 		"reasoning_effort":"max"
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectRecord.ID+"/tasks/"+created.ID+"/steer", strings.NewReader(body))

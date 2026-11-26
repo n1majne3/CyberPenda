@@ -132,9 +132,8 @@ func (h ownerHistory) TimelineItem(ref string) (timeline.Item, bool, error) {
 	if err != nil {
 		return timeline.Item{}, false, err
 	}
-	seqHint, _ := strconv.Atoi(ref)
 	for _, item := range timeline.Build(ownerTimelineEvents(window.Events)) {
-		if item.ID == ref || (seqHint > 0 && item.Seq == seqHint) {
+		if item.ID == ref {
 			return item, true, nil
 		}
 	}
@@ -212,9 +211,6 @@ func (h ownerHistory) transcriptWindowEntries(window ownerHistoryEventWindow) ([
 			}
 			if found {
 				summary.Seq = entry.Seq
-				if legacy := legacyChildItems(entry, events); len(legacy) > 0 {
-					summary.Details["legacy_items"] = legacy
-				}
 				entries[i] = summary
 				indexed = true
 			}
@@ -263,9 +259,6 @@ func (h ownerHistory) TranscriptEntry(ref string) (transcript.Entry, bool, error
 }
 
 func (h ownerHistory) resolveRefSeq(ref string) (int, bool, error) {
-	if seq, err := strconv.Atoi(ref); err == nil && seq > 0 {
-		return seq, true, nil
-	}
 	return h.store.EventSeqByRef(ref)
 }
 
@@ -440,23 +433,6 @@ func indexedChildBlock(entry transcript.Entry, events []transcript.Event) bool {
 		}
 	}
 	return false
-}
-func legacyChildItems(entry transcript.Entry, events []transcript.Event) []any {
-	indexed := map[int]bool{}
-	for _, event := range events {
-		indexed[event.Seq] = event.Payload["child_history_v1"] == true
-	}
-	var legacy []any
-	if items, ok := entry.Details["items"].([]any); ok {
-		for _, item := range items {
-			if value, ok := item.(map[string]any); ok {
-				if seq, ok := value["seq"].(float64); ok && !indexed[int(seq)] {
-					legacy = append(legacy, item)
-				}
-			}
-		}
-	}
-	return legacy
 }
 
 // transcriptWindowEntry restores one child preview from exactly its original

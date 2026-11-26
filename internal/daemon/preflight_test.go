@@ -267,7 +267,16 @@ func TestPreflightReturnsEnabledSkillPreviewWithoutCredentialBlockers(t *testing
 func TestPreflightFailsWhenRequiredRuntimeLacksModelProvider(t *testing.T) {
 	server := newDaemon(t)
 	projectID := createProject(t, server, `{"name":"Acme","scope":{"domains":["example.com"]}}`)
-	profileID := createRuntimeProfile(t, server, `{"name":"Codex","provider":"codex"}`)
+	profileResponse := httptest.NewRecorder()
+	server.ServeHTTP(profileResponse, httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", strings.NewReader(`{"name":"Codex","provider":"codex"}`)))
+	if profileResponse.Code != http.StatusCreated {
+		t.Fatalf("create raw codex profile: %d %s", profileResponse.Code, profileResponse.Body.String())
+	}
+	var profile struct{ ID string }
+	if err := json.NewDecoder(profileResponse.Body).Decode(&profile); err != nil {
+		t.Fatal(err)
+	}
+	profileID := profile.ID
 
 	body := []byte(`{"runtime_profile_id":"` + profileID + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(body))

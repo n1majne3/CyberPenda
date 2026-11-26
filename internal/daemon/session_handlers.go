@@ -26,7 +26,6 @@ type createSessionInput struct {
 	RuntimeProvider    string                 `json:"runtime_provider"`
 	ModelProviderID    string                 `json:"model_provider_id"`
 	Model              string                 `json:"model"`
-	ModelOverride      string                 `json:"model_override"`
 	ReasoningEffort    string                 `json:"reasoning_effort"`
 	Runner             string                 `json:"runner"`
 	HostActivated      bool                   `json:"host_activated"`
@@ -71,6 +70,9 @@ func parseCreateSessionRequest(request *http.Request) (createSessionInput, []upl
 		return createSessionInput{}, nil, errInvalidSessionBody
 	}
 	var input createSessionInput
+	if err := rejectLegacyModelOverride(raw); err != nil {
+		return createSessionInput{}, nil, err
+	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return createSessionInput{}, nil, errInvalidSessionBody
 	}
@@ -81,14 +83,22 @@ func parseMultipartCreateSessionRequest(request *http.Request) (createSessionInp
 	if err := request.ParseMultipartForm(32 << 20); err != nil {
 		return createSessionInput{}, nil, errInvalidSessionBody
 	}
-	payload := strings.TrimSpace(request.FormValue("payload"))
 	var input createSessionInput
+	if request.MultipartForm != nil {
+		if _, present := request.MultipartForm.Value["model_override"]; present {
+			return createSessionInput{}, nil, errLegacyModelOverrideField
+		}
+	}
+	payload := strings.TrimSpace(request.FormValue("payload"))
 	if payload != "" {
 		if err := rejectLegacyBlackboardModeField([]byte(payload)); err != nil {
 			if errors.Is(err, errLegacyBlackboardModeField) {
 				return createSessionInput{}, nil, err
 			}
 			return createSessionInput{}, nil, errInvalidSessionBody
+		}
+		if err := rejectLegacyModelOverride([]byte(payload)); err != nil {
+			return createSessionInput{}, nil, err
 		}
 		if err := json.Unmarshal([]byte(payload), &input); err != nil {
 			return createSessionInput{}, nil, errInvalidSessionBody
@@ -106,7 +116,6 @@ func parseMultipartCreateSessionRequest(request *http.Request) (createSessionInp
 		input.RuntimeProvider = request.FormValue("runtime_provider")
 		input.ModelProviderID = request.FormValue("model_provider_id")
 		input.Model = request.FormValue("model")
-		input.ModelOverride = request.FormValue("model_override")
 		input.ReasoningEffort = request.FormValue("reasoning_effort")
 		input.Runner = request.FormValue("runner")
 		input.HostActivated = strings.EqualFold(request.FormValue("host_activated"), "true")

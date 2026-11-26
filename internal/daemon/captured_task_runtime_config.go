@@ -41,7 +41,7 @@ func (server *Server) capturedTaskRuntimeConfig(created task.Task, profile runti
 	}
 	turn := runtimeconfig.RuntimeTurnSelection{
 		ModelProviderID: firstNonBlank(provider.ModelProviderID, profile.Fields.ModelProviderID, prior.TurnSelection.ModelProviderID),
-		Model:           firstNonBlank(launchModelOverride, provider.Model, profile.Fields.ModelOverride, profile.Fields.Model, prior.TurnSelection.Model),
+		Model:           firstNonBlank(launchModelOverride, provider.Model, profile.Fields.ModelOverride, prior.TurnSelection.Model),
 		ReasoningEffort: firstNonBlank(launchReasoningEffort, profile.Fields.ReasoningEffort, prior.TurnSelection.ReasoningEffort),
 	}
 	requested, err := runtimeprofile.ResolveRequestedReasoningEffort("", turn.ReasoningEffort, "")
@@ -83,9 +83,6 @@ func initialProviderTurnSelection(plan taskLaunchPlan) (runtime.ProviderSessionR
 	}
 	if model == "" {
 		model = strings.TrimSpace(plan.ResolvedProfile.Fields.ModelOverride)
-	}
-	if model == "" {
-		model = strings.TrimSpace(plan.ResolvedProfile.Fields.Model)
 	}
 	requested, err := runtimeprofile.ResolveRequestedReasoningEffort(
 		"",

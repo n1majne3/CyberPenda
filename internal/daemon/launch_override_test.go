@@ -41,7 +41,7 @@ func TestPreflightUsesLaunchModelOverrideForPresetProfile(t *testing.T) {
 
 	body := []byte(`{
 		"runtime_profile_id":"` + profileID + `",
-		"model_override":"mimo-v2-pro",
+		"model":"mimo-v2-pro",
 		"runner":"sandbox"
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/preflight", bytes.NewReader(body))

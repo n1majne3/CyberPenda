@@ -3,9 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { mockApi } from "@/test/mockApi";
-import { BlackboardPage } from "./BlackboardPage";
 import { EvidencePage } from "./EvidencePage";
-import { FactsPage } from "./FactsPage";
 import { FindingsPage } from "./FindingsPage";
 import { ReportPage } from "./ReportPage";
 import { ScopeEditorPage } from "./ScopeEditorPage";
@@ -121,49 +119,6 @@ describe("knowledge and reporting views", () => {
     expect((screen.getByLabelText("Domains") as HTMLTextAreaElement).value).not.toContain("api.acme.test");
     await userEvent.click(within(queue).getByRole("button", { name: /Approve/i }));
     await waitFor(() => expect((screen.getByLabelText("Domains") as HTMLTextAreaElement).value).toContain("api.acme.test"));
-  });
-
-  it("redirects legacy Facts bookmarks to Blackboard Knowledge", async () => {
-    mockApi({
-      "/api/v2/projects/project-1/blackboard/snapshot": {
-        schema: "runtime-blackboard/v2",
-        semantics: "work is active; knowledge is current; history and details are available by key",
-        revision: 1,
-        work: {},
-        knowledge: {
-          facts: {
-            "fact:mail": {
-              version: 1,
-              category: "asset",
-              summary: "mail.acme.test responds but is outside current Scope",
-              confidence: "tentative",
-              scope_status: "out_of_scope",
-            },
-          },
-        },
-        relations: [],
-      },
-      "/api/projects/project-1": project,
-    });
-
-    render(
-      <MemoryRouter initialEntries={["/projects/project-1/facts"]}>
-        <Routes>
-          <Route path="/projects/:projectId/facts" element={<FactsPage />} />
-          <Route path="/projects/:projectId/blackboard" element={<BlackboardPage />} />
-          <Route path="/projects/:projectId/blackboard/*" element={<BlackboardPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByRole("heading", { name: /Blackboard/i })).toBeInTheDocument();
-    expect(await screen.findByRole("region", { name: /Project Knowledge/i })).toBeInTheDocument();
-    expect(
-      screen.getByRole("link", {
-        name: /mail\.acme\.test responds but is outside current Scope/i,
-      }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("out-of-scope")).toHaveClass("border-warning/25", "bg-warning/10");
   });
 
   it("renders Findings from the v2 Snapshot with severity preserved per identity", async () => {

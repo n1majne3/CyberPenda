@@ -99,34 +99,13 @@ func TestResolveExplicitProfileCopiesImmutableConfiguration(t *testing.T) {
 	}
 }
 
-func TestResolveExplicitLegacyProfileDoesNotInventModelProvider(t *testing.T) {
-	snapshot, err := runtimeconfig.Resolve(runtimeconfig.ResolveRequest{
-		Selection: runtimeconfig.LaunchSelection{RuntimeProfileID: "profile-legacy"},
-		Profile: &runtimeconfig.ProfileSource{
-			ID: "profile-legacy", Name: "Legacy", RuntimePluginID: "codex",
-			Settings: map[string]any{"endpoint": "https://legacy.example.test"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("Resolve legacy profile: %v", err)
-	}
-	if snapshot.TurnSelection.ModelProviderID != "" || snapshot.ModelProvider.ModelProviderID != "" {
-		t.Fatalf("legacy profile gained invented Model Provider: %#v", snapshot)
-	}
-	if _, err := runtimeconfig.CloneForTurn(snapshot, snapshot.TurnSelection, snapshot.ModelProvider); err != nil {
-		t.Fatalf("CloneForTurn legacy profile: %v", err)
-	}
-}
-
-func TestCloneForTurnAcceptsMigratedProviderNativeSnapshotWithoutProvenance(t *testing.T) {
+func TestCloneForTurnRefusesLegacyProviderNativeSnapshot(t *testing.T) {
 	prior := runtimeconfig.RuntimeConfigurationSnapshot{
 		SnapshotVersion: runtimeconfig.SnapshotVersion,
 		RuntimePluginID: "codex",
 		Runner:          "sandbox",
 		ModelProvider:   modelprovider.Snapshot{Model: "gpt-5.5"},
-		TurnSelection: runtimeconfig.RuntimeTurnSelection{
-			Model: "gpt-5.5",
-		},
+		TurnSelection:   runtimeconfig.RuntimeTurnSelection{Model: "gpt-5.5"},
 		Settings: map[string]any{
 			"model": "gpt-5.5",
 			"generated_config": map[string]any{
@@ -137,12 +116,8 @@ func TestCloneForTurnAcceptsMigratedProviderNativeSnapshotWithoutProvenance(t *t
 		ConfigProjection: map[string]any{"primitive": "codex_home"},
 	}
 
-	cloned, err := runtimeconfig.CloneForTurn(prior, prior.TurnSelection, prior.ModelProvider)
-	if err != nil {
-		t.Fatalf("CloneForTurn migrated provider-native Snapshot: %v", err)
-	}
-	if cloned.TurnSelection.ModelProviderID != "" || cloned.TurnSelection.Model != "gpt-5.5" {
-		t.Fatalf("cloned provider-native turn = %#v", cloned.TurnSelection)
+	if _, err := runtimeconfig.CloneForTurn(prior, prior.TurnSelection, prior.ModelProvider); err == nil {
+		t.Fatal("CloneForTurn accepted a legacy provider-native Snapshot without a Model Provider")
 	}
 }
 

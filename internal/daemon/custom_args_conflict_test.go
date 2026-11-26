@@ -222,9 +222,26 @@ func forceProfileCustomArgs(t *testing.T, dbPath, profileID, fieldsJSON string) 
 		t.Fatalf("open inspection db: %v", err)
 	}
 	t.Cleanup(func() { _ = inspectionDB.Close() })
+	var existingJSON string
+	if err := inspectionDB.QueryRow(`SELECT fields_json FROM runtime_profiles WHERE id=?`, profileID).Scan(&existingJSON); err != nil {
+		t.Fatalf("read profile fields before forced custom args: %v", err)
+	}
+	merged := map[string]any{}
+	_ = json.Unmarshal([]byte(existingJSON), &merged)
+	forced := map[string]any{}
+	if err := json.Unmarshal([]byte(fieldsJSON), &forced); err != nil {
+		t.Fatalf("decode forced custom args: %v", err)
+	}
+	for key, value := range forced {
+		merged[key] = value
+	}
+	raw, err := json.Marshal(merged)
+	if err != nil {
+		t.Fatalf("encode forced custom args: %v", err)
+	}
 	if _, err := inspectionDB.Exec(
 		`UPDATE runtime_profiles SET fields_json = ? WHERE id = ?`,
-		fieldsJSON, profileID,
+		string(raw), profileID,
 	); err != nil {
 		t.Fatalf("force legacy custom args: %v", err)
 	}

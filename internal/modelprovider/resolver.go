@@ -62,6 +62,9 @@ func Resolve(req ResolveRequest) (Snapshot, error) {
 		return Snapshot{}, nil
 	}
 	if strings.TrimSpace(req.Profile.Fields.ModelProviderID) == "" {
+		if plugin.ModelProvider.Requirement == "optional" {
+			return Snapshot{}, nil
+		}
 		return Snapshot{}, ErrMissingProvider
 	}
 	if req.Providers == nil {

@@ -281,7 +281,7 @@ func TestQueueSteerRecordsSameRuntimeModelSelection(t *testing.T) {
 	steerReq := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/steer/queue", bytes.NewReader([]byte(`{
 		"directive":"continue with mimo pro",
 		"model_provider_id":`+quoteJSON(providerID)+`,
-		"model_override":"mimo-v2-pro"
+		"model":"mimo-v2-pro"
 	}`)))
 	steerReq.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(steerResp, steerReq)

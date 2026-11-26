@@ -34,7 +34,7 @@ func (c *engineProbeCounter) record(name string) {
 
 func sandboxRequest(t *testing.T, svc services) preflight.Request {
 	t.Helper()
-	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-5"})
+	profile, err := svc.createProfile(t, "codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{Model: "gpt-5"})
 	if err != nil {
 		t.Fatalf("create profile: %v", err)
 	}
