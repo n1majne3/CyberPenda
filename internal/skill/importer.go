@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,6 +85,38 @@ var importShorthandPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*(/[A
 
 var importFilterPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
+var importVersionPinPattern = regexp.MustCompile(`^v?\d+(\.\d+)+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
+var importCommitSHAPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+
+func isVersionPin(value string) bool {
+	return importVersionPinPattern.MatchString(value) || importCommitSHAPattern.MatchString(value)
+}
+
+func sourceSelectsRevision(source string) bool {
+	if strings.Contains(source, "#") {
+		return true
+	}
+	if strings.Contains(source, "/tree/") || strings.Contains(source, "/-/tree/") {
+		return true
+	}
+	if at := strings.LastIndex(source, "@"); at > 0 {
+		return isVersionPin(source[at+1:])
+	}
+	return false
+}
+
+func sourceSupportsRefSelection(source string) bool {
+	if !strings.Contains(source, "://") {
+		return strings.Contains(source, "/")
+	}
+	parsed, err := url.Parse(source)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "github.com" || host == "gitlab.com" || strings.HasSuffix(strings.ToLower(parsed.Path), ".git")
+}
+
 // validateImportSource reports whether source is a shape the fixed
 // `npx skills add` command may resolve: an https:// URL, or a shorthand such as
 // owner/repo or a well-known name with an optional @skill filter. Local paths,
@@ -133,6 +166,12 @@ func resolveImportSource(request ImportRequest) (string, error) {
 		return "", err
 	}
 	if ref := strings.TrimSpace(request.Ref); ref != "" {
+		if sourceSelectsRevision(source) {
+			return "", fmt.Errorf("source already selects a revision; supply only one ref")
+		}
+		if !sourceSupportsRefSelection(source) {
+			return "", fmt.Errorf("ref is supported only for git sources, not well-known bundles")
+		}
 		source += "#" + encodeRefFragment(ref)
 	}
 	return source, nil
@@ -248,13 +287,10 @@ func readSkillsLock(workdir string) (skillsLock, error) {
 // carries an @filter (owner/repo@name), prefer that skill; otherwise prefer the
 // skill whose lock sourceUrl matches the request, falling back to the first.
 func selectInstalledSkill(lock skillsLock, sourceURL string) (string, bool) {
-	if at := strings.LastIndex(sourceURL, "@"); at > 0 {
-		filter := sourceURL[at+1:]
-		if filter != "" {
-			for name := range lock.Skills {
-				if name == filter {
-					return name, true
-				}
+	if filter := skillFilterFromSource(sourceURL); filter != "" {
+		for name := range lock.Skills {
+			if name == filter {
+				return name, true
 			}
 		}
 	}
@@ -267,6 +303,23 @@ func selectInstalledSkill(lock skillsLock, sourceURL string) (string, bool) {
 		return name, true
 	}
 	return "", false
+}
+
+func skillFilterFromSource(source string) string {
+	if hash := strings.Index(source, "#"); hash >= 0 {
+		fragment := source[hash+1:]
+		if at := strings.LastIndex(fragment, "@"); at >= 0 {
+			return fragment[at+1:]
+		}
+		source = source[:hash]
+	}
+	if at := strings.LastIndex(source, "@"); at > 0 {
+		filter := source[at+1:]
+		if !isVersionPin(filter) {
+			return filter
+		}
+	}
+	return ""
 }
 
 // readBundleFiles reads every regular file under root, keyed by path relative
