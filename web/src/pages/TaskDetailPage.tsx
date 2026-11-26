@@ -141,15 +141,15 @@ function RuntimeOwnerWorkspace({ ownerKind }: { ownerKind: RuntimeOwnerKind }) {
   }, [isSession, ownerID, projectId]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
-  // Poll events while the runtime owner is active and the tab is visible.
-  // Depends on status/visibility only so the interval is not reset every render;
-  // loadAll/owner are intentionally omitted.
+  // Keep recovery and late Steering receipts live after a Runtime stops.
+  // The interval follows status and visibility, not each history update.
   /* eslint-disable react-hooks/exhaustive-deps */
   useEffect(() => {
-    if (!isVisible || !owner || !ACTIVE_OWNER_STATUSES.has(owner.status)) return;
-    const id = setInterval(() => void loadAll("poll"), 1000);
+    if (!isVisible || !ownerID) return;
+    const delay = owner && ACTIVE_OWNER_STATUSES.has(owner.status) ? 1000 : 3000;
+    const id = setInterval(() => void loadAll("poll"), delay);
     return () => clearInterval(id);
-  }, [owner?.status, isVisible]);
+  }, [owner?.status, isVisible, ownerID]);
   /* eslint-enable react-hooks/exhaustive-deps */
 
 
