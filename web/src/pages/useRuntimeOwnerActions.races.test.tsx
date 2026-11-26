@@ -103,10 +103,12 @@ describe("Runtime Owner conversation races", () => {
     let send!: Promise<void>;
     act(() => { send = result.current.sendConversationMessage(); });
     expect(result.current.sending).toBe(true);
-    await act(async () => { await result.current.stop(); });
+    let stop!: Promise<void>;
+    act(() => { stop = result.current.stop(); });
     expect(adapter.stop).toHaveBeenCalledTimes(1);
     act(() => { result.current.setSteering("new draft after Stop"); });
-    await act(async () => { pending.resolve(); await send; });
+    await act(async () => { pending.resolve(); await Promise.all([send, stop]); });
+    expect(adapter.stop).toHaveBeenCalledTimes(2);
     expect(result.current.steering).toBe("new draft after Stop");
     expect(result.current.sending).toBe(false);
     expect(loadAll).toHaveBeenCalledTimes(1);
@@ -118,9 +120,10 @@ describe("Runtime Owner conversation races", () => {
     let send!: Promise<void>;
     act(() => { send = result.current.sendConversationMessage(); });
     expect(adapter.queueSteer).toHaveBeenCalledTimes(1);
-    await act(async () => { await result.current.stop(); });
-    await act(async () => { pending.resolve(); await send; });
-    expect(adapter.stop).toHaveBeenCalledTimes(1);
+    let stop!: Promise<void>;
+    act(() => { stop = result.current.stop(); });
+    await act(async () => { pending.resolve(); await Promise.all([send, stop]); });
+    expect(adapter.stop).toHaveBeenCalledTimes(2);
     expect(adapter.resume).not.toHaveBeenCalled();
     expect(result.current.steering).toBe("first instruction");
   });
@@ -130,9 +133,10 @@ describe("Runtime Owner conversation races", () => {
     vi.mocked(adapter.stop).mockImplementationOnce(() => pending.promise);
     let send!: Promise<void>;
     act(() => { send = result.current.sendConversationMessage(); });
-    await act(async () => { await result.current.stop(); });
-    await act(async () => { pending.resolve(); await send; });
-    expect(adapter.stop).toHaveBeenCalledTimes(2);
+    let stop!: Promise<void>;
+    act(() => { stop = result.current.stop(); });
+    await act(async () => { pending.resolve(); await Promise.all([send, stop]); });
+    expect(adapter.stop).toHaveBeenCalledTimes(3);
     expect(adapter.sendMessage).not.toHaveBeenCalled();
     expect(result.current.steering).toBe("first instruction");
   });
@@ -148,5 +152,33 @@ describe("Runtime Owner conversation races", () => {
     expect(result.current.actionError).toBe("Provider refused steering");
     expect(result.current.sending).toBe(false);
     expect(result.current.conversationState.phase).toBe("failed");
+  });
+
+  it("does not finish Stop before an uploading Session switch can admit a new Runtime", async () => {
+    const { result, adapter } = harness(owner(), "other-provider");
+    const upload = deferred();
+    let running = true;
+    vi.mocked(adapter.stop).mockImplementation(async () => { running = false; });
+    vi.mocked(adapter.sendMessage).mockImplementation(async () => {
+      await upload.promise;
+      running = true;
+      return owner();
+    });
+    let send!: Promise<void>;
+    await act(async () => { send = result.current.sendConversationMessage(); });
+    expect(adapter.sendMessage).toHaveBeenCalledOnce();
+    let stopped = false;
+    let stop!: Promise<void>;
+    await act(async () => {
+      stop = result.current.stop().then(() => { stopped = true; });
+    });
+    expect(running).toBe(false);
+    expect(stopped).toBe(false);
+    expect(result.current.conversationState.phase).toBe("stopping");
+    await act(async () => { upload.resolve(); await Promise.all([send, stop]); });
+    expect(stopped).toBe(true);
+    expect(running).toBe(false);
+    expect(result.current.sending).toBe(false);
+    expect(adapter.stop).toHaveBeenCalledTimes(3);
   });
 });

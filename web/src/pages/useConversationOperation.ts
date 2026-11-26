@@ -7,6 +7,7 @@ import type { RuntimeOwnerView } from "@/lib/runtimeOwner/types";
 function createConversationOperation(ownerKey: string) {
   let state = initialConversationState(ownerKey);
   let active = true;
+  const pending = new Set<Promise<unknown>>();
   const listeners = new Set<() => void>();
   const dispatch = (event: ConversationEvent) => {
     if (!active) return;
@@ -23,6 +24,11 @@ function createConversationOperation(ownerKey: string) {
     },
     activate: () => { active = true; },
     deactivate: () => { active = false; },
+    pending: () => [...pending],
+    track: (request: Promise<unknown>) => {
+      pending.add(request);
+      void request.then(() => pending.delete(request), () => pending.delete(request));
+    },
     begin: (operation: ConversationOperation) => {
       const id = newSteerRequestID();
       dispatch({ type: "begin", ownerKey, id, operation });

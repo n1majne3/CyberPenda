@@ -63,7 +63,9 @@ export function useRuntimeOwnerActions({
     const isCurrent = () => operation.isCurrent(requestID);
     setActionError(null);
     try {
-      await run(isCurrent, requestID);
+      const request = run(isCurrent, requestID);
+      if (kind !== "stop") operation.track(request);
+      await request;
       if (!isCurrent()) return;
       accepted?.();
       operation.accepted(requestID);
@@ -96,7 +98,14 @@ export function useRuntimeOwnerActions({
 
   async function stop() {
     if (!owner) return;
-    await runOperation("stop", () => ownerAdapter.stop());
+    const pending = operation.pending();
+    await runOperation("stop", async () => {
+      if (pending.length) {
+        // Stop now, then settle requests that may still admit a replacement Runtime.
+        await Promise.allSettled([ownerAdapter.stop(), ...pending]);
+      }
+      await ownerAdapter.stop();
+    });
   }
 
   async function finishTask() {
