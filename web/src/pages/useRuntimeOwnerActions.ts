@@ -91,7 +91,7 @@ export function useRuntimeOwnerActions({
     return deriveConversationControls({
       owner, currentContinuation: owner.activeContinuation ?? owner.latestContinuation,
       currentRuntimeProvider, continuationModelProvider,
-      continuationModelOverride: selection.model ?? selection.model_override ?? "",
+      continuationModelOverride: selection.model ?? "",
       continuationReasoningEffort: selection.reasoning_effort, forceReplaceNext,
     });
   }
