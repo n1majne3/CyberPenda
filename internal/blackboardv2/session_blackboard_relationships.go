@@ -280,16 +280,28 @@ func sessionHasIncomingSatisfies(ctx context.Context, tx *sql.Tx, sessionID, obj
 	return exists == 1, nil
 }
 
-func sessionHasIncomingInvalidates(ctx context.Context, tx *sql.Tx, sessionID, objectiveKey string) (bool, error) {
-	var exists int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM blackboard_v2_session_relationships AS rel
-			JOIN blackboard_v2_session_records AS source
-			  ON source.session_id=rel.session_id AND source.key=rel.from_key
-			WHERE rel.session_id=? AND rel.relation='invalidates' AND rel.to_key=? AND source.type='fact'
-		)`, sessionID, objectiveKey).Scan(&exists); err != nil {
-		return false, fmt.Errorf("check Session Objective invalidation: %w", err)
+func sessionIncomingInvalidatingFactKeys(ctx context.Context, tx *sql.Tx, sessionID, objectiveKey string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT rel.from_key
+		FROM blackboard_v2_session_relationships AS rel
+		JOIN blackboard_v2_session_records AS source
+		  ON source.session_id=rel.session_id AND source.key=rel.from_key
+		WHERE rel.session_id=? AND rel.relation='invalidates' AND rel.to_key=? AND source.type='fact'
+		ORDER BY rel.from_key ASC`, sessionID, objectiveKey)
+	if err != nil {
+		return nil, fmt.Errorf("read Session Objective invalidation proof: %w", err)
 	}
-	return exists == 1, nil
+	defer rows.Close()
+	keys := make([]string, 0)
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("scan Session Objective invalidation proof: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate Session Objective invalidation proof: %w", err)
+	}
+	return keys, nil
 }

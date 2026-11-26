@@ -32,6 +32,7 @@ func TestSessionAbandonedObjectiveRequiresInvalidatingFact(t *testing.T) {
 			{Op: "create", Key: "objective:invalidated", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Remember the removed path"}},
 			{Op: "create", Key: "objective:without-proof", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Remember the unproven path"}},
 			{Op: "create", Key: "fact:invalidating", Type: "fact", Record: blackboardv2.FactRecord{Category: "note", Summary: "The path was removed", Confidence: "tentative"}},
+			{Op: "create", Key: "fact:replacement", Type: "fact", Record: blackboardv2.FactRecord{Category: "note", Summary: "The path changed but remains relevant", Confidence: "tentative"}},
 			{Op: "relate", From: "fact:invalidating", Relation: "invalidates", To: "objective:invalidated"},
 		},
 	})
@@ -48,6 +49,17 @@ func TestSessionAbandonedObjectiveRequiresInvalidatingFact(t *testing.T) {
 	var semanticErr *blackboardv2.Error
 	if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[0].status" {
 		t.Fatalf("Session abandonment without invalidates error = %#v, want semantic_validation on changes[0].status", err)
+	}
+
+	_, err = board.ApplyForOwner(ctx, ownerContract, blackboardv2.ChangeBatch{
+		Schema: "semantic-change-batch/v2", IdempotencyKey: "reject-session-abandonment-with-superseded-proof",
+		Changes: []blackboardv2.Change{
+			{Op: "transition", Key: "objective:invalidated", Version: 1, Status: "abandoned", ResolutionSummary: "The proof Fact was superseded in the same batch"},
+			{Op: "supersede", Replacement: "fact:replacement", ReplacementVersion: 1, Replaced: "fact:invalidating", ReplacedVersion: 1},
+		},
+	})
+	if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[0].status" {
+		t.Fatalf("Session abandonment with superseded proof error = %#v, want semantic_validation on changes[0].status", err)
 	}
 
 	_, err = board.ApplyForOwner(ctx, ownerContract, blackboardv2.ChangeBatch{

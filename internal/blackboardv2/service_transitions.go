@@ -14,6 +14,11 @@ type terminalAttemptValidation struct {
 	path   string
 }
 
+type abandonedObjectiveValidation struct {
+	path       string
+	proofFacts []string
+}
+
 func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision, index int, change Change, now string) (int, string, int, bool, error) {
 	path := fmt.Sprintf("changes[%d]", index)
 	if err := validateKey(change.Key, path+".key"); err != nil {
@@ -68,11 +73,11 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 			}
 		}
 		if change.Status == "abandoned" {
-			invalidated, err := hasIncomingInvalidates(ctx, tx, projectID, change.Key)
+			proofFacts, err := incomingInvalidatingFactKeys(ctx, tx, projectID, change.Key)
 			if err != nil {
 				return revision, "", 0, false, err
 			}
-			if !invalidated {
+			if len(proofFacts) == 0 {
 				return revision, "", 0, false, semanticError("semantic_validation", "abandoned Objective requires a current incoming invalidates relationship", path+".status", nil)
 			}
 		}
@@ -275,6 +280,35 @@ func (s *Service) runtimeFactConfirmationHasBasis(ctx context.Context, tx *sql.T
 		return false, fmt.Errorf("iterate producing Attempts for confirmation: %w", err)
 	}
 	return false, nil
+}
+
+func validateFinalAbandonedObjectives(ctx context.Context, tx *sql.Tx, projectID string, objectives map[string]abandonedObjectiveValidation) error {
+	keys := make([]string, 0, len(objectives))
+	for key := range objectives {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		validation := objectives[key]
+		proofCurrent := false
+		for _, factKey := range validation.proofFacts {
+			proof, err := loadCurrentRecord(ctx, tx, projectID, factKey)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if proof.typ == "fact" {
+				proofCurrent = true
+				break
+			}
+		}
+		if !proofCurrent {
+			return semanticError("semantic_validation", "abandoned Objective requires a current invalidating Fact at batch end", validation.path, map[string]any{"key": key})
+		}
+	}
+	return nil
 }
 
 func validateFinalTerminalAttempts(ctx context.Context, tx *sql.Tx, projectID string, attempts map[string]terminalAttemptValidation) error {

@@ -121,6 +121,7 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	runtimeCreatedAttempts := make(map[string]string)
 	dependentConfirmedFacts := make(map[string]string)
 	affectedConclusions := make(map[string]bool)
+	abandonedObjectives := make(map[string]abandonedObjectiveValidation)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	baseRevision := revision
 	kernel, err := applySemanticChangeSet(ctx, tx, revision, batch.Changes, now, semanticChangeBackend{
@@ -138,6 +139,13 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 				if err := ensureCTFProject(ctx, tx, projectID, fmt.Sprintf("changes[%d].status", index)); err != nil {
 					return Change{}, err
 				}
+			}
+			if change.Op == "transition" && change.Status == "abandoned" {
+				proofFacts, err := incomingInvalidatingFactKeys(ctx, tx, projectID, change.Key)
+				if err != nil {
+					return Change{}, err
+				}
+				abandonedObjectives[change.Key] = abandonedObjectiveValidation{path: fmt.Sprintf("changes[%d].status", index), proofFacts: proofFacts}
 			}
 			if continuationID != "" {
 				if err := validateContinuationChangeOwnership(ctx, tx, projectID, continuationID, change, index); err != nil {
@@ -236,6 +244,9 @@ func (s *Service) apply(ctx context.Context, projectID, continuationID string, b
 	}
 	revision = kernel.Revision
 	if err := validateFinalTerminalAttempts(ctx, tx, projectID, kernel.TerminalAttempts); err != nil {
+		return ChangeResult{}, err
+	}
+	if err := validateFinalAbandonedObjectives(ctx, tx, projectID, abandonedObjectives); err != nil {
 		return ChangeResult{}, err
 	}
 	if continuationID != "" {

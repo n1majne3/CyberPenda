@@ -55,11 +55,11 @@ func sessionApplyTransition(ctx context.Context, tx *sql.Tx, sessionID string, r
 			}
 		}
 		if change.Status == "abandoned" {
-			invalidated, err := sessionHasIncomingInvalidates(ctx, tx, sessionID, change.Key)
+			proofFacts, err := sessionIncomingInvalidatingFactKeys(ctx, tx, sessionID, change.Key)
 			if err != nil {
 				return revision, "", 0, false, err
 			}
-			if !invalidated {
+			if len(proofFacts) == 0 {
 				return revision, "", 0, false, semanticError("semantic_validation", "abandoned Objective requires a current incoming invalidates relationship", path+".status", nil)
 			}
 		}
@@ -198,6 +198,35 @@ func sessionTerminalizeRecord(ctx context.Context, tx *sql.Tx, sessionID string,
 		return revision, "", 0, false, fmt.Errorf("remove terminal Session %s: %w", existing.typ, err)
 	}
 	return nextRevision, existing.key, nextVersion, true, nil
+}
+
+func sessionValidateFinalAbandonedObjectives(ctx context.Context, tx *sql.Tx, sessionID string, objectives map[string]abandonedObjectiveValidation) error {
+	keys := make([]string, 0, len(objectives))
+	for key := range objectives {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		validation := objectives[key]
+		proofCurrent := false
+		for _, factKey := range validation.proofFacts {
+			proof, err := loadSessionCurrentRecord(ctx, tx, sessionID, factKey)
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if proof.typ == "fact" {
+				proofCurrent = true
+				break
+			}
+		}
+		if !proofCurrent {
+			return semanticError("semantic_validation", "abandoned Objective requires a current invalidating Fact at batch end", validation.path, map[string]any{"key": key})
+		}
+	}
+	return nil
 }
 
 func sessionValidateFinalTerminalAttempts(ctx context.Context, tx *sql.Tx, sessionID string, attempts map[string]terminalAttemptValidation) error {

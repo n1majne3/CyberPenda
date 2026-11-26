@@ -31,6 +31,7 @@ func TestAbandonedObjectiveRequiresInvalidatingFact(t *testing.T) {
 			{Op: "create", Key: "objective:invalidated", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Test the deprecated administrative endpoint"}},
 			{Op: "create", Key: "objective:without-proof", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Test the unattainable legacy path"}},
 			{Op: "create", Key: "fact:invalidating", Type: "fact", Record: blackboardv2.FactRecord{Category: "authorization", Summary: "The administrative endpoint was removed before testing started", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "create", Key: "fact:replacement", Type: "fact", Record: blackboardv2.FactRecord{Category: "authorization", Summary: "The administrative endpoint changed but remains testable", Confidence: "tentative", ScopeStatus: "in_scope"}},
 			{Op: "relate", From: "fact:invalidating", Relation: "invalidates", To: "objective:invalidated"},
 		},
 	})
@@ -51,6 +52,22 @@ func TestAbandonedObjectiveRequiresInvalidatingFact(t *testing.T) {
 	var semanticErr *blackboardv2.Error
 	if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[0].status" {
 		t.Fatalf("abandonment without invalidates error = %#v, want semantic_validation on changes[0].status", err)
+	}
+
+	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
+		Schema:         "semantic-change-batch/v2",
+		IdempotencyKey: "reject-abandonment-with-superseded-proof",
+		Changes: []blackboardv2.Change{
+			{Op: "transition", Key: "objective:invalidated", Version: 1, Status: "abandoned", ResolutionSummary: "The proof Fact was superseded in the same batch"},
+			{Op: "supersede", Replacement: "fact:replacement", ReplacementVersion: 1, Replaced: "fact:invalidating", ReplacedVersion: 1},
+		},
+	})
+	if !errors.As(err, &semanticErr) || semanticErr.Code != "semantic_validation" || semanticErr.Path != "changes[0].status" {
+		t.Fatalf("abandonment with superseded proof error = %#v, want semantic_validation on changes[0].status", err)
+	}
+	current, err := service.ReadCurrent(ctx, createdProject.ID, "objective:invalidated")
+	if err != nil || current.Record.Status != "open" {
+		t.Fatalf("rejected abandonment changed Objective = %#v, %v", current, err)
 	}
 
 	abandoned, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{

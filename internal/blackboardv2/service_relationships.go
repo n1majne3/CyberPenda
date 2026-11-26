@@ -206,22 +206,33 @@ func hasIncomingSatisfies(ctx context.Context, tx *sql.Tx, projectID, objectiveK
 	return exists == 1, nil
 }
 
-func hasIncomingInvalidates(ctx context.Context, tx *sql.Tx, projectID, objectiveKey string) (bool, error) {
-	var exists int
-	if err := tx.QueryRowContext(ctx, `
-		SELECT EXISTS(
-			SELECT 1
-			FROM blackboard_v2_relationships AS rel
-			JOIN blackboard_v2_records AS source
-			  ON source.project_id = rel.project_id AND source.key = rel.from_key
-			WHERE rel.project_id = ? AND rel.relation = 'invalidates' AND rel.to_key = ?
-			  AND source.type = 'fact'
-		)`,
+func incomingInvalidatingFactKeys(ctx context.Context, tx *sql.Tx, projectID, objectiveKey string) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT rel.from_key
+		FROM blackboard_v2_relationships AS rel
+		JOIN blackboard_v2_records AS source
+		  ON source.project_id = rel.project_id AND source.key = rel.from_key
+		WHERE rel.project_id = ? AND rel.relation = 'invalidates' AND rel.to_key = ?
+		  AND source.type = 'fact'
+		ORDER BY rel.from_key ASC`,
 		projectID, objectiveKey,
-	).Scan(&exists); err != nil {
-		return false, fmt.Errorf("check Objective invalidation: %w", err)
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read Objective invalidation proof: %w", err)
 	}
-	return exists == 1, nil
+	defer rows.Close()
+	keys := make([]string, 0)
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, fmt.Errorf("scan Objective invalidation proof: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate Objective invalidation proof: %w", err)
+	}
+	return keys, nil
 }
 
 func validateRelationshipEndpoint(relation, fromType, toType, path string) error {
