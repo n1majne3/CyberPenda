@@ -29,17 +29,30 @@ type piSessionTailAdapter struct {
 	sessionDir string
 	mu         sync.Mutex
 	record     func(NativeSessionMetadata) error
-	retained   map[[sha256.Size]byte]struct{}
+	retained   map[[sha256.Size]byte]int
 }
 
 // NewPiSessionTailAdapter tails Pi sessionDir records not retained by the daemon.
 // Native-only records remain recoverable after a crash.
 func NewPiSessionTailAdapter(inner Adapter, sessionDir string, retained ...string) Adapter {
-	seen := make(map[[sha256.Size]byte]struct{}, len(retained))
+	seen := make(map[[sha256.Size]byte]int, len(retained))
 	for _, line := range retained {
-		seen[sha256.Sum256([]byte(line))] = struct{}{}
+		key, _ := piSessionRecordKey(line)
+		seen[key]++
 	}
 	return &piSessionTailAdapter{inner: inner, sessionDir: sessionDir, retained: seen}
+}
+
+func piSessionRecordKey(line string) ([sha256.Size]byte, bool) {
+	var record struct {
+		Type      string          `json:"type"`
+		ID        string          `json:"id"`
+		Timestamp json.RawMessage `json:"timestamp"`
+	}
+	if json.Unmarshal([]byte(line), &record) == nil && record.Type != "" && record.ID != "" {
+		return sha256.Sum256([]byte("native\x00" + record.Type + "\x00" + record.ID + "\x00" + string(record.Timestamp))), true
+	}
+	return sha256.Sum256([]byte("raw\x00" + line)), false
 }
 
 func (a *piSessionTailAdapter) Name() string { return a.inner.Name() }
@@ -67,17 +80,22 @@ func (a *piSessionTailAdapter) recordRuntimeLineMetadata(line string) {
 }
 
 func (a *piSessionTailAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
-	seen := make(map[[sha256.Size]byte]struct{}, len(a.retained))
-	for key := range a.retained {
-		seen[key] = struct{}{}
+	seen := make(map[[sha256.Size]byte]int, len(a.retained))
+	for key, count := range a.retained {
+		seen[key] = count
 	}
 	emitUnretained := func(kind task.EventKind, payload task.EventPayload) {
 		text, _ := payload["text"].(string)
-		key := sha256.Sum256([]byte(text))
-		if _, exists := seen[key]; exists {
+		key, native := piSessionRecordKey(text)
+		if seen[key] > 0 {
+			if !native {
+				seen[key]--
+			}
 			return
 		}
-		seen[key] = struct{}{}
+		if native {
+			seen[key] = 1
+		}
 		emit(kind, payload)
 	}
 	// Derive a child context so the tailer is always stopped when the inner
