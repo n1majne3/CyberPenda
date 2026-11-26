@@ -44,6 +44,27 @@ func TestSandboxLiveSmokeRunsFGSContainerAcceptance(t *testing.T) {
 	assertContains(t, smoke, "COPY --from=pentestctl-build /out/pentestctl /usr/local/bin/pentestctl")
 }
 
+func TestSandboxDockerfilePinsAndChecksPi(t *testing.T) {
+	dockerfileBytes, err := os.ReadFile(filepath.Join(repoRoot(t), "docker", "pentest-sandbox", "Dockerfile"))
+	if err != nil {
+		t.Fatalf("read sandbox Dockerfile: %v", err)
+	}
+	dockerfile := string(dockerfileBytes)
+
+	for _, required := range []string{
+		"ARG PI_VERSION=1.6.1",
+		"@earendil-works/pi-coding-agent@${PI_VERSION}",
+		"command -v pi",
+	} {
+		if !strings.Contains(dockerfile, required) {
+			t.Fatalf("sandbox Dockerfile must pin and check Pi; missing %q", required)
+		}
+	}
+	if strings.Contains(dockerfile, "@earendil-works/pi-coding-agent@latest") {
+		t.Fatal("sandbox Dockerfile must not resolve Pi from a mutable latest tag")
+	}
+}
+
 func TestSandboxDockerfileKeepsKaliLinuxHeadlessMetaPackage(t *testing.T) {
 	repoRoot := repoRoot(t)
 	dockerfilePath := filepath.Join(repoRoot, "docker", "pentest-sandbox", "Dockerfile")

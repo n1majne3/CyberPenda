@@ -81,7 +81,8 @@ func TestTSecBenchHostedDockerfileInstallsAndChecksTheBoundedToolBaseline(t *tes
 	dockerfile := string(contents)
 
 	for _, required := range []string{
-		"@earendil-works/pi-coding-agent@latest",
+		"ARG PI_VERSION=1.6.1",
+		"@earendil-works/pi-coding-agent@${PI_VERSION}",
 		"@tintinweb/pi-subagents@latest",
 		"pi-rtk-optimizer@latest",
 		`"npm:pi-rtk-optimizer"`,

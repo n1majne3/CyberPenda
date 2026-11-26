@@ -12,56 +12,6 @@ import (
 	"pentest/internal/store"
 )
 
-func TestWrapSandboxPiCommandInstallsPiWhenMissing(t *testing.T) {
-	wrapped, err := runner.WrapSandboxPiCommand(
-		[]string{"pi", "--model", "mimo-v2.5-pro", "-p", "smoke goal"},
-		map[string]string{},
-	)
-	if err != nil {
-		t.Fatalf("wrap command: %v", err)
-	}
-	if len(wrapped) != 3 || wrapped[0] != "sh" || wrapped[1] != "-c" {
-		t.Fatalf("expected sh -c wrapper, got %#v", wrapped)
-	}
-	script := wrapped[2]
-	for _, want := range []string{
-		"command -v pi",
-		"npm install -g '@earendil-works/pi-coding-agent'",
-		"/task/logs/pi-bootstrap.log",
-		"exec pi '--model' 'mimo-v2.5-pro' '-p' 'smoke goal'",
-	} {
-		if !strings.Contains(script, want) {
-			t.Fatalf("expected script to contain %q, got:\n%s", want, script)
-		}
-	}
-}
-
-func TestWrapSandboxPiCommandQuotesApostropheOnce(t *testing.T) {
-	wrapped, err := runner.WrapSandboxPiCommand([]string{"pi", "-p", "don't stop"}, map[string]string{})
-	if err != nil {
-		t.Fatalf("wrap command: %v", err)
-	}
-	if want := `exec pi '-p' 'don'\''t stop'`; !strings.Contains(wrapped[2], want) {
-		t.Fatalf("expected script to contain %q, got:\n%s", want, wrapped[2])
-	}
-}
-
-func TestWrapSandboxPiCommandHonorsPackageOverride(t *testing.T) {
-	wrapped, err := runner.WrapSandboxPiCommand(
-		[]string{"pi", "goal"},
-		map[string]string{
-			"PENTEST_PI_NPM_PACKAGE": "@example/pi",
-			"PENTEST_PI_NPM_VERSION": "1.2.3",
-		},
-	)
-	if err != nil {
-		t.Fatalf("wrap command: %v", err)
-	}
-	if !strings.Contains(wrapped[2], "npm install -g '@example/pi@1.2.3'") {
-		t.Fatalf("expected custom package install, got:\n%s", wrapped[2])
-	}
-}
-
 func TestLaunchProcessEnvSetsPiCodingAgentDirInSandbox(t *testing.T) {
 	root := t.TempDir()
 	layout, err := runner.PrepareTaskLayout(root, "task-pi", runtimeprofile.ProviderPi)
