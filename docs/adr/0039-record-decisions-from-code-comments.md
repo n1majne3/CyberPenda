@@ -53,6 +53,7 @@ Code comments recorded important decisions, but nobody reviewed them as decision
 - After a steer replaces the session, an in-flight assisted-conclusion obligation gets a new Conclusion Dispatch for the replacement Continuation. Historical dispatch identity is not changed (ADR 0021).
 - A same-turn steer is Harness control. Its fallback starts a replacement Turn, which is Work (ADR 0018). The successful fallback replaces the cached method-unavailable outcome, so a retry of the same request stays idempotent.
 - A same-turn steer does not take ownership of the Turn identity. The Turn stays fenced on the prompt request id that started it.
+- Pi RPC reports `willRetry` on `agent_end`; `agent_settled` reports only `aborted`. The Pi adapter retains the outcome across these notifications, so settlement after failed retries cannot imply success.
 - Adapters wait on `FirstSignal` of the bridge `Closed` and `Terminated` signals, so explicit cleanup and an unexpected exit both end the Task-scoped run.
 
 ### Navigation and history bounds (ADR 0024)
@@ -78,6 +79,8 @@ Code comments recorded important decisions, but nobody reviewed them as decision
 
 ### Sandbox and Hosted Images
 
+- A concurrent Docker removal does not confirm that the container is gone. `removeDockerContainer` waits for successful removal or a missing-container result, within its own timeout.
+- `DockerCLISandboxBridgeDocker.Remove` does not inherit caller cancellation. Setup rollback must remove its container even after the launch request expires; the removal helper bounds that work.
 - Kali `nmap` has file capabilities (`cap_net_admin`) outside the Docker default bounding set, so `execve` fails with `EPERM` (#286). The build guard runs the real binary, so a bad future package fails the build, not a task.
 - Kali `qemu-user` 11 ships `qemu-<arch>`. The image provides both `qemu-<arch>` and `qemu-<arch>-static`, and the build fails when a pinned emulator is missing.
 - `pwntools` and `frida-tools` install with pip because Kali has no package. `cmake` is in the apt layer for the `unicorn` source build. `--ignore-installed` stops pip from removing the apt-owned `python3-websockets`, which has no RECORD file.

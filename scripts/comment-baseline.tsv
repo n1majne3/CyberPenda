@@ -299,7 +299,7 @@ internal/runtime/claude_assisted.go	14
 internal/runtime/codex_assisted.go	24
 internal/runtime/codex_subagent_activity_test.go	6
 internal/runtime/container.go	4
-internal/runtime/docker_sandbox.go	26
+internal/runtime/docker_sandbox.go	25
 internal/runtime/host_process_unix.go	5
 internal/runtime/host_process_windows.go	5
 internal/runtime/host_session_bridge.go	31
@@ -308,7 +308,7 @@ internal/runtime/output_batch.go	1
 internal/runtime/output_reader.go	10
 internal/runtime/owner_harness.go	18
 internal/runtime/owner_startup_test.go	2
-internal/runtime/pi_assisted.go	30
+internal/runtime/pi_assisted.go	27
 internal/runtime/pi_session_path_other.go	7
 internal/runtime/pi_session_path_test.go	11
 internal/runtime/pi_session_path_windows.go	13

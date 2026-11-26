@@ -39,7 +39,6 @@ func removeDockerContainer(parent context.Context, containerCLI, containerID str
 			return commandErr
 		}
 		pending = commandErr
-		// A concurrent remover is not confirmation that removal has finished.
 		timer := time.NewTimer(20 * time.Millisecond)
 		select {
 		case <-ctx.Done():

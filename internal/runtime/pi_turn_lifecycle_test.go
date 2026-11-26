@@ -29,7 +29,6 @@ func TestPiLoopStepDoesNotCompleteTheProviderTurn(t *testing.T) {
 
 func TestPiLoopRetainsFailedOutcomeAfterAllRetries(t *testing.T) {
 	r := newPiLoopRecorder(t)
-	// Native RPC sends willRetry on agent_end; agent_settled has only aborted.
 	for attempt := range 4 {
 		r.push(t, "pi/turn_end", map[string]any{"message": piLoopAssistant("error")})
 		r.push(t, "pi/agent_end", map[string]any{"willRetry": attempt < 3, "messages": []any{piLoopAssistant("error")}})
