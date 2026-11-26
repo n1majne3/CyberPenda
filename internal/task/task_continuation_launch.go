@@ -192,7 +192,7 @@ func (s *Service) CreateContinuationLaunchTx(ctx context.Context, tx *sql.Tx, re
 	); err != nil {
 		return RuntimeConfigVersion{}, TaskContinuation{}, fmt.Errorf("store launch continuation: %w", err)
 	}
-	if err := consumeHarnessSteeringTx(ctx, tx, req.TaskID, continuation.ID, req.SteeringEventIDs, now); err != nil {
+	if err := recordHarnessSteeringSelectionTx(ctx, tx, req.TaskID, continuation.ID, req.SteeringEventIDs, now, "steering_prepared"); err != nil {
 		return RuntimeConfigVersion{}, TaskContinuation{}, err
 	}
 	return config, continuation, nil
@@ -226,7 +226,7 @@ func (s *Service) CreateContinuationLaunchWithoutBlackboard(ctx context.Context,
 	return config, continuation, nil
 }
 
-func consumeHarnessSteeringTx(ctx context.Context, tx *sql.Tx, taskID, continuationID string, eventIDs []string, now time.Time) error {
+func recordHarnessSteeringSelectionTx(ctx context.Context, tx *sql.Tx, taskID, continuationID string, eventIDs []string, now time.Time, phase string) error {
 	if len(eventIDs) == 0 {
 		return nil
 	}
@@ -266,17 +266,65 @@ func consumeHarnessSteeringTx(ctx context.Context, tx *sql.Tx, taskID, continuat
 		if consumed != 0 {
 			return ErrSteeringSelectionConflict
 		}
-		appliedJSON, err := json.Marshal(EventPayload{"phase": "steering_applied", "requested_event_id": eventID})
+		selectionJSON, err := json.Marshal(EventPayload{"phase": phase, "requested_event_id": eventID})
 		if err != nil {
-			return fmt.Errorf("encode applied Harness Steering: %w", err)
+			return fmt.Errorf("encode Harness Steering selection: %w", err)
 		}
 		seq++
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO task_events (id,task_id,continuation_id,seq,kind,payload_json,created_at)
-			VALUES (?,?,?,?,?,?,?)`, newID(), taskID, continuationID, seq, string(EventKindSteering), string(appliedJSON), now.UTC().Format(time.RFC3339Nano),
+			VALUES (?,?,?,?,?,?,?)`, newID(), taskID, continuationID, seq, string(EventKindSteering), string(selectionJSON), now.UTC().Format(time.RFC3339Nano),
 		); err != nil {
-			return fmt.Errorf("mark Harness Steering applied: %w", err)
+			return fmt.Errorf("record Harness Steering selection: %w", err)
 		}
 	}
 	return nil
+}
+
+func (s *Service) FencePreparedHarnessSteering(ctx context.Context, taskID, continuationID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if continuationID == "" {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin Harness Steering send fence: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	rows, err := tx.QueryContext(ctx, `
+		SELECT payload_json FROM task_events
+		WHERE task_id=? AND continuation_id=? AND kind=?
+		  AND json_extract(payload_json,'$.phase')='steering_prepared' ORDER BY seq`,
+		taskID, continuationID, string(EventKindSteering),
+	)
+	if err != nil {
+		return fmt.Errorf("read prepared Harness Steering: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var eventIDs []string
+	for rows.Next() {
+		var payloadJSON string
+		if err := rows.Scan(&payloadJSON); err != nil {
+			return err
+		}
+		var payload struct {
+			RequestedEventID string `json:"requested_event_id"`
+		}
+		if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+			return err
+		}
+		eventIDs = append(eventIDs, payload.RequestedEventID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if err := recordHarnessSteeringSelectionTx(ctx, tx, taskID, continuationID, eventIDs, time.Now().UTC(), "steering_applied"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

@@ -141,6 +141,9 @@ func TestBlackboardV2ResumeProjectionFailureLeavesNoContinuationPinOrSteeringCon
 	if resumed.Number != first.Number+1 {
 		t.Fatalf("retry Continuation number = %d, want %d", resumed.Number, first.Number+1)
 	}
+	if err := restarted.tasks.FencePreparedHarnessSteering(context.Background(), createdTask.ID, resumed.ID); err != nil {
+		t.Fatalf("fence retry input: %v", err)
+	}
 	unconsumed, err = restarted.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
 	if err != nil || len(unconsumed) != 0 {
 		t.Fatalf("successful retry did not consume steering once: %#v, %v", unconsumed, err)
@@ -258,23 +261,6 @@ func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringC
 	if err != nil {
 		t.Fatalf("read interrupt steer Events: %v", err)
 	}
-	appliedCount := 0
-	for _, event := range events {
-		if event.Kind == task.EventKindSteering && event.Payload["phase"] == "steering_applied" {
-			appliedCount++
-			if event.ContinuationID != second.ID {
-				t.Errorf("steering_applied is outside resumed Continuation transaction: %#v", event)
-			}
-		}
-	}
-	if appliedCount != 1 {
-		t.Fatalf("steering_applied count = %d, want 1", appliedCount)
-	}
-	unconsumed, err := server.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
-	if err != nil || len(unconsumed) != 0 {
-		t.Fatalf("successful interrupt resume left steering retryable: %#v, %v", unconsumed, err)
-	}
-
 	deadline = time.Now().Add(5 * time.Second)
 	var resumedOutput string
 	for time.Now().Before(deadline) {
@@ -301,5 +287,21 @@ func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringC
 		if !strings.Contains(resumedOutput, required) {
 			t.Errorf("resumed Runtime omitted %q: %s", required, resumedOutput)
 		}
+	}
+	appliedCount := 0
+	for _, event := range events {
+		if event.Kind == task.EventKindSteering && event.Payload["phase"] == "steering_applied" {
+			appliedCount++
+			if event.ContinuationID != second.ID {
+				t.Errorf("steering_applied is outside resumed Continuation: %#v", event)
+			}
+		}
+	}
+	if appliedCount != 1 {
+		t.Fatalf("steering_applied count = %d, want 1", appliedCount)
+	}
+	unconsumed, err := server.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
+	if err != nil || len(unconsumed) != 0 {
+		t.Fatalf("successful interrupt resume left steering retryable: %#v, %v", unconsumed, err)
 	}
 }

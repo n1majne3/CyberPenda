@@ -48,6 +48,7 @@ type Harness struct {
 func NewHarness(tasks *task.Service) *Harness {
 	h := &Harness{}
 	h.core = NewOwnerHarness(OwnerHarnessConfig{
+		BeforeRun: tasks.FencePreparedHarnessSteering,
 		VerifyOwner: func(ownerID string) error {
 			_, err := tasks.Get(ownerID)
 			return err

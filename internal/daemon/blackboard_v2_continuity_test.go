@@ -293,13 +293,16 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 	}
 	for index, requestedID := range unconsumedIDs {
 		applied := events[5+index]
-		if applied.Kind != task.EventKindSteering || applied.ContinuationID != resumed.ID || applied.Payload["phase"] != "steering_applied" || applied.Payload["requested_event_id"] != requestedID {
-			t.Errorf("applied steering %d = %#v", index, applied)
+		if applied.Kind != task.EventKindSteering || applied.ContinuationID != resumed.ID || applied.Payload["phase"] != "steering_prepared" || applied.Payload["requested_event_id"] != requestedID {
+			t.Errorf("prepared steering %d = %#v", index, applied)
 		}
 	}
 	remaining, err := server.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
-	if err != nil || len(remaining) != 0 {
-		t.Fatalf("successful resume left duplicate steering: %#v, %v", remaining, err)
+	if err != nil || len(remaining) != len(unconsumedIDs) {
+		t.Fatalf("preparation consumed input before Runtime handoff: %#v, %v", remaining, err)
+	}
+	if err := server.tasks.FencePreparedHarnessSteering(context.Background(), createdTask.ID, resumed.ID); err != nil {
+		t.Fatalf("fence resumed input: %v", err)
 	}
 	queueNext := httptest.NewRecorder()
 	queueNextRequest := httptest.NewRequest(http.MethodPost, "/api/projects/"+createdProject.ID+"/tasks/"+createdTask.ID+"/steer/queue", strings.NewReader(`{"directive":"next resume only"}`))
@@ -324,11 +327,15 @@ func TestBlackboardV2FinishThenResumeUsesFreshPinAndOnlyUnconsumedHarnessSteerin
 		server.releaseTaskControl(createdTask.ID)
 		t.Fatalf("second resume steering selection = %s", secondGoal)
 	}
-	if _, _, err := server.prepareBlackboardV2ContinuationLaunch(found, secondPlan, secondGoal); err != nil {
+	next, _, err := server.prepareBlackboardV2ContinuationLaunch(found, secondPlan, secondGoal)
+	if err != nil {
 		server.releaseTaskControl(createdTask.ID)
 		t.Fatalf("create second resumed Continuation: %v", err)
 	}
 	server.releaseTaskControl(createdTask.ID)
+	if err := server.tasks.FencePreparedHarnessSteering(context.Background(), createdTask.ID, next.ID); err != nil {
+		t.Fatalf("fence second resumed input: %v", err)
+	}
 	remaining, err = server.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("second successful resume left steering: %#v, %v", remaining, err)

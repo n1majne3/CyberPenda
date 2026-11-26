@@ -25,6 +25,7 @@ type OwnerHarnessConfig struct {
 	RegisterRuntimeOutputFlush        func(string, func() error) func()
 	outputBatchDelay                  time.Duration
 	MarkRunning                       func(string, string) error
+	BeforeRun                         func(context.Context, string, string) error
 	UpdateContinuationRuntimeMetadata func(string, string, string, string) error
 	Finalize                          func(string, string, string) error
 }
@@ -142,7 +143,13 @@ func (h *OwnerHarness) Launch(ctx context.Context, req OwnerLaunchRequest) (laun
 		})
 	}
 
-	runErr := req.Adapter.Run(ctx, req.Goal, emit)
+	var runErr error
+	if h.config.BeforeRun != nil {
+		runErr = h.config.BeforeRun(ctx, req.OwnerID, req.ContinuationID)
+	}
+	if runErr == nil {
+		runErr = req.Adapter.Run(ctx, req.Goal, emit)
+	}
 	if outputBatch != nil {
 		if err := outputBatch.Close(); err != nil {
 			unregisterOutputFlush()
