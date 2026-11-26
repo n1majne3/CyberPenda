@@ -25,10 +25,11 @@ import (
 type providerSessionRegistry struct {
 	mu       sync.RWMutex
 	sessions map[string]runtime.ProviderSession
+	changed  chan struct{}
 }
 
 func newProviderSessionRegistry() *providerSessionRegistry {
-	return &providerSessionRegistry{sessions: make(map[string]runtime.ProviderSession)}
+	return &providerSessionRegistry{sessions: make(map[string]runtime.ProviderSession), changed: make(chan struct{})}
 }
 
 func (r *providerSessionRegistry) bind(taskID string, session runtime.ProviderSession) error {
@@ -70,7 +71,30 @@ func (r *providerSessionRegistry) remove(taskID string) runtime.ProviderSession 
 	defer r.mu.Unlock()
 	session := r.sessions[taskID]
 	delete(r.sessions, taskID)
+	r.notifyReleaseLocked()
 	return session
+}
+
+func (r *providerSessionRegistry) notifyReleaseLocked() {
+	close(r.changed)
+	r.changed = make(chan struct{})
+}
+
+func (r *providerSessionRegistry) waitAbsent(ctx context.Context, ownerID string) bool {
+	for {
+		r.mu.RLock()
+		_, bound := r.sessions[ownerID]
+		changed := r.changed
+		r.mu.RUnlock()
+		if !bound {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-changed:
+		}
+	}
 }
 
 func (r *providerSessionRegistry) closeTask(ctx context.Context, taskID string) error {
@@ -86,6 +110,7 @@ func (r *providerSessionRegistry) closeTask(ctx context.Context, taskID string) 
 	r.mu.Lock()
 	if current, ok := r.sessions[taskID]; ok && current.SessionID() == session.SessionID() {
 		delete(r.sessions, taskID)
+		r.notifyReleaseLocked()
 	}
 	r.mu.Unlock()
 	return nil
@@ -98,6 +123,7 @@ func (r *providerSessionRegistry) closeAll(ctx context.Context) error {
 		sessions = append(sessions, session)
 		delete(r.sessions, taskID)
 	}
+	r.notifyReleaseLocked()
 	r.mu.Unlock()
 	var errs []error
 	for _, session := range sessions {

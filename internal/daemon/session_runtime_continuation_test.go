@@ -64,6 +64,7 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 	if created.ID == "" {
 		t.Fatal("created Session has no id")
 	}
+	waitForSessionRunning(t, server, created.ID)
 
 	var launchRequest ProviderSessionLaunchRequest
 	deadline := time.Now().Add(time.Second)
@@ -99,6 +100,7 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 	if message.Code != http.StatusAccepted {
 		t.Fatalf("Session message status = %d, body=%s", message.Code, message.Body.String())
 	}
+	waitForProviderRequests(t, providerSession, 1)
 
 	conversation := httptest.NewRecorder()
 	server.ServeHTTP(conversation, httptest.NewRequest(http.MethodGet, "/api/sessions/"+created.ID+"/conversation", nil))
