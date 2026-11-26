@@ -26,14 +26,19 @@ func (s *providerSessionAdapter) run(ctx context.Context, mode ProviderSessionMo
 	} else if ok {
 		return cached.result, cached.err
 	}
-	if err := s.begin(request.RequestID, mode, fingerprint); err != nil {
+	snapshot, err := s.begin(request, mode, fingerprint)
+	if err != nil {
 		return ProviderSessionResult{}, err
 	}
 	s.recordProviderSessionTurnKind(request.RequestID, "", request.TurnKind)
 	s.recordProviderSessionTurnLineage(request, "")
 	defer s.end(request.RequestID, mode)
-	s.emit(emit, mode, "requested", request.RequestID, s.currentTurn())
-	settlementSession, settlementTurn, baseline := s.settlementTarget(request)
+	requestedTurn := s.currentTurn()
+	if mode == ProviderSessionModeInterruptTurn {
+		requestedTurn = snapshot.activeTurnID
+	}
+	s.emit(emit, mode, "requested", request.RequestID, requestedTurn)
+	settlementSession, settlementTurn, baseline := snapshot.sessionID, snapshot.targetTurnID, snapshot.settlementSeq
 	result, err := s.native(ctx, mode, request, method, request.RequestID)
 	if err != nil {
 		s.storeFailure(request.RequestID, mode, fingerprint, err)

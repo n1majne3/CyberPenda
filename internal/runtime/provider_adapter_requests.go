@@ -21,23 +21,39 @@ func (s *providerSessionAdapter) require(capability ProviderSessionCapability) e
 	return nil
 }
 
-func (s *providerSessionAdapter) begin(requestID string, mode ProviderSessionMode, fingerprint string) error {
+type providerSessionBeginSnapshot struct {
+	activeTurnID  string
+	sessionID     string
+	targetTurnID  string
+	settlementSeq uint64
+}
+
+func (s *providerSessionAdapter) begin(request ProviderSessionRequest, mode ProviderSessionMode, fingerprint string) (providerSessionBeginSnapshot, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return ErrProviderSessionClosed
+		return providerSessionBeginSnapshot{}, ErrProviderSessionClosed
 	}
 	if s.active {
-		if s.activeRequestID == requestID && s.activeMode == mode && s.activeFingerprint != fingerprint {
-			return &ProviderSessionRequestConflictError{RequestID: requestID}
+		if s.activeRequestID == request.RequestID && s.activeMode == mode && s.activeFingerprint != fingerprint {
+			return providerSessionBeginSnapshot{}, &ProviderSessionRequestConflictError{RequestID: request.RequestID}
 		}
-		return ErrProviderSessionControlConflict
+		return providerSessionBeginSnapshot{}, ErrProviderSessionControlConflict
+	}
+	snapshot := providerSessionBeginSnapshot{
+		activeTurnID:  s.activeTurnID,
+		sessionID:     s.sessionID,
+		targetTurnID:  strings.TrimSpace(request.ProviderTurnID),
+		settlementSeq: s.settlementSeq,
+	}
+	if snapshot.targetTurnID == "" {
+		snapshot.targetTurnID = snapshot.activeTurnID
 	}
 	s.active = true
-	s.activeRequestID = requestID
+	s.activeRequestID = request.RequestID
 	s.activeMode = mode
 	s.activeFingerprint = fingerprint
-	return nil
+	return snapshot, nil
 }
 
 func (s *providerSessionAdapter) bindRequest(requestID string, mode ProviderSessionMode, fingerprint string) error {

@@ -21,17 +21,6 @@ func providerTurnSettled(metadata map[string]any) bool {
 	}
 }
 
-func (s *providerSessionAdapter) settlementTarget(request ProviderSessionRequest) (sessionID, turnID string, baseline uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	sessionID, turnID = s.sessionID, strings.TrimSpace(request.ProviderTurnID)
-	if turnID == "" {
-		turnID = s.activeTurnID
-	}
-	baseline = s.settlementSeq
-	return
-}
-
 func providerSettlementKey(sessionID, turnID string) string {
 	return strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(turnID)
 }
