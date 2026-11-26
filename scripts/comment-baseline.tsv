@@ -400,8 +400,14 @@ internal/task/provider_event.go	3
 internal/task/runtime_config_batch.go	3
 internal/task/runtime_control_read.go	6
 internal/task/runtime_control_read_test.go	1
-internal/task/task.go	183
+internal/task/task.go	47
+internal/task/task_continuation_launch.go	20
 internal/task/task_continuation_race_test.go	7
+internal/task/task_continuation_store.go	20
+internal/task/task_event_store.go	24
+internal/task/task_restart_recovery.go	5
+internal/task/task_runtime_model.go	43
+internal/task/task_store.go	24
 internal/task/task_test.go	20
 internal/testsupport/fakeprovider/session.go	19
 internal/timeline/subagent_activity_test.go	9
