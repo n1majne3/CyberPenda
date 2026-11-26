@@ -34,6 +34,7 @@
 
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 98%;
+    --destructive-text: 0 72% 45%;
 
     --success: 142 70% 28%;
     --success-foreground: 0 0% 98%;
@@ -42,6 +43,7 @@
 
     --warning: 38 92% 45%;
     --warning-foreground: 0 0% 9%;
+    --warning-text: 38 92% 30%;
 
     --signal: 211 92% 42%;
 
@@ -94,6 +96,7 @@
 
     --destructive: 0 70% 60%;
     --destructive-foreground: 0 0% 98%;
+    --destructive-text: 0 70% 68%;
 
     --success: 142 55% 52%;
     --success-foreground: 0 0% 9%;
@@ -102,6 +105,7 @@
 
     --warning: 38 92% 54%;
     --warning-foreground: 0 0% 9%;
+    --warning-text: 38 92% 54%;
 
     /* Dark surfaces need a lighter, slightly cooler signal to stay legible. */
     --signal: 211 100% 70%;
