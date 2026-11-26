@@ -251,7 +251,9 @@ internal/pentestctl/fgs_test.go	2
 internal/preflight/codex_multi_agent_test.go	2
 internal/preflight/engine_probe_test.go	4
 internal/preflight/preflight.go	55
-internal/preflight/preflight_test.go	27
+internal/preflight/preflight_credentials_test.go	7
+internal/preflight/preflight_model_provider_test.go	4
+internal/preflight/preflight_runtime_environment_test.go	1
 internal/project/project.go	34
 internal/project/project_test.go	2
 internal/projectinterface/bearer.go	2
