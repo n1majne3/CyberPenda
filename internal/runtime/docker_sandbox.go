@@ -517,22 +517,9 @@ func StopDockerContainer(containerCLI, containerID string, grace time.Duration) 
 	return err
 }
 
-// RemoveDockerContainer force-removes a docker container. Missing containers
-// are treated as a successful cleanup by Docker itself.
+// RemoveDockerContainer force-removes a container or confirms it is absent.
 func RemoveDockerContainer(containerCLI, containerID string) error {
-	cli := strings.TrimSpace(containerCLI)
-	if cli == "" {
-		cli = "docker"
-	}
-	id := strings.TrimSpace(containerID)
-	if id == "" {
-		return nil
-	}
-	err := runDockerContainerCommand(cli, 0, "rm", "-f", id)
-	if isMissingDockerContainerError(err) {
-		return nil
-	}
-	return err
+	return removeDockerContainer(context.Background(), containerCLI, containerID)
 }
 
 type dockerContainerCommandError struct {
