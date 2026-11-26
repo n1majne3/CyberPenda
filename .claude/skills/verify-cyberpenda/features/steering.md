@@ -1,6 +1,6 @@
 # 真实 LLM Steer 生存性
 
-验证 Steer 后 Runtime 是否仍能接收下一条输入。HTTP 202、pending 徽标或一次 `applied` 都不是充分证明。Pi 原生 Steer 与 Claude Code 中断替换必须分开记录。
+验证 Steer 后 Runtime 是否仍能接收下一条输入。HTTP 202、pending 徽标或一次 `applied` 都不是充分证明。Pi 与 Claude Code 都采用 interrupt→settlement→新输入，但 Provider 事件、原生会话身份和 Continuation 证据必须分开记录。
 
 ## Sub-features
 
@@ -35,10 +35,10 @@ Preconditions：获得真实模型调用授权。使用新的隔离实例，保�
 ## Gotchas
 
 - Windows 原生 daemon 的 Skill 目录符号链接权限错误发生在模型调用前；它是启动阻断，不是 Steer 缺陷。记录 `provider_session_setup_failed` 的完整错误。
-- Pi 走原生 `pi/steer`；Claude Code 采用 interrupt→settlement→新输入。不要混合两者的成功率或 Continuation 预期。
+- Pi 的 `pi/steer` 只能排队到下一模型步骤边界，不能改写已经在生成的请求；CyberPenda 的 Pi 操作员 Steer 因此采用 interrupt→settlement→新输入。Claude Code 也采用中断替换，但不要混合两个 Provider 的成功率或事件证据。
 - Pi 的 Steer 结算要核对 `accepted_steering.expected_provider_turn_id` 与 bridge 返回的 `turn_id`。2026-10-21 曾在 `cmd/pentest-provider-bridge` 的 `pi/steer` 分支发现活动 Turn 被改写为 Steer 请求 ID，导致同轮 Steer 被判 `target_turn_changed` / `action_required`，而模型其实已按 Steer 回复；该缺陷已修复，修复后三轮原生 Steer 全部 `applied` 且无提示。判定标准是数据库里的这两个 ID 和界面提示，不是单一徽标。
 - 同轮 Steer 的 marker 要来自 Steer 请求之后的 assistant 消息；Pi 会先把提示词本身作为 assistant 消息回显，那不是 Steer 生效。
-- Claude Code 的每次替换都会新建 Continuation；容器与原生会话 ID 不变才说明原 Runtime 存活。
+- Pi 与 Claude Code 的每次替换都会新建 Continuation；容器与原生会话 ID 不变才说明原 Runtime 存活。
 - 切换 Provider、model 或 Reasoning Effort 可能触发替换；原生 Steer 轮次保持这三项不变。
 - marker 必须来自 assistant 的 message，不能匹配用户 prompt、reasoning、错误日志或工具结果。
 - 排队消息、idle Send、显式恢复、新 Runtime 都要单独分类，不能算作 busy 原生 Steer 成功。

@@ -361,6 +361,10 @@ type nativeSteerPreparation struct {
 // fence from one TurnState snapshot. Task and Session handlers must not read
 // TurnState again while accepting the same Steering request.
 func prepareAcceptedNativeSteer(ctx context.Context, session runtime.ProviderSession, selectionChanged, forceReplace bool, settlement providerControlSettlement) (nativeSteerPreparation, error) {
+	return prepareAcceptedNativeSteerForProvider(ctx, session, runtimeprofile.ProviderCodex, selectionChanged, forceReplace, settlement)
+}
+
+func prepareAcceptedNativeSteerForProvider(ctx context.Context, session runtime.ProviderSession, provider runtimeprofile.Provider, selectionChanged, forceReplace bool, settlement providerControlSettlement) (nativeSteerPreparation, error) {
 	if settlement != nil {
 		settled, err := settlement(ctx, false)
 		if err != nil {
@@ -378,10 +382,14 @@ func prepareAcceptedNativeSteer(ctx context.Context, session runtime.ProviderSes
 			return nativeSteerPreparation{Mode: runtime.ProviderSessionModeSendTurn}, nil
 		}
 	}
-	return prepareNativeSteer(session, selectionChanged, forceReplace)
+	return prepareNativeSteerForProvider(session, provider, selectionChanged, forceReplace)
 }
 
 func prepareNativeSteer(session runtime.ProviderSession, selectionChanged, forceReplace bool) (nativeSteerPreparation, error) {
+	return prepareNativeSteerForProvider(session, runtimeprofile.ProviderCodex, selectionChanged, forceReplace)
+}
+
+func prepareNativeSteerForProvider(session runtime.ProviderSession, provider runtimeprofile.Provider, selectionChanged, forceReplace bool) (nativeSteerPreparation, error) {
 	capabilities := session.Capabilities()
 	if !capabilities.PersistentSession || !capabilities.SendTurn {
 		return nativeSteerPreparation{}, &runtime.UnsupportedProviderSessionCapabilityError{Capability: runtime.ProviderSessionCapabilityPersistentSession}
@@ -391,7 +399,8 @@ func prepareNativeSteer(session runtime.ProviderSession, selectionChanged, force
 	if activeTurnID == "" {
 		return nativeSteerPreparation{Mode: runtime.ProviderSessionModeSendTurn}, nil
 	}
-	if forceReplace || selectionChanged || state.ActiveTurnKind != runtime.RuntimeTurnKindWork {
+	piSteerReplacesTurn := provider == runtimeprofile.ProviderPi
+	if forceReplace || selectionChanged || piSteerReplacesTurn || state.ActiveTurnKind != runtime.RuntimeTurnKindWork {
 		if !capabilities.InterruptThenReplace {
 			if state.ActiveTurnKind != runtime.RuntimeTurnKindWork {
 				return nativeSteerPreparation{}, &runtime.ProviderSessionOperationError{
@@ -411,8 +420,8 @@ func prepareNativeSteer(session runtime.ProviderSession, selectionChanged, force
 	return nativeSteerPreparation{}, &runtime.UnsupportedProviderSessionCapabilityError{Capability: runtime.ProviderSessionCapabilityInTurnSteer}
 }
 
-func nativeSteerModeForSession(session runtime.ProviderSession, selectionChanged bool) (runtime.ProviderSessionMode, error) {
-	prepared, err := prepareNativeSteer(session, selectionChanged, false)
+func nativeSteerModeForSession(session runtime.ProviderSession, provider runtimeprofile.Provider, selectionChanged bool) (runtime.ProviderSessionMode, error) {
+	prepared, err := prepareNativeSteerForProvider(session, provider, selectionChanged, false)
 	return prepared.Mode, err
 }
 

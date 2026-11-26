@@ -330,8 +330,8 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		return
 	}
 	settlement := server.taskConclusionSettlementForID(found.ID)
-	prepared, err := prepareAcceptedNativeSteer(
-		request.Context(), session,
+	prepared, err := prepareAcceptedNativeSteerForProvider(
+		request.Context(), session, runtimeProfile.Provider,
 		providerSelectionRequiresReplacement(runtimeProfile.Provider, currentSelection, selection),
 		input.ForceReplace, settlement,
 	)

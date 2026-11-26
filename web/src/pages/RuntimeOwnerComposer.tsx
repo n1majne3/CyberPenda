@@ -254,7 +254,7 @@ export function RuntimeOwnerComposer({
                 </Badge>
               )}
               {steeringPhase === "delivered" && (
-                <Badge variant="outline" size="sm" title="Accepted by Runtime; current output can continue.">
+                <Badge variant="outline" size="sm" title="Accepted by Runtime; completion is separate.">
                   Sent
                 </Badge>
               )}
