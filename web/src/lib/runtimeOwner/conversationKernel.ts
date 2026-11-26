@@ -153,7 +153,7 @@ export function conversationSendLabel(mode: ConversationSendMode, nativeSteerMod
   switch (mode) {
     case "native":
       if (selectionChanged || nativeSteerMode === "interrupt_then_replace") return "Interrupt and send";
-      if (nativeSteerMode === "in_turn_steer") return "Steer current turn";
+      if (nativeSteerMode === "in_turn_steer") return "Steer";
       return "Send";
     case "interrupt":
       return "Interrupt and send";
@@ -169,15 +169,15 @@ export function conversationSendLabel(mode: ConversationSendMode, nativeSteerMod
 export function conversationModeText(mode: ConversationSendMode): string {
   switch (mode) {
     case "native":
-      return "direct native";
+      return "Direct";
     case "interrupt":
-      return "interrupt then replace";
+      return "Replace";
     case "queue":
-      return "queued";
+      return "Queued";
     case "resume":
-      return "resume";
+      return "Resume";
     default:
-      return "unavailable";
+      return "Unavailable";
   }
 }
 

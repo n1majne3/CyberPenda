@@ -98,9 +98,9 @@ describe("TaskDetailPage", () => {
     await user.type(screen.getByPlaceholderText("Focus on admin.example.com next…"), "continue with mimo on pi");
     
     expect(screen.queryByRole("button", { name: "Switch provider and resume" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Steer current turn" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Steer" })).toBeEnabled();
 
-    await user.click(screen.getByRole("button", { name: "Steer current turn" }));
+    await user.click(screen.getByRole("button", { name: "Steer" }));
 
     const postPaths = fetchMock.mock.calls
       .filter(([, init]) => init?.method === "POST")

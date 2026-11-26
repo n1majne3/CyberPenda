@@ -3,7 +3,7 @@ import type { RuntimeOwnerView } from "./types";
 export type ConversationOperation = "send" | "queue" | "stop" | "resume" | "finish";
 export type ConversationPhase = "ready" | "submitting" | "stopping" | "refreshing" | "failed";
 export type RuntimeTurnPhase = "busy" | "idle" | "offline" | "unknown" | "reconnecting";
-export type SteeringPhase = "idle" | "pending" | "applied" | "failed" | "action_required";
+export type SteeringPhase = "idle" | "pending" | "delivered" | "failed" | "action_required";
 type RuntimeConversation = { turn: RuntimeTurnPhase; steering: SteeringPhase };
 
 type PendingConversation = {
@@ -64,7 +64,8 @@ export function transitionConversation(state: ConversationState, event: Conversa
 }
 
 export function steeringPhase(state?: string): SteeringPhase {
-  if (state === "applied" || state === "failed" || state === "action_required") return state;
+  if (state === "applied") return "delivered";
+  if (state === "failed" || state === "action_required") return state;
   return ["pending", "requested", "acknowledged", "settled", "started"].includes(state ?? "") ? "pending" : "idle";
 }
 
@@ -80,20 +81,20 @@ export function runtimeTurnPhase(owner: Pick<RuntimeOwnerView, "runtimeActivity"
 
 export function conversationStatus(state: ConversationState, turn: RuntimeTurnPhase): string {
   switch (state.phase) {
-    case "stopping": return "Stopping Runtime…";
+    case "stopping": return "Stopping…";
     case "submitting":
-      if (state.request?.operation === "queue") return "Queueing message…";
-      if (state.request?.operation === "resume") return "Resuming Runtime…";
-      if (state.request?.operation === "finish") return "Finishing Task…";
-      return "Sending message…";
-    case "refreshing": return "Refreshing conversation…";
+      if (state.request?.operation === "queue") return "Queueing…";
+      if (state.request?.operation === "resume") return "Resuming…";
+      if (state.request?.operation === "finish") return "Finishing…";
+      return "Sending…";
+    case "refreshing": return "Syncing…";
     default:
       switch (turn) {
         case "busy": return "Working";
-        case "idle": return "Ready for your next message";
-        case "offline": return "Runtime offline";
-        case "reconnecting": return "Connection interrupted · retrying";
-        case "unknown": return "Runtime status unknown";
+        case "idle": return "Ready";
+        case "offline": return "Offline";
+        case "reconnecting": return "Reconnecting…";
+        case "unknown": return "Status unknown";
       }
   }
 }

@@ -34,10 +34,10 @@ it("applies Runtime observations before consumers commit", () => {
 
   expect(committed).toEqual([
     { ownerKey: "session:one", runtime: { turn: "busy", steering: "pending" } },
-    { ownerKey: "session:one", runtime: { turn: "busy", steering: "applied" } },
-    { ownerKey: "session:one", runtime: { turn: "idle", steering: "applied" } },
-    { ownerKey: "session:one", runtime: { turn: "reconnecting", steering: "applied" } },
-    { ownerKey: "session:one", runtime: { turn: "busy", steering: "applied" } },
+    { ownerKey: "session:one", runtime: { turn: "busy", steering: "delivered" } },
+    { ownerKey: "session:one", runtime: { turn: "idle", steering: "delivered" } },
+    { ownerKey: "session:one", runtime: { turn: "reconnecting", steering: "delivered" } },
+    { ownerKey: "session:one", runtime: { turn: "busy", steering: "delivered" } },
     { ownerKey: "session:two", runtime: { turn: "offline", steering: "idle" } },
   ]);
 });

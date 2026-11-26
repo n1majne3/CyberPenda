@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { conversationBusy, initialConversationState, runtimeTurnPhase, transitionConversation,
+import { conversationBusy, initialConversationState, runtimeTurnPhase, steeringPhase, transitionConversation,
   type ConversationEvent, type ConversationOperation } from "./conversationState";
 import type { RuntimeOwnerView } from "./types";
 
@@ -51,9 +51,9 @@ describe("conversation transition contract", () => {
 
   it("does not equate a steer acknowledgement with a completed provider Turn", () => {
     const state = transitionConversation(initialConversationState(key), {
-      type: "observed", ownerKey: key, runtime: { turn: "busy", steering: "applied" },
+      type: "observed", ownerKey: key, runtime: { turn: "busy", steering: steeringPhase("applied") },
     });
-    expect(state.runtime).toEqual({ turn: "busy", steering: "applied" });
+    expect(state.runtime).toEqual({ turn: "busy", steering: "delivered" });
     let pending = transitionConversation(state, begin("send"));
     pending = transitionConversation(pending, receipt("accepted"));
     pending = transitionConversation(pending, receipt("refreshed"));
@@ -70,7 +70,7 @@ describe("conversation transition contract", () => {
     });
     expect(state.request).toBeUndefined();
     state = transitionConversation(state, {
-      type: "observed", ownerKey: key, runtime: { turn: "idle", steering: "applied" },
+      type: "observed", ownerKey: key, runtime: { turn: "idle", steering: "delivered" },
     });
     expect(state.runtime.turn).toBe("idle");
     expect(state.phase).toBe("ready");

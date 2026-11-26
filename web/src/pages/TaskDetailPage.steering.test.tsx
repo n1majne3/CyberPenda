@@ -25,7 +25,7 @@ describe("TaskDetailPage", () => {
 
     renderPage();
 
-    expect(await screen.findByTestId("steer-pending-badge")).toHaveTextContent("steering pending…");
+    expect(await screen.findByTestId("steer-pending-badge")).toHaveTextContent("Steer pending");
     expect(screen.queryByTestId("steer-failed-badge")).not.toBeInTheDocument();
   });
 
@@ -44,7 +44,7 @@ describe("TaskDetailPage", () => {
 
     renderPage();
 
-    expect(await screen.findByTestId("steer-failed-badge")).toHaveTextContent("steering failed");
+    expect(await screen.findByTestId("steer-failed-badge")).toHaveTextContent("Steer failed");
     expect(screen.queryByTestId("steer-pending-badge")).not.toBeInTheDocument();
   });
 

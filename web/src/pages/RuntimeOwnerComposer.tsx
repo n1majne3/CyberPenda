@@ -137,7 +137,7 @@ export function RuntimeOwnerComposer({
     <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none lg:px-0">
       <div className="mx-auto max-w-3xl space-y-2">
         <div role="status" aria-live="polite" aria-atomic="true" aria-label="Conversation status"
-          data-testid="conversation-status" data-turn-phase={turnPhase} data-phase={conversationState.phase}
+          data-testid="conversation-status" data-turn-phase={turnPhase} data-steering-phase={steeringPhase} data-phase={conversationState.phase}
           className="flex min-h-5 items-center gap-2 text-xs text-muted-foreground">
           <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${turnPhase === "busy" ? "bg-primary motion-safe:animate-pulse" : "bg-muted-foreground/50"}`} />
           {conversationStatus(conversationState, turnPhase)}
@@ -159,7 +159,7 @@ export function RuntimeOwnerComposer({
             )}
           </div>
         )}
-        <div className="overflow-hidden rounded-lg border border-input bg-card shadow-sm focus-within:border-ring">
+        <div className="overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm focus-within:border-ring">
           <Textarea
             aria-label={`${ownerLabel} message`}
             name="task_message"
@@ -245,12 +245,17 @@ export function RuntimeOwnerComposer({
               )}
               {steeringPhase === "pending" && (
                 <Badge variant="warning" size="sm" data-testid="steer-pending-badge">
-                  steering pending…
+                  Steer pending
                 </Badge>
               )}
               {steeringPhase === "failed" && (
                 <Badge variant="destructive" size="sm" data-testid="steer-failed-badge">
-                  steering failed
+                  Steer failed
+                </Badge>
+              )}
+              {steeringPhase === "delivered" && (
+                <Badge variant="outline" size="sm" title="Accepted by Runtime; current output can continue.">
+                  Sent
                 </Badge>
               )}
             </div>

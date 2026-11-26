@@ -173,8 +173,8 @@ export function TranscriptRow({
       data-testid="transcript-message-bubble"
       className={cn(
         "min-w-0 whitespace-pre-wrap break-words text-sm leading-6 text-foreground",
-        isUser && "rounded-lg bg-muted/40 px-4 py-4",
-        isAssistant && "py-1",
+        isUser && "rounded-lg border border-border/60 bg-muted/40 px-4 py-3",
+        isAssistant && "rounded-lg border border-border/50 bg-card/70 px-4 py-3",
         !isUser && !isAssistant && "rounded-md border border-border bg-muted/30 px-3 py-2",
       )}
     >
