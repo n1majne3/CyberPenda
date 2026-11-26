@@ -317,7 +317,13 @@ internal/runtime/pi_session_tail.go	49
 internal/runtime/pi_session_tail_test.go	47
 internal/runtime/pi_subagent_activity_test.go	6
 internal/runtime/posix_doubles_test.go	4
-internal/runtime/provider_adapters.go	62
+internal/runtime/provider_adapter_claude.go	6
+internal/runtime/provider_adapter_codex.go	6
+internal/runtime/provider_adapter_events.go	8
+internal/runtime/provider_adapter_pi.go	6
+internal/runtime/provider_adapter_steering.go	12
+internal/runtime/provider_adapter_wire.go	4
+internal/runtime/provider_adapters.go	20
 internal/runtime/provider_adapters_test.go	22
 internal/runtime/provider_attempt_result.go	24
 internal/runtime/provider_bridge_adapter.go	13
