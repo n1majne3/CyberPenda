@@ -26,19 +26,12 @@ func MigrateLegacyEventReferences(tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM child_history_context`); err != nil {
-		return fmt.Errorf("reset child history migration context: %w", err)
+	for _, table := range []string{"child_history_changes", "child_history_items", "child_history_observations", "child_history_aliases", "child_history_blocks", "child_history_context"} {
+		if _, err := tx.Exec(`DELETE FROM ` + table); err != nil {
+			return fmt.Errorf("reset child history migration table %s: %w", table, err)
+		}
 	}
 	for _, reference := range references {
-		if reference.kind == "runtime_output" {
-			indexed, err := eventIndexed(tx, reference)
-			if err != nil {
-				return err
-			}
-			if indexed {
-				continue
-			}
-		}
 		event, err := readStoredEvent(tx, reference)
 		if err != nil {
 			return err
@@ -82,15 +75,6 @@ func storedRuntimeEventReferences(tx *sql.Tx) ([]storedEventReference, error) {
 		}
 	}
 	return references, nil
-}
-
-func eventIndexed(tx *sql.Tx, reference storedEventReference) (bool, error) {
-	var count int
-	err := tx.QueryRow(`SELECT COUNT(*) FROM child_history_observations WHERE owner_kind=? AND owner_id=? AND event_seq=?`, reference.ownerKind, reference.ownerID, reference.seq).Scan(&count)
-	if err != nil {
-		return false, fmt.Errorf("check migrated child history Event: %w", err)
-	}
-	return count > 0, nil
 }
 
 func readStoredEvent(tx *sql.Tx, reference storedEventReference) (transcript.Event, error) {

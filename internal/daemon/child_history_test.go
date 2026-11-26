@@ -146,7 +146,7 @@ func TestLegacyChildHistoryReferencesMigrateOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	append(`{"type":"assistant","parent_tool_use_id":"spawn-post","message":{"role":"assistant","content":[{"type":"text","text":"post-upgrade work"}]}}`)
+	append(`{"type":"assistant","parent_tool_use_id":"spawn-old","message":{"role":"assistant","content":[{"type":"text","text":"post-upgrade work"}]}}`)
 	if _, err := server.db.Exec(`UPDATE schema_migrations SET version=1`); err != nil {
 		t.Fatal(err)
 	}
@@ -164,20 +164,15 @@ func TestLegacyChildHistoryReferencesMigrateOnce(t *testing.T) {
 			t.Fatal("request path still emits legacy_items")
 		}
 	}
-	for _, tc := range []struct{ ref, text string }{
-		{base + "/children/subagent-spawn-old", "pre-upgrade work"},
-		{base + "/children/subagent-spawn-post", "post-upgrade work"},
-	} {
-		child := getHistoryURL(t, server, tc.ref)
-		if len(child.Entries) != 1 || child.Entries[0].Text != tc.text {
-			t.Fatalf("migrated child history %s=%+v", tc.ref, child.Entries)
-		}
+	child := getHistoryURL(t, server, base+"/children/subagent-spawn-old")
+	if len(child.Entries) != 2 || child.Entries[0].Text != "pre-upgrade work" || child.Entries[1].Text != "post-upgrade work" {
+		t.Fatalf("migrated mixed child history=%+v", child.Entries)
 	}
 	if err := migrateLegacyEventReferencesOnce(server.db); err != nil {
 		t.Fatal(err)
 	}
 	again := getHistoryURL(t, server, base+"/children/subagent-spawn-old")
-	if len(again.Entries) != 1 || again.Entries[0].Text != "pre-upgrade work" {
+	if len(again.Entries) != 2 || again.Entries[0].Text != "pre-upgrade work" || again.Entries[1].Text != "post-upgrade work" {
 		t.Fatalf("migration was not one-time/idempotent: %+v", again.Entries)
 	}
 }
