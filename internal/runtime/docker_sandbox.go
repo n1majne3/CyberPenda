@@ -507,11 +507,11 @@ func StopDockerContainer(containerCLI, containerID string, grace time.Duration) 
 	if id == "" {
 		return nil
 	}
-	if err := runDockerContainerCommand(cli, grace, "stop", id); err == nil || isMissingDockerContainerError(err) {
+	if err := runDockerContainerCommand(cli, grace, "stop", id); err == nil || isStoppedDockerContainerError(err) {
 		return nil
 	}
 	err := runDockerContainerCommand(cli, grace, "kill", id)
-	if isMissingDockerContainerError(err) {
+	if isStoppedDockerContainerError(err) {
 		return nil
 	}
 	return err
@@ -562,4 +562,12 @@ func isMissingDockerContainerError(err error) bool {
 		return strings.Contains(text, "no such container") || strings.Contains(text, "no such object")
 	}
 	return false
+}
+
+func isStoppedDockerContainerError(err error) bool {
+	if isMissingDockerContainerError(err) {
+		return true
+	}
+	var commandErr dockerContainerCommandError
+	return errors.As(err, &commandErr) && strings.Contains(strings.ToLower(commandErr.output), "is not running")
 }
