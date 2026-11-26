@@ -27,6 +27,11 @@ export function TaskDetailPage() {
 }
 
 export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerKind }) {
+  const { projectId, taskId, sessionId } = useParams();
+  return <RuntimeOwnerWorkspace key={`${ownerKind}:${projectId ?? ""}:${taskId ?? sessionId ?? ""}`} ownerKind={ownerKind} />;
+}
+
+function RuntimeOwnerWorkspace({ ownerKind }: { ownerKind: RuntimeOwnerKind }) {
   const { projectId, taskId, sessionId } = useParams<{ projectId: string; taskId: string; sessionId: string }>();
   const isSession = ownerKind === "session";
   const ownerID = isSession ? sessionId : taskId;
