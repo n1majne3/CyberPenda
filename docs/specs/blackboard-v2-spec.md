@@ -48,7 +48,7 @@ Unknown record types and unknown type-specific fields are rejected. Partial upda
 
 ### 2.1 Lifecycle guards
 
-- Objective resolves only with an incoming current `satisfies` relationship from a current Project Fact, Finding, or Solution. Supersession requires a replacement.
+- Objective resolves only with an incoming current `satisfies` relationship from a current Project Fact, Finding, or Solution. Objective abandonment requires an incoming current `invalidates` relationship from a current Project Fact. Supersession requires a replacement.
 - Attempt terminal states require a distilled summary and at least one `tests` relationship. Runtime interruption is reconciled by the server; a Runtime cannot mark its own Attempt interrupted.
 - Confirmed Fact requires semantic support: Evidence, a confirmed supporting Fact, a succeeded producing Attempt bound to the Runtime, or an explicit trusted operator/system confirmation basis.
 - Confirmed Finding requires complete report fields, a complete valid CVSS vector, and Evidence or a confirmed supporting Fact.
@@ -89,6 +89,7 @@ A current relationship is identified in public contracts by `(from_key, type, to
 | `derived_from` | Exploration Objective → Project Fact, Finding, or Solution; Project Fact → Project Fact or Evidence Artifact; Evidence Artifact → Evidence Artifact |
 | `depends_on` | dependent Exploration Objective → prerequisite Exploration Objective |
 | `satisfies` | Project Fact, Finding, or Solution → Exploration Objective |
+| `invalidates` | Project Fact → Exploration Objective |
 | `supersedes` | replacement → replaced record of the same type for Entity, Exploration Objective, Project Fact, Finding, Solution, or Evidence Artifact |
 
 Every self-link is invalid. `part_of`, `derived_from`, `depends_on`, `supersedes`, and the Project-Fact-to-Project-Fact subset of `supports` are independently acyclic. A replaced record has at most one current replacement. Reciprocal `contradicts` relationships are valid. No global DAG rule spans different relationship types.

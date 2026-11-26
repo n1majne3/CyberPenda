@@ -249,7 +249,9 @@ func seedTerminalAttemptFixture(t *testing.T, withReplacement bool) (context.Con
 		{Op: "create", Key: "objective:final-target", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Provide the tested final-batch target"}},
 		{Op: "create", Key: "attempt:final-batch", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Exercise final-batch Attempt invariants"}},
 		{Op: "create", Key: "entity:outcome-old", Type: "entity", Record: blackboardv2.EntityRecord{Status: "active", Kind: "endpoint", Name: "Original reusable outcome", ScopeStatus: "in_scope"}},
+		{Op: "create", Key: "fact:final-target-invalidated", Type: "fact", Record: blackboardv2.FactRecord{Category: "endpoint", Summary: "The final-batch target no longer requires work", Confidence: "tentative", ScopeStatus: "in_scope"}},
 		{Op: "relate", From: "attempt:final-batch", Relation: "tests", To: "objective:final-target"},
+		{Op: "relate", From: "fact:final-target-invalidated", Relation: "invalidates", To: "objective:final-target"},
 		{Op: "relate", From: "attempt:final-batch", Relation: "produced", To: "entity:outcome-old"},
 	}
 	if withReplacement {

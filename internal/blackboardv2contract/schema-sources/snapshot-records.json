@@ -381,6 +381,7 @@
               "evidences",
               "derived_from",
               "satisfies",
+              "invalidates",
               "supersedes"
             ]
           },

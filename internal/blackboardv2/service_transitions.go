@@ -67,6 +67,15 @@ func applyTransition(ctx context.Context, tx *sql.Tx, projectID string, revision
 				return revision, "", 0, false, semanticError("semantic_validation", "resolved Objective requires a current incoming satisfies relationship", path+".status", nil)
 			}
 		}
+		if change.Status == "abandoned" {
+			invalidated, err := hasIncomingInvalidates(ctx, tx, projectID, change.Key)
+			if err != nil {
+				return revision, "", 0, false, err
+			}
+			if !invalidated {
+				return revision, "", 0, false, semanticError("semantic_validation", "abandoned Objective requires a current incoming invalidates relationship", path+".status", nil)
+			}
+		}
 		terminal := existing.record.objectiveRecord()
 		terminal.Status = change.Status
 		terminal.ResolutionSummary = change.ResolutionSummary

@@ -206,6 +206,24 @@ func hasIncomingSatisfies(ctx context.Context, tx *sql.Tx, projectID, objectiveK
 	return exists == 1, nil
 }
 
+func hasIncomingInvalidates(ctx context.Context, tx *sql.Tx, projectID, objectiveKey string) (bool, error) {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1
+			FROM blackboard_v2_relationships AS rel
+			JOIN blackboard_v2_records AS source
+			  ON source.project_id = rel.project_id AND source.key = rel.from_key
+			WHERE rel.project_id = ? AND rel.relation = 'invalidates' AND rel.to_key = ?
+			  AND source.type = 'fact'
+		)`,
+		projectID, objectiveKey,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check Objective invalidation: %w", err)
+	}
+	return exists == 1, nil
+}
+
 func validateRelationshipEndpoint(relation, fromType, toType, path string) error {
 	rule, ok := blackboardv2grammar.Lookup(relation)
 	if !ok {

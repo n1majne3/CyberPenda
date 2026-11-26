@@ -74,6 +74,8 @@ var rules = []Rule{
 		endpoint{"objective", "objective"}),
 	newRule("satisfies", ReasonForbidden, "unrestricted", "satisfies must point from current knowledge to an Objective",
 		pairs([]string{"fact", "finding", "solution"}, []string{"objective"})...),
+	newRule("invalidates", ReasonForbidden, "unrestricted", "invalidates must point from a Project Fact to an Objective",
+		endpoint{"fact", "objective"}),
 	newRule("supersedes", ReasonForbidden, "acyclic_single_current_replacement", "supersedes requires replacement and replaced records of the same supersedable type",
 		endpoint{"entity", "entity"}, endpoint{"objective", "objective"}, endpoint{"fact", "fact"},
 		endpoint{"finding", "finding"}, endpoint{"solution", "solution"}, endpoint{"evidence", "evidence"}),

@@ -279,3 +279,17 @@ func sessionHasIncomingSatisfies(ctx context.Context, tx *sql.Tx, sessionID, obj
 	}
 	return exists == 1, nil
 }
+
+func sessionHasIncomingInvalidates(ctx context.Context, tx *sql.Tx, sessionID, objectiveKey string) (bool, error) {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS(
+			SELECT 1 FROM blackboard_v2_session_relationships AS rel
+			JOIN blackboard_v2_session_records AS source
+			  ON source.session_id=rel.session_id AND source.key=rel.from_key
+			WHERE rel.session_id=? AND rel.relation='invalidates' AND rel.to_key=? AND source.type='fact'
+		)`, sessionID, objectiveKey).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check Session Objective invalidation: %w", err)
+	}
+	return exists == 1, nil
+}

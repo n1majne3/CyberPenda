@@ -32,7 +32,7 @@ func TestFrozenRelationshipFixtureMatchesAuthoritativeGrammar(t *testing.T) {
 	if fixture.Schema != "blackboard-v2-relationship-matrix/v1" || !slices.Equal(fixture.RecordTypes, blackboardv2grammar.RecordTypes()) {
 		t.Fatalf("frozen relationship fixture header = %q, %#v", fixture.Schema, fixture.RecordTypes)
 	}
-	fixtureCases := make([]blackboardv2grammar.Case, 0, 11*7*7)
+	fixtureCases := make([]blackboardv2grammar.Case, 0, 12*7*7)
 	for _, relation := range fixture.Relations {
 		if len(relation.Matrix) != len(fixture.RecordTypes) {
 			t.Fatalf("fixture relation %s has %d rows", relation.Relation, len(relation.Matrix))
@@ -50,8 +50,8 @@ func TestFrozenRelationshipFixtureMatchesAuthoritativeGrammar(t *testing.T) {
 		}
 	}
 	grammarCases := blackboardv2grammar.Cases()
-	if len(grammarCases) != 11*7*7 {
-		t.Fatalf("authoritative grammar has %d cases, want 539", len(grammarCases))
+	if len(grammarCases) != 12*7*7 {
+		t.Fatalf("authoritative grammar has %d cases, want 588", len(grammarCases))
 	}
 	if !slices.Equal(fixtureCases, grammarCases) {
 		t.Fatal("frozen relationship fixture drifted from the authoritative grammar")
@@ -72,7 +72,7 @@ func TestRelationshipSchemaEnumsMatchAuthoritativeGrammar(t *testing.T) {
 	if err := json.Unmarshal(raw, &document); err != nil {
 		t.Fatalf("decode Blackboard v2 schema: %v", err)
 	}
-	all := make([]string, 0, 11)
+	all := make([]string, 0, 12)
 	ordinary := make([]string, 0, 7)
 	reasoned := make([]string, 0, 3)
 	mutable := make([]string, 0, 10)
@@ -106,7 +106,7 @@ func TestRelationshipTableEnumeratesEveryEndpointAndGraphPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load relationship cases: %v", err)
 	}
-	if got, want := len(cases), 11*7*7; got != want {
+	if got, want := len(cases), 12*7*7; got != want {
 		t.Fatalf("relationship cases = %d, want %d", got, want)
 	}
 
@@ -121,6 +121,7 @@ func TestRelationshipTableEnumeratesEveryEndpointAndGraphPolicy(t *testing.T) {
 		"derived_from": "acyclic",
 		"depends_on":   "acyclic",
 		"satisfies":    "unrestricted",
+		"invalidates":  "unrestricted",
 		"supersedes":   "acyclic_single_current_replacement",
 	}
 	seen := map[string]bool{}
@@ -148,7 +149,7 @@ func TestRelationshipTableEnumeratesEveryEndpointAndGraphPolicy(t *testing.T) {
 			t.Errorf("%s reason policy = %q, want %q", identity, relationshipCase.ReasonPolicy, wantReason)
 		}
 	}
-	if allowed != 44 {
-		t.Fatalf("allowed endpoint cases = %d, want 44 (and 495 explicit rejections)", allowed)
+	if allowed != 45 {
+		t.Fatalf("allowed endpoint cases = %d, want 45 (and 543 explicit rejections)", allowed)
 	}
 }

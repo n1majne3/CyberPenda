@@ -54,6 +54,15 @@ func sessionApplyTransition(ctx context.Context, tx *sql.Tx, sessionID string, r
 				return revision, "", 0, false, semanticError("semantic_validation", "resolved Objective requires a current incoming satisfies relationship", path+".status", nil)
 			}
 		}
+		if change.Status == "abandoned" {
+			invalidated, err := sessionHasIncomingInvalidates(ctx, tx, sessionID, change.Key)
+			if err != nil {
+				return revision, "", 0, false, err
+			}
+			if !invalidated {
+				return revision, "", 0, false, semanticError("semantic_validation", "abandoned Objective requires a current incoming invalidates relationship", path+".status", nil)
+			}
+		}
 		next := existing.record.objectiveRecord()
 		next.Status, next.ResolutionSummary = change.Status, change.ResolutionSummary
 		terminal = next

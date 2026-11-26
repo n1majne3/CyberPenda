@@ -112,6 +112,11 @@
       "schema": "relationshipTuple"
     },
     {
+      "name": "relationship.invalidates",
+      "path": "fixtures/relationship-invalidates.json",
+      "schema": "relationshipTuple"
+    },
+    {
       "name": "relationship.supersedes",
       "path": "fixtures/relationship-supersedes.json",
       "schema": "relationshipTuple"

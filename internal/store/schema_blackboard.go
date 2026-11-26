@@ -75,7 +75,7 @@ var baselineBlackboardStatements = []string{
 	`CREATE TABLE blackboard_v2_relationships (
 	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 	from_key TEXT NOT NULL,
-	relation TEXT NOT NULL CHECK (relation IN ('about','part_of','tests','produced','evidences','supports','contradicts','derived_from','depends_on','satisfies','supersedes')),
+	relation TEXT NOT NULL CHECK (relation IN ('about','part_of','tests','produced','evidences','supports','contradicts','derived_from','depends_on','satisfies','invalidates','supersedes')),
 	to_key TEXT NOT NULL,
 	version INTEGER NOT NULL CHECK (version >= 1),
 	reason TEXT NOT NULL DEFAULT '',
@@ -86,7 +86,7 @@ var baselineBlackboardStatements = []string{
 	`CREATE TABLE blackboard_v2_relationship_history (
 	project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 	from_key TEXT NOT NULL,
-	relation TEXT NOT NULL CHECK (relation IN ('about','part_of','tests','produced','evidences','supports','contradicts','derived_from','depends_on','satisfies','supersedes')),
+	relation TEXT NOT NULL CHECK (relation IN ('about','part_of','tests','produced','evidences','supports','contradicts','derived_from','depends_on','satisfies','invalidates','supersedes')),
 	to_key TEXT NOT NULL,
 	version INTEGER NOT NULL CHECK (version >= 1),
 	reason TEXT NOT NULL DEFAULT '',
@@ -239,7 +239,7 @@ var baselineBlackboardStatements = []string{
 	`CREATE TABLE blackboard_v2_session_relationships (
 	session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 	from_key TEXT NOT NULL,
-	relation TEXT NOT NULL CHECK (relation IN ('about', 'part_of', 'tests', 'produced', 'evidences', 'supports', 'contradicts', 'derived_from', 'depends_on', 'satisfies', 'supersedes')),
+	relation TEXT NOT NULL CHECK (relation IN ('about', 'part_of', 'tests', 'produced', 'evidences', 'supports', 'contradicts', 'derived_from', 'depends_on', 'satisfies', 'invalidates', 'supersedes')),
 	to_key TEXT NOT NULL,
 	version INTEGER NOT NULL CHECK (version >= 1),
 	reason TEXT NOT NULL DEFAULT '',
