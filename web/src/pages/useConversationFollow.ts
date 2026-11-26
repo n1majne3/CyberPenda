@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useVirtualWindow } from "@/lib/virtualWindow";
 import type { OwnerHistory, RuntimeOwnerView } from "@/lib/runtimeOwner/types";
 import { buildTranscriptRows, isNearScrollBottom, prefersReducedMotion } from "./runtimeOwnerView";
@@ -115,14 +115,15 @@ export function useConversationFollow({
   const [transcriptRowsElement, setTranscriptRowsElement] = useState<HTMLDivElement | null>(null);
   // The window slices display rows (tool results already paired with their
   // calls), so row keys and measured heights match the rendered DOM 1:1.
-  const transcriptDisplayRows = buildTranscriptRows(history.transcript);
+  const transcriptDisplayRows = useMemo(() => buildTranscriptRows(history.transcript), [history.transcript]);
+  const transcriptRowKey = useCallback((index: number) => transcriptDisplayRows[index]!.entry.id, [transcriptDisplayRows]);
   const transcriptWindow = useVirtualWindow({
     itemCount: transcriptDisplayRows.length,
     viewport: transcriptViewport,
     estimateHeight: TRANSCRIPT_ROW_ESTIMATE,
     anchorEnd: autoFollow,
     windowElement: transcriptRowsElement,
-    rowKey: (index) => transcriptDisplayRows[index]!.entry.id,
+    rowKey: transcriptRowKey,
   });
   const bindTranscriptViewport = useCallback((node: HTMLDivElement | null) => {
     conversationViewport.current = node;

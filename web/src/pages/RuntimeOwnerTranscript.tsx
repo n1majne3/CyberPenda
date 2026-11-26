@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useState, useRef, type ReactNode, type RefObject } from "react";
 import { Terminal, GitBranch, MessageSquare, ChevronRight, User, Bot, CheckCircle2, CircleX, Brain } from "lucide-react";
 import { type TaskTranscriptEntry } from "@/lib/api";
 import { Chip } from "@/components/ui";
@@ -27,29 +27,16 @@ export function TranscriptList({
       {rows.map((row, index) => {
         const spacing = index === 0 ? "" : row.lane === "user" && row.laneStart ? "mt-4" : "mt-1";
         return (
-          <div
+          <MemoTranscriptItem
             key={row.entry.id}
-            data-vw-key={row.entry.id}
-            data-testid="transcript-row"
-            className={`${spacing}`}
-          >
-            {row.lane === "divider" ? (
-              <TranscriptRow entry={row.entry} />
-            ) : (
-              <TranscriptTurnGroup
-                lane={row.lane}
-                showMarker={row.laneStart}
-                entry={row.entry}
-                runtimeLabel={runtimeLabel}
-              >
-                <TranscriptRow
-                  entry={row.entry}
-                  pairedResult={row.result}
-                  autoExpandReasoning={row.entry.id === liveReasoningID}
-                />
-              </TranscriptTurnGroup>
-            )}
-          </div>
+            entry={row.entry}
+            result={row.result}
+            lane={row.lane}
+            laneStart={row.laneStart}
+            spacing={spacing}
+            runtimeLabel={runtimeLabel}
+            autoExpandReasoning={row.entry.id === liveReasoningID}
+          />
         );
       })}
       {rows.length === 0 && (
@@ -62,6 +49,46 @@ export function TranscriptList({
     </div>
   );
 }
+
+function TranscriptItem({
+  entry,
+  result,
+  lane,
+  laneStart,
+  spacing,
+  runtimeLabel,
+  autoExpandReasoning,
+}: {
+  entry: TaskTranscriptEntry;
+  result?: TaskTranscriptEntry;
+  lane: TranscriptLane;
+  laneStart: boolean;
+  spacing: string;
+  runtimeLabel: string;
+  autoExpandReasoning: boolean;
+}) {
+  return (
+    <div data-vw-key={entry.id} data-testid="transcript-row" className={spacing}>
+      {lane === "divider" ? (
+        <TranscriptRow entry={entry} />
+      ) : (
+        <TranscriptTurnGroup lane={lane} showMarker={laneStart} entry={entry} runtimeLabel={runtimeLabel}>
+          <TranscriptRow entry={entry} pairedResult={result} autoExpandReasoning={autoExpandReasoning} />
+        </TranscriptTurnGroup>
+      )}
+    </div>
+  );
+}
+
+const MemoTranscriptItem = memo(TranscriptItem, (previous, next) =>
+  previous.entry === next.entry &&
+  previous.result === next.result &&
+  previous.lane === next.lane &&
+  previous.laneStart === next.laneStart &&
+  previous.spacing === next.spacing &&
+  previous.runtimeLabel === next.runtimeLabel &&
+  previous.autoExpandReasoning === next.autoExpandReasoning,
+);
 
 export function TranscriptTurnGroup({
   lane,
