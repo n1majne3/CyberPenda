@@ -27,17 +27,17 @@ func TestDockerRemovalWaitsForConcurrentRemovalToFinish(t *testing.T) {
 	}
 }
 
-func TestDockerBridgeRemovalHonorsCanceledContext(t *testing.T) {
+func TestDockerBridgeRemovalCleansContainerAfterCanceledSetup(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "started")
 	cli := removalRetryFixture(t, "touch "+strconv.Quote(marker)+"\n")
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	err := (DockerCLISandboxBridgeDocker{ContainerCLI: cli}).Remove(ctx, "ctr")
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("removal ignored cancellation: %v", err)
+	if err != nil {
+		t.Fatalf("canceled setup prevented owned container cleanup: %v", err)
 	}
-	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("canceled cleanup started Docker: %v", err)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("canceled setup left its container without a removal attempt: %v", err)
 	}
 }
 
@@ -45,7 +45,7 @@ func TestDockerRemovalRetainsBusyErrorAtDeadline(t *testing.T) {
 	cli := removalRetryFixture(t, "echo 'Error response from daemon: removal of container ctr is already in progress' >&2\nexit 1\n")
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
-	err := (DockerCLISandboxBridgeDocker{ContainerCLI: cli}).Remove(ctx, "ctr")
+	err := removeDockerContainer(ctx, cli, "ctr")
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "already in progress") {
 		t.Fatalf("cleanup must fail with its deadline and last Docker error: %v", err)
 	}
@@ -78,10 +78,16 @@ func TestDockerConcurrentRemovalWithRealEngine(t *testing.T) {
 			start := make(chan struct{})
 			results := make(chan error, 2)
 			var workers sync.WaitGroup
-			for range 2 {
+			for index := range 2 {
 				workers.Go(func() {
 					<-start
-					results <- (DockerCLISandboxBridgeDocker{}).Remove(ctx, id)
+					requestContext := ctx
+					if index == 0 {
+						var cancelRequest context.CancelFunc
+						requestContext, cancelRequest = context.WithCancel(ctx)
+						cancelRequest()
+					}
+					results <- (DockerCLISandboxBridgeDocker{}).Remove(requestContext, id)
 				})
 			}
 			close(start)
@@ -96,7 +102,7 @@ func TestDockerConcurrentRemovalWithRealEngine(t *testing.T) {
 			if detail := strings.ToLower(string(output)); err == nil || (!strings.Contains(detail, "no such object") && !strings.Contains(detail, "no such container")) {
 				t.Fatalf("removal not confirmed: %v: %s", err, output)
 			}
-			t.Logf("both removers confirmed absence of %s", id)
+			t.Logf("both cleanup calls confirmed absence of %s", id)
 		})
 	}
 }

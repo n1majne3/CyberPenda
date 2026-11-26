@@ -94,5 +94,6 @@ func (d DockerCLISandboxBridgeDocker) Stop(_ context.Context, containerID string
 }
 
 func (d DockerCLISandboxBridgeDocker) Remove(ctx context.Context, containerID string) error {
-	return removeDockerContainer(ctx, d.cli(), containerID)
+	// Setup rollback must clean its container after the launch request expires.
+	return removeDockerContainer(context.WithoutCancel(ctx), d.cli(), containerID)
 }
