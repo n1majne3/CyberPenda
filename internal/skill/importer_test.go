@@ -185,6 +185,48 @@ func TestImportRejectsSeparateRefWhenSourceAlreadySelectsRevision(t *testing.T) 
 	}
 }
 
+func TestImportAcceptsRefForCLIBackedGitHTTPSSources(t *testing.T) {
+	for _, source := range []string{
+		"https://dev.azure.com/acme/project/_git/recon-skills",
+		"https://mirror.example/github.com/acme/recon-skills",
+	} {
+		runner := &fakeRunner{
+			install: func(dir string) error {
+				installBundle(t, dir, "recon", source, "git", map[string]string{"SKILL.md": sampleSkillMD})
+				return nil
+			},
+		}
+		imp := skill.NPXSkillsImporter{Runner: runner}
+		_, err := imp.ImportSkill(context.Background(), skill.ImportRequest{
+			SourceKind: "git",
+			SourceURL:  source,
+			Ref:        "v1.2.3",
+		})
+		if err != nil {
+			t.Errorf("source %q: ImportSkill: %v", source, err)
+		}
+		if len(runner.recorded) != 1 || !strings.Contains(runner.recorded[0], source+"#v1.2.3") {
+			t.Errorf("source %q: expected ref fragment in skills add, ran %#v", source, runner.recorded)
+		}
+	}
+}
+
+func TestImportRejectsSeparateRefWhenAzureURLSelectsRevision(t *testing.T) {
+	runner := &fakeRunner{}
+	imp := skill.NPXSkillsImporter{Runner: runner}
+	_, err := imp.ImportSkill(context.Background(), skill.ImportRequest{
+		SourceKind: "git",
+		SourceURL:  "https://dev.azure.com/acme/project/_git/recon-skills?version=GBmain",
+		Ref:        "v1.2.3",
+	})
+	if !errors.Is(err, skill.ErrInvalidSkill) {
+		t.Fatalf("expected ErrInvalidSkill for conflicting Azure version, got %v", err)
+	}
+	if len(runner.recorded) != 0 {
+		t.Fatalf("conflicting Azure version must not execute npx, ran %#v", runner.recorded)
+	}
+}
+
 func TestImportRejectsRefForWellKnownHTTPSSource(t *testing.T) {
 	runner := &fakeRunner{}
 	imp := skill.NPXSkillsImporter{Runner: runner}

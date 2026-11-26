@@ -99,6 +99,9 @@ func sourceSelectsRevision(source string) bool {
 	if strings.Contains(source, "/tree/") || strings.Contains(source, "/-/tree/") {
 		return true
 	}
+	if parsed, err := url.Parse(source); err == nil && isAzureReposPath(parsed.Path) && parsed.Query().Get("version") != "" {
+		return true
+	}
 	if at := strings.LastIndex(source, "@"); at > 0 {
 		return isVersionPin(source[at+1:])
 	}
@@ -114,7 +117,30 @@ func sourceSupportsRefSelection(source string) bool {
 		return false
 	}
 	host := strings.ToLower(parsed.Hostname())
-	return host == "github.com" || host == "gitlab.com" || strings.HasSuffix(strings.ToLower(parsed.Path), ".git")
+	return host == "github.com" || host == "gitlab.com" ||
+		strings.HasSuffix(strings.ToLower(parsed.Path), ".git") ||
+		isAzureReposPath(parsed.Path) || isMirroredRepoPath(parsed.Path)
+}
+
+func isAzureReposPath(path string) bool {
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	for index, segment := range segments {
+		if segment == "_git" && index+1 < len(segments) && segments[index+1] != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func isMirroredRepoPath(path string) bool {
+	segments := strings.Split(strings.Trim(strings.ToLower(path), "/"), "/")
+	for index, segment := range segments {
+		host := strings.TrimPrefix(segment, "www.")
+		if (host == "github.com" || host == "gitlab.com") && index+2 < len(segments) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateImportSource reports whether source is a shape the fixed
