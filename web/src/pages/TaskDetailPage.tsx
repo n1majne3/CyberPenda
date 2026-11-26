@@ -81,7 +81,7 @@ function RuntimeOwnerWorkspace({ ownerKind }: { ownerKind: RuntimeOwnerKind }) {
   } = useContinuationSelection({ owner, profiles, modelProviders, runtimePlugins });
   const [permissionBusy, setPermissionBusy] = useState("");
   const [editingTitle, setEditingTitle] = useState(false);
-  const [titleDraft, setTitleDraft] = useState("");
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<File[]>([]);
   const [confirmAction, setConfirmAction] = useState<"stop" | "finish" | "delete" | null>(null);
   const base = isSession ? `/api/sessions/${sessionId}` : `/api/projects/${projectId}/tasks/${taskId}`;

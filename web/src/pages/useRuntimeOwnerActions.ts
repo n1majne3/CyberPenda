@@ -47,7 +47,7 @@ export function useRuntimeOwnerActions({
   setForceReplaceNext: Dispatch<SetStateAction<boolean>>;
   currentRuntimeProvider: string | undefined;
   setPermissionBusy: Dispatch<SetStateAction<string>>;
-  titleDraft: string;
+  titleDraft: string | null;
   setEditingTitle: Dispatch<SetStateAction<boolean>>;
 }) {
   const { operation, state: conversationState } = useConversationOperation(ownerAdapter.base, owner, pollError);
@@ -188,7 +188,7 @@ export function useRuntimeOwnerActions({
   }
 
   async function saveSessionTitle() {
-    if (owner?.kind !== "session" || !titleDraft.trim()) return;
+    if (owner?.kind !== "session" || !titleDraft?.trim() || titleDraft.trim() === owner.title.trim()) return;
     try {
       await ownerAdapter.rename(titleDraft.trim());
       setEditingTitle(false);
