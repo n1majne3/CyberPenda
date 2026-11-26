@@ -54,6 +54,10 @@ _Avoid_: unrestricted Project, temporary Task, separate chat product
 A durable Non-Project owner of one persistent Runtime conversation, owner-local events, attachments, and workdir, with a self-contained Blackboard unless its **Blackboard Mode** is disabled.
 _Avoid_: Project, Task, disposable chat, UI-only conversation
 
+**Resume and Send**:
+The operator action that sends a new message and starts a replacement **Runtime Continuation** for a stopped **Session**. A Session has no standalone Resume action without a message. A **Task** can resume its captured state without new input.
+_Avoid_: empty Session resume, message-free Session resume
+
 **Runtime Owner Workspace**:
 The shared operator workspace for a **Task** or **Session**, with its conversation, Runtime activity, attachments, and lifecycle controls.
 _Avoid_: Session-specific chat UI, duplicated Task page, shared domain aggregate
