@@ -29,20 +29,22 @@ func (s *providerSessionAdapter) InterruptThenReplace(ctx context.Context, reque
 	} else if ok {
 		return cached.result, cached.err
 	}
-	if err := s.begin(request.RequestID, ProviderSessionModeInterruptThenReplace, fingerprint); err != nil {
+	snapshot, err := s.begin(request, ProviderSessionModeInterruptThenReplace, fingerprint)
+	if err != nil {
 		return ProviderSessionResult{}, err
 	}
 	s.recordProviderSessionTurnKind(request.RequestID, "", request.TurnKind)
 	s.recordProviderSessionTurnLineage(request, "")
 	defer s.end(request.RequestID, ProviderSessionModeInterruptThenReplace)
 
-	s.emit(emit, ProviderSessionModeInterruptThenReplace, "requested", request.RequestID, s.currentTurn())
+	activeTurnID := snapshot.activeTurnID
+	settlementSession, settlementTurn, baseline := snapshot.sessionID, snapshot.targetTurnID, snapshot.settlementSeq
+	s.emit(emit, ProviderSessionModeInterruptThenReplace, "requested", request.RequestID, activeTurnID)
 	// When the session is idle (no active provider turn), there is nothing to
 	// interrupt. Claude Code completes turns and clears the active turn; a later
 	// operator message must SendTurn on the same Query, not call interrupt with a
 	// stale finished turn id ("Claude active turn identity mismatch").
-	if activeTurn := strings.TrimSpace(s.currentTurn()); activeTurn != "" {
-		settlementSession, settlementTurn, baseline := s.settlementTarget(request)
+	if activeTurn := strings.TrimSpace(activeTurnID); activeTurn != "" {
 		interruptResult, err := s.native(ctx, ProviderSessionModeInterruptThenReplace, request, s.methods.interrupt, request.RequestID+":interrupt")
 		if err != nil {
 			s.storeFailure(request.RequestID, ProviderSessionModeInterruptThenReplace, fingerprint, err)
