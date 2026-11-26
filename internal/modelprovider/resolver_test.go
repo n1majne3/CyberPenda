@@ -359,3 +359,28 @@ func TestResolveModelProviderStrictProtocolPinFailsWhenEndpointRemoved(t *testin
 		t.Fatal("expected strict pin to fail when the pinned endpoint is unavailable")
 	}
 }
+
+func TestResolveModelProviderAllowsOptionalProviderToBeAbsent(t *testing.T) {
+	plugin, ok := runtimeplugin.MustBuiltinRegistry().Get("codex")
+	if !ok {
+		t.Fatal("missing codex plugin")
+	}
+	plugin.ID = "optional_runtime"
+	plugin.ModelProvider.Requirement = "optional"
+	registry, err := runtimeplugin.NewRegistry([]runtimeplugin.Plugin{plugin})
+	if err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+
+	snapshot, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+		Profile:  runtimeprofile.Profile{Provider: "optional_runtime"},
+		Plugins:  registry,
+		CheckEnv: true,
+	})
+	if err != nil {
+		t.Fatalf("optional provider resolution: %v", err)
+	}
+	if snapshot.ModelProviderID != "" || snapshot.Model != "" {
+		t.Fatalf("optional provider invented a model snapshot: %#v", snapshot)
+	}
+}
