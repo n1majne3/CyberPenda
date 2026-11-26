@@ -62,7 +62,6 @@ func (a piAssembler) SandboxCommand(assembly providerSessionAssembly) ([]string,
 	}
 	args := []string{a.sandboxBridge, "--provider", "pi", "--", providerBinary, "--mode", "rpc"}
 	if sessionPath := strings.TrimSpace(assembly.request.Continuation.NativeSessionPath); sessionPath != "" {
-		// Session discovery retains host paths; Pi must reopen the mounted file.
 		if root := strings.TrimSpace(assembly.facts().HostTaskRoot); root != "" {
 			if relative, err := filepath.Rel(root, sessionPath); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 				sessionPath = path.Join("/task", filepath.ToSlash(relative))

@@ -32,9 +32,8 @@ type piSessionTailAdapter struct {
 	retained   map[[sha256.Size]byte]struct{}
 }
 
-// NewPiSessionTailAdapter wraps inner with a Pi session jsonl tailer rooted
-// at sessionDir. Retained raw records fence durable output without discarding
-// records that reached the native file but not the daemon before a crash.
+// NewPiSessionTailAdapter tails Pi sessionDir records not retained by the daemon.
+// Native-only records remain recoverable after a crash.
 func NewPiSessionTailAdapter(inner Adapter, sessionDir string, retained ...string) Adapter {
 	seen := make(map[[sha256.Size]byte]struct{}, len(retained))
 	for _, line := range retained {
