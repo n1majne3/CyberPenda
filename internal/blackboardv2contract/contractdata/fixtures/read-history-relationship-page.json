@@ -1,0 +1,15 @@
+{
+  "schema": "semantic-history/v2",
+  "revision": 10,
+  "key": "fact:login",
+  "items": [
+    {
+      "kind": "relationship",
+      "version": 2,
+      "from": "fact:login",
+      "relation": "supports",
+      "to": "finding:sqli",
+      "reason": "The response establishes exploitability"
+    }
+  ]
+}

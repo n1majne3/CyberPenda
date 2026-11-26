@@ -1,0 +1,13 @@
+{
+  "schema": "semantic-change-batch/v2",
+  "idempotency_key": "fixture-unrelate",
+  "changes": [
+    {
+      "op": "unrelate",
+      "from": "fact:login",
+      "relation": "supports",
+      "to": "finding:sqli",
+      "version": 1
+    }
+  ]
+}

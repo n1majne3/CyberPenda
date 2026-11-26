@@ -1,0 +1,328 @@
+{
+  "historicalEntityRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "kind",
+      "name",
+      "scope_status"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "active",
+          "retired",
+          "superseded"
+        ]
+      },
+      "kind": {
+        "$ref": "#/$defs/entityKind"
+      },
+      "name": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "locator": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "description": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "scope_status": {
+        "$ref": "#/$defs/scopeStatus"
+      },
+      "credential_ref": {
+        "$ref": "#/$defs/conciseText"
+      }
+    }
+  },
+  "historicalObjectiveRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "objective"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "open",
+          "resolved",
+          "abandoned",
+          "superseded"
+        ]
+      },
+      "objective": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "resolution_summary": {
+        "$ref": "#/$defs/conciseText"
+      }
+    }
+  },
+  "historicalAttemptRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "summary"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "open",
+          "succeeded",
+          "failed",
+          "blocked",
+          "inconclusive",
+          "interrupted"
+        ]
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      }
+    }
+  },
+  "historicalFactRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "category",
+      "summary",
+      "confidence",
+      "scope_status"
+    ],
+    "properties": {
+      "category": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "body": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "confidence": {
+        "enum": [
+          "tentative",
+          "confirmed",
+          "deprecated"
+        ]
+      },
+      "scope_status": {
+        "$ref": "#/$defs/scopeStatus"
+      }
+    }
+  },
+  "historicalFindingRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "title",
+      "cvss_pending"
+    ],
+    "dependentRequired": {
+      "cvss_version": [
+        "cvss_vector"
+      ],
+      "cvss_vector": [
+        "cvss_version"
+      ]
+    },
+    "properties": {
+      "status": {
+        "enum": [
+          "unconfirmed",
+          "confirmed",
+          "false_positive",
+          "superseded"
+        ]
+      },
+      "title": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "target": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "description": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "proof": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "impact": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "recommendation": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "cvss_version": {
+        "enum": [
+          "3.1",
+          "4.0"
+        ]
+      },
+      "cvss_vector": {
+        "type": "string",
+        "minLength": 1
+      },
+      "severity": {
+        "enum": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ]
+      },
+      "cvss_pending": {
+        "type": "boolean"
+      },
+      "resolution_summary": {
+        "$ref": "#/$defs/conciseText"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "confirmed"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "target",
+            "proof",
+            "impact",
+            "recommendation",
+            "cvss_version",
+            "cvss_vector"
+          ]
+        }
+      }
+    ]
+  },
+  "historicalSolutionRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "kind",
+      "summary"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "candidate",
+          "verified",
+          "rejected",
+          "superseded"
+        ]
+      },
+      "kind": {
+        "enum": [
+          "answer",
+          "flag",
+          "procedure"
+        ]
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "value": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "verification_summary": {
+        "$ref": "#/$defs/conciseText"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "verified"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "verification_summary"
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "verified"
+            },
+            "kind": {
+              "enum": [
+                "answer",
+                "flag"
+              ]
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "value"
+          ]
+        }
+      }
+    ]
+  },
+  "historicalEvidenceRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "artifact_type",
+      "summary",
+      "managed_path",
+      "sha256",
+      "size"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "available",
+          "missing",
+          "superseded"
+        ]
+      },
+      "artifact_type": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "media_type": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "source_path": {
+        "type": "string"
+      },
+      "managed_path": {
+        "type": "string",
+        "minLength": 1
+      },
+      "sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "size": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "captured_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  }
+}

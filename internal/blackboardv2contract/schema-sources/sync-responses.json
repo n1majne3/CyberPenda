@@ -1,0 +1,182 @@
+{
+  "recordVersionTuple": {
+    "type": "array",
+    "minItems": 2,
+    "maxItems": 2,
+    "prefixItems": [
+      {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      {
+        "$ref": "#/$defs/version"
+      }
+    ],
+    "items": false
+  },
+  "relationVersionTuple": {
+    "type": "array",
+    "minItems": 4,
+    "maxItems": 4,
+    "prefixItems": [
+      {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      {
+        "$ref": "#/$defs/relationType"
+      },
+      {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      {
+        "$ref": "#/$defs/version"
+      }
+    ],
+    "items": false
+  },
+  "workingSnapshot": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "path",
+      "revision"
+    ],
+    "properties": {
+      "path": {
+        "const": ".pentest/blackboard.json"
+      },
+      "revision": {
+        "$ref": "#/$defs/revision"
+      }
+    }
+  },
+  "syncAttachment": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "reason",
+      "from_revision",
+      "revision",
+      "snapshot"
+    ],
+    "properties": {
+      "reason": {
+        "const": "another_task_changed_shared_project_knowledge"
+      },
+      "from_revision": {
+        "$ref": "#/$defs/revision"
+      },
+      "revision": {
+        "$ref": "#/$defs/revision"
+      },
+      "snapshot": {
+        "$ref": "#/$defs/runtimeSnapshot"
+      }
+    }
+  },
+  "changeResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema",
+      "revision",
+      "records",
+      "relations",
+      "working_snapshot"
+    ],
+    "properties": {
+      "schema": {
+        "const": "semantic-change-result/v2"
+      },
+      "revision": {
+        "$ref": "#/$defs/revision"
+      },
+      "records": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/recordVersionTuple"
+        }
+      },
+      "relations": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/relationVersionTuple"
+        }
+      },
+      "working_snapshot": {
+        "$ref": "#/$defs/workingSnapshot"
+      },
+      "sync": {
+        "$ref": "#/$defs/syncAttachment"
+      }
+    }
+  },
+  "syncResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "sync"
+    ],
+    "properties": {
+      "sync": {
+        "$ref": "#/$defs/syncAttachment"
+      }
+    }
+  },
+  "errorBody": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "code",
+      "message",
+      "path",
+      "retryable",
+      "details"
+    ],
+    "properties": {
+      "code": {
+        "type": "string",
+        "minLength": 1
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1
+      },
+      "path": {
+        "type": "string"
+      },
+      "retryable": {
+        "type": "boolean"
+      },
+      "details": {
+        "type": "object"
+      }
+    }
+  },
+  "errorEnvelope": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "error"
+    ],
+    "properties": {
+      "error": {
+        "$ref": "#/$defs/errorBody"
+      },
+      "sync": {
+        "$ref": "#/$defs/syncAttachment"
+      }
+    }
+  },
+  "unauthenticatedErrorEnvelope": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "error"
+    ],
+    "properties": {
+      "error": {
+        "$ref": "#/$defs/errorBody"
+      }
+    }
+  }
+}

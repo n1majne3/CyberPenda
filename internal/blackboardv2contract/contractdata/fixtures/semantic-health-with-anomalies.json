@@ -1,0 +1,37 @@
+{
+  "schema": "blackboard-health/v2",
+  "revision": 12,
+  "status": "critical",
+  "attention": {
+    "bytes": 260000,
+    "estimated_tokens": 65000,
+    "state": "required",
+    "complete": true,
+    "launchable": true,
+    "consolidation_offered": true,
+    "consolidation_required": true
+  },
+  "anomalies": [
+    {
+      "code": "attention_required",
+      "severity": "critical",
+      "message": "Runtime Snapshot reached the 64K consolidation-required threshold (65000 estimated tokens). Complete Snapshot remains launchable."
+    },
+    {
+      "code": "missing_evidence",
+      "severity": "critical",
+      "message": "Missing Evidence currently supports a confirmed or verified conclusion.",
+      "subject_key": "evidence:missing",
+      "related_keys": [
+        "finding:confirmed"
+      ]
+    },
+    {
+      "code": "stranded_objective",
+      "severity": "warning",
+      "message": "Open Objective has no open Attempt currently testing it.",
+      "subject_key": "objective:stranded"
+    }
+  ],
+  "proposals": []
+}

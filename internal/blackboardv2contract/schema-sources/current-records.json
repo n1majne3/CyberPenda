@@ -1,0 +1,375 @@
+{
+  "entityRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "kind",
+      "name",
+      "scope_status"
+    ],
+    "properties": {
+      "status": {
+        "const": "active"
+      },
+      "kind": {
+        "$ref": "#/$defs/entityKind"
+      },
+      "name": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "locator": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "description": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "scope_status": {
+        "$ref": "#/$defs/scopeStatus"
+      },
+      "credential_ref": {
+        "$ref": "#/$defs/conciseText"
+      }
+    }
+  },
+  "objectiveRecord": {
+    "description": "objective record: objective (required), status (open only)",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "objective"
+    ],
+    "properties": {
+      "status": {
+        "const": "open"
+      },
+      "objective": {
+        "$ref": "#/$defs/semanticText"
+      }
+    }
+  },
+  "attemptRecord": {
+    "description": "attempt record: summary (required), status (open only)",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "summary"
+    ],
+    "properties": {
+      "status": {
+        "const": "open"
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      }
+    }
+  },
+  "factRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "category",
+      "summary",
+      "confidence",
+      "scope_status"
+    ],
+    "properties": {
+      "category": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "body": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "confidence": {
+        "enum": [
+          "tentative",
+          "confirmed"
+        ]
+      },
+      "scope_status": {
+        "$ref": "#/$defs/scopeStatus"
+      }
+    }
+  },
+  "findingInputRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "title"
+    ],
+    "dependentRequired": {
+      "cvss_version": [
+        "cvss_vector"
+      ],
+      "cvss_vector": [
+        "cvss_version"
+      ]
+    },
+    "properties": {
+      "status": {
+        "enum": [
+          "unconfirmed",
+          "confirmed"
+        ]
+      },
+      "title": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "target": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "description": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "proof": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "impact": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "recommendation": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "cvss_version": {
+        "enum": [
+          "3.1",
+          "4.0"
+        ]
+      },
+      "cvss_vector": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "confirmed"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "target",
+            "proof",
+            "impact",
+            "recommendation",
+            "cvss_version",
+            "cvss_vector"
+          ]
+        }
+      }
+    ]
+  },
+  "findingRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "title",
+      "cvss_pending"
+    ],
+    "dependentRequired": {
+      "cvss_version": [
+        "cvss_vector"
+      ],
+      "cvss_vector": [
+        "cvss_version"
+      ]
+    },
+    "properties": {
+      "status": {
+        "enum": [
+          "unconfirmed",
+          "confirmed"
+        ]
+      },
+      "title": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "target": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "description": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "proof": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "impact": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "recommendation": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "cvss_version": {
+        "enum": [
+          "3.1",
+          "4.0"
+        ]
+      },
+      "cvss_vector": {
+        "type": "string",
+        "minLength": 1
+      },
+      "severity": {
+        "enum": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ]
+      },
+      "cvss_pending": {
+        "type": "boolean"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "confirmed"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "target",
+            "proof",
+            "impact",
+            "recommendation",
+            "cvss_version",
+            "cvss_vector"
+          ]
+        }
+      }
+    ]
+  },
+  "solutionRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "kind",
+      "summary"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "candidate",
+          "verified"
+        ]
+      },
+      "kind": {
+        "enum": [
+          "answer",
+          "flag",
+          "procedure"
+        ]
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "value": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "verification_summary": {
+        "$ref": "#/$defs/conciseText"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "verified"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "verification_summary"
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "verified"
+            },
+            "kind": {
+              "enum": [
+                "answer",
+                "flag"
+              ]
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "value"
+          ]
+        }
+      }
+    ]
+  },
+  "evidenceRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "artifact_type",
+      "summary",
+      "managed_path",
+      "sha256",
+      "size"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "available",
+          "missing"
+        ]
+      },
+      "artifact_type": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "media_type": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "source_path": {
+        "type": "string"
+      },
+      "managed_path": {
+        "type": "string",
+        "minLength": 1
+      },
+      "sha256": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "size": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "captured_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  }
+}

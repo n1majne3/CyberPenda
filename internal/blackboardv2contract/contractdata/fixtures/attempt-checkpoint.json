@@ -1,0 +1,6 @@
+{
+  "idempotency_key": "fixture-checkpoint",
+  "key": "attempt:login",
+  "version": 2,
+  "summary": "Login payload matrix is half complete"
+}

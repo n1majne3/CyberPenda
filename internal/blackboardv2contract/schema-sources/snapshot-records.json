@@ -1,0 +1,450 @@
+{
+  "snapshotEntity": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "status",
+      "kind",
+      "name",
+      "scope_status"
+    ],
+    "properties": {
+      "version": {
+        "$ref": "#/$defs/version"
+      },
+      "status": {
+        "const": "active"
+      },
+      "kind": {
+        "$ref": "#/$defs/entityKind"
+      },
+      "name": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "locator": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "description": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "scope_status": {
+        "$ref": "#/$defs/scopeStatus"
+      },
+      "credential_ref": {
+        "$ref": "#/$defs/conciseText"
+      }
+    }
+  },
+  "snapshotObjective": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "status",
+      "objective"
+    ],
+    "properties": {
+      "version": {
+        "$ref": "#/$defs/version"
+      },
+      "status": {
+        "const": "open"
+      },
+      "objective": {
+        "$ref": "#/$defs/semanticText"
+      }
+    }
+  },
+  "snapshotAttempt": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "status",
+      "summary"
+    ],
+    "properties": {
+      "version": {
+        "$ref": "#/$defs/version"
+      },
+      "status": {
+        "const": "open"
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      }
+    }
+  },
+  "snapshotFact": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "category",
+      "summary",
+      "confidence",
+      "scope_status"
+    ],
+    "properties": {
+      "version": {
+        "$ref": "#/$defs/version"
+      },
+      "category": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "confidence": {
+        "enum": [
+          "tentative",
+          "confirmed"
+        ]
+      },
+      "scope_status": {
+        "$ref": "#/$defs/scopeStatus"
+      }
+    }
+  },
+  "snapshotFinding": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "status",
+      "title",
+      "cvss_pending"
+    ],
+    "properties": {
+      "version": {
+        "$ref": "#/$defs/version"
+      },
+      "status": {
+        "enum": [
+          "unconfirmed",
+          "confirmed"
+        ]
+      },
+      "title": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "target": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "description": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "severity": {
+        "enum": [
+          "none",
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ]
+      },
+      "cvss_pending": {
+        "type": "boolean"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "confirmed"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "cvss_pending": {
+              "const": false
+            }
+          }
+        }
+      }
+    ]
+  },
+  "snapshotSolution": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "status",
+      "kind",
+      "summary"
+    ],
+    "properties": {
+      "version": {
+        "$ref": "#/$defs/version"
+      },
+      "status": {
+        "enum": [
+          "candidate",
+          "verified"
+        ]
+      },
+      "kind": {
+        "enum": [
+          "answer",
+          "flag",
+          "procedure"
+        ]
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "value": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "verification_summary": {
+        "$ref": "#/$defs/conciseText"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "verified"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "verification_summary"
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "const": "verified"
+            },
+            "kind": {
+              "enum": [
+                "answer",
+                "flag"
+              ]
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "value"
+          ]
+        }
+      }
+    ]
+  },
+  "snapshotEvidence": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "status",
+      "artifact_type",
+      "summary"
+    ],
+    "properties": {
+      "version": {
+        "$ref": "#/$defs/version"
+      },
+      "status": {
+        "enum": [
+          "available",
+          "missing"
+        ]
+      },
+      "artifact_type": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "media_type": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "captured_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "snapshotWork": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "objectives": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "additionalProperties": {
+          "$ref": "#/$defs/snapshotObjective"
+        }
+      },
+      "attempts": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "additionalProperties": {
+          "$ref": "#/$defs/snapshotAttempt"
+        }
+      }
+    }
+  },
+  "snapshotKnowledge": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "entities": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "additionalProperties": {
+          "$ref": "#/$defs/snapshotEntity"
+        }
+      },
+      "facts": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "additionalProperties": {
+          "$ref": "#/$defs/snapshotFact"
+        }
+      },
+      "findings": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "additionalProperties": {
+          "$ref": "#/$defs/snapshotFinding"
+        }
+      },
+      "solutions": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "additionalProperties": {
+          "$ref": "#/$defs/snapshotSolution"
+        }
+      },
+      "evidence": {
+        "type": "object",
+        "minProperties": 1,
+        "propertyNames": {
+          "$ref": "#/$defs/blackboardKey"
+        },
+        "additionalProperties": {
+          "$ref": "#/$defs/snapshotEvidence"
+        }
+      }
+    },
+    "not": {
+      "required": [
+        "findings",
+        "solutions"
+      ]
+    }
+  },
+  "relationshipTuple": {
+    "oneOf": [
+      {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 3,
+        "prefixItems": [
+          {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          {
+            "enum": [
+              "about",
+              "part_of",
+              "tests",
+              "produced",
+              "evidences",
+              "derived_from",
+              "satisfies",
+              "supersedes"
+            ]
+          },
+          {
+            "$ref": "#/$defs/blackboardKey"
+          }
+        ],
+        "items": false
+      },
+      {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 4,
+        "prefixItems": [
+          {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          {
+            "$ref": "#/$defs/reasonRelationType"
+          },
+          {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          {
+            "$ref": "#/$defs/conciseText"
+          }
+        ],
+        "items": false
+      }
+    ]
+  },
+  "runtimeSnapshot": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema",
+      "semantics",
+      "revision",
+      "work",
+      "knowledge",
+      "relations"
+    ],
+    "properties": {
+      "schema": {
+        "const": "runtime-blackboard/v2"
+      },
+      "semantics": {
+        "const": "work is active; knowledge is current; history and details are available by key"
+      },
+      "revision": {
+        "$ref": "#/$defs/revision"
+      },
+      "work": {
+        "$ref": "#/$defs/snapshotWork"
+      },
+      "knowledge": {
+        "$ref": "#/$defs/snapshotKnowledge"
+      },
+      "relations": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/relationshipTuple"
+        }
+      }
+    }
+  }
+}

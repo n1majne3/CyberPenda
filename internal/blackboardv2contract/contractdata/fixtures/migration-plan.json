@@ -1,0 +1,34 @@
+{
+  "schema": "blackboard-v2-migration-plan/v1",
+  "source_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "projects": [
+    {
+      "project": "example-pentest",
+      "mappings": [
+        {
+          "source_type": "project_fact",
+          "source_key": "fact:login",
+          "action": "retain",
+          "target_key": "fact:login"
+        }
+      ]
+    }
+  ],
+  "validation_blockers": [],
+  "required_decisions": [
+    {
+      "source": {
+        "project": "example-pentest",
+        "type": "hypothesis",
+        "key": "hypothesis:sqli"
+      },
+      "allowed_actions": [
+        "objective",
+        "tentative_fact",
+        "discard"
+      ],
+      "decision": "tentative_fact",
+      "target_key": "fact:sqli-candidate"
+    }
+  ]
+}

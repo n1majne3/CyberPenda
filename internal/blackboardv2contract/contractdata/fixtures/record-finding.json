@@ -1,0 +1,21 @@
+{
+  "schema": "blackboard-record/v2",
+  "revision": 9,
+  "key": "finding:sqli",
+  "type": "finding",
+  "version": 2,
+  "record": {
+    "status": "confirmed",
+    "title": "SQL injection in login",
+    "target": "https://example.test/login",
+    "description": "The username field is injectable",
+    "proof": "A boolean payload changed the response",
+    "impact": "Authentication can be bypassed",
+    "recommendation": "Use parameterized queries",
+    "cvss_version": "4.0",
+    "cvss_vector": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:N/SC:N/SI:N/SA:N",
+    "severity": "high",
+    "cvss_pending": false
+  },
+  "relationships": []
+}

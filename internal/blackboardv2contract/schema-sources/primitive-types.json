@@ -1,0 +1,120 @@
+{
+  "blackboardKey": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 96,
+    "pattern": "^[\\x20-\\x7e]+$",
+    "x-max-utf8-bytes": 96
+  },
+  "semanticText": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 1024,
+    "x-max-utf8-bytes": 1024
+  },
+  "conciseText": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 512,
+    "x-max-utf8-bytes": 512
+  },
+  "nonEmptyText": {
+    "type": "string",
+    "minLength": 1
+  },
+  "version": {
+    "type": "integer",
+    "minimum": 1,
+    "maximum": 9007199254740991
+  },
+  "revision": {
+    "type": "integer",
+    "minimum": 0,
+    "maximum": 9007199254740991
+  },
+  "scopeStatus": {
+    "enum": [
+      "in_scope",
+      "unknown",
+      "out_of_scope"
+    ]
+  },
+  "entityKind": {
+    "enum": [
+      "host",
+      "service",
+      "endpoint",
+      "identity",
+      "file",
+      "function"
+    ]
+  },
+  "recordType": {
+    "enum": [
+      "entity",
+      "objective",
+      "attempt",
+      "fact",
+      "finding",
+      "solution",
+      "evidence"
+    ]
+  },
+  "creatableRecordType": {
+    "enum": [
+      "entity",
+      "objective",
+      "attempt",
+      "fact",
+      "finding",
+      "solution"
+    ]
+  },
+  "relationType": {
+    "enum": [
+      "about",
+      "part_of",
+      "tests",
+      "produced",
+      "evidences",
+      "supports",
+      "contradicts",
+      "derived_from",
+      "depends_on",
+      "satisfies",
+      "supersedes"
+    ]
+  },
+  "reasonRelationType": {
+    "enum": [
+      "supports",
+      "contradicts",
+      "depends_on"
+    ]
+  },
+  "ordinaryRelationType": {
+    "enum": [
+      "about",
+      "part_of",
+      "tests",
+      "produced",
+      "evidences",
+      "derived_from",
+      "satisfies"
+    ]
+  },
+  "mutableRelationType": {
+    "enum": [
+      "about",
+      "part_of",
+      "tests",
+      "produced",
+      "evidences",
+      "supports",
+      "contradicts",
+      "derived_from",
+      "depends_on",
+      "satisfies"
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "schema": "semantic-change-batch/v2",
+  "idempotency_key": "fixture-update",
+  "changes": [
+    {
+      "op": "update",
+      "key": "entity:api",
+      "version": 1,
+      "type": "entity",
+      "record": {
+        "description": "Primary JSON API"
+      },
+      "clear": [
+        "credential_ref"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "error": {
+    "code": "version_conflict",
+    "message": "fact:login changed",
+    "path": "changes[0].version",
+    "retryable": false,
+    "details": {
+      "key": "fact:login",
+      "expected_version": 3,
+      "current_version": 4,
+      "next_action": "read_current_record"
+    }
+  }
+}

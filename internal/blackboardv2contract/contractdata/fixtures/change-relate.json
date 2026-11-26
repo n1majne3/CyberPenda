@@ -1,0 +1,13 @@
+{
+  "schema": "semantic-change-batch/v2",
+  "idempotency_key": "fixture-relate",
+  "changes": [
+    {
+      "op": "relate",
+      "from": "fact:login",
+      "relation": "supports",
+      "to": "finding:sqli",
+      "reason": "The observed response supports the finding"
+    }
+  ]
+}

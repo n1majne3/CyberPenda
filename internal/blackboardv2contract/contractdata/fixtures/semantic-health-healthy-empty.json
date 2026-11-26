@@ -1,0 +1,16 @@
+{
+  "schema": "blackboard-health/v2",
+  "revision": 0,
+  "status": "healthy",
+  "attention": {
+    "bytes": 128,
+    "estimated_tokens": 32,
+    "state": "within_target",
+    "complete": true,
+    "launchable": true,
+    "consolidation_offered": false,
+    "consolidation_required": false
+  },
+  "anomalies": [],
+  "proposals": []
+}

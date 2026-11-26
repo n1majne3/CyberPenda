@@ -1,0 +1,12 @@
+{
+  "schema": "blackboard-record/v2",
+  "revision": 9,
+  "key": "objective:login",
+  "type": "objective",
+  "version": 1,
+  "record": {
+    "status": "open",
+    "objective": "Determine whether login can be bypassed"
+  },
+  "relationships": []
+}
