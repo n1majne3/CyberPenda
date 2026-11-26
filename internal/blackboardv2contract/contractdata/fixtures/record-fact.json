@@ -1,0 +1,21 @@
+{
+  "schema": "blackboard-record/v2",
+  "revision": 9,
+  "key": "fact:login",
+  "type": "fact",
+  "version": 3,
+  "record": {
+    "category": "authentication",
+    "summary": "The login endpoint accepts JSON",
+    "body": "POST /login accepts an application/json body.",
+    "confidence": "confirmed",
+    "scope_status": "in_scope"
+  },
+  "relationships": [
+    [
+      "fact:login",
+      "about",
+      "entity:login"
+    ]
+  ]
+}

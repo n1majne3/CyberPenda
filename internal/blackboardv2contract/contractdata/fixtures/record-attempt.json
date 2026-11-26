@@ -1,0 +1,18 @@
+{
+  "schema": "blackboard-record/v2",
+  "revision": 9,
+  "key": "attempt:login",
+  "type": "attempt",
+  "version": 2,
+  "record": {
+    "status": "open",
+    "summary": "Testing parameterized login requests"
+  },
+  "relationships": [
+    [
+      "attempt:login",
+      "tests",
+      "objective:login"
+    ]
+  ]
+}

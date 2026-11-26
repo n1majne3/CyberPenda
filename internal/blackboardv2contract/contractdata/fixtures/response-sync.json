@@ -1,0 +1,15 @@
+{
+  "sync": {
+    "reason": "another_task_changed_shared_project_knowledge",
+    "from_revision": 40,
+    "revision": 42,
+    "snapshot": {
+      "schema": "runtime-blackboard/v2",
+      "semantics": "work is active; knowledge is current; history and details are available by key",
+      "revision": 42,
+      "work": {},
+      "knowledge": {},
+      "relations": []
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "fragments": [
+    "primitive-types.json",
+    "current-records.json",
+    "historical-records.json",
+    "record-partials.json",
+    "snapshot-records.json",
+    "read-models.json",
+    "change-requests.json",
+    "sync-responses.json",
+    "runtime-requests.json",
+    "migration.json",
+    "health-reports.json"
+  ]
+}

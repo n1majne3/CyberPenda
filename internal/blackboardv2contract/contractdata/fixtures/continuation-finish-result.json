@@ -1,0 +1,9 @@
+{
+  "schema": "continuation-finish/v2",
+  "status": "finished",
+  "revision": 10,
+  "working_snapshot": {
+    "path": ".pentest/blackboard.json",
+    "revision": 10
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "schema": "semantic-change-batch/v2",
+  "idempotency_key": "fixture-merge",
+  "changes": [
+    {
+      "op": "merge",
+      "source": "fact:login-copy",
+      "source_version": 1,
+      "canonical": "fact:login",
+      "canonical_version": 3,
+      "canonical_record": {
+        "summary": "The login endpoint accepts JSON"
+      },
+      "clear": [
+        "body"
+      ]
+    }
+  ]
+}

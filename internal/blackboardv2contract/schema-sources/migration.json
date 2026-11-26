@@ -1,0 +1,354 @@
+{
+  "migrationSource": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "project",
+      "type",
+      "key"
+    ],
+    "properties": {
+      "project": {
+        "type": "string",
+        "minLength": 1
+      },
+      "type": {
+        "enum": [
+          "observation",
+          "hypothesis",
+          "project_directive"
+        ]
+      },
+      "key": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "migrationDecision": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "source",
+      "allowed_actions"
+    ],
+    "properties": {
+      "source": {
+        "$ref": "#/$defs/migrationSource"
+      },
+      "allowed_actions": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": {
+          "enum": [
+            "objective",
+            "tentative_fact",
+            "confirmed_fact",
+            "scope_limit",
+            "discard"
+          ]
+        }
+      },
+      "decision": {
+        "enum": [
+          "objective",
+          "tentative_fact",
+          "confirmed_fact",
+          "scope_limit",
+          "discard"
+        ]
+      },
+      "target_key": {
+        "$ref": "#/$defs/blackboardKey"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "source": {
+              "properties": {
+                "type": {
+                  "const": "hypothesis"
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "allowed_actions": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "objective",
+                  "tentative_fact",
+                  "discard"
+                ]
+              }
+            },
+            "decision": {
+              "enum": [
+                "objective",
+                "tentative_fact",
+                "discard"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "source": {
+              "properties": {
+                "type": {
+                  "const": "project_directive"
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "allowed_actions": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "scope_limit",
+                  "objective"
+                ]
+              }
+            },
+            "decision": {
+              "enum": [
+                "scope_limit",
+                "objective"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "source": {
+              "properties": {
+                "type": {
+                  "const": "observation"
+                }
+              }
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "allowed_actions": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "tentative_fact",
+                  "confirmed_fact"
+                ]
+              }
+            },
+            "decision": {
+              "enum": [
+                "tentative_fact",
+                "confirmed_fact"
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  "migrationMapping": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "source_type",
+      "source_key",
+      "action"
+    ],
+    "properties": {
+      "source_type": {
+        "type": "string",
+        "minLength": 1
+      },
+      "source_key": {
+        "type": "string",
+        "minLength": 1
+      },
+      "action": {
+        "type": "string",
+        "minLength": 1
+      },
+      "target_key": {
+        "$ref": "#/$defs/blackboardKey"
+      }
+    }
+  },
+  "migrationProjectPlan": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "project",
+      "mappings"
+    ],
+    "properties": {
+      "project": {
+        "type": "string",
+        "minLength": 1
+      },
+      "mappings": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/migrationMapping"
+        }
+      }
+    }
+  },
+  "migrationBlocker": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "code",
+      "message",
+      "path"
+    ],
+    "properties": {
+      "code": {
+        "type": "string",
+        "minLength": 1
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1
+      },
+      "path": {
+        "type": "string"
+      }
+    }
+  },
+  "migrationPlan": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema",
+      "source_digest",
+      "projects",
+      "validation_blockers",
+      "required_decisions"
+    ],
+    "properties": {
+      "schema": {
+        "const": "blackboard-v2-migration-plan/v1"
+      },
+      "source_digest": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      },
+      "projects": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/migrationProjectPlan"
+        }
+      },
+      "validation_blockers": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/migrationBlocker"
+        }
+      },
+      "required_decisions": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/migrationDecision"
+        }
+      }
+    }
+  },
+  "migrationProjectResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "project",
+      "revision"
+    ],
+    "properties": {
+      "project": {
+        "type": "string",
+        "minLength": 1
+      },
+      "revision": {
+        "$ref": "#/$defs/revision"
+      }
+    }
+  },
+  "migrationValidation": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "snapshots_validated"
+    ],
+    "properties": {
+      "status": {
+        "const": "passed"
+      },
+      "snapshots_validated": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  "migrationResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema",
+      "status",
+      "verified_backup_path",
+      "project_count",
+      "projects",
+      "validation",
+      "store_epoch"
+    ],
+    "properties": {
+      "schema": {
+        "const": "blackboard-v2-migration-result/v1"
+      },
+      "status": {
+        "const": "migrated"
+      },
+      "verified_backup_path": {
+        "type": "string",
+        "minLength": 1
+      },
+      "project_count": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "projects": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/migrationProjectResult"
+        }
+      },
+      "validation": {
+        "$ref": "#/$defs/migrationValidation"
+      },
+      "store_epoch": {
+        "const": "blackboard_v2"
+      }
+    }
+  }
+}

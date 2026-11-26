@@ -1,0 +1,450 @@
+{
+  "currentDetail": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema",
+      "revision",
+      "key",
+      "type",
+      "version",
+      "record",
+      "relationships"
+    ],
+    "properties": {
+      "schema": {
+        "const": "blackboard-record/v2"
+      },
+      "revision": {
+        "$ref": "#/$defs/revision"
+      },
+      "key": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "type": {
+        "$ref": "#/$defs/recordType"
+      },
+      "version": {
+        "$ref": "#/$defs/version"
+      },
+      "record": {
+        "type": "object"
+      },
+      "relationships": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/relationshipTuple"
+        }
+      },
+      "sync": {
+        "$ref": "#/$defs/syncAttachment"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "entity"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/entityRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "objective"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/objectiveRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "attempt"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/attemptRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "fact"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/factRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "finding"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/findingRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "solution"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/solutionRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "evidence"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/evidenceRecord"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "recordHistoryItem": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "kind",
+      "key",
+      "version",
+      "type",
+      "record"
+    ],
+    "properties": {
+      "kind": {
+        "const": "record"
+      },
+      "key": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "version": {
+        "$ref": "#/$defs/version"
+      },
+      "type": {
+        "$ref": "#/$defs/recordType"
+      },
+      "record": {
+        "type": "object"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "entity"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/historicalEntityRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "objective"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/historicalObjectiveRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "attempt"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/historicalAttemptRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "fact"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/historicalFactRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "finding"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/historicalFindingRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "solution"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/historicalSolutionRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "evidence"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/historicalEvidenceRecord"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "relationshipHistoryItem": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "version",
+          "from",
+          "relation",
+          "to"
+        ],
+        "properties": {
+          "kind": {
+            "const": "relationship"
+          },
+          "version": {
+            "$ref": "#/$defs/version"
+          },
+          "from": {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          "relation": {
+            "$ref": "#/$defs/reasonRelationType"
+          },
+          "to": {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          "reason": {
+            "$ref": "#/$defs/conciseText"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "version",
+          "from",
+          "relation",
+          "to"
+        ],
+        "properties": {
+          "kind": {
+            "const": "relationship"
+          },
+          "version": {
+            "$ref": "#/$defs/version"
+          },
+          "from": {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          "relation": {
+            "enum": [
+              "about",
+              "part_of",
+              "tests",
+              "produced",
+              "evidences",
+              "derived_from",
+              "satisfies",
+              "supersedes"
+            ]
+          },
+          "to": {
+            "$ref": "#/$defs/blackboardKey"
+          }
+        }
+      }
+    ]
+  },
+  "historyItem": {
+    "oneOf": [
+      {
+        "$ref": "#/$defs/recordHistoryItem"
+      },
+      {
+        "$ref": "#/$defs/relationshipHistoryItem"
+      }
+    ]
+  },
+  "semanticHistory": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema",
+      "revision",
+      "key",
+      "items"
+    ],
+    "properties": {
+      "schema": {
+        "const": "semantic-history/v2"
+      },
+      "revision": {
+        "$ref": "#/$defs/revision"
+      },
+      "key": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "items": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/historyItem"
+        }
+      },
+      "next_cursor": {
+        "type": "string",
+        "minLength": 1
+      },
+      "sync": {
+        "$ref": "#/$defs/syncAttachment"
+      }
+    }
+  },
+  "readRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "key"
+    ],
+    "properties": {
+      "key": {
+        "$ref": "#/$defs/blackboardKey"
+      }
+    }
+  },
+  "historyRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "key"
+    ],
+    "properties": {
+      "key": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "cursor": {
+        "type": "string",
+        "minLength": 1
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "default": 20
+      }
+    }
+  }
+}

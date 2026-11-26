@@ -1,0 +1,17 @@
+{
+  "schema": "semantic-change-batch/v2",
+  "idempotency_key": "fixture-create",
+  "changes": [
+    {
+      "op": "create",
+      "key": "entity:api",
+      "type": "entity",
+      "record": {
+        "status": "active",
+        "kind": "service",
+        "name": "API",
+        "scope_status": "in_scope"
+      }
+    }
+  ]
+}

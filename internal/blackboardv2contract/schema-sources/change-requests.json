@@ -1,0 +1,753 @@
+{
+  "createChange": {
+    "description": "create requires key, type, and record; node types such as objective and attempt belong in type, never op",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "op",
+      "key",
+      "type",
+      "record"
+    ],
+    "properties": {
+      "op": {
+        "const": "create"
+      },
+      "key": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "type": {
+        "$ref": "#/$defs/creatableRecordType"
+      },
+      "record": {
+        "type": "object"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "entity"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/entityRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "objective"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/objectiveRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "attempt"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/attemptRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "fact"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/factRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "finding"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/findingInputRecord"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "solution"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/solutionRecord"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "updateChange": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "op",
+      "key",
+      "version",
+      "type",
+      "record"
+    ],
+    "properties": {
+      "op": {
+        "const": "update"
+      },
+      "key": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "version": {
+        "$ref": "#/$defs/version"
+      },
+      "type": {
+        "$ref": "#/$defs/recordType"
+      },
+      "record": {
+        "type": "object"
+      },
+      "clear": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "enum": [
+            "locator",
+            "description",
+            "credential_ref",
+            "body",
+            "target",
+            "proof",
+            "impact",
+            "recommendation",
+            "cvss_version",
+            "cvss_vector",
+            "value",
+            "verification_summary",
+            "media_type",
+            "captured_at"
+          ]
+        }
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "entity"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/entityPartial"
+            },
+            "clear": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "locator",
+                  "description",
+                  "credential_ref"
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "objective"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/objectivePartial"
+            }
+          },
+          "not": {
+            "required": [
+              "clear"
+            ]
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "attempt"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/attemptPartial"
+            }
+          },
+          "not": {
+            "required": [
+              "clear"
+            ]
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "fact"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/factPartial"
+            },
+            "clear": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "const": "body"
+              }
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "finding"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/findingPartial"
+            },
+            "clear": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "target",
+                  "description",
+                  "proof",
+                  "impact",
+                  "recommendation",
+                  "cvss_version",
+                  "cvss_vector"
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "solution"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/solutionPartial"
+            },
+            "clear": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "value",
+                  "verification_summary"
+                ]
+              }
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "evidence"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "record": {
+              "$ref": "#/$defs/evidencePartial"
+            },
+            "clear": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "media_type",
+                  "captured_at"
+                ]
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "transitionChange": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "op",
+          "key",
+          "version",
+          "status",
+          "resolution_summary"
+        ],
+        "properties": {
+          "op": {
+            "const": "transition"
+          },
+          "key": {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          "version": {
+            "$ref": "#/$defs/version"
+          },
+          "status": {
+            "enum": [
+              "resolved",
+              "abandoned",
+              "retired",
+              "false_positive"
+            ]
+          },
+          "resolution_summary": {
+            "$ref": "#/$defs/conciseText"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "op",
+          "key",
+          "version",
+          "status",
+          "summary"
+        ],
+        "properties": {
+          "op": {
+            "const": "transition"
+          },
+          "key": {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          "version": {
+            "$ref": "#/$defs/version"
+          },
+          "status": {
+            "enum": [
+              "succeeded",
+              "failed",
+              "blocked",
+              "inconclusive",
+              "interrupted",
+              "deprecated",
+              "missing"
+            ]
+          },
+          "summary": {
+            "$ref": "#/$defs/semanticText"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "op",
+          "key",
+          "version",
+          "status"
+        ],
+        "properties": {
+          "op": {
+            "const": "transition"
+          },
+          "key": {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          "version": {
+            "$ref": "#/$defs/version"
+          },
+          "status": {
+            "enum": [
+              "tentative",
+              "confirmed"
+            ]
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "op",
+          "key",
+          "version",
+          "status",
+          "verification_summary"
+        ],
+        "properties": {
+          "op": {
+            "const": "transition"
+          },
+          "key": {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          "version": {
+            "$ref": "#/$defs/version"
+          },
+          "status": {
+            "enum": [
+              "verified",
+              "rejected"
+            ]
+          },
+          "verification_summary": {
+            "$ref": "#/$defs/conciseText"
+          }
+        }
+      }
+    ]
+  },
+  "relateChange": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "op",
+          "from",
+          "relation",
+          "to"
+        ],
+        "properties": {
+          "op": {
+            "const": "relate"
+          },
+          "from": {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          "relation": {
+            "$ref": "#/$defs/ordinaryRelationType"
+          },
+          "to": {
+            "$ref": "#/$defs/blackboardKey"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "op",
+          "from",
+          "relation",
+          "to"
+        ],
+        "dependentRequired": {
+          "version": [
+            "reason"
+          ]
+        },
+        "properties": {
+          "op": {
+            "const": "relate"
+          },
+          "from": {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          "relation": {
+            "$ref": "#/$defs/reasonRelationType"
+          },
+          "to": {
+            "$ref": "#/$defs/blackboardKey"
+          },
+          "version": {
+            "$ref": "#/$defs/version"
+          },
+          "reason": {
+            "$ref": "#/$defs/conciseText"
+          }
+        }
+      }
+    ]
+  },
+  "unrelateChange": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "op",
+      "from",
+      "relation",
+      "to",
+      "version"
+    ],
+    "properties": {
+      "op": {
+        "const": "unrelate"
+      },
+      "from": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "relation": {
+        "$ref": "#/$defs/mutableRelationType"
+      },
+      "to": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "version": {
+        "$ref": "#/$defs/version"
+      }
+    }
+  },
+  "mergeChange": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "op",
+      "source",
+      "source_version",
+      "canonical",
+      "canonical_version"
+    ],
+    "properties": {
+      "op": {
+        "const": "merge"
+      },
+      "source": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "source_version": {
+        "$ref": "#/$defs/version"
+      },
+      "canonical": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "canonical_version": {
+        "$ref": "#/$defs/version"
+      },
+      "canonical_record": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/entityPartial"
+          },
+          {
+            "$ref": "#/$defs/factPartial"
+          },
+          {
+            "$ref": "#/$defs/findingPartial"
+          },
+          {
+            "$ref": "#/$defs/solutionPartial"
+          },
+          {
+            "$ref": "#/$defs/evidencePartial"
+          }
+        ]
+      },
+      "clear": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "enum": [
+            "locator",
+            "description",
+            "credential_ref",
+            "body",
+            "target",
+            "proof",
+            "impact",
+            "recommendation",
+            "cvss_version",
+            "cvss_vector",
+            "value",
+            "verification_summary",
+            "media_type",
+            "captured_at"
+          ]
+        }
+      }
+    }
+  },
+  "supersedeChange": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "op",
+      "replacement",
+      "replaced",
+      "replaced_version"
+    ],
+    "properties": {
+      "op": {
+        "const": "supersede"
+      },
+      "replacement": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "replacement_version": {
+        "$ref": "#/$defs/version"
+      },
+      "replaced": {
+        "$ref": "#/$defs/blackboardKey"
+      },
+      "replaced_version": {
+        "$ref": "#/$defs/version"
+      }
+    }
+  },
+  "change": {
+    "description": "operation kind is a verb: create creates a record; update patches a record; transition changes lifecycle status; supported ops are create, update, transition, relate, unrelate, merge, and supersede; record types such as objective and attempt belong in type, never op",
+    "oneOf": [
+      {
+        "$ref": "#/$defs/createChange"
+      },
+      {
+        "$ref": "#/$defs/updateChange"
+      },
+      {
+        "$ref": "#/$defs/transitionChange"
+      },
+      {
+        "$ref": "#/$defs/relateChange"
+      },
+      {
+        "$ref": "#/$defs/unrelateChange"
+      },
+      {
+        "$ref": "#/$defs/mergeChange"
+      },
+      {
+        "$ref": "#/$defs/supersedeChange"
+      }
+    ]
+  },
+  "changeBatch": {
+    "description": "Atomic semantic-change-batch/v2: schema is always semantic-change-batch/v2; idempotency_key is required for exact replay; changes is a closed list of semantic ops. op is a verb: create creates a record; update patches a record; transition changes lifecycle status; relate/unrelate manage relationships; merge and supersede rewrite knowledge. Record types such as objective and attempt belong in type, never op. create requires key, type, and record.",
+    "examples": [
+      {
+        "schema": "semantic-change-batch/v2",
+        "idempotency_key": "attempt-with-tests",
+        "changes": [
+          {
+            "op": "create",
+            "key": "objective:sample",
+            "type": "objective",
+            "record": {
+              "status": "open",
+              "objective": "Test the sample target."
+            }
+          },
+          {
+            "op": "create",
+            "key": "attempt:sample",
+            "type": "attempt",
+            "record": {
+              "status": "open",
+              "summary": "Started the sample test."
+            }
+          },
+          {
+            "op": "relate",
+            "from": "attempt:sample",
+            "relation": "tests",
+            "to": "objective:sample"
+          }
+        ]
+      }
+    ],
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema",
+      "idempotency_key",
+      "changes"
+    ],
+    "properties": {
+      "schema": {
+        "const": "semantic-change-batch/v2"
+      },
+      "idempotency_key": {
+        "type": "string",
+        "minLength": 1
+      },
+      "changes": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/change"
+        }
+      }
+    }
+  }
+}

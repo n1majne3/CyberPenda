@@ -1,0 +1,5 @@
+[
+  "finding:sqli",
+  "satisfies",
+  "objective:login"
+]

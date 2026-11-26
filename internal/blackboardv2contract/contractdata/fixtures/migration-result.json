@@ -1,0 +1,17 @@
+{
+  "schema": "blackboard-v2-migration-result/v1",
+  "status": "migrated",
+  "verified_backup_path": "/backups/pentest-before-v2.db",
+  "project_count": 1,
+  "projects": [
+    {
+      "project": "example-pentest",
+      "revision": 1
+    }
+  ],
+  "validation": {
+    "status": "passed",
+    "snapshots_validated": 1
+  },
+  "store_epoch": "blackboard_v2"
+}

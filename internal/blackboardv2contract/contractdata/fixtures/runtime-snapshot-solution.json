@@ -1,0 +1,19 @@
+{
+  "schema": "runtime-blackboard/v2",
+  "semantics": "work is active; knowledge is current; history and details are available by key",
+  "revision": 7,
+  "work": {},
+  "knowledge": {
+    "solutions": {
+      "solution:flag": {
+        "version": 2,
+        "status": "verified",
+        "kind": "flag",
+        "summary": "Recovered the challenge flag",
+        "value": "FLAG{accepted}",
+        "verification_summary": "Accepted by the challenge"
+      }
+    }
+  },
+  "relations": []
+}

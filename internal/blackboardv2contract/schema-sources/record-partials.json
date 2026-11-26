@@ -1,0 +1,141 @@
+{
+  "entityPartial": {
+    "type": "object",
+    "additionalProperties": false,
+    "minProperties": 1,
+    "properties": {
+      "kind": {
+        "$ref": "#/$defs/entityKind"
+      },
+      "name": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "locator": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "description": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "scope_status": {
+        "$ref": "#/$defs/scopeStatus"
+      },
+      "credential_ref": {
+        "$ref": "#/$defs/conciseText"
+      }
+    }
+  },
+  "objectivePartial": {
+    "type": "object",
+    "additionalProperties": false,
+    "minProperties": 1,
+    "properties": {
+      "objective": {
+        "$ref": "#/$defs/semanticText"
+      }
+    }
+  },
+  "attemptPartial": {
+    "type": "object",
+    "additionalProperties": false,
+    "minProperties": 1,
+    "properties": {
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      }
+    }
+  },
+  "factPartial": {
+    "type": "object",
+    "additionalProperties": false,
+    "minProperties": 1,
+    "properties": {
+      "category": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "body": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "scope_status": {
+        "$ref": "#/$defs/scopeStatus"
+      }
+    }
+  },
+  "findingPartial": {
+    "type": "object",
+    "additionalProperties": false,
+    "minProperties": 1,
+    "properties": {
+      "title": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "target": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "description": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "proof": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "impact": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "recommendation": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "cvss_version": {
+        "enum": [
+          "3.1",
+          "4.0"
+        ]
+      },
+      "cvss_vector": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "solutionPartial": {
+    "type": "object",
+    "additionalProperties": false,
+    "minProperties": 1,
+    "properties": {
+      "kind": {
+        "enum": [
+          "answer",
+          "flag",
+          "procedure"
+        ]
+      },
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "value": {
+        "$ref": "#/$defs/nonEmptyText"
+      },
+      "verification_summary": {
+        "$ref": "#/$defs/conciseText"
+      }
+    }
+  },
+  "evidencePartial": {
+    "type": "object",
+    "additionalProperties": false,
+    "minProperties": 1,
+    "properties": {
+      "summary": {
+        "$ref": "#/$defs/semanticText"
+      },
+      "media_type": {
+        "$ref": "#/$defs/conciseText"
+      },
+      "captured_at": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  }
+}

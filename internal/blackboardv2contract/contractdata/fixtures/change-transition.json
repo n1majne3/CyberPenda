@@ -1,0 +1,32 @@
+{
+  "schema": "semantic-change-batch/v2",
+  "idempotency_key": "fixture-transition",
+  "changes": [
+    {
+      "op": "transition",
+      "key": "attempt:login",
+      "version": 2,
+      "status": "failed",
+      "summary": "The tested payloads did not bypass login"
+    },
+    {
+      "op": "transition",
+      "key": "fact:login",
+      "version": 3,
+      "status": "confirmed"
+    },
+    {
+      "op": "transition",
+      "key": "finding:sqli",
+      "version": 1,
+      "status": "confirmed"
+    },
+    {
+      "op": "transition",
+      "key": "solution:flag",
+      "version": 1,
+      "status": "verified",
+      "verification_summary": "Accepted by the challenge"
+    }
+  ]
+}

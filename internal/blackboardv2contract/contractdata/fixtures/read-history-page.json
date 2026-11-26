@@ -1,0 +1,20 @@
+{
+  "schema": "semantic-history/v2",
+  "revision": 10,
+  "key": "fact:login",
+  "items": [
+    {
+      "kind": "record",
+      "key": "fact:login",
+      "version": 1,
+      "type": "fact",
+      "record": {
+        "category": "authentication",
+        "summary": "Login probably accepts JSON",
+        "confidence": "tentative",
+        "scope_status": "in_scope"
+      }
+    }
+  ],
+  "next_cursor": "opaque:page-2"
+}

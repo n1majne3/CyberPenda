@@ -1,0 +1,13 @@
+{
+  "schema": "semantic-change-batch/v2",
+  "idempotency_key": "fixture-supersede",
+  "changes": [
+    {
+      "op": "supersede",
+      "replacement": "fact:login-v2",
+      "replacement_version": 1,
+      "replaced": "fact:login",
+      "replaced_version": 3
+    }
+  ]
+}

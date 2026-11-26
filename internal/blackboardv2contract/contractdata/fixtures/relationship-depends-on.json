@@ -1,0 +1,6 @@
+[
+  "objective:exploit",
+  "depends_on",
+  "objective:login",
+  "Login behavior must be known first"
+]

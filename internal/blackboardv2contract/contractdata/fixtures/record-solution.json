@@ -1,0 +1,15 @@
+{
+  "schema": "blackboard-record/v2",
+  "revision": 9,
+  "key": "solution:flag",
+  "type": "solution",
+  "version": 2,
+  "record": {
+    "status": "verified",
+    "kind": "flag",
+    "summary": "Recovered the challenge flag",
+    "value": "FLAG{accepted}",
+    "verification_summary": "Accepted by the challenge"
+  },
+  "relationships": []
+}

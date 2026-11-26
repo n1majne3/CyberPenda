@@ -1,0 +1,22 @@
+{
+  "schema": "semantic-change-result/v2",
+  "revision": 10,
+  "records": [
+    [
+      "fact:login",
+      4
+    ]
+  ],
+  "relations": [
+    [
+      "fact:login",
+      "supports",
+      "finding:sqli",
+      1
+    ]
+  ],
+  "working_snapshot": {
+    "path": ".pentest/blackboard.json",
+    "revision": 10
+  }
+}
