@@ -113,7 +113,6 @@ function RuntimeOwnerWorkspace({ ownerKind }: { ownerKind: RuntimeOwnerKind }) {
     commitHistory,
     setOwner,
     setFinishReadiness,
-    setTitleDraft,
     setError,
     setActionError,
   });

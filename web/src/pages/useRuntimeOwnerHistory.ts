@@ -30,7 +30,6 @@ export function useRuntimeOwnerHistory({
   commitHistory,
   setOwner,
   setFinishReadiness,
-  setTitleDraft,
   setError,
   setActionError,
 }: {
@@ -44,7 +43,6 @@ export function useRuntimeOwnerHistory({
   commitHistory: (next: OwnerHistory) => void;
   setOwner: Dispatch<SetStateAction<RuntimeOwnerView | null>>;
   setFinishReadiness: Dispatch<SetStateAction<FinishReadiness | null>>;
-  setTitleDraft: Dispatch<SetStateAction<string>>;
   setError: Dispatch<SetStateAction<string | null>>;
   setActionError: Dispatch<SetStateAction<string | null>>;
 }) {
@@ -52,7 +50,6 @@ export function useRuntimeOwnerHistory({
   const loadGeneration = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const ownerIDRef = useRef(ownerID);
-  const lastSavedTitle = useRef<{ ownerID: string; title: string } | null>(null);
   const activeViewRef = useRef(activeView);
   const timelineAtTailRef = useRef(true);
   const timelineViewport = useRef<HTMLDivElement>(null);
@@ -83,12 +80,6 @@ export function useRuntimeOwnerHistory({
       }
       setOwner(loaded.owner);
       setFinishReadiness(loaded.finishReadiness ?? null);
-      if (loaded.owner.kind === "session") {
-        const previous = lastSavedTitle.current;
-        const title = loaded.owner.title;
-        setTitleDraft((draft) => previous?.ownerID === requestOwner && draft !== previous.title ? draft : title);
-        lastSavedTitle.current = { ownerID: requestOwner, title };
-      }
       // Merge into the latest state at commit time, not the pre-request
       // snapshot, so a backward page (or any other concurrent history
       // change) committed while this request was in flight is preserved

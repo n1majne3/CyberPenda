@@ -1,5 +1,4 @@
 import { act, renderHook } from "@testing-library/react";
-import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeOwnerAdapter } from "@/lib/runtimeOwner/adapter";
 import { useOwnerHistoryState, useRuntimeOwnerHistory } from "./useRuntimeOwnerHistory";
@@ -13,16 +12,14 @@ function deferred<T>() {
 function renderHistory(
   loadWorkspace: (signal: AbortSignal) => Promise<unknown>,
   setError = vi.fn(),
-  isSession = false,
 ) {
   const ownerAdapter = { loadWorkspace } as unknown as RuntimeOwnerAdapter;
   const rendered = renderHook(() => {
     const { historyRef, commitHistory } = useOwnerHistoryState();
-    const [titleDraft, setTitleDraft] = useState("");
-    const history = useRuntimeOwnerHistory({
-      ownerID: isSession ? "session-1" : "task-1",
-      isSession,
-      projectId: isSession ? undefined : "project-1",
+    return useRuntimeOwnerHistory({
+      ownerID: "task-1",
+      isSession: false,
+      projectId: "project-1",
       activeView: "conversation",
       ownerAdapter,
       autoFollowRef: { current: true },
@@ -30,37 +27,14 @@ function renderHistory(
       commitHistory,
       setOwner: vi.fn(),
       setFinishReadiness: vi.fn(),
-      setTitleDraft,
       setError,
       setActionError: vi.fn(),
     });
-    return { ...history, titleDraft, setTitleDraft };
   });
   return { ...rendered, setError };
 }
 
 describe("useRuntimeOwnerHistory", () => {
-  it("keeps an unsaved Session title across polls and syncs a clean draft", async () => {
-    let title = "Saved title";
-    const { result } = renderHistory(async () => ({
-      owner: { kind: "session", id: "session-1", title, status: "stopped" },
-      timeline: [],
-      transcript: [],
-    }), vi.fn(), true);
-    await act(async () => { await result.current.loadAll("initial"); });
-    expect(result.current.titleDraft).toBe("Saved title");
-    act(() => { result.current.setTitleDraft("Unsaved title"); });
-    await act(async () => { await result.current.loadAll("poll"); });
-    expect(result.current.titleDraft).toBe("Unsaved title");
-    title = "Remote title";
-    await act(async () => { await result.current.loadAll("poll"); });
-    expect(result.current.titleDraft).toBe("Unsaved title");
-    act(() => { result.current.setTitleDraft("Remote title"); });
-    title = "New remote title";
-    await act(async () => { await result.current.loadAll("poll"); });
-    expect(result.current.titleDraft).toBe("New remote title");
-  });
-
   it("does not abort a slow load when the next poll starts", async () => {
     const pending = deferred<unknown>();
     const signals: AbortSignal[] = [];

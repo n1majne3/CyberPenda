@@ -114,7 +114,7 @@ export function RuntimeOwnerHeader({
               </Button>
             )}
             {owner.capabilities.rename && !editingTitle && (
-              <Button size="sm" variant="ghost" onClick={() => setEditingTitle(true)} aria-label={`Rename ${owner.title}`} title="Rename Session">
+              <Button size="sm" variant="ghost" onClick={() => { setTitleDraft(owner.title); setEditingTitle(true); }} aria-label={`Rename ${owner.title}`} title="Rename Session">
                 <Pencil className="h-4 w-4" /> Rename
               </Button>
             )}
