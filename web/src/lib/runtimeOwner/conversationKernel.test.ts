@@ -170,7 +170,7 @@ describe("conversation send mode", () => {
   it("labels the real provider operation for the composer", () => {
     expect(conversationSendLabel("native")).toBe("Send");
     expect(conversationSendLabel("native", "send_turn")).toBe("Send");
-    expect(conversationSendLabel("native", "in_turn_steer")).toBe("Steer current turn");
+    expect(conversationSendLabel("native", "in_turn_steer")).toBe("Steer");
     expect(conversationSendLabel("native", "in_turn_steer", true)).toBe("Interrupt and send");
     expect(conversationSendLabel("native", "interrupt_then_replace")).toBe("Interrupt and send");
     expect(conversationSendLabel("interrupt")).toBe("Interrupt and send");

@@ -155,7 +155,12 @@ func (server *Server) startPreparedSessionRuntimeForBlackboardProjection(ctx con
 		if adapter, ok := binding.Adapter.(*runtime.ProviderSessionRunAdapter); ok {
 			adapter.SetInitialTurnSelection(plan.Selection)
 		}
-		plan.Adapter = wrapPersistentProviderAdapter(binding.Adapter, profile.Provider, plan.ProviderHome)
+		plan.Adapter, factoryErr = server.wrapOwnerProviderAdapter(binding.Adapter, found.OwnerContract(), profile.Provider, plan.ProviderHome)
+		if factoryErr != nil {
+			_ = server.closeSessionProviderSession(found.ID)
+			server.failSessionProviderLaunch(found.ID, continuation.ID, factoryErr)
+			return continuation, factoryErr
+		}
 	}
 	if _, err := server.sessions.AppendEvent(found.ID, session.EventKindLifecycle, session.EventPayload{
 		"phase": "launch_requested", "continuation_id": continuation.ID,

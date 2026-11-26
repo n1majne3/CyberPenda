@@ -27,7 +27,6 @@ function renderHistory(
       commitHistory,
       setOwner: vi.fn(),
       setFinishReadiness: vi.fn(),
-      setTitleDraft: vi.fn(),
       setError,
       setActionError: vi.fn(),
     });

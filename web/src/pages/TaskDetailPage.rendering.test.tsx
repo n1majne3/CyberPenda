@@ -11,7 +11,7 @@ describe("TaskDetailPage", () => {
   });
 
 
-  it("keeps a quiet Runtime identity without bordering assistant messages", async () => {
+  it("keeps the Runtime identity above assistant messages", async () => {
     stubTaskDetailApi();
 
     renderPage("/projects/project-1/tasks/task-1?view=conversation");
@@ -20,7 +20,6 @@ describe("TaskDetailPage", () => {
     const message = screen.getByTestId("transcript-message-bubble");
     expect(message).not.toHaveClass("border-l-2");
     expect(within(screen.getByTestId("transcript-turn-header")).getByText("Codex")).toHaveClass("text-signal");
-    expect(message).not.toHaveClass("rounded-lg");
   });
 
 

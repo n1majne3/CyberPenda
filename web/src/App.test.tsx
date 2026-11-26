@@ -134,7 +134,7 @@ describe("App", () => {
 
     expect(screen.queryByRole("button", { name: /collapse non-project/i })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /^sessions$/i })).toHaveAttribute("href", "/sessions");
-    expect(screen.getByRole("region", { name: /recent sessions/i })).not.toHaveAttribute("open");
+    expect(screen.getByRole("group", { name: /recent sessions/i })).not.toHaveAttribute("open");
   });
 
   it("applies the shell primitive styling to skip link and theme toggle", async () => {

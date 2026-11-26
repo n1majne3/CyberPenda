@@ -141,6 +141,9 @@ func TestBlackboardV2ResumeProjectionFailureLeavesNoContinuationPinOrSteeringCon
 	if resumed.Number != first.Number+1 {
 		t.Fatalf("retry Continuation number = %d, want %d", resumed.Number, first.Number+1)
 	}
+	if err := restarted.tasks.FencePreparedHarnessSteering(context.Background(), createdTask.ID, resumed.ID); err != nil {
+		t.Fatalf("fence retry input: %v", err)
+	}
 	unconsumed, err = restarted.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
 	if err != nil || len(unconsumed) != 0 {
 		t.Fatalf("successful retry did not consume steering once: %#v, %v", unconsumed, err)
@@ -148,6 +151,15 @@ func TestBlackboardV2ResumeProjectionFailureLeavesNoContinuationPinOrSteeringCon
 }
 
 func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringCommit(t *testing.T) {
+	testFallbackInterruptSteering(t, task.BlackboardModeWorkingGraph)
+}
+
+func TestInterruptSteerWithoutBlackboardConsumesInputOnlyOnce(t *testing.T) {
+	testFallbackInterruptSteering(t, task.BlackboardModeDisabled)
+}
+
+func testFallbackInterruptSteering(t *testing.T, mode task.BlackboardMode) {
+	t.Helper()
 	root := t.TempDir()
 	runtimeRoot := filepath.Join(root, "runs")
 	factory := testProviderSessionFactoryFunc(func(_ context.Context, req ProviderSessionLaunchRequest) (ProviderSessionBinding, error) {
@@ -194,6 +206,7 @@ func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringC
 	createdTask, err := server.tasks.Create(task.CreateRequest{
 		ProjectID: createdProject.ID, Type: task.TypePentest, Goal: "map the Task Goal before continuing", RuntimeProfileID: profile.ID, Runner: task.RunnerHost,
 		RuntimeConfig: testTaskRuntimeSnapshot(t, server, profile, task.RunnerHost),
+		RunControls:   task.RunControls{BlackboardMode: mode},
 	})
 	if err != nil {
 		t.Fatalf("create Task: %v", err)
@@ -206,12 +219,25 @@ func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringC
 		t.Fatalf("launch initial Continuation: %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
-	for !server.harness.IsActive(createdTask.ID) && time.Now().Before(deadline) {
+	initialOutput := false
+	for time.Now().Before(deadline) {
+		events, err := server.tasks.Events(createdTask.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range events {
+			text, _ := event.Payload["text"].(string)
+			initialOutput = initialOutput || event.Kind == task.EventKindRuntimeOutput && strings.Contains(text, "codex-provider:")
+		}
+		if initialOutput {
+			break
+		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !server.harness.IsActive(createdTask.ID) {
-		t.Fatal("initial Runtime did not become active")
+	if !initialOutput {
+		t.Fatal("initial Runtime did not receive its input")
 	}
+	waitForTaskRunning(t, server, createdTask.ID)
 	first, err := server.tasks.LatestContinuation(createdTask.ID)
 	if err != nil || first == nil {
 		t.Fatalf("read first Continuation: %#v, %v", first, err)
@@ -224,21 +250,23 @@ func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringC
 	if err := os.WriteFile(sessionPath, []byte(sessionMeta), 0o600); err != nil {
 		t.Fatalf("write native session: %v", err)
 	}
-	if _, err := server.blackboardV2.ApplyForContinuation(context.Background(), createdProject.ID, first.ID, blackboardv2.ChangeBatch{
-		Schema: "semantic-change-batch/v2", IdempotencyKey: "interrupt-steer-open-attempt",
-		Changes: []blackboardv2.Change{
-			{Op: "create", Key: "objective:interrupt-steer", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Continue interrupted work"}},
-			{Op: "create", Key: "attempt:interrupt-steer", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Initial active work"}},
-			{Op: "relate", From: "attempt:interrupt-steer", Relation: "tests", To: "objective:interrupt-steer"},
-		},
-	}); err != nil {
-		t.Fatalf("create interrupted Attempt: %v", err)
-	}
 	const checkpointSummary = "Mapped the login boundary before interruption"
-	if _, err := server.blackboardV2.CheckpointAttemptForContinuation(context.Background(), createdProject.ID, first.ID, blackboardv2.CheckpointAttemptRequest{
-		IdempotencyKey: "interrupt-steer-checkpoint", Key: "attempt:interrupt-steer", Version: 1, Summary: checkpointSummary,
-	}); err != nil {
-		t.Fatalf("checkpoint interrupted Attempt: %v", err)
+	if mode != task.BlackboardModeDisabled {
+		if _, err := server.blackboardV2.ApplyForContinuation(context.Background(), createdProject.ID, first.ID, blackboardv2.ChangeBatch{
+			Schema: "semantic-change-batch/v2", IdempotencyKey: "interrupt-steer-open-attempt",
+			Changes: []blackboardv2.Change{
+				{Op: "create", Key: "objective:interrupt-steer", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Continue interrupted work"}},
+				{Op: "create", Key: "attempt:interrupt-steer", Type: "attempt", Record: blackboardv2.AttemptRecord{Status: "open", Summary: "Initial active work"}},
+				{Op: "relate", From: "attempt:interrupt-steer", Relation: "tests", To: "objective:interrupt-steer"},
+			},
+		}); err != nil {
+			t.Fatalf("create interrupted Attempt: %v", err)
+		}
+		if _, err := server.blackboardV2.CheckpointAttemptForContinuation(context.Background(), createdProject.ID, first.ID, blackboardv2.CheckpointAttemptRequest{
+			IdempotencyKey: "interrupt-steer-checkpoint", Key: "attempt:interrupt-steer", Version: 1, Summary: checkpointSummary,
+		}); err != nil {
+			t.Fatalf("checkpoint interrupted Attempt: %v", err)
+		}
 	}
 
 	_ = server.providerSessions.remove(createdTask.ID)
@@ -258,23 +286,6 @@ func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringC
 	if err != nil {
 		t.Fatalf("read interrupt steer Events: %v", err)
 	}
-	appliedCount := 0
-	for _, event := range events {
-		if event.Kind == task.EventKindSteering && event.Payload["phase"] == "steering_applied" {
-			appliedCount++
-			if event.ContinuationID != second.ID {
-				t.Errorf("steering_applied is outside resumed Continuation transaction: %#v", event)
-			}
-		}
-	}
-	if appliedCount != 1 {
-		t.Fatalf("steering_applied count = %d, want 1", appliedCount)
-	}
-	unconsumed, err := server.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
-	if err != nil || len(unconsumed) != 0 {
-		t.Fatalf("successful interrupt resume left steering retryable: %#v, %v", unconsumed, err)
-	}
-
 	deadline = time.Now().Add(5 * time.Second)
 	var resumedOutput string
 	for time.Now().Before(deadline) {
@@ -292,14 +303,34 @@ func TestBlackboardV2InterruptSteerUsesReconciledResumeContextAndAtomicSteeringC
 				resumedOutput += text
 			}
 		}
-		if strings.Contains(resumedOutput, checkpointSummary) {
+		if strings.Contains(resumedOutput, "continue from the checkpoint") {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	for _, required := range []string{createdTask.Goal, "continue from the checkpoint", "attempt:interrupt-steer", checkpointSummary} {
+	requiredOutput := []string{createdTask.Goal, "continue from the checkpoint"}
+	if mode != task.BlackboardModeDisabled {
+		requiredOutput = append(requiredOutput, "attempt:interrupt-steer", checkpointSummary)
+	}
+	for _, required := range requiredOutput {
 		if !strings.Contains(resumedOutput, required) {
 			t.Errorf("resumed Runtime omitted %q: %s", required, resumedOutput)
 		}
+	}
+	appliedCount := 0
+	for _, event := range events {
+		if event.Kind == task.EventKindSteering && event.Payload["phase"] == "steering_applied" {
+			appliedCount++
+			if event.ContinuationID != second.ID {
+				t.Errorf("steering_applied is outside resumed Continuation: %#v", event)
+			}
+		}
+	}
+	if appliedCount != 1 {
+		t.Fatalf("steering_applied count = %d, want 1", appliedCount)
+	}
+	unconsumed, err := server.tasks.UnconsumedHarnessSteering(context.Background(), createdTask.ID)
+	if err != nil || len(unconsumed) != 0 {
+		t.Fatalf("successful interrupt resume left steering retryable: %#v, %v", unconsumed, err)
 	}
 }

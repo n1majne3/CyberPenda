@@ -74,7 +74,7 @@ func (server *Server) runtimeControlsForTask(found task.Task, latest *task.TaskC
 		controls.NativeSteerError = steeringControl.error
 	}
 	if session, bound := server.providerSessions.get(found.ID); bound {
-		if selectedMode, modeErr := nativeSteerModeForSession(session, false); modeErr == nil {
+		if selectedMode, modeErr := nativeSteerModeForSession(session, profile.Provider, false); modeErr == nil {
 			controls.NativeSteerAvailable = active
 			controls.NativeSteerMode = string(selectedMode)
 			if steeringControl.nonTerminal {

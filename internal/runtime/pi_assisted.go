@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 
@@ -27,6 +28,8 @@ type piAssistedState struct {
 	candidates            map[string]piAttemptCandidate
 	delivered             map[string]bool
 	deliveredOrder        []string
+	turns                 map[string]piTurnLifecycle
+	turnOrder             []string
 }
 
 var piAssistedStates sync.Map
@@ -39,7 +42,13 @@ func (s *PiProviderSession) assistedState() *piAssistedState {
 		candidates: map[string]piAttemptCandidate{},
 		delivered:  map[string]bool{},
 	}
+	if s.SessionClosed() {
+		return created
+	}
 	found, _ := piAssistedStates.LoadOrStore(s, created)
+	if s.SessionClosed() {
+		piAssistedStates.Delete(s)
+	}
 	return found.(*piAssistedState)
 }
 
@@ -78,8 +87,8 @@ func (s *PiProviderSession) HandleEvent(event SandboxBridgeEvent, emit ProviderS
 	case method == "pi/subagent_output":
 		s.emitPiSubagentOutput(params, emit)
 		return
-	case piStartedBoundary(method):
-		s.emitPiLifecycle(event.Method, params, "started", emit)
+	case piLoopBoundary(method):
+		s.handlePiTurnLifecycle(event, params, emit)
 		return
 	case piMessageBoundary(method):
 		s.capturePiAttemptCandidate(params)
@@ -91,10 +100,9 @@ func (s *PiProviderSession) HandleEvent(event SandboxBridgeEvent, emit ProviderS
 		s.emitPiToolObservation(params, ProviderSessionObservationToolResult)
 		return
 	case piTerminalBoundary(method, params):
-		// Pi status is carried in params, so preserve completed/failed/
-		// interrupted rather than classifying every agent_end as completed.
-		s.projectPiTerminalLifecycle(event, params, piTerminalStatus(method, params), emit)
-		s.finishPiAssistedTurn(method, params)
+		outcome := piTerminalStatus(method, params)
+		s.projectPiTerminalLifecycle(event, params, outcome, emit)
+		s.finishPiAssistedTurn(params, outcome)
 		return
 	default:
 		s.providerSessionAdapter.HandleEvent(event, emit)
@@ -113,8 +121,13 @@ func (s *PiProviderSession) projectPiTerminalLifecycle(event SandboxBridgeEvent,
 	}
 	projected := false
 	errMsg, hasErr := piTerminalError(params)
-	s.providerSessionAdapter.HandleEvent(event, func(kind task.EventKind, payload task.EventPayload) {
+	bookkeeping := event
+	if strings.EqualFold(event.Method, "pi/agent_settled") {
+		bookkeeping.Method = "pi/agent_end"
+	}
+	s.providerSessionAdapter.HandleEvent(bookkeeping, func(kind task.EventKind, payload task.EventPayload) {
 		projected = true
+		payload["provider_event"] = event.Method
 		method := strings.ToLower(event.Method)
 		// Keep the existing interrupt lifecycle contract ("settled") for
 		// explicit abort/cancel/interrupt notifications. The assisted
@@ -133,8 +146,7 @@ func (s *PiProviderSession) projectPiTerminalLifecycle(event SandboxBridgeEvent,
 			emit(kind, payload)
 		}
 	})
-	// Some Pi terminal aliases (for example agent_settled) are intentionally
-	// provider-specific and are not classified by the generic lifecycle mapper.
+	// Other Pi terminal aliases can bypass the generic lifecycle mapper.
 	if !projected {
 		s.emitPiLifecycle(event.Method, params, outcome, emit)
 	}
@@ -232,6 +244,9 @@ func (s *PiProviderSession) emitPiLifecycle(providerEvent string, params map[str
 }
 
 func (s *PiProviderSession) capturePiAttemptCandidate(params map[string]any) {
+	if s.SessionClosed() {
+		return
+	}
 	lineage, _, _, ok := s.piEventLineage(params)
 	if !ok || lineage.Kind != RuntimeTurnKindControl {
 		return
@@ -266,7 +281,7 @@ func (s *PiProviderSession) emitPiToolObservation(params map[string]any, kind Pr
 	s.emitPiObservation(observation)
 }
 
-func (s *PiProviderSession) finishPiAssistedTurn(method string, params map[string]any) {
+func (s *PiProviderSession) finishPiAssistedTurn(params map[string]any, status string) {
 	lineage, sessionID, turnID, ok := s.piEventLineage(params)
 	if !ok {
 		return
@@ -290,12 +305,18 @@ func (s *PiProviderSession) finishPiAssistedTurn(method string, params map[strin
 	failureSink := state.validationFailureSink
 	state.mu.Unlock()
 
-	status := piTerminalStatus(method, params)
 	s.emitPiObservation(ProviderSessionObservation{
 		Kind: ProviderSessionObservationTurnCompleted, RequestID: lineage.RequestID,
 		SessionID: sessionID, ProviderTurnID: turnID, Status: status,
 	})
 	if lineage.Kind != RuntimeTurnKindControl {
+		return
+	}
+	if status != "completed" {
+		if failureSink != nil {
+			failureSink(attemptResultValidationFailure(lineage.RequestID, sessionID, turnID,
+				errors.New("Pi control Turn did not complete"), blackboardconclusion.ValidationReasonInvalidResult))
+		}
 		return
 	}
 
@@ -354,7 +375,7 @@ func (s *PiProviderSession) emitPiObservation(observation ProviderSessionObserva
 
 func (s *PiProviderSession) Close(ctx context.Context) error {
 	err := s.providerSessionAdapter.Close(ctx)
-	if err == nil || err == ErrProviderSessionClosed {
+	if err == nil || errors.Is(err, ErrProviderSessionClosed) || s.SessionClosed() {
 		piAssistedStates.Delete(s)
 	}
 	return err
@@ -362,10 +383,6 @@ func (s *PiProviderSession) Close(ctx context.Context) error {
 
 func piMessageBoundary(method string) bool {
 	return method == "pi/message_end" || method == "pi/message_completed"
-}
-
-func piStartedBoundary(method string) bool {
-	return method == "pi/agent_start" || method == "pi/turn_start"
 }
 
 func piToolUseBoundary(method string) bool {
@@ -386,6 +403,9 @@ func piTerminalBoundary(method string, params map[string]any) bool {
 }
 
 func piTerminalStatus(method string, params map[string]any) string {
+	if piTurnAborted(params) {
+		return "interrupted"
+	}
 	status := strings.ToLower(providerJSONValue(params, "status", "turn_status", "turnStatus"))
 	switch status {
 	case "failed", "error", "rejected":

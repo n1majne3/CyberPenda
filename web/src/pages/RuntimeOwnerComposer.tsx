@@ -1,10 +1,11 @@
-import { type KeyboardEvent, type RefObject } from "react";
+import { useEffect, useRef, type KeyboardEvent } from "react";
 import { Square, ChevronsUpDown, ArrowUp, CheckCircle2, CircleX, KeyRound, ListPlus, Loader2, Flag, Paperclip, PlugZap } from "lucide-react";
 import { type ModelProvider, type ProviderPermissionRequest } from "@/lib/api";
 import { Button, Badge, Select, Textarea } from "@/components/ui";
 import { displayReasoningEffort, REASONING_EFFORT_VALUES } from "./runtimeProfileForm";
-import { conversationModeText, steerPendingState } from "@/lib/runtimeOwner/conversationKernel";
+import { conversationModeText } from "@/lib/runtimeOwner/conversationKernel";
 import { type ConversationSendMode } from "@/lib/runtimeOwner/types";
+import { conversationStatus, type ConversationState } from "@/lib/runtimeOwner/conversationState";
 
 export function ProviderPermissionRequests({
   permissions,
@@ -64,6 +65,7 @@ export function RuntimeOwnerComposer({
   onFinish,
   finishAvailable,
   sending,
+  conversationState,
   running,
   queueAvailable,
   queueDisabled,
@@ -72,7 +74,6 @@ export function RuntimeOwnerComposer({
   sendMode,
   sendActionLabel,
   actionError,
-  steerState,
   steerError,
   replacementRecoveryAvailable,
   replacementSelected,
@@ -86,7 +87,6 @@ export function RuntimeOwnerComposer({
   onSelectModel,
   onSelectReasoningEffort,
   attachments,
-  attachmentInputRef,
   onAttachmentsChange,
 }: {
   ownerLabel: "Task" | "Session";
@@ -99,6 +99,7 @@ export function RuntimeOwnerComposer({
   onFinish: () => void;
   finishAvailable: boolean;
   sending: boolean;
+  conversationState: ConversationState;
   running: boolean;
   queueAvailable: boolean;
   queueDisabled: boolean;
@@ -107,7 +108,6 @@ export function RuntimeOwnerComposer({
   sendMode: ConversationSendMode;
   sendActionLabel: string;
   actionError: string | null;
-  steerState?: string;
   steerError?: string;
   replacementRecoveryAvailable: boolean;
   replacementSelected: boolean;
@@ -121,15 +121,27 @@ export function RuntimeOwnerComposer({
   onSelectModel: (model: string) => void;
   onSelectReasoningEffort: (effort: string) => void;
   attachments?: File[];
-  attachmentInputRef?: RefObject<HTMLInputElement | null>;
   onAttachmentsChange?: (files: File[]) => void;
 }) {
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!attachments?.length && attachmentInputRef.current) attachmentInputRef.current.value = "";
+  }, [attachments]);
   // The runtime is offline but resumable when the only admitted send mode is
   // resume: explain the state and its consequence instead of a bare badge.
   const runtimeOffline = sendMode === "resume";
+  const turnPhase = conversationState.runtime.turn;
+  const steeringPhase = conversationState.runtime.steering;
+  const stopping = conversationState.request?.operation === "stop" && sending;
   return (
     <div data-testid="task-composer" className="fixed inset-x-0 bottom-0 z-30 shrink-0 bg-background/95 px-3 py-2 shadow-[0_-8px_24px] shadow-black/15 backdrop-blur-sm sm:px-4 md:static md:z-10 md:shadow-none lg:px-0">
       <div className="mx-auto max-w-3xl space-y-2">
+        <div role="status" aria-live="polite" aria-atomic="true" aria-label="Conversation status"
+          data-testid="conversation-status" data-turn-phase={turnPhase} data-steering-phase={steeringPhase} data-phase={conversationState.phase}
+          className="flex min-h-5 items-center gap-2 text-xs text-muted-foreground">
+          <span aria-hidden="true" className={`h-1.5 w-1.5 rounded-full ${turnPhase === "busy" ? "bg-primary motion-safe:animate-pulse" : "bg-muted-foreground/50"}`} />
+          {conversationStatus(conversationState, turnPhase)}
+        </div>
         {actionError && <p role="alert" className="text-xs text-destructive">{actionError}</p>}
         {runtimeOffline && (
           <div className="flex items-center gap-2 rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-[hsl(28_90%_32%)]">
@@ -137,7 +149,7 @@ export function RuntimeOwnerComposer({
             <span>The Runtime is offline. Sending a message resumes this {ownerLabel} with a new Runtime.</span>
           </div>
         )}
-        {steerState === "action_required" && (
+        {steeringPhase === "action_required" && (
           <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs">
             <span>{steerError || "Steering needs operator action."}</span>
             {replacementRecoveryAvailable && (
@@ -147,7 +159,7 @@ export function RuntimeOwnerComposer({
             )}
           </div>
         )}
-        <div className="overflow-hidden rounded-lg border border-input bg-card shadow-sm focus-within:border-ring">
+        <div className="overflow-hidden rounded-lg border border-border/80 bg-card shadow-sm focus-within:border-ring">
           <Textarea
             aria-label={`${ownerLabel} message`}
             name="task_message"
@@ -231,14 +243,19 @@ export function RuntimeOwnerComposer({
                   {providerSwitchRequested ? "switch provider" : conversationModeText(sendMode)}
                 </Badge>
               )}
-              {steerPendingState(steerState) && (
+              {steeringPhase === "pending" && (
                 <Badge variant="warning" size="sm" data-testid="steer-pending-badge">
-                  steering pending…
+                  Steer pending
                 </Badge>
               )}
-              {steerState === "failed" && (
+              {steeringPhase === "failed" && (
                 <Badge variant="destructive" size="sm" data-testid="steer-failed-badge">
-                  steering failed
+                  Steer failed
+                </Badge>
+              )}
+              {steeringPhase === "delivered" && (
+                <Badge variant="outline" size="sm" title="Accepted by Runtime; completion is separate.">
+                  Sent
                 </Badge>
               )}
             </div>
@@ -269,7 +286,7 @@ export function RuntimeOwnerComposer({
                 </Button>
               )}
               {running && (
-                <Button size="icon-xl" variant="destructive" onClick={onStop} disabled={sending} aria-label={`Stop ${ownerLabel.toLowerCase()}`} title={`Stop ${ownerLabel}`}>
+                <Button size="icon-xl" variant="destructive" onClick={onStop} disabled={stopping} aria-label={`Stop ${ownerLabel.toLowerCase()}`} title={`Stop ${ownerLabel}`}>
                   <Square className="h-4 w-4" />
                 </Button>
               )}

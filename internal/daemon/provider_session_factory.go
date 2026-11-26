@@ -23,6 +23,7 @@ type ProviderSessionLaunchFacts struct {
 	Model               string
 	SettingsPath        string
 	Workdir             string
+	HostTaskRoot        string
 	Env                 map[string]string
 	SandboxContainerCLI string
 	SandboxCreateArgs   []string
@@ -131,12 +132,12 @@ func supportsPersistentProviderSession(runner task.Runner, provider runtimeprofi
 // Codex and Claude Code adapters (which forward output as bridge events) are
 // returned unchanged. Without this wrapping a persistent Pi session produces an
 // empty transcript because ProviderSessionRunAdapter never tails the jsonl.
-func wrapPersistentProviderAdapter(adapter runtime.Adapter, provider runtimeprofile.Provider, providerHome string) runtime.Adapter {
+func wrapPersistentProviderAdapter(adapter runtime.Adapter, provider runtimeprofile.Provider, providerHome string, retained ...string) runtime.Adapter {
 	if adapter == nil || provider != runtimeprofile.ProviderPi || strings.TrimSpace(providerHome) == "" {
 		return adapter
 	}
 	sessionDir := filepath.Join(providerHome, "agent", "sessions")
-	return runtime.NewPiSessionTailAdapter(adapter, sessionDir)
+	return runtime.NewPiSessionTailAdapter(adapter, sessionDir, retained...)
 }
 
 func validateProviderSessionBinding(binding ProviderSessionBinding) error {

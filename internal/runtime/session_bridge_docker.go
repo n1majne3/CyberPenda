@@ -93,6 +93,6 @@ func (d DockerCLISandboxBridgeDocker) Stop(_ context.Context, containerID string
 	return StopDockerContainer(d.cli(), containerID, dockerStopGrace)
 }
 
-func (d DockerCLISandboxBridgeDocker) Remove(_ context.Context, containerID string) error {
-	return RemoveDockerContainer(d.cli(), containerID)
+func (d DockerCLISandboxBridgeDocker) Remove(ctx context.Context, containerID string) error {
+	return removeDockerContainer(context.WithoutCancel(ctx), d.cli(), containerID)
 }

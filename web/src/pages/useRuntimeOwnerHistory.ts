@@ -30,7 +30,6 @@ export function useRuntimeOwnerHistory({
   commitHistory,
   setOwner,
   setFinishReadiness,
-  setTitleDraft,
   setError,
   setActionError,
 }: {
@@ -44,7 +43,6 @@ export function useRuntimeOwnerHistory({
   commitHistory: (next: OwnerHistory) => void;
   setOwner: Dispatch<SetStateAction<RuntimeOwnerView | null>>;
   setFinishReadiness: Dispatch<SetStateAction<FinishReadiness | null>>;
-  setTitleDraft: Dispatch<SetStateAction<string>>;
   setError: Dispatch<SetStateAction<string | null>>;
   setActionError: Dispatch<SetStateAction<string | null>>;
 }) {
@@ -82,7 +80,6 @@ export function useRuntimeOwnerHistory({
       }
       setOwner(loaded.owner);
       setFinishReadiness(loaded.finishReadiness ?? null);
-      if (loaded.owner.kind === "session") setTitleDraft(loaded.owner.title);
       // Merge into the latest state at commit time, not the pre-request
       // snapshot, so a backward page (or any other concurrent history
       // change) committed while this request was in flight is preserved

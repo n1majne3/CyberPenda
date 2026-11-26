@@ -24,7 +24,7 @@ export type ConversationKernelState = {
 };
 
 export type ConversationAction = {
-  run: (message: string, selection: ConversationSelection, adapter: RuntimeOwnerAdapter, attachments: File[]) => Promise<void>;
+  run: (message: string, selection: ConversationSelection, adapter: RuntimeOwnerAdapter, attachments: File[], isCurrent?: () => boolean, onAdmitted?: () => void) => Promise<void>;
 };
 
 export function resolveConversationAction(
@@ -46,29 +46,34 @@ export function resolveConversationAction(
   if (owner.kind === "session") {
     if (switchingProvider) {
       return {
-        run: async (message, selection, adapter, attachments) => {
+        run: async (message, selection, adapter, attachments, isCurrent = () => true, onAdmitted) => {
           await adapter.stop();
+          if (!isCurrent()) return;
           await adapter.sendMessage(message, selection, attachments);
+          onAdmitted?.();
         },
       };
     }
     if (state.running && (state.nativeSteerAvailable || state.interruptSteerAvailable)) {
       return {
-        run: async (message, selection, adapter, attachments) => {
+        run: async (message, selection, adapter, attachments, _isCurrent, onAdmitted) => {
           await adapter.steer({ text: message, selection, requestID, native: true, forceReplace: state.forceReplace, attachments });
+          onAdmitted?.();
         },
       };
     }
     if (state.running && state.queueSteerAvailable) {
       return {
-        run: async (message, selection, adapter, attachments) => {
+        run: async (message, selection, adapter, attachments, _isCurrent, onAdmitted) => {
           await adapter.queueSteer(message, selection, attachments);
+          onAdmitted?.();
         },
       };
     }
     return {
-      run: async (message, selection, adapter, attachments) => {
+      run: async (message, selection, adapter, attachments, _isCurrent, onAdmitted) => {
         await adapter.sendMessage(message, selection, attachments);
+        onAdmitted?.();
       },
     };
   }
@@ -81,16 +86,19 @@ export function resolveConversationAction(
     // Persist the message/config first, then restart the Continuation so a
     // failed stop or resume never drops the operator's request.
     return {
-      run: async (message, selection, adapter) => {
+      run: async (message, selection, adapter, _attachments, isCurrent = () => true, onAdmitted) => {
         await adapter.queueSteer(message, selection, []);
+        onAdmitted?.();
+        if (!isCurrent()) return;
         await adapter.stop();
+        if (!isCurrent()) return;
         await adapter.resume(selection);
       },
     };
   }
   if (state.running && (state.nativeSteerAvailable || state.interruptSteerAvailable)) {
     return {
-      run: async (message, selection, adapter) => {
+      run: async (message, selection, adapter, _attachments, _isCurrent, onAdmitted) => {
         await adapter.steer({
           text: message,
           selection,
@@ -98,22 +106,26 @@ export function resolveConversationAction(
           native: state.nativeSteerAvailable,
           forceReplace: state.forceReplace,
         });
+        onAdmitted?.();
       },
     };
   }
   if (state.running && state.queueSteerAvailable) {
     return {
-      run: async (message, selection, adapter) => {
+      run: async (message, selection, adapter, _attachments, _isCurrent, onAdmitted) => {
         await adapter.queueSteer(message, selection, []);
+        onAdmitted?.();
       },
     };
   }
   if (!state.running && state.queueSteerAvailable && state.resumeAvailable) {
     return {
-      run: async (message, selection, adapter) => {
+      run: async (message, selection, adapter, _attachments, isCurrent = () => true, onAdmitted) => {
         // Queue first so a failed resume retains the operator's message for the
         // next successful Continuation instead of silently dropping it.
         await adapter.queueSteer(message, selection, []);
+        onAdmitted?.();
+        if (!isCurrent()) return;
         await adapter.resume(selection);
       },
     };
@@ -141,7 +153,7 @@ export function conversationSendLabel(mode: ConversationSendMode, nativeSteerMod
   switch (mode) {
     case "native":
       if (selectionChanged || nativeSteerMode === "interrupt_then_replace") return "Interrupt and send";
-      if (nativeSteerMode === "in_turn_steer") return "Steer current turn";
+      if (nativeSteerMode === "in_turn_steer") return "Steer";
       return "Send";
     case "interrupt":
       return "Interrupt and send";
@@ -157,15 +169,15 @@ export function conversationSendLabel(mode: ConversationSendMode, nativeSteerMod
 export function conversationModeText(mode: ConversationSendMode): string {
   switch (mode) {
     case "native":
-      return "direct native";
+      return "Direct";
     case "interrupt":
-      return "interrupt then replace";
+      return "Replace";
     case "queue":
-      return "queued";
+      return "Queued";
     case "resume":
-      return "resume";
+      return "Resume";
     default:
-      return "unavailable";
+      return "Unavailable";
   }
 }
 

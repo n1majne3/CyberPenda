@@ -1,13 +1,13 @@
 import { fireEvent, screen, within } from "@testing-library/react";
 
 export function openRecentSessions() {
-  const region = screen.getByRole("region", { name: /recent sessions/i });
+  const region = screen.getByRole("group", { name: /recent sessions/i });
   if (!region.hasAttribute("open")) fireEvent.click(within(region).getByText(/^Recent sessions/));
   return region;
 }
 
 export async function findRecentSessions() {
-  await screen.findByRole("region", { name: /recent sessions/i });
+  await screen.findByRole("group", { name: /recent sessions/i });
   return openRecentSessions();
 }
 

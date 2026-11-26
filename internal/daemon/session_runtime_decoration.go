@@ -85,7 +85,7 @@ func (server *Server) decorateSessionFromData(found session.Session, data sessio
 	if isBound {
 		capabilities := bound.Capabilities()
 		controls.QueueSteerAvailable = capabilities.SendTurn
-		if mode, modeErr := nativeSteerModeForSession(bound, false); modeErr == nil {
+		if mode, modeErr := nativeSteerModeForSession(bound, runtimeprofile.Provider(provider), false); modeErr == nil {
 			controls.NativeSteerAvailable = true
 			controls.NativeSteerMode = string(mode)
 			controls.InterruptSteerAvailable = capabilities.InterruptThenReplace || capabilities.InTurnSteer

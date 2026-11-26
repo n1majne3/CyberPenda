@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 const OVERSCAN = 8;
 
@@ -90,7 +90,7 @@ export function useVirtualWindow(options: {
     }
     return offsets;
   }, [itemCount, rowKey, estimateHeight]);
-  const offsets = buildOffsets(rowHeights);
+  const offsets = useMemo(() => buildOffsets(rowHeights), [buildOffsets, rowHeights]);
   const totalHeight = offsets[itemCount]!;
 
   const height = viewportHeight > 0 ? viewportHeight : estimateHeight * 10;
@@ -102,10 +102,11 @@ export function useVirtualWindow(options: {
   const baseEnd = Math.min(itemCount, indexAt(offsets, scrollTop + height) + 1 + OVERSCAN);
   const endIndex = anchorTail ? itemCount : Math.min(itemCount, baseEnd + extension);
 
-  /* eslint-disable react-hooks/set-state-in-effect */
+  /* eslint-disable react-hooks/set-state-in-effect, react-hooks/immutability */
   useLayoutEffect(() => {
     if (!measured || !viewport || itemCount === 0) return;
-    const viewportTop = viewport.getBoundingClientRect().top;
+    const scrollContainer = viewport;
+    const viewportTop = scrollContainer.getBoundingClientRect().top;
 
     if (!anchorEnd && anchorRef.current && windowElement) {
       const anchorElement = windowElement.querySelector(
@@ -116,7 +117,7 @@ export function useVirtualWindow(options: {
         const contentOffset = anchorRect.top - viewportTop + viewport.scrollTop;
         const shift = contentOffset - anchorRef.current.contentOffset;
         if (Math.abs(shift) >= 1) {
-          viewport.scrollTop += shift;
+          scrollContainer.scrollTop += shift;
         }
       }
     }
@@ -171,7 +172,7 @@ export function useVirtualWindow(options: {
     endIndex, scrollTop, viewportHeight, contentVersion, extension,
     estimateHeight, totalHeight, rowHeights, offsets, buildOffsets,
   ]);
-  /* eslint-enable react-hooks/set-state-in-effect */
+  /* eslint-enable react-hooks/set-state-in-effect, react-hooks/immutability */
 
   if (!measured || itemCount === 0) {
     return { startIndex: 0, endIndex: itemCount, spacerBefore: 0, spacerAfter: 0, virtualized: false };

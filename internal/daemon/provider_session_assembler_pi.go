@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -61,6 +62,11 @@ func (a piAssembler) SandboxCommand(assembly providerSessionAssembly) ([]string,
 	}
 	args := []string{a.sandboxBridge, "--provider", "pi", "--", providerBinary, "--mode", "rpc"}
 	if sessionPath := strings.TrimSpace(assembly.request.Continuation.NativeSessionPath); sessionPath != "" {
+		if root := strings.TrimSpace(assembly.facts().HostTaskRoot); root != "" {
+			if relative, err := filepath.Rel(root, sessionPath); err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				sessionPath = path.Join("/task", filepath.ToSlash(relative))
+			}
+		}
 		args = append(args, "--session", sessionPath)
 	} else {
 		sessionID := strings.TrimSpace(assembly.request.Continuation.NativeSessionID)

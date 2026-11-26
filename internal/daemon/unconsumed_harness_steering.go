@@ -268,7 +268,7 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 			writeTaskLaunchError(response, err)
 			return
 		}
-		if !plan.BlackboardV2 {
+		if !plan.BlackboardV2 && len(plan.BlackboardV2SteeringEventIDs) == 0 {
 			_, _ = server.tasks.AppendEvent(taskID, task.EventKindSteering, task.EventPayload{
 				"phase":              "steering_applied",
 				"directive":          input.Directive,
@@ -330,8 +330,8 @@ func (server *Server) handleProviderSessionSteer(response http.ResponseWriter, r
 		return
 	}
 	settlement := server.taskConclusionSettlementForID(found.ID)
-	prepared, err := prepareAcceptedNativeSteer(
-		request.Context(), session,
+	prepared, err := prepareAcceptedNativeSteerForProvider(
+		request.Context(), session, runtimeProfile.Provider,
 		providerSelectionRequiresReplacement(runtimeProfile.Provider, currentSelection, selection),
 		input.ForceReplace, settlement,
 	)

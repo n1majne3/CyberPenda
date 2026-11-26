@@ -507,32 +507,19 @@ func StopDockerContainer(containerCLI, containerID string, grace time.Duration) 
 	if id == "" {
 		return nil
 	}
-	if err := runDockerContainerCommand(cli, grace, "stop", id); err == nil || isMissingDockerContainerError(err) {
+	if err := runDockerContainerCommand(cli, grace, "stop", id); err == nil || isStoppedDockerContainerError(err) {
 		return nil
 	}
 	err := runDockerContainerCommand(cli, grace, "kill", id)
-	if isMissingDockerContainerError(err) {
+	if isStoppedDockerContainerError(err) {
 		return nil
 	}
 	return err
 }
 
-// RemoveDockerContainer force-removes a docker container. Missing containers
-// are treated as a successful cleanup by Docker itself.
+// RemoveDockerContainer force-removes a container or confirms it is absent.
 func RemoveDockerContainer(containerCLI, containerID string) error {
-	cli := strings.TrimSpace(containerCLI)
-	if cli == "" {
-		cli = "docker"
-	}
-	id := strings.TrimSpace(containerID)
-	if id == "" {
-		return nil
-	}
-	err := runDockerContainerCommand(cli, 0, "rm", "-f", id)
-	if isMissingDockerContainerError(err) {
-		return nil
-	}
-	return err
+	return removeDockerContainer(context.Background(), containerCLI, containerID)
 }
 
 type dockerContainerCommandError struct {
@@ -541,8 +528,13 @@ type dockerContainerCommandError struct {
 }
 
 func (e dockerContainerCommandError) Error() string {
+	if detail := strings.TrimSpace(e.output); detail != "" {
+		return fmt.Sprintf("%v: %s", e.err, detail)
+	}
 	return e.err.Error()
 }
+
+func (e dockerContainerCommandError) Unwrap() error { return e.err }
 
 func runDockerContainerCommand(containerCLI string, timeout time.Duration, args ...string) error {
 	var cmd *exec.Cmd
@@ -570,4 +562,12 @@ func isMissingDockerContainerError(err error) bool {
 		return strings.Contains(text, "no such container") || strings.Contains(text, "no such object")
 	}
 	return false
+}
+
+func isStoppedDockerContainerError(err error) bool {
+	if isMissingDockerContainerError(err) {
+		return true
+	}
+	var commandErr dockerContainerCommandError
+	return errors.As(err, &commandErr) && strings.Contains(strings.ToLower(commandErr.output), "is not running")
 }

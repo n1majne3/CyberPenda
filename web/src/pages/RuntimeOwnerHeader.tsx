@@ -38,8 +38,8 @@ export function RuntimeOwnerHeader({
   controls: RuntimeOwnerView["runtimeControls"];
   editingTitle: boolean;
   setEditingTitle: Dispatch<SetStateAction<boolean>>;
-  titleDraft: string;
-  setTitleDraft: Dispatch<SetStateAction<string>>;
+  titleDraft: string | null;
+  setTitleDraft: Dispatch<SetStateAction<string | null>>;
   saveSessionTitle: () => Promise<void>;
   changeSessionLifecycle: (action: "archive" | "restore") => Promise<void>;
   running: boolean;
@@ -75,12 +75,12 @@ export function RuntimeOwnerHeader({
               <div className="flex min-w-0 flex-1 items-center gap-1.5">
                 <Input
                   aria-label="Session title"
-                  value={titleDraft}
+                  value={titleDraft ?? owner.title}
                   onChange={(event) => setTitleDraft(event.target.value)}
                   className="h-8 min-w-0"
                   autoFocus
                 />
-                <Button size="sm" onClick={() => void saveSessionTitle()} disabled={!titleDraft.trim()}>Save</Button>
+                <Button size="sm" onClick={() => void saveSessionTitle()} disabled={!titleDraft?.trim() || titleDraft.trim() === owner.title.trim()}>Save</Button>
                 <Button size="sm" variant="ghost" onClick={() => setEditingTitle(false)}>Cancel</Button>
               </div>
             ) : (
@@ -114,7 +114,7 @@ export function RuntimeOwnerHeader({
               </Button>
             )}
             {owner.capabilities.rename && !editingTitle && (
-              <Button size="sm" variant="ghost" onClick={() => setEditingTitle(true)} aria-label={`Rename ${owner.title}`} title="Rename Session">
+              <Button size="sm" variant="ghost" onClick={() => { setTitleDraft(null); setEditingTitle(true); }} aria-label={`Rename ${owner.title}`} title="Rename Session">
                 <Pencil className="h-4 w-4" /> Rename
               </Button>
             )}

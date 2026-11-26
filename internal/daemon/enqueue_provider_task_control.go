@@ -194,8 +194,12 @@ func (server *Server) handleResumeTask(response http.ResponseWriter, request *ht
 		}
 	}
 	if _, bound := server.providerSessions.get(taskID); bound {
-		writeError(response, http.StatusConflict, "task already has a live Runtime")
-		return
+		cleanupContext, cancel := context.WithTimeout(request.Context(), server.runtimeStopTimeout)
+		defer cancel()
+		if !server.providerSessions.waitAbsent(cleanupContext, taskID) {
+			writeError(response, http.StatusConflict, "task already has a live Runtime")
+			return
+		}
 	}
 	if input.hasSelection() {
 		if _, ok := server.recordSelectedRuntimeConfig(response, found, "", input); !ok {

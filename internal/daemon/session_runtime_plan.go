@@ -141,6 +141,7 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 		CustomArgs:     append([]string(nil), launchProfile.Fields.CustomArgs...),
 		SettingsPath:   configPath,
 		Workdir:        "/task/workdir",
+		HostTaskRoot:   layout.TaskRoot,
 		Env:            processEnv,
 	}
 	if run != session.RunnerSandbox {

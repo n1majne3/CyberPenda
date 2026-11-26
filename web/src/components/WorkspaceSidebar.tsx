@@ -331,7 +331,7 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
             </div>
           )}
         </section>
-        <details role="region" aria-labelledby="non-project-navigation" className="mt-5 px-2" open={currentSessionId || normalizedQuery ? true : undefined}>
+        <details aria-labelledby="non-project-navigation" className="mt-5 px-2" open={currentSessionId || normalizedQuery ? true : undefined}>
           <summary id="non-project-navigation" className="cursor-pointer text-[11px] text-muted-foreground">
             Recent sessions <span className="ml-1 tabular-nums">{filteredSessions.length}</span>
           </summary>
@@ -351,7 +351,7 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
           </div>
         </details>
       </nav>
-      <aside aria-label="Global settings" className="shrink-0 bg-sidebar px-[15px] pb-4 pt-5">
+      <section aria-label="Global settings" className="shrink-0 bg-sidebar px-[15px] pb-4 pt-5">
         <div className="mb-2 px-3 text-[10px] uppercase tracking-[1.2px] text-muted-foreground">Configuration</div>
         <div className="space-y-0.5">
           <SettingsLink to="/profiles" icon={<Cpu className="size-4" />} onNavigate={onNavigate}>Runtime profiles</SettingsLink>
@@ -367,7 +367,7 @@ export function WorkspaceSidebar({ onNavigate }: WorkspaceSidebarProps) {
               className={cn("rounded px-1 py-2 text-[10px] text-muted-foreground hover:text-foreground", sidebarFocusClass)}>Sign out</button>
           )}
         </div>
-      </aside>
+      </section>
       <PromptDialog
         open={renameTarget !== null}
         title={renameTarget ? `Rename ${renameTarget.title}` : "Rename session"}

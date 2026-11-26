@@ -71,6 +71,14 @@ export default {
           ring: "hsl(var(--sidebar-ring))",
         },
       },
+      textColor: {
+        destructive: {
+          DEFAULT: "hsl(var(--destructive-text))",
+        },
+        warning: {
+          DEFAULT: "hsl(var(--warning-text))",
+        },
+      },
       borderRadius: {
         sm: "0.125rem",
         md: "0.25rem",

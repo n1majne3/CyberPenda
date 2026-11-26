@@ -64,6 +64,7 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 	if created.ID == "" {
 		t.Fatal("created Session has no id")
 	}
+	waitForSessionRunning(t, server, created.ID)
 
 	var launchRequest ProviderSessionLaunchRequest
 	deadline := time.Now().Add(time.Second)
@@ -99,6 +100,7 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 	if message.Code != http.StatusAccepted {
 		t.Fatalf("Session message status = %d, body=%s", message.Code, message.Body.String())
 	}
+	waitForProviderRequests(t, providerSession, 1)
 
 	conversation := httptest.NewRecorder()
 	server.ServeHTTP(conversation, httptest.NewRequest(http.MethodGet, "/api/sessions/"+created.ID+"/conversation", nil))
@@ -262,4 +264,79 @@ func TestSessionLaunchUsesProjectFreeOwnerAndPersistentProviderControls(t *testi
 	if stop.Code != http.StatusOK {
 		t.Fatalf("Session stop status = %d, body=%s", stop.Code, stop.Body.String())
 	}
+}
+
+func TestPiSessionSteerInterruptsAndReplacesTheInFlightTurn(t *testing.T) {
+	providerSession := fakeprovider.New(fakeprovider.Config{
+		SessionID: "pi-session-steer",
+		Capabilities: runtimeplugin.Capabilities{
+			PersistentSession: true, SendTurn: true, InterruptThenReplace: true, InTurnSteer: true,
+		},
+	})
+	server, err := NewServer(Config{
+		Version: "test", DBPath: filepath.Join(t.TempDir(), "pentest.db"),
+		RuntimeRoot: t.TempDir(), DisableBuiltinSkills: true,
+		ProviderSessionFactory: &recordingProviderSessionFactory{session: providerSession, adapter: &persistentTestAdapter{}},
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	modelProvider := createSnapshotTestModelProvider(t, server, "qwen-session")
+	profile, err := server.profiles.Create("Session Pi", runtimeprofile.ProviderPi, runtimeprofile.Fields{
+		DefaultRunner: "host", ModelProviderID: modelProvider.ID, ModelOverride: "qwen-session",
+	})
+	if err != nil {
+		t.Fatalf("create Pi profile: %v", err)
+	}
+
+	create := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/sessions", bytes.NewBufferString(`{"input":"write a long answer","runtime_profile_id":"`+profile.ID+`","runner":"host","host_activated":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(create, request)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create Session status = %d, body=%s", create.Code, create.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(create.Body).Decode(&created); err != nil {
+		t.Fatalf("decode Session: %v", err)
+	}
+	waitForSessionRunning(t, server, created.ID)
+	message := httptest.NewRecorder()
+	messageRequest := httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/messages", bytes.NewBufferString(`{"message":"continue the long answer"}`))
+	messageRequest.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(message, messageRequest)
+	if message.Code != http.StatusAccepted {
+		t.Fatalf("Session message status = %d, body=%s", message.Code, message.Body.String())
+	}
+	waitForProviderRequests(t, providerSession, 1)
+
+	steer := httptest.NewRecorder()
+	steerRequest := httptest.NewRequest(http.MethodPost, "/api/sessions/"+created.ID+"/steer", bytes.NewBufferString(`{"message":"redirect now"}`))
+	steerRequest.Header.Set("Content-Type", "application/json")
+	server.ServeHTTP(steer, steerRequest)
+	if steer.Code != http.StatusAccepted {
+		t.Fatalf("Pi Session steer status = %d, body=%s", steer.Code, steer.Body.String())
+	}
+	waitForProviderRequests(t, providerSession, 2)
+	requests := providerSession.LastRequests()
+	if requests[1].Message != "redirect now" || requests[1].ProviderTurnID == "" {
+		t.Fatalf("Pi replacement request = %#v", requests[1])
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		active, activeErr := server.sessions.ActiveContinuation(created.ID)
+		if activeErr != nil {
+			t.Fatalf("read active Pi Session continuation: %v", activeErr)
+		}
+		if active != nil && active.Number == 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	active, activeErr := server.sessions.ActiveContinuation(created.ID)
+	t.Fatalf("Pi steer did not replace the active continuation: active=%#v err=%v", active, activeErr)
 }

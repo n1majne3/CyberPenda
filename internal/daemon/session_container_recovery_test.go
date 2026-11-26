@@ -137,6 +137,40 @@ func TestSessionRestartAcceptsAnAlreadyRemovedContainer(t *testing.T) {
 	_ = server.Close()
 }
 
+func TestSessionRestartWaitsForConcurrentContainerRemoval(t *testing.T) {
+	root := t.TempDir()
+	started := filepath.Join(root, "removal-started")
+	calls := filepath.Join(root, "removal-calls")
+	script := "if [ \"$1\" != rm ]; then exit 0; fi\n" +
+		"echo rm >> " + shellQuote(calls) + "\n" +
+		"if [ ! -f " + shellQuote(started) + " ]; then\n" +
+		"touch " + shellQuote(started) + "\n" +
+		"echo 'Error response from daemon: removal of container session-container is already in progress' >&2\nexit 1\nfi\n" +
+		"echo 'Error: No such container: session-container' >&2\nexit 1\n"
+	config, sessionID := sessionContainerRecoveryFixture(t, script)
+	server, err := daemon.NewServer(config)
+	if err != nil {
+		t.Fatalf("concurrent removal blocked Session recovery: %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(calls)
+	if err != nil || strings.TrimSpace(string(raw)) != "rm\nrm" {
+		t.Fatalf("recovery did not confirm removal: %q, %v", raw, err)
+	}
+	db, err := store.Open(config.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sessions := session.NewService(db, config.SessionRoot)
+	latest, err := sessions.LatestContinuation(sessionID)
+	if err != nil || latest == nil || latest.Status != session.RuntimeStatusInterrupted || latest.NativeSessionID != "native-session" {
+		t.Fatalf("recovered Continuation lost its state or native identity: %#v, %v", latest, err)
+	}
+}
+
 func TestSessionRestartDoesNotRemoveATerminalContinuationsContainer(t *testing.T) {
 	calls := filepath.Join(t.TempDir(), "container-calls")
 	config, sessionID := sessionContainerRecoveryFixture(t, "echo \"$*\" >> "+shellQuote(calls)+"\n")

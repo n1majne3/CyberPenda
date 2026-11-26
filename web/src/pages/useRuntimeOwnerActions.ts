@@ -1,14 +1,18 @@
-import type { Dispatch, KeyboardEvent, RefObject, SetStateAction } from "react";
+import type { Dispatch, KeyboardEvent, SetStateAction } from "react";
 import type { NavigateFunction } from "react-router-dom";
 import type { RuntimeOwnerAdapter } from "@/lib/runtimeOwner/adapter";
-import { conversationQueueUnavailable, newSteerRequestID, resolveConversationAction } from "@/lib/runtimeOwner/conversationKernel";
+import { conversationQueueUnavailable, resolveConversationAction } from "@/lib/runtimeOwner/conversationKernel";
 import { ACTIVE_OWNER_STATUSES } from "@/lib/runtimeOwner/status";
 import type { RuntimeOwnerView } from "@/lib/runtimeOwner/types";
+import { conversationBusy, type ConversationOperation } from "@/lib/runtimeOwner/conversationState";
 import type { useContinuationSelection } from "./useContinuationSelection";
+import { deriveConversationControls } from "./runtimeOwnerConversationControls";
+import { useConversationOperation } from "./useConversationOperation";
 
 export function useRuntimeOwnerActions({
   owner,
   ownerAdapter,
+  pollError,
   loadAll,
   setActionError,
   navigate,
@@ -16,12 +20,9 @@ export function useRuntimeOwnerActions({
   continuationModelPayload,
   steering,
   setSteering,
-  sending,
-  setSending,
   continuationModelProvider,
   attachments,
   setAttachments,
-  attachmentInput,
   forceReplaceNext,
   setForceReplaceNext,
   currentRuntimeProvider,
@@ -31,6 +32,7 @@ export function useRuntimeOwnerActions({
 }: {
   owner: RuntimeOwnerView | null;
   ownerAdapter: RuntimeOwnerAdapter;
+  pollError?: string | null;
   loadAll: (mode: "initial" | "poll") => Promise<void>;
   setActionError: Dispatch<SetStateAction<string | null>>;
   navigate: NavigateFunction;
@@ -38,39 +40,76 @@ export function useRuntimeOwnerActions({
   continuationModelPayload: ReturnType<typeof useContinuationSelection>["continuationModelPayload"];
   steering: string;
   setSteering: Dispatch<SetStateAction<string>>;
-  sending: boolean;
-  setSending: Dispatch<SetStateAction<boolean>>;
   continuationModelProvider: string;
   attachments: File[];
   setAttachments: Dispatch<SetStateAction<File[]>>;
-  attachmentInput: RefObject<HTMLInputElement | null>;
   forceReplaceNext: boolean;
   setForceReplaceNext: Dispatch<SetStateAction<boolean>>;
   currentRuntimeProvider: string | undefined;
   setPermissionBusy: Dispatch<SetStateAction<string>>;
-  titleDraft: string;
+  titleDraft: string | null;
   setEditingTitle: Dispatch<SetStateAction<boolean>>;
 }) {
+  const { operation, state: conversationState } = useConversationOperation(ownerAdapter.base, owner, pollError);
+  const sending = conversationBusy(conversationState);
+
+  async function runOperation(
+    kind: ConversationOperation,
+    run: (isCurrent: () => boolean, requestID: string) => Promise<unknown>,
+    accepted?: () => void,
+  ) {
+    const requestID = operation.begin(kind);
+    if (!requestID) return;
+    const isCurrent = () => operation.isCurrent(requestID);
+    setActionError(null);
+    try {
+      const request = run(isCurrent, requestID);
+      if (kind !== "stop") operation.track(request);
+      await request;
+      if (operation.isActive()) accepted?.();
+      if (!isCurrent()) return;
+      operation.accepted(requestID);
+      await loadAll("poll");
+      if (isCurrent()) operation.refreshed(requestID);
+    } catch (e) {
+      if (!isCurrent()) return;
+      const error = e instanceof Error ? e.message : String(e);
+      operation.rejected(requestID, error);
+      setActionError(error);
+    }
+  }
+
+  function clearSubmittedDraft() {
+    setSteering((current) => current === steering ? "" : current);
+    if (!owner?.capabilities.attachments) return;
+    setAttachments((current) => current.filter((file) => !attachments.includes(file)));
+  }
+
+  function conversationControls() {
+    if (!owner) return null;
+    const selection = continuationModelPayload();
+    return deriveConversationControls({
+      owner, currentContinuation: owner.activeContinuation ?? owner.latestContinuation,
+      currentRuntimeProvider, continuationModelProvider,
+      continuationModelOverride: selection.model ?? "",
+      continuationReasoningEffort: selection.reasoning_effort, forceReplaceNext,
+    });
+  }
+
   async function stop() {
     if (!owner) return;
-    try {
+    const pending = operation.pending();
+    await runOperation("stop", async () => {
+      if (pending.length) {
+        await Promise.allSettled([ownerAdapter.stop(), ...pending]);
+      }
       await ownerAdapter.stop();
-      setActionError(null);
-      loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
+    });
   }
 
   async function finishTask() {
     if (!owner?.capabilities.finish) return;
-    try {
-      await ownerAdapter.finish();
-      setActionError(null);
-      loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
+    await runOperation("finish", () => ownerAdapter.finish());
   }
 
   async function deleteTask() {
@@ -85,45 +124,28 @@ export function useRuntimeOwnerActions({
 
   async function resumeNative() {
     if (!owner?.capabilities.resumeWithoutMessage) return;
-    try {
-      await ownerAdapter.resume(continuationModelPayload());
-      setActionError(null);
-      loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    }
+    await runOperation("resume", () => ownerAdapter.resume(continuationModelPayload()));
   }
 
   async function queueSteer() {
     const directive = steering.trim();
-    if (!directive || sending || !owner) return;
+    const controls = conversationControls();
+    if (!directive || !owner || !controls?.queueActionAvailable || controls.sendMode === "unavailable") return;
     if (conversationQueueUnavailable(owner, continuationModelProvider.trim())) {
       setActionError("Queue cannot switch a Session model provider; use Switch provider and resume.");
       return;
     }
-    setSending(true);
-    try {
-      await ownerAdapter.queueSteer(directive, continuationModelPayload(), owner.capabilities.attachments ? attachments : []);
-      if (owner.capabilities.attachments) {
-        setAttachments([]);
-        if (attachmentInput.current) attachmentInput.current.value = "";
-      }
-      setSteering("");
-      setActionError(null);
-      await loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    } finally {
-      setSending(false);
-    }
+    await runOperation("queue", () => ownerAdapter.queueSteer(
+      directive, continuationModelPayload(), owner.capabilities.attachments ? attachments : [],
+    ), clearSubmittedDraft);
   }
 
   async function sendConversationMessage() {
     const message = steering.trim();
-    if (!message || sending || !owner) return;
-    setSending(true);
-    const requestID = newSteerRequestID();
-    try {
+    const controls = conversationControls();
+    if (!message || !owner || !controls || controls.sendMode === "unavailable"
+      || (controls.providerSwitchRequested && !controls.providerSwitchAvailable)) return;
+    await runOperation("send", async (isCurrent, requestID) => {
       const modelPayload = continuationModelPayload();
       const action = resolveConversationAction(owner, {
         running: ACTIVE_OWNER_STATUSES.has(owner.status),
@@ -138,20 +160,12 @@ export function useRuntimeOwnerActions({
         nativeSteerMode: owner.runtimeControls?.native_steer_mode,
         forceReplace: forceReplaceNext,
       }, requestID);
-      await action.run(message, modelPayload, ownerAdapter, owner.capabilities.attachments ? attachments : []);
-      setSteering("");
-      setForceReplaceNext(false);
-      if (owner.capabilities.attachments) {
-        setAttachments([]);
-        if (attachmentInput.current) attachmentInput.current.value = "";
-      }
-      setActionError(null);
-      await loadAll("poll");
-    } catch (e) {
-      setActionError((e as Error).message);
-    } finally {
-      setSending(false);
-    }
+      await action.run(message, modelPayload, ownerAdapter, owner.capabilities.attachments ? attachments : [], isCurrent, () => {
+        if (!operation.isActive()) return;
+        clearSubmittedDraft();
+        setForceReplaceNext(false);
+      });
+    });
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -174,7 +188,7 @@ export function useRuntimeOwnerActions({
   }
 
   async function saveSessionTitle() {
-    if (owner?.kind !== "session" || !titleDraft.trim()) return;
+    if (owner?.kind !== "session" || !titleDraft?.trim() || titleDraft.trim() === owner.title.trim()) return;
     try {
       await ownerAdapter.rename(titleDraft.trim());
       setEditingTitle(false);
@@ -197,6 +211,8 @@ export function useRuntimeOwnerActions({
   }
 
   return {
+    sending,
+    conversationState,
     stop,
     finishTask,
     deleteTask,

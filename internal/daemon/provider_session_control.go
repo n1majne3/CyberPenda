@@ -23,12 +23,18 @@ import (
 // It is intentionally in-memory: restart recovery must fail closed rather
 // than reattach an orphaned stdio process.
 type providerSessionRegistry struct {
-	mu       sync.RWMutex
-	sessions map[string]runtime.ProviderSession
+	mu             sync.RWMutex
+	sessions       map[string]runtime.ProviderSession
+	generations    map[string]uint64
+	nextGeneration uint64
+	changed        chan struct{}
 }
 
 func newProviderSessionRegistry() *providerSessionRegistry {
-	return &providerSessionRegistry{sessions: make(map[string]runtime.ProviderSession)}
+	return &providerSessionRegistry{
+		sessions: make(map[string]runtime.ProviderSession), generations: make(map[string]uint64),
+		changed: make(chan struct{}),
+	}
 }
 
 func (r *providerSessionRegistry) bind(taskID string, session runtime.ProviderSession) error {
@@ -42,6 +48,8 @@ func (r *providerSessionRegistry) bind(taskID string, session runtime.ProviderSe
 		return fmt.Errorf("provider session already bound to owner")
 	}
 	r.sessions[taskID] = session
+	r.nextGeneration++
+	r.generations[taskID] = r.nextGeneration
 	return nil
 }
 
@@ -70,25 +78,59 @@ func (r *providerSessionRegistry) remove(taskID string) runtime.ProviderSession 
 	defer r.mu.Unlock()
 	session := r.sessions[taskID]
 	delete(r.sessions, taskID)
+	delete(r.generations, taskID)
+	r.notifyReleaseLocked()
 	return session
+}
+
+func (r *providerSessionRegistry) notifyReleaseLocked() {
+	close(r.changed)
+	r.changed = make(chan struct{})
+}
+
+func (r *providerSessionRegistry) waitAbsent(ctx context.Context, ownerID string) bool {
+	for {
+		r.mu.RLock()
+		_, bound := r.sessions[ownerID]
+		changed := r.changed
+		r.mu.RUnlock()
+		if !bound {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-changed:
+		}
+	}
 }
 
 func (r *providerSessionRegistry) closeTask(ctx context.Context, taskID string) error {
 	r.mu.RLock()
 	session := r.sessions[taskID]
+	generation := r.generations[taskID]
 	r.mu.RUnlock()
 	if session == nil {
 		return nil
 	}
-	if err := session.Close(ctx); err != nil && !errors.Is(err, runtime.ErrProviderSessionClosed) {
-		return err
+	closeErr := session.Close(ctx)
+	if closeErr != nil && !errors.Is(closeErr, runtime.ErrProviderSessionClosed) {
+		closed, ok := session.(interface{ SessionClosed() bool })
+		if !ok || !closed.SessionClosed() {
+			return closeErr
+		}
 	}
 	r.mu.Lock()
-	if current, ok := r.sessions[taskID]; ok && current.SessionID() == session.SessionID() {
+	if current, ok := r.generations[taskID]; ok && current == generation {
 		delete(r.sessions, taskID)
+		delete(r.generations, taskID)
+		r.notifyReleaseLocked()
 	}
 	r.mu.Unlock()
-	return nil
+	if errors.Is(closeErr, runtime.ErrProviderSessionClosed) {
+		return nil
+	}
+	return closeErr
 }
 
 func (r *providerSessionRegistry) closeAll(ctx context.Context) error {
@@ -97,7 +139,9 @@ func (r *providerSessionRegistry) closeAll(ctx context.Context) error {
 	for taskID, session := range r.sessions {
 		sessions = append(sessions, session)
 		delete(r.sessions, taskID)
+		delete(r.generations, taskID)
 	}
+	r.notifyReleaseLocked()
 	r.mu.Unlock()
 	var errs []error
 	for _, session := range sessions {
@@ -317,6 +361,10 @@ type nativeSteerPreparation struct {
 // fence from one TurnState snapshot. Task and Session handlers must not read
 // TurnState again while accepting the same Steering request.
 func prepareAcceptedNativeSteer(ctx context.Context, session runtime.ProviderSession, selectionChanged, forceReplace bool, settlement providerControlSettlement) (nativeSteerPreparation, error) {
+	return prepareAcceptedNativeSteerForProvider(ctx, session, runtimeprofile.ProviderCodex, selectionChanged, forceReplace, settlement)
+}
+
+func prepareAcceptedNativeSteerForProvider(ctx context.Context, session runtime.ProviderSession, provider runtimeprofile.Provider, selectionChanged, forceReplace bool, settlement providerControlSettlement) (nativeSteerPreparation, error) {
 	if settlement != nil {
 		settled, err := settlement(ctx, false)
 		if err != nil {
@@ -334,10 +382,14 @@ func prepareAcceptedNativeSteer(ctx context.Context, session runtime.ProviderSes
 			return nativeSteerPreparation{Mode: runtime.ProviderSessionModeSendTurn}, nil
 		}
 	}
-	return prepareNativeSteer(session, selectionChanged, forceReplace)
+	return prepareNativeSteerForProvider(session, provider, selectionChanged, forceReplace)
 }
 
 func prepareNativeSteer(session runtime.ProviderSession, selectionChanged, forceReplace bool) (nativeSteerPreparation, error) {
+	return prepareNativeSteerForProvider(session, runtimeprofile.ProviderCodex, selectionChanged, forceReplace)
+}
+
+func prepareNativeSteerForProvider(session runtime.ProviderSession, provider runtimeprofile.Provider, selectionChanged, forceReplace bool) (nativeSteerPreparation, error) {
 	capabilities := session.Capabilities()
 	if !capabilities.PersistentSession || !capabilities.SendTurn {
 		return nativeSteerPreparation{}, &runtime.UnsupportedProviderSessionCapabilityError{Capability: runtime.ProviderSessionCapabilityPersistentSession}
@@ -347,7 +399,8 @@ func prepareNativeSteer(session runtime.ProviderSession, selectionChanged, force
 	if activeTurnID == "" {
 		return nativeSteerPreparation{Mode: runtime.ProviderSessionModeSendTurn}, nil
 	}
-	if forceReplace || selectionChanged || state.ActiveTurnKind != runtime.RuntimeTurnKindWork {
+	piSteerReplacesTurn := provider == runtimeprofile.ProviderPi
+	if forceReplace || selectionChanged || piSteerReplacesTurn || state.ActiveTurnKind != runtime.RuntimeTurnKindWork {
 		if !capabilities.InterruptThenReplace {
 			if state.ActiveTurnKind != runtime.RuntimeTurnKindWork {
 				return nativeSteerPreparation{}, &runtime.ProviderSessionOperationError{
@@ -367,8 +420,8 @@ func prepareNativeSteer(session runtime.ProviderSession, selectionChanged, force
 	return nativeSteerPreparation{}, &runtime.UnsupportedProviderSessionCapabilityError{Capability: runtime.ProviderSessionCapabilityInTurnSteer}
 }
 
-func nativeSteerModeForSession(session runtime.ProviderSession, selectionChanged bool) (runtime.ProviderSessionMode, error) {
-	prepared, err := prepareNativeSteer(session, selectionChanged, false)
+func nativeSteerModeForSession(session runtime.ProviderSession, provider runtimeprofile.Provider, selectionChanged bool) (runtime.ProviderSessionMode, error) {
+	prepared, err := prepareNativeSteerForProvider(session, provider, selectionChanged, false)
 	return prepared.Mode, err
 }
 

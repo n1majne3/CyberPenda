@@ -109,8 +109,8 @@ func (server *Server) handleSessionSteer(response http.ResponseWriter, request *
 		writeError(response, http.StatusBadRequest, err.Error())
 		return
 	}
-	prepared, err := prepareAcceptedNativeSteer(
-		request.Context(), provider,
+	prepared, err := prepareAcceptedNativeSteerForProvider(
+		request.Context(), provider, runtimeprofile.Provider(active.RuntimeProvider),
 		providerSelectionRequiresReplacement(runtimeprofile.Provider(active.RuntimeProvider), currentSelection, selection),
 		input.ForceReplace, adapter.settlement,
 	)
