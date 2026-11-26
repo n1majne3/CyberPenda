@@ -82,6 +82,7 @@ func TestFixtureCorpusCoversEveryFrozenV2WireShape(t *testing.T) {
 		"relationship.depends_on",
 		"relationship.derived_from",
 		"relationship.evidences",
+		"relationship.invalidates",
 		"relationship.part_of",
 		"relationship.produced",
 		"relationship.satisfies",

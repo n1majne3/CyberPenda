@@ -81,9 +81,20 @@ func (s *Service) applySession(ctx context.Context, sessionID, continuationID st
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	baseRevision := revision
+	abandonedObjectives := make(map[string]abandonedObjectiveValidation)
 	kernel, err := applySemanticChangeSet(ctx, tx, revision, batch.Changes, now, semanticChangeBackend{
-		prepare: func(_ context.Context, _ *sql.Tx, change Change, index int) (Change, error) {
-			return change, validateSessionChangeCapability(change, index)
+		prepare: func(ctx context.Context, tx *sql.Tx, change Change, index int) (Change, error) {
+			if err := validateSessionChangeCapability(change, index); err != nil {
+				return Change{}, err
+			}
+			if change.Op == "transition" && change.Status == "abandoned" {
+				proofFacts, err := sessionIncomingInvalidatingFactKeys(ctx, tx, sessionID, change.Key)
+				if err != nil {
+					return Change{}, err
+				}
+				abandonedObjectives[change.Key] = abandonedObjectiveValidation{path: fmt.Sprintf("changes[%d].status", index), proofFacts: proofFacts}
+			}
+			return change, nil
 		},
 		create: func(ctx context.Context, tx *sql.Tx, revision, index int, change Change, now string) (int, string, int, bool, error) {
 			return sessionApplyCreate(ctx, tx, sessionID, revision, index, change, now)
@@ -110,6 +121,9 @@ func (s *Service) applySession(ctx context.Context, sessionID, continuationID st
 	}
 	revision = kernel.Revision
 	if err := sessionValidateFinalTerminalAttempts(ctx, tx, sessionID, kernel.TerminalAttempts); err != nil {
+		return ChangeResult{}, err
+	}
+	if err := sessionValidateFinalAbandonedObjectives(ctx, tx, sessionID, abandonedObjectives); err != nil {
 		return ChangeResult{}, err
 	}
 	result := makeChangeResult(revision, kernel.ChangedRecords, kernel.ChangedRelations)

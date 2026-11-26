@@ -106,7 +106,9 @@ func TestRelationshipHistoryUsesSemanticVersionOrderAcrossPages(t *testing.T) {
 		Changes: []blackboardv2.Change{
 			{Op: "create", Key: "objective:dependent-history", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Exercise the dependent path"}},
 			{Op: "create", Key: "objective:prerequisite-history", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Map the prerequisite path"}},
+			{Op: "create", Key: "fact:dependent-history-invalidated", Type: "fact", Record: blackboardv2.FactRecord{Category: "endpoint", Summary: "The dependent path is no longer relevant", Confidence: "tentative", ScopeStatus: "in_scope"}},
 			{Op: "relate", From: "objective:dependent-history", Relation: "depends_on", To: "objective:prerequisite-history", Reason: "The prerequisite must be mapped first"},
+			{Op: "relate", From: "fact:dependent-history-invalidated", Relation: "invalidates", To: "objective:dependent-history"},
 		},
 	})
 	if err != nil {
@@ -178,14 +180,15 @@ func TestRelationshipHistoryUsesSemanticVersionOrderAcrossPages(t *testing.T) {
 		}
 		cursor = page.NextCursor
 	}
-	if len(items) != 4 {
-		t.Fatalf("history items = %#v, want two record and two relationship versions", items)
+	if len(items) != 5 {
+		t.Fatalf("history items = %#v, want two record, two dependency relationship, and one invalidation relationship versions", items)
 	}
 	if items[0].Kind != "record" || items[0].Version != 1 || items[1].Kind != "record" || items[1].Version != 2 {
 		t.Fatalf("record history order = %#v", items[:2])
 	}
 	if items[2].Kind != "relationship" || items[2].Version != 1 || items[2].Reason != "The prerequisite must be mapped first" ||
-		items[3].Kind != "relationship" || items[3].Version != 2 || items[3].Reason != "The prerequisite boundary must be mapped first" {
+		items[3].Kind != "relationship" || items[3].Version != 2 || items[3].Reason != "The prerequisite boundary must be mapped first" ||
+		items[4].Kind != "relationship" || items[4].Relation != "invalidates" || items[4].Version != 1 {
 		t.Fatalf("relationship history order = %#v", items[2:])
 	}
 }
@@ -209,7 +212,9 @@ func TestHistoryCursorRejectsRevisionDriftAndMalformedValues(t *testing.T) {
 		Changes: []blackboardv2.Change{
 			{Op: "create", Key: "objective:cursor-dependent", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Exercise cursor pagination"}},
 			{Op: "create", Key: "objective:cursor-prerequisite", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Provide cursor history"}},
+			{Op: "create", Key: "fact:cursor-dependent-invalidated", Type: "fact", Record: blackboardv2.FactRecord{Category: "endpoint", Summary: "The cursor dependent path is no longer relevant", Confidence: "tentative", ScopeStatus: "in_scope"}},
 			{Op: "relate", From: "objective:cursor-dependent", Relation: "depends_on", To: "objective:cursor-prerequisite", Reason: "Initial cursor relationship reason"},
+			{Op: "relate", From: "fact:cursor-dependent-invalidated", Relation: "invalidates", To: "objective:cursor-dependent"},
 		},
 	})
 	if err != nil {

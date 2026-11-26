@@ -86,6 +86,7 @@
         "derived_from",
         "depends_on",
         "satisfies",
+        "invalidates",
         "supersedes"
       ]
     },
@@ -104,7 +105,8 @@
         "produced",
         "evidences",
         "derived_from",
-        "satisfies"
+        "satisfies",
+        "invalidates"
       ]
     },
     "mutableRelationType": {
@@ -118,7 +120,8 @@
         "contradicts",
         "derived_from",
         "depends_on",
-        "satisfies"
+        "satisfies",
+        "invalidates"
       ]
     },
     "entityRecord": {
@@ -1341,6 +1344,7 @@
                 "evidences",
                 "derived_from",
                 "satisfies",
+                "invalidates",
                 "supersedes"
               ]
             },
@@ -1767,6 +1771,7 @@
                 "evidences",
                 "derived_from",
                 "satisfies",
+                "invalidates",
                 "supersedes"
               ]
             },

@@ -143,6 +143,11 @@ describe("blackboard v2 data contracts", () => {
       to: "b",
       reason: "because",
     });
+    expect(parseRelationship(["fact:removed", "invalidates", "objective:login"])).toEqual({
+      from: "fact:removed",
+      relation: "invalidates",
+      to: "objective:login",
+    });
     expect(() => parseRelationship("a about b")).toThrow(/array tuple/i);
     expect(() => parseRelationship(["a", "blocks", "b"])).toThrow(/closed relationship/i);
   });
@@ -229,7 +234,7 @@ describe("blackboard v2 data contracts", () => {
     }
     expect(graph.nodes.every((n) => n.key.includes(":"))).toBe(true);
     expect(graph.edges).toHaveLength(2);
-    expect(RELATIONSHIP_TYPES).toHaveLength(11);
+    expect(RELATIONSHIP_TYPES).toHaveLength(12);
     expect(RECORD_TYPES).toHaveLength(7);
   });
 

@@ -101,19 +101,21 @@ func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 	abandoned, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
 		Schema:         "semantic-change-batch/v2",
 		IdempotencyKey: "abandon-objective",
-		Changes: []blackboardv2.Change{{
-			Op: "transition", Key: "objective:abandon", Version: 1, Status: "abandoned", ResolutionSummary: "The endpoint was removed before testing",
-		}},
+		Changes: []blackboardv2.Change{
+			{Op: "create", Key: "fact:removed-login-path", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "The login path was removed before testing", Confidence: "tentative", ScopeStatus: "in_scope"}},
+			{Op: "relate", From: "fact:removed-login-path", Relation: "invalidates", To: "objective:abandon"},
+			{Op: "transition", Key: "objective:abandon", Version: 1, Status: "abandoned", ResolutionSummary: "The endpoint was removed before testing"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("abandon Objective: %v", err)
 	}
-	assertChangeRecords(t, abandoned, 5, [][]any{{"objective:abandon", float64(2)}})
+	assertChangeRecords(t, abandoned, 7, [][]any{{"fact:removed-login-path", float64(1)}, {"objective:abandon", float64(2)}})
 	abandonedHistory, err := service.ReadHistory(ctx, createdProject.ID, "objective:abandon", blackboardv2.HistoryOptions{})
 	if err != nil {
 		t.Fatalf("read abandoned Objective history: %v", err)
 	}
-	if len(abandonedHistory.Items) != 2 || abandonedHistory.Items[1].Record.Status != "abandoned" || abandonedHistory.Items[1].Record.ResolutionSummary != "The endpoint was removed before testing" {
+	if len(abandonedHistory.Items) != 3 || abandonedHistory.Items[1].Record.Status != "abandoned" || abandonedHistory.Items[1].Record.ResolutionSummary != "The endpoint was removed before testing" || abandonedHistory.Items[2].Relation != "invalidates" {
 		t.Fatalf("abandoned Objective history = %#v", abandonedHistory.Items)
 	}
 	assertContractJSON(t, harness, "semanticHistory", abandonedHistory)
@@ -121,8 +123,8 @@ func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot after no-meaning abandonment: %v", err)
 	}
-	if len(noMeaningSnapshot.Knowledge.Facts) != 0 {
-		t.Fatalf("no-meaning abandonment manufactured Facts: %#v", noMeaningSnapshot.Knowledge.Facts)
+	if len(noMeaningSnapshot.Knowledge.Facts) != 1 || noMeaningSnapshot.Knowledge.Facts["fact:removed-login-path"].Summary != "The login path was removed before testing" {
+		t.Fatalf("abandonment proof Fact is not current semantic knowledge: %#v", noMeaningSnapshot.Knowledge.Facts)
 	}
 
 	meaningfulAbandonment, err := service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{
@@ -131,15 +133,15 @@ func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 		Changes: []blackboardv2.Change{
 			{Op: "create", Key: "objective:meaningful-abandonment", Type: "objective", Record: blackboardv2.ObjectiveRecord{Status: "open", Objective: "Test the retired administrative login endpoint"}},
 			{Op: "create", Key: "fact:retired-admin-login", Type: "fact", Record: blackboardv2.FactRecord{Category: "authentication", Summary: "The legacy administrative login endpoint was removed from the current deployment", Confidence: "tentative", ScopeStatus: "in_scope"}},
-			{Op: "relate", From: "objective:meaningful-abandonment", Relation: "derived_from", To: "fact:retired-admin-login"},
+			{Op: "relate", From: "fact:retired-admin-login", Relation: "invalidates", To: "objective:meaningful-abandonment"},
 			{Op: "transition", Key: "objective:meaningful-abandonment", Version: 1, Status: "abandoned", ResolutionSummary: "The endpoint retirement is reusable deployment knowledge"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("abandon Objective with reusable meaning: %v", err)
 	}
-	assertChangeRecords(t, meaningfulAbandonment, 9, [][]any{{"fact:retired-admin-login", float64(1)}, {"objective:meaningful-abandonment", float64(2)}})
-	assertRelationResult(t, meaningfulAbandonment, [][]any{{"objective:meaningful-abandonment", "derived_from", "fact:retired-admin-login", float64(1)}})
+	assertChangeRecords(t, meaningfulAbandonment, 11, [][]any{{"fact:retired-admin-login", float64(1)}, {"objective:meaningful-abandonment", float64(2)}})
+	assertRelationResult(t, meaningfulAbandonment, [][]any{{"fact:retired-admin-login", "invalidates", "objective:meaningful-abandonment", float64(1)}})
 	if fact, err := service.ReadCurrent(ctx, createdProject.ID, "fact:retired-admin-login"); err != nil || fact.Record.Summary != "The legacy administrative login endpoint was removed from the current deployment" {
 		t.Fatalf("reusable abandonment Fact is not current = %#v, %v", fact, err)
 	}
@@ -147,7 +149,7 @@ func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read meaningful abandoned Objective history: %v", err)
 	}
-	if len(meaningfulHistory.Items) != 3 || meaningfulHistory.Items[2].Relation != "derived_from" || meaningfulHistory.Items[2].To != "fact:retired-admin-login" {
+	if len(meaningfulHistory.Items) != 3 || meaningfulHistory.Items[2].Relation != "invalidates" || meaningfulHistory.Items[2].From != "fact:retired-admin-login" || meaningfulHistory.Items[2].To != "objective:meaningful-abandonment" {
 		t.Fatalf("meaningful abandoned Objective history = %#v", meaningfulHistory.Items)
 	}
 
@@ -161,7 +163,7 @@ func TestObjectiveLifecycleAndWorkflowChangeShapesAreClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("supersede Objective: %v", err)
 	}
-	assertChangeRecords(t, superseded, 10, [][]any{{"objective:old", float64(2)}})
+	assertChangeRecords(t, superseded, 12, [][]any{{"objective:old", float64(2)}})
 	assertRelationResult(t, superseded, [][]any{{"objective:new", "supersedes", "objective:old", float64(1)}})
 
 	_, err = service.Apply(ctx, createdProject.ID, blackboardv2.ChangeBatch{

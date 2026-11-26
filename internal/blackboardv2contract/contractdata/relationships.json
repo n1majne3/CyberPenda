@@ -153,6 +153,21 @@
       ]
     },
     {
+      "relation": "invalidates",
+      "reason_policy": "forbidden",
+      "self_link_policy": "reject",
+      "cycle_policy": "unrestricted",
+      "matrix": [
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, true, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false],
+        [false, false, false, false, false, false, false]
+      ]
+    },
+    {
       "relation": "supersedes",
       "reason_policy": "forbidden",
       "self_link_policy": "reject",

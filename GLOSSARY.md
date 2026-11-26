@@ -702,6 +702,10 @@ _Avoid_: edge ID, audit lineage, untyped relation
 A durable project-scoped investigation direction that may be derived from existing **Project Facts**, **Findings**, or **Solutions** and points toward an unknown future conclusion. It may inform a **Task Goal** and later resolve through **Project Facts**, **Findings**, or **Solutions**, but it is not **Current Truth** by itself.
 _Avoid_: intent, open relationship, task, attack graph edge
 
+**Invalidates Relationship**:
+A **Blackboard Relationship** from a **Project Fact** to an **Exploration Objective** that proves why the Objective can be abandoned. It is distinct from `contradicts`, which disputes knowledge and does not prove abandonment.
+_Avoid_: contradicts, objective deletion, task cancellation
+
 **Attempt**:
 A durable Blackboard record of one exploration episode that tests an **Exploration Objective**, **Entity**, **Project Fact**, **Finding**, or **Solution** and concludes with a distilled outcome.
 _Avoid_: Task, command, tool call, raw output

@@ -672,9 +672,9 @@ The daemon owns one versioned source string. Every built-in Runtime receives the
 6. **Use stable identities and optimistic versions.** Reuse stable keys for the same durable concept, supply current expected versions, and reread on `version_conflict`.
 7. **Make retries replay-safe.** Choose an idempotency key before each semantic action and reuse that exact key and payload after uncertainty. Never reuse a key for a different payload.
 8. **Checkpoint meaningful progress.** Use Attempt checkpoint after a material phase so interruption recovery has a compact truthful summary.
-9. **Record outcomes with their reasoning chain.** Link Runtime-created outputs with `produced`, retain proof with Evidence, and use `supports`, `contradicts`, `evidences`, `satisfies`, and lineage edges precisely.
+9. **Record outcomes with their reasoning chain.** Link Runtime-created outputs with `produced`, retain proof with Evidence, and use `supports`, `contradicts`, `evidences`, `satisfies`, `invalidates`, and lineage edges precisely.
 10. **Conclude every Attempt.** Transition it once to `succeeded`, `failed`, `blocked`, or `inconclusive` with a distilled summary. Do not mark `interrupted` yourself.
-11. **Resolve Objectives only with `satisfies`.** A Task Summary outcome alone does not close an Objective.
+11. **Resolve Objectives only with `satisfies` and abandon them only with `invalidates`.** A Task Summary outcome alone does not close an Objective.
 12. **Treat scope labels as memory, not authorization.** Follow `.pentest/scope.json` and the Runner/task policy. Blackboard scope status never grants permission.
 13. **Finish last.** After all current-Continuation Attempts are terminal and the graph is current, call Finish with a compact handoff summary. Make no later Blackboard write in that Continuation.
 14. **Do not hide protocol defects.** If a trusted operation fails, surface the stable error and retry only when its contract says retryable.
