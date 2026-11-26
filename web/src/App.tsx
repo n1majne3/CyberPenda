@@ -238,7 +238,7 @@ export default function App() {
   const router = useMemo(() => createAppRouter(), []);
   return (
     <OperatorCredentialGate>
-      <RouterProvider router={router} />
+      <RouterProvider router={router} useTransitions={false} />
     </OperatorCredentialGate>
   );
 }
