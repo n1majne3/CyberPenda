@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"pentest/internal/keymutex"
@@ -80,7 +81,7 @@ func (s *productionBoundSession) HandleEvent(event runtime.SandboxBridgeEvent, e
 
 func (s *productionBoundSession) Close(ctx context.Context) error {
 	err := s.ProviderSession.Close(ctx)
-	if err == nil || err == runtime.ErrProviderSessionClosed {
+	if err == nil || errors.Is(err, runtime.ErrProviderSessionClosed) || s.SessionClosed() {
 		s.once.Do(func() {
 			if s.onClose != nil {
 				s.onClose(ctx)

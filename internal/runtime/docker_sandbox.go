@@ -541,8 +541,13 @@ type dockerContainerCommandError struct {
 }
 
 func (e dockerContainerCommandError) Error() string {
+	if detail := strings.TrimSpace(e.output); detail != "" {
+		return fmt.Sprintf("%v: %s", e.err, detail)
+	}
 	return e.err.Error()
 }
+
+func (e dockerContainerCommandError) Unwrap() error { return e.err }
 
 func runDockerContainerCommand(containerCLI string, timeout time.Duration, args ...string) error {
 	var cmd *exec.Cmd

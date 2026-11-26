@@ -23,13 +23,18 @@ import (
 // It is intentionally in-memory: restart recovery must fail closed rather
 // than reattach an orphaned stdio process.
 type providerSessionRegistry struct {
-	mu       sync.RWMutex
-	sessions map[string]runtime.ProviderSession
-	changed  chan struct{}
+	mu             sync.RWMutex
+	sessions       map[string]runtime.ProviderSession
+	generations    map[string]uint64
+	nextGeneration uint64
+	changed        chan struct{}
 }
 
 func newProviderSessionRegistry() *providerSessionRegistry {
-	return &providerSessionRegistry{sessions: make(map[string]runtime.ProviderSession), changed: make(chan struct{})}
+	return &providerSessionRegistry{
+		sessions: make(map[string]runtime.ProviderSession), generations: make(map[string]uint64),
+		changed: make(chan struct{}),
+	}
 }
 
 func (r *providerSessionRegistry) bind(taskID string, session runtime.ProviderSession) error {
@@ -43,6 +48,8 @@ func (r *providerSessionRegistry) bind(taskID string, session runtime.ProviderSe
 		return fmt.Errorf("provider session already bound to owner")
 	}
 	r.sessions[taskID] = session
+	r.nextGeneration++
+	r.generations[taskID] = r.nextGeneration
 	return nil
 }
 
@@ -71,6 +78,7 @@ func (r *providerSessionRegistry) remove(taskID string) runtime.ProviderSession 
 	defer r.mu.Unlock()
 	session := r.sessions[taskID]
 	delete(r.sessions, taskID)
+	delete(r.generations, taskID)
 	r.notifyReleaseLocked()
 	return session
 }
@@ -100,20 +108,29 @@ func (r *providerSessionRegistry) waitAbsent(ctx context.Context, ownerID string
 func (r *providerSessionRegistry) closeTask(ctx context.Context, taskID string) error {
 	r.mu.RLock()
 	session := r.sessions[taskID]
+	generation := r.generations[taskID]
 	r.mu.RUnlock()
 	if session == nil {
 		return nil
 	}
-	if err := session.Close(ctx); err != nil && !errors.Is(err, runtime.ErrProviderSessionClosed) {
-		return err
+	closeErr := session.Close(ctx)
+	if closeErr != nil && !errors.Is(closeErr, runtime.ErrProviderSessionClosed) {
+		closed, ok := session.(interface{ SessionClosed() bool })
+		if !ok || !closed.SessionClosed() {
+			return closeErr
+		}
 	}
 	r.mu.Lock()
-	if current, ok := r.sessions[taskID]; ok && current.SessionID() == session.SessionID() {
+	if current, ok := r.generations[taskID]; ok && current == generation {
 		delete(r.sessions, taskID)
+		delete(r.generations, taskID)
 		r.notifyReleaseLocked()
 	}
 	r.mu.Unlock()
-	return nil
+	if errors.Is(closeErr, runtime.ErrProviderSessionClosed) {
+		return nil
+	}
+	return closeErr
 }
 
 func (r *providerSessionRegistry) closeAll(ctx context.Context) error {
@@ -122,6 +139,7 @@ func (r *providerSessionRegistry) closeAll(ctx context.Context) error {
 	for taskID, session := range r.sessions {
 		sessions = append(sessions, session)
 		delete(r.sessions, taskID)
+		delete(r.generations, taskID)
 	}
 	r.notifyReleaseLocked()
 	r.mu.Unlock()
