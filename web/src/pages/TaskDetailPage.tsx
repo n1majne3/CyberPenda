@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowDown, ArrowUp, Loader2 } from "lucide-react";
 import { apiGet, type FinishReadiness, type ModelProvider, type RuntimePlugin, type RuntimeProfile } from "@/lib/api";
@@ -56,7 +56,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   } = useConversationFollow({ owner, activeView, history, historyRef, commitHistory });
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
   const [steering, setSteering] = useState("");
   const [forceReplaceNext, setForceReplaceNext] = useState(false);
   const [profiles, setProfiles] = useState<RuntimeProfile[]>([]);
@@ -80,7 +79,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   const [titleDraft, setTitleDraft] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const [confirmAction, setConfirmAction] = useState<"stop" | "finish" | "delete" | null>(null);
-  const attachmentInput = useRef<HTMLInputElement>(null);
   const base = isSession ? `/api/sessions/${sessionId}` : `/api/projects/${projectId}/tasks/${taskId}`;
   // The behavioral owner adapter owns every endpoint and payload shape; the
   // workspace keeps only rendering and orchestration.
@@ -151,6 +149,8 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
 
 
   const {
+    sending,
+    conversationState,
     stop,
     finishTask,
     deleteTask,
@@ -164,6 +164,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
   } = useRuntimeOwnerActions({
     owner,
     ownerAdapter,
+    pollError,
     loadAll,
     setActionError,
     navigate,
@@ -171,12 +172,9 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
     continuationModelPayload,
     steering,
     setSteering,
-    sending,
-    setSending,
     continuationModelProvider,
     attachments,
     setAttachments,
-    attachmentInput,
     forceReplaceNext,
     setForceReplaceNext,
     currentRuntimeProvider,
@@ -421,6 +419,7 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           onFinish={() => setConfirmAction("finish")}
           finishAvailable={finishAvailable}
           sending={sending}
+          conversationState={conversationState}
           running={running}
           queueAvailable={queueActionAvailable}
           queueDisabled={owner.kind === "session" && providerSwitchRequested}
@@ -429,7 +428,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           sendMode={sendMode}
           sendActionLabel={sendActionLabel}
           actionError={actionError}
-          steerState={controls?.native_steer_state}
           steerError={controls?.native_steer_error}
           replacementRecoveryAvailable={replacementRecoveryAvailable}
           replacementSelected={forceReplaceNext}
@@ -443,7 +441,6 @@ export function RuntimeOwnerDetailPage({ ownerKind }: { ownerKind: RuntimeOwnerK
           onSelectModel={setContinuationModelOverride}
           onSelectReasoningEffort={setContinuationReasoningEffort}
           attachments={owner.capabilities.attachments ? attachments : undefined}
-          attachmentInputRef={owner.capabilities.attachments ? attachmentInput : undefined}
           onAttachmentsChange={owner.capabilities.attachments ? setAttachments : undefined}
         />
       </div>

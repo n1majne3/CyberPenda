@@ -149,6 +149,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 		CustomArgs:     append([]string(nil), launchProfile.Fields.CustomArgs...),
 		SettingsPath:   configPath,
 		Workdir:        "/task/workdir",
+		HostTaskRoot:   layout.TaskRoot,
 		Env:            processEnv,
 	}
 	if !sandbox {

@@ -23,6 +23,7 @@ type ProviderSessionLaunchFacts struct {
 	Model               string
 	SettingsPath        string
 	Workdir             string
+	HostTaskRoot        string
 	Env                 map[string]string
 	SandboxContainerCLI string
 	SandboxCreateArgs   []string
