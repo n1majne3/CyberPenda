@@ -224,6 +224,9 @@ func decodeOptionalJSON(request *http.Request, target any) error {
 	if err != nil {
 		return err
 	}
+	if err := rejectLegacyModelOverride(raw); err != nil {
+		return err
+	}
 	err = json.NewDecoder(bytes.NewReader(raw)).Decode(target)
 	if errors.Is(err, io.EOF) {
 		return nil

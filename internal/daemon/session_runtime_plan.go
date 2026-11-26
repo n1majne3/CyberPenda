@@ -149,7 +149,7 @@ func (server *Server) buildSessionRuntimePlanForOwnerContext(found session.Sessi
 	if strings.TrimSpace(selection.Model) != "" {
 		launchFacts.Model = strings.TrimSpace(selection.Model)
 	} else {
-		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.Model)
+		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.ModelOverride)
 	}
 	containerIDFile := ""
 	if run == session.RunnerSandbox {

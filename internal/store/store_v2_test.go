@@ -47,6 +47,27 @@ func TestOpenCreatesBaselineSchemaAndEpoch(t *testing.T) {
 	}
 }
 
+func TestOpenAcceptsLegacyReferenceMigrationSourceVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pre-migration.db")
+	db, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("open baseline store: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE schema_migrations SET version=?`, store.LegacyReferenceMigrationSourceVersion()); err != nil {
+		_ = db.Close()
+		t.Fatalf("set pre-migration marker: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close baseline store: %v", err)
+	}
+
+	reopened, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("reopen pre-migration store: %v", err)
+	}
+	defer reopened.Close()
+}
+
 func TestOpenRefusesSchemaWithoutBaselineMarker(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "legacy.db")
 	legacy, err := sql.Open("sqlite", path)

@@ -16,7 +16,7 @@ import (
 func sessionRuntimeInputFromCreate(input createSessionInput) sessionRuntimeInput {
 	return sessionRuntimeInput{
 		RuntimeProfileID: input.RuntimeProfileID, RuntimePluginID: input.RuntimePluginID, Provider: input.Provider, RuntimeProvider: input.RuntimeProvider,
-		ModelProviderID: input.ModelProviderID, Model: input.Model, ModelOverride: input.ModelOverride,
+		ModelProviderID: input.ModelProviderID, Model: input.Model,
 		ReasoningEffort: input.ReasoningEffort, Runner: input.Runner, HostActivated: input.HostActivated,
 		HostBrowserEnabled: input.HostBrowserEnabled,
 		RuntimeConfig:      input.RuntimeConfig,

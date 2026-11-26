@@ -159,6 +159,10 @@ func newServer(config Config, openStore func(string) (*store.DB, error)) (*Serve
 	if err != nil {
 		return nil, err
 	}
+	if err := migrateLegacyEventReferencesOnce(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	runtimePlugins, err := runtimePluginRegistry(config.RuntimePluginDirs)
 	if err != nil {

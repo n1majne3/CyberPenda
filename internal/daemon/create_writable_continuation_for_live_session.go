@@ -240,9 +240,6 @@ func (server *Server) precedingConversationTurnSelectionTimed(taskID string) (ru
 		}
 		providerID, _ := event.Payload["model_provider_id"].(string)
 		model, _ := event.Payload["model"].(string)
-		if model == "" {
-			model, _ = event.Payload["model_override"].(string)
-		}
 		effort, _ := event.Payload["requested_reasoning_effort"].(string)
 		if effort == "" {
 			effort, _ = event.Payload["reasoning_effort"].(string)

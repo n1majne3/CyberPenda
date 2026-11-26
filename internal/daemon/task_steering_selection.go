@@ -43,7 +43,7 @@ func (server *Server) prepareSelectedRuntimeConfig(response http.ResponseWriter,
 	}
 	turn := runtimeconfig.RuntimeTurnSelection{
 		ModelProviderID: requestedProfile.Fields.ModelProviderID,
-		Model:           firstNonBlank(input.selectedModel(), requestedProfile.Fields.ModelOverride, requestedProfile.Fields.Model),
+		Model:           firstNonBlank(input.selectedModel(), requestedProfile.Fields.ModelOverride),
 		ReasoningEffort: firstNonBlank(input.ReasoningEffort, requestedProfile.Fields.ReasoningEffort),
 	}
 	cloned, err := server.cloneSnapshotForTurn(prior, found.ProjectID, turn)

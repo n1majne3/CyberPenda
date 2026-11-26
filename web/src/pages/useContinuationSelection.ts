@@ -75,12 +75,10 @@ export function useContinuationSelection({
     const providerID = continuationModelProvider.trim();
     const model = continuationModelOverride.trim();
     const effort = displayReasoningEffort(continuationReasoningEffort);
-    // Every Runtime Turn sends the complete resolved selection. `model` is the
-    // canonical field; model_override is kept as a compatibility alias.
+    // Every Runtime Turn sends the complete resolved selection.
     const payload: {
       model_provider_id?: string;
       model?: string;
-      model_override?: string;
       reasoning_effort: string;
     } = {
       reasoning_effort: effort,
@@ -88,7 +86,6 @@ export function useContinuationSelection({
     if (providerID) payload.model_provider_id = providerID;
     if (model) {
       payload.model = model;
-      payload.model_override = model;
     }
     return payload;
   }

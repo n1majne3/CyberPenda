@@ -157,7 +157,7 @@ func (server *Server) buildTaskLaunchPlanWithBinding(created task.Task, goal str
 	if launchModelOverride != "" {
 		launchFacts.Model = launchModelOverride
 	} else {
-		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.Model)
+		launchFacts.Model = strings.TrimSpace(launchProfile.Fields.ModelOverride)
 	}
 	containerIDFile := ""
 	sandboxNetwork := runner.SandboxNetworkDefault

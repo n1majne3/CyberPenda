@@ -80,9 +80,6 @@ func (app *HTTPApp) streamInitialTranscript(ctx context.Context, run HostedEvalu
 						}
 						entry = complete
 					}
-					if legacy, ok := legacyChildBlock(entry); ok {
-						older = append(older, legacy)
-					}
 					continue
 				}
 			}
@@ -298,11 +295,6 @@ func (app *HTTPApp) emitChildTranscript(ctx context.Context, run HostedEvaluatio
 	if err != nil || parsed.IsAbs() || parsed.RawQuery != "" || parsed.Fragment != "" || !strings.HasPrefix(parsed.Path, prefix) {
 		return errorsInvalidTranscriptPage("invalid child history reference")
 	}
-	if legacy, ok := legacyChildBlock(summary); ok {
-		if err := writeTranscriptEntry(output, masker, legacy); err != nil {
-			return err
-		}
-	}
 	summary.Details = maps.Clone(summary.Details)
 	delete(summary.Details, "legacy_items")
 	cursor := 0
@@ -365,16 +357,4 @@ func writeTranscriptEntry(output io.Writer, masker *exactMasker, entry transcrip
 		return fmt.Errorf("write hosted Transcript to stdout: %w", io.ErrShortWrite)
 	}
 	return nil
-}
-
-func legacyChildBlock(entry transcript.Entry) (transcript.Entry, bool) {
-	items, ok := entry.Details["legacy_items"].([]any)
-	if !ok || len(items) == 0 {
-		return transcript.Entry{}, false
-	}
-	entry.Details = maps.Clone(entry.Details)
-	delete(entry.Details, "history")
-	delete(entry.Details, "legacy_items")
-	entry.Details["items"] = items
-	return entry, true
 }

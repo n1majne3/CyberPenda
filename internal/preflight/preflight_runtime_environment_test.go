@@ -37,7 +37,7 @@ func TestRunRejectsConflictingCustomArgs(t *testing.T) {
 
 func TestRunPassesNonConflictingCustomArgs(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("codex-ok", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "codex-ok", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		Model:      "gpt-5",
 		CustomArgs: []string{"--strict", "--skip-git-repo-check"},
 		APIKeys:    map[string]string{"OPENAI_API_KEY": "sk-test"},
@@ -60,7 +60,7 @@ func TestRunPassesNonConflictingCustomArgs(t *testing.T) {
 
 func TestSandboxPreflightProbesContainerEngineAndVPNTun(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		Model: "gpt-5",
 	})
 	if err != nil {
@@ -102,7 +102,7 @@ func TestSandboxPreflightProbesContainerEngineAndVPNTun(t *testing.T) {
 
 func TestSandboxPreflightRejectsRootlessPodmanVPNTun(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		Model: "gpt-5",
 	})
 	if err != nil {
@@ -129,7 +129,7 @@ func TestSandboxPreflightRejectsRootlessPodmanVPNTun(t *testing.T) {
 
 func TestSandboxPreflightRuntimeRootMustBeWritable(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		Model: "gpt-5",
 	})
 	if err != nil {
@@ -172,7 +172,7 @@ func TestSandboxPreflightRuntimeRootMustBeWritable(t *testing.T) {
 
 func TestSandboxPreflightRejectsVPNTunWithHostProxyOnly(t *testing.T) {
 	svc := newTestServices(t)
-	profile, err := svc.profiles.Create("codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
+	profile, err := svc.createProfile(t, "codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{
 		Model: "gpt-5",
 	})
 	if err != nil {

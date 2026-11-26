@@ -10,7 +10,16 @@ import (
 	"time"
 )
 
-const baselineSchemaVersion = 1
+const baselineSchemaVersion = 2
+const legacyReferenceMigrationSourceVersion = 1
+
+func CurrentSchemaVersion() int {
+	return baselineSchemaVersion
+}
+
+func LegacyReferenceMigrationSourceVersion() int {
+	return legacyReferenceMigrationSourceVersion
+}
 
 const baselineSchemaName = "baseline_blackboard_v2"
 
@@ -107,7 +116,7 @@ func validateBaselineSchema(db *sql.DB) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("read Store baseline marker: %w", err)
 	}
-	if count != 1 || version != baselineSchemaVersion || name != baselineSchemaName || checksum != baselineSchemaChecksum() {
+	if count != 1 || (version != baselineSchemaVersion && version != legacyReferenceMigrationSourceVersion) || name != baselineSchemaName || checksum != baselineSchemaChecksum() {
 		return fmt.Errorf("%w: expected schema %q version %d", ErrUnsupportedStoreSchema, baselineSchemaName, baselineSchemaVersion)
 	}
 	var epoch string

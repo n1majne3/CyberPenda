@@ -52,7 +52,7 @@ func (s *Service) LatestTurnSelectionEvent(taskID string) (*Event, error) {
 	rows, err := s.db.Query(`WITH candidates AS (
  SELECT *,
  CASE WHEN json_type(payload_json,'$.model_provider_id')='text' THEN json_extract(payload_json,'$.model_provider_id') ELSE '' END AS provider,
- COALESCE(NULLIF(CASE WHEN json_type(payload_json,'$.model')='text' THEN json_extract(payload_json,'$.model') ELSE '' END,''), CASE WHEN json_type(payload_json,'$.model_override')='text' THEN json_extract(payload_json,'$.model_override') ELSE '' END) AS model,
+ CASE WHEN json_type(payload_json,'$.model')='text' THEN json_extract(payload_json,'$.model') ELSE '' END AS model,
  COALESCE(NULLIF(CASE WHEN json_type(payload_json,'$.requested_reasoning_effort')='text' THEN json_extract(payload_json,'$.requested_reasoning_effort') ELSE '' END,''), CASE WHEN json_type(payload_json,'$.reasoning_effort')='text' THEN json_extract(payload_json,'$.reasoning_effort') ELSE '' END) AS effort
  FROM task_events WHERE task_id=? AND kind IN ('conversation','steering'))
  SELECT id,task_id,continuation_id,attempt_node_id,seq,kind,payload_json,created_at FROM candidates

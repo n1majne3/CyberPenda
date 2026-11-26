@@ -105,7 +105,7 @@ func TestResumeTaskUsesContinuationModelSelectionWithoutDroppingRuntimeFields(t 
 	resp := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks/"+taskID+"/resume", bytes.NewReader([]byte(`{
 		"model_provider_id":`+quoteJSON(providerID)+`,
-		"model_override":"mimo-v2-pro"
+		"model":"mimo-v2-pro"
 	}`)))
 	req.Header.Set("Content-Type", "application/json")
 	server.ServeHTTP(resp, req)

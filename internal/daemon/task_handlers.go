@@ -26,15 +26,12 @@ var (
 )
 
 type taskContinuationSelectionInput struct {
-	RuntimeProfileID string `json:"runtime_profile_id"`
-	ModelProviderID  string `json:"model_provider_id"`
-	// Model is the preferred Runtime Turn Selection field. model_override remains
-	// accepted as a backwards-compatible alias used by older clients.
-	Model           string         `json:"model"`
-	ModelOverride   string         `json:"model_override"`
-	ReasoningEffort string         `json:"reasoning_effort"`
-	SubmittedBy     string         `json:"submitted_by"`
-	Config          map[string]any `json:"config"`
+	RuntimeProfileID string         `json:"runtime_profile_id"`
+	ModelProviderID  string         `json:"model_provider_id"`
+	Model            string         `json:"model"`
+	ReasoningEffort  string         `json:"reasoning_effort"`
+	SubmittedBy      string         `json:"submitted_by"`
+	Config           map[string]any `json:"config"`
 }
 
 func (input taskContinuationSelectionInput) hasSelection() bool {
@@ -51,10 +48,7 @@ func (input taskContinuationSelectionInput) hasRuntimeProfileSelection() bool {
 }
 
 func (input taskContinuationSelectionInput) selectedModel() string {
-	if model := strings.TrimSpace(input.Model); model != "" {
-		return model
-	}
-	return strings.TrimSpace(input.ModelOverride)
+	return strings.TrimSpace(input.Model)
 }
 
 func (server *Server) handleCreateTask(response http.ResponseWriter, request *http.Request) {
@@ -90,9 +84,6 @@ func (server *Server) handleCreateTask(response http.ResponseWriter, request *ht
 	input.RuntimeProfileID = defaulted.runtimeProfileID
 	input.Runner = defaulted.runner
 	launchModel := strings.TrimSpace(input.Model)
-	if launchModel == "" {
-		launchModel = strings.TrimSpace(input.ModelOverride)
-	}
 	resolvedConfiguration, err := server.resolveLaunchConfiguration(runtimeconfig.LaunchSelection{
 		RuntimeProfileID:   input.RuntimeProfileID,
 		RuntimePluginID:    input.RuntimePluginID,
@@ -265,7 +256,7 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 	}
 	turn := runtimeconfig.RuntimeTurnSelection{
 		ModelProviderID: plan.ResolvedProfile.Fields.ModelProviderID,
-		Model:           firstNonBlank(plan.LaunchModelOverride, plan.ResolvedProfile.Fields.ModelOverride, plan.ResolvedProfile.Fields.Model),
+		Model:           firstNonBlank(plan.LaunchModelOverride, plan.ResolvedProfile.Fields.ModelOverride),
 		ReasoningEffort: firstNonBlank(plan.LaunchReasoningEffort, plan.ResolvedProfile.Fields.ReasoningEffort),
 	}
 	providerSnapshot := latestSnapshot.ModelProvider

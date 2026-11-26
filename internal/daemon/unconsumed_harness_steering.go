@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -82,8 +81,8 @@ func (server *Server) handleQueueSteerTask(response http.ResponseWriter, request
 		Directive string `json:"directive"`
 		taskContinuationSelectionInput
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	if err := decodeOptionalJSON(request, &input); err != nil {
+		writeRequestBodyError(response, err)
 		return
 	}
 	if strings.TrimSpace(input.RuntimeProfileID) != "" {
@@ -115,7 +114,6 @@ func (server *Server) handleQueueSteerTask(response http.ResponseWriter, request
 	}
 	if model := input.selectedModel(); model != "" {
 		payload["model"] = model
-		payload["model_override"] = model
 	}
 	if input.ReasoningEffort != "" {
 		payload["reasoning_effort"] = input.ReasoningEffort
@@ -151,8 +149,8 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 		return
 	}
 	var input nativeSteerRequest
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
-		writeError(response, http.StatusBadRequest, "invalid JSON body")
+	if err := decodeOptionalJSON(request, &input); err != nil {
+		writeRequestBodyError(response, err)
 		return
 	}
 	if strings.TrimSpace(input.RuntimeProfileID) != "" {
@@ -224,7 +222,6 @@ func (server *Server) handleSteerTask(response http.ResponseWriter, request *htt
 	}
 	if model := input.selectedModel(); model != "" {
 		payload["model"] = model
-		payload["model_override"] = model
 	}
 	if input.ReasoningEffort != "" {
 		payload["reasoning_effort"] = input.ReasoningEffort

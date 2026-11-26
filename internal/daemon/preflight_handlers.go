@@ -25,7 +25,6 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		RuntimePluginID         string           `json:"runtime_plugin_id,omitempty"`
 		ModelProviderID         string           `json:"model_provider_id,omitempty"`
 		Model                   string           `json:"model,omitempty"`
-		ModelOverride           string           `json:"model_override,omitempty"`
 		ReasoningEffort         string           `json:"reasoning_effort,omitempty"`
 		Runner                  string           `json:"runner"`
 		RunControls             task.RunControls `json:"run_controls"`
@@ -33,7 +32,16 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		HostActivated           bool             `json:"host_activated"`
 		HostBrowserEnabled      bool             `json:"host_browser_enabled"`
 	}
-	if err := json.NewDecoder(request.Body).Decode(&input); err != nil {
+	raw, readErr := readBoundedJSONBody(request.Body, maxJSONRequestBodyBytes)
+	if readErr != nil {
+		writeRequestBodyError(response, readErr)
+		return
+	}
+	if err := rejectLegacyModelOverride(raw); err != nil {
+		writeRequestBodyError(response, err)
+		return
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
 		writeError(response, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -53,9 +61,6 @@ func (server *Server) handlePreflight(response http.ResponseWriter, request *htt
 		return
 	}
 	model := strings.TrimSpace(input.Model)
-	if model == "" {
-		model = strings.TrimSpace(input.ModelOverride)
-	}
 	resolvedConfiguration, err := server.resolveLaunchConfiguration(runtimeconfig.LaunchSelection{
 		RuntimeProfileID: input.RuntimeProfileID, RuntimePluginID: input.RuntimePluginID,
 		ModelProviderID: input.ModelProviderID, Model: model,

@@ -182,8 +182,64 @@ func TestListRuntimeProfiles(t *testing.T) {
 	}
 }
 
+func createStructuredModelProviderFixture(t *testing.T, server *daemon.Server, name, model string) string {
+	t.Helper()
+	body := `{"name":` + quoteJSON(name+" provider") + `,"base_url":"https://api.example.test/v1","protocols":["openai_responses","openai_chat_completions","anthropic_messages"],"catalog":{"manual":[` + quoteJSON(model) + `],"default_model":` + quoteJSON(model) + `}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/model-providers", strings.NewReader(body))
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusCreated {
+		t.Fatalf("create structured Model Provider fixture status %d: %s", resp.Code, resp.Body.String())
+	}
+	var createdProvider struct {
+		ID        string `json:"id"`
+		APIKeyEnv string `json:"api_key_env"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&createdProvider); err != nil {
+		t.Fatalf("decode Model Provider fixture: %v", err)
+	}
+	if createdProvider.APIKeyEnv != "" {
+		t.Setenv(createdProvider.APIKeyEnv, "sk-test")
+	}
+	return createdProvider.ID
+}
+
+func migrateRuntimeProfileFixtureFields(t *testing.T, server *daemon.Server, name string, fields map[string]any) {
+	t.Helper()
+	if fields["model_provider_id"] != nil {
+		return
+	}
+	model, _ := fields["model"].(string)
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = "gpt-test"
+	}
+	delete(fields, "model")
+	delete(fields, "endpoint")
+	if fields["model_override"] == nil {
+		fields["model_override"] = model
+	}
+	fields["model_provider_id"] = createStructuredModelProviderFixture(t, server, name, model)
+}
+
 func createRuntimeProfile(t *testing.T, server *daemon.Server, body string) string {
 	t.Helper()
+	var document map[string]any
+	if json.Unmarshal([]byte(body), &document) == nil {
+		provider, _ := document["provider"].(string)
+		fields, _ := document["fields"].(map[string]any)
+		if fields == nil {
+			fields = map[string]any{}
+		}
+		if provider == "codex" || provider == "pi" || provider == "claude_code" {
+			name, _ := document["name"].(string)
+			migrateRuntimeProfileFixtureFields(t, server, name, fields)
+			document["fields"] = fields
+			if encoded, err := json.Marshal(document); err == nil {
+				body = string(encoded)
+			}
+		}
+	}
 	req := httptest.NewRequest(http.MethodPost, "/api/runtime-profiles", bytes.NewReader([]byte(body)))
 	req.Header.Set("Content-Type", "application/json")
 	resp := httptest.NewRecorder()
@@ -202,6 +258,14 @@ func createRuntimeProfile(t *testing.T, server *daemon.Server, body string) stri
 
 func createLocalRuntimeProfile(t *testing.T, server *daemon.Server, name string, provider runtimeprofile.Provider, fields runtimeprofile.Fields) string {
 	t.Helper()
+	if strings.TrimSpace(fields.ModelProviderID) == "" && strings.TrimSpace(fields.Model) != "" {
+		model := strings.TrimSpace(fields.Model)
+		fields.Model = ""
+		if strings.TrimSpace(fields.ModelOverride) == "" {
+			fields.ModelOverride = model
+		}
+		fields.ModelProviderID = createStructuredModelProviderFixture(t, server, name, model)
+	}
 	created, err := server.CreateLocalRuntimeProfile(name, provider, fields)
 	if err != nil {
 		t.Fatalf("create local runtime profile: %v", err)
@@ -230,13 +294,13 @@ func TestPatchRuntimeProfilePreservesUntouchedFields(t *testing.T) {
 	var patched struct {
 		Name   string `json:"name"`
 		Fields struct {
-			Model string `json:"model"`
+			ModelOverride string `json:"model_override"`
 		} `json:"fields"`
 	}
 	if err := json.NewDecoder(patchResp.Body).Decode(&patched); err != nil {
 		t.Fatalf("decode patch response: %v", err)
 	}
-	if patched.Name != "Codex Renamed" || patched.Fields.Model != "gpt-5" {
+	if patched.Name != "Codex Renamed" || patched.Fields.ModelOverride != "gpt-5" {
 		t.Fatalf("unexpected patched profile: %#v", patched)
 	}
 }

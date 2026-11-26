@@ -176,7 +176,6 @@ describe("TaskDetailPage", () => {
       directive: "continue with mimo",
       model_provider_id: "mimo",
       model: "mimo-v2-pro",
-      model_override: "mimo-v2-pro",
       reasoning_effort: "xhigh",
     });
     expect(fetchMock.mock.calls.some(([input, init]) =>

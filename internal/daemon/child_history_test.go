@@ -7,11 +7,9 @@ import (
 	"net/http/httptest"
 	"pentest/internal/childhistory"
 	"pentest/internal/session"
-	"strings"
 	"testing"
 
 	"pentest/internal/task"
-	"pentest/internal/transcript"
 )
 
 func TestChildHistoryDoesNotDependOnMainWindow(t *testing.T) {
@@ -131,108 +129,55 @@ func TestSessionChildHistorySplitsSameEventAndRollsBackWithSource(t *testing.T) 
 	}
 }
 
-func TestChildHistoryKeepsPreUpgradeWindowInline(t *testing.T) {
+func TestLegacyChildHistoryReferencesMigrateOnce(t *testing.T) {
 	server, projectID, taskID := newHistoryWindowFixture(t)
-	append := func(text string) task.Event {
+	append := func(text string) {
 		t.Helper()
-		event, err := server.tasks.AppendEvent(taskID, task.EventKindRuntimeOutput, task.EventPayload{"text": text})
-		if err != nil {
+		if _, err := server.tasks.AppendEvent(taskID, task.EventKindRuntimeOutput, task.EventPayload{"text": text}); err != nil {
 			t.Fatal(err)
 		}
-		return event
 	}
 	if _, err := server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{"phase": "started", "adapter": "claude_code"}); err != nil {
 		t.Fatal(err)
 	}
-	old := append(`{"type":"assistant","parent_tool_use_id":"spawn","message":{"role":"assistant","content":[{"type":"text","text":"pre-upgrade work"}]}}`)
-	// Fixture boundary: the preceding source Events were stored by an older
-	// release and have no child index. Only test-created derived rows are removed.
+	append(`{"type":"assistant","parent_tool_use_id":"spawn-old","message":{"role":"assistant","content":[{"type":"text","text":"pre-upgrade work"}]}}`)
 	for _, table := range []string{"child_history_changes", "child_history_items", "child_history_observations", "child_history_aliases", "child_history_blocks"} {
 		if _, err := server.db.Exec("DELETE FROM " + table); err != nil {
 			t.Fatal(err)
 		}
 	}
-	append(`{"type":"assistant","parent_tool_use_id":"spawn","message":{"role":"assistant","content":[{"type":"text","text":"post-upgrade work"}]}}`)
-	base := fmt.Sprintf("/api/projects/%s/tasks/%s/transcript", projectID, taskID)
-	for _, path := range []string{base, fmt.Sprintf("%s?before=%d", base, old.Seq+1)} {
-		page := getHistoryURL(t, server, path)
-		found := false
-		for _, entry := range page.Entries {
-			if entry.Kind != "subagent_block" {
-				continue
-			}
-			raw, _ := json.Marshal(entry.Details)
-			if !strings.Contains(string(raw), "pre-upgrade work") {
-				t.Fatalf("legacy content lost: %s", raw)
-			}
-			if path != base && entry.Details["history"] != nil {
-				t.Fatal("partial index replaced old-only window")
-			}
-			if path == base {
-				legacy, _ := json.Marshal(entry.Details["legacy_items"])
-				if strings.Contains(string(legacy), "post-upgrade work") {
-					t.Fatal("indexed item duplicated as legacy")
-				}
-				ref, _ := entry.Details["history"].(string)
-				indexed := getHistoryURL(t, server, ref)
-				if len(indexed.Entries) != 1 || indexed.Entries[0].Text != "post-upgrade work" {
-					t.Fatalf("indexed=%+v", indexed)
-				}
-			}
-			found = true
-		}
-		if !found {
-			t.Fatal("legacy child missing")
-		}
-	}
-}
-
-func TestMixedChildHistoryDetailRetainsLargeLegacyItem(t *testing.T) {
-	server, projectID, taskID := newHistoryWindowFixture(t)
-	_, err := server.tasks.AppendEvent(taskID, task.EventKindLifecycle, task.EventPayload{"phase": "started", "adapter": "claude_code"})
-	if err != nil {
+	append(`{"type":"assistant","parent_tool_use_id":"spawn-post","message":{"role":"assistant","content":[{"type":"text","text":"post-upgrade work"}]}}`)
+	if _, err := server.db.Exec(`UPDATE schema_migrations SET version=1`); err != nil {
 		t.Fatal(err)
 	}
-	legacyText := strings.Repeat("legacy result ", 30000)
-	raw, _ := json.Marshal(map[string]any{"type": "user", "parent_tool_use_id": "spawn", "message": map[string]any{"role": "user", "content": []any{map[string]any{"type": "tool_result", "tool_use_id": "legacy-tool", "content": legacyText}}}})
-	if _, err := server.tasks.AppendEvent(taskID, task.EventKindRuntimeOutput, task.EventPayload{"text": string(raw)}); err != nil {
+	if err := migrateLegacyEventReferencesOnce(server.db); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"child_history_changes", "child_history_items", "child_history_observations", "child_history_aliases", "child_history_blocks"} {
-		if _, err := server.db.Exec("DELETE FROM " + table); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := server.tasks.AppendEvent(taskID, task.EventKindRuntimeOutput, task.EventPayload{"text": `{"type":"assistant","parent_tool_use_id":"spawn","message":{"role":"assistant","content":[{"type":"text","text":"indexed work"}]}}`}); err != nil {
-		t.Fatal(err)
+	var version int
+	if err := server.db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&version); err != nil || version != 2 {
+		t.Fatalf("migration marker version=%d err=%v, want 2", version, err)
 	}
 	base := fmt.Sprintf("/api/projects/%s/tasks/%s/transcript", projectID, taskID)
 	page := getHistoryURL(t, server, base)
-	// A later append must not change this preview's source boundary.
-	if _, err := server.tasks.AppendEvent(taskID, task.EventKindRuntimeOutput, task.EventPayload{"text": `{"type":"assistant","parent_tool_use_id":"spawn","message":{"role":"assistant","content":[{"type":"text","text":"later work"}]}}`}); err != nil {
+	for _, entry := range page.Entries {
+		if entry.Kind == "subagent_block" && entry.Details["legacy_items"] != nil {
+			t.Fatal("request path still emits legacy_items")
+		}
+	}
+	for _, tc := range []struct{ ref, text string }{
+		{base + "/children/subagent-spawn-old", "pre-upgrade work"},
+		{base + "/children/subagent-spawn-post", "post-upgrade work"},
+	} {
+		child := getHistoryURL(t, server, tc.ref)
+		if len(child.Entries) != 1 || child.Entries[0].Text != tc.text {
+			t.Fatalf("migrated child history %s=%+v", tc.ref, child.Entries)
+		}
+	}
+	if err := migrateLegacyEventReferencesOnce(server.db); err != nil {
 		t.Fatal(err)
 	}
-	for _, preview := range page.Entries {
-		if preview.Kind != "subagent_block" {
-			continue
-		}
-		if !preview.Truncated {
-			t.Fatal("large legacy summary was not bounded")
-		}
-		response := httptest.NewRecorder()
-		server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, preview.Detail, nil))
-		if response.Code != http.StatusOK {
-			t.Fatalf("detail status=%d: %s", response.Code, response.Body.String())
-		}
-		var full transcript.Entry
-		if err := json.Unmarshal(response.Body.Bytes(), &full); err != nil {
-			t.Fatal(err)
-		}
-		raw, _ := json.Marshal(full.Details["legacy_items"])
-		if full.ID != preview.ID || full.Seq != preview.Seq || full.Truncated || !strings.Contains(string(raw), legacyText) || strings.Contains(string(raw), "indexed work") || full.Details["history"] == nil {
-			t.Fatal("detail lost full legacy/index separation")
-		}
-		return
+	again := getHistoryURL(t, server, base+"/children/subagent-spawn-old")
+	if len(again.Entries) != 1 || again.Entries[0].Text != "pre-upgrade work" {
+		t.Fatalf("migration was not one-time/idempotent: %+v", again.Entries)
 	}
-	t.Fatal("missing child block")
 }

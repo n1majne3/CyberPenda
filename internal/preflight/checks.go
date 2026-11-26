@@ -132,21 +132,11 @@ func shouldCheckModelProvider(profile runtimeprofile.Profile, registry *runtimep
 		strings.TrimSpace(profile.Fields.ModelOverride) != "" {
 		return true
 	}
-	if hasLegacyModelConfig(profile) {
-		return false
-	}
 	plugin, ok := runtimepluginForProfile(profile, registry)
 	if !ok {
 		return false
 	}
 	return plugin.ModelProvider.Requirement == "required"
-}
-
-func hasLegacyModelConfig(profile runtimeprofile.Profile) bool {
-	return strings.TrimSpace(profile.Fields.Model) != "" ||
-		strings.TrimSpace(profile.Fields.Endpoint) != "" ||
-		len(profile.Fields.APIKeys) > 0 ||
-		len(profile.Fields.CredentialRefs) > 0
 }
 
 func runtimepluginForProfile(profile runtimeprofile.Profile, registry *runtimeplugin.Registry) (runtimeplugin.Plugin, bool) {
