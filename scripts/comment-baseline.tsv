@@ -63,7 +63,7 @@ internal/blackboardv2/working_snapshot_incremental.go	4
 internal/blackboardv2/working_snapshot_incremental_bench_test.go	2
 internal/blackboardv2/working_snapshot_incremental_test.go	2
 internal/blackboardv2contract/contract.go	33
-internal/blackboardv2contract/contract_test.go	2
+internal/blackboardv2contract/contract_trusted_tools_test.go	2
 internal/blackboardv2grammar/grammar.go	8
 internal/blackboardv2input/schema_validation.go	8
 internal/challengeadapter/adapter.go	3
