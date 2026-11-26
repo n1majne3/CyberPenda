@@ -115,13 +115,15 @@ RUN bash /tmp/install-knowledge-baseline.sh && rm -f /tmp/install-knowledge-base
 COPY docker/knowledge-baseline/pentest-knowledge-lookup.sh /usr/local/bin/pentest-knowledge-lookup
 RUN chmod 0755 /usr/local/bin/pentest-knowledge-lookup
 
-# Runtime CLIs intentionally resolve current releases when the image is built.
-# The exact resolved versions are captured below for the delivery inventory.
+# Pi is pinned to the latest verified release. Other Runtime CLIs resolve
+# current releases when the image is built; exact resolved versions are
+# captured below for the delivery inventory.
+ARG PI_VERSION=1.6.1
 ARG RUNTIME_RELEASE_CACHE_BUST=local
 RUN --mount=type=cache,target=/root/.npm \
     test -n "${RUNTIME_RELEASE_CACHE_BUST}" \
   && npm install -g \
-      @earendil-works/pi-coding-agent@latest \
+      @earendil-works/pi-coding-agent@${PI_VERSION} \
       @tintinweb/pi-subagents@latest \
       pi-web-access@latest \
       @openai/codex@latest \

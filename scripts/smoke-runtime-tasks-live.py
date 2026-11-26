@@ -374,7 +374,6 @@ def build_smoke_profiles(
         "env": {
             "PI_PROVIDER_ID": "xiaomi-token-plan-cn",
             "PI_API": "openai-completions",
-            "PENTEST_PI_NPM_VERSION": "0.78.0",
         },
         "custom_args": ["-p"],
         "binary_path": "pi",
