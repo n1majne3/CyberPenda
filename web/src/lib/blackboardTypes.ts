@@ -16,6 +16,7 @@ export const RELATIONSHIP_TYPES = [
   "derived_from",
   "depends_on",
   "satisfies",
+  "invalidates",
   "supersedes",
 ] as const;
 
