@@ -77,6 +77,73 @@ func TestImportRequiresSourceURL(t *testing.T) {
 	}
 }
 
+func TestImportUsesPackageAndRefAsGitSource(t *testing.T) {
+	runner := &fakeRunner{
+		install: func(dir string) error {
+			installBundle(t, dir, "recon", "acme/recon-skills", "github", map[string]string{"SKILL.md": sampleSkillMD})
+			lock := `{"version":1,"skills":{"recon":{"source":"acme/recon-skills","sourceType":"github","ref":"v1.2.3","computedHash":"abc"}}}`
+			return os.WriteFile(filepath.Join(dir, "skills-lock.json"), []byte(lock), 0o600)
+		},
+	}
+	imp := skill.NPXSkillsImporter{Runner: runner}
+
+	bundle, err := imp.ImportSkill(context.Background(), skill.ImportRequest{
+		SourceKind: "git",
+		Package:    "acme/recon-skills",
+		Ref:        "v1.2.3",
+	})
+	if err != nil {
+		t.Fatalf("ImportSkill: %v", err)
+	}
+	if len(runner.recorded) != 1 {
+		t.Fatalf("expected one npx invocation, got %#v", runner.recorded)
+	}
+	if !strings.Contains(runner.recorded[0], "skills add acme/recon-skills#v1.2.3") {
+		t.Fatalf("expected package and ref in skills add source, got %q", runner.recorded[0])
+	}
+	if bundle.Metadata.Source.Package != "acme/recon-skills" || bundle.Metadata.Source.Ref != "v1.2.3" {
+		t.Fatalf("source provenance = %#v", bundle.Metadata.Source)
+	}
+}
+
+func TestImportEncodesRefFragmentSeparatelyFromSkillFilter(t *testing.T) {
+	runner := &fakeRunner{
+		install: func(dir string) error {
+			installBundle(t, dir, "recon", "acme/recon-skills", "github", map[string]string{"SKILL.md": sampleSkillMD})
+			return nil
+		},
+	}
+	imp := skill.NPXSkillsImporter{Runner: runner}
+
+	_, err := imp.ImportSkill(context.Background(), skill.ImportRequest{
+		SourceKind: "git",
+		Package:    "acme/recon-skills",
+		Ref:        "feature/recon@v1",
+	})
+	if err != nil {
+		t.Fatalf("ImportSkill: %v", err)
+	}
+	if !strings.Contains(runner.recorded[0], "skills add acme/recon-skills#feature%2Frecon%40v1") {
+		t.Fatalf("expected encoded ref fragment, got %q", runner.recorded[0])
+	}
+}
+
+func TestImportRejectsAmbiguousPackageAndSourceURL(t *testing.T) {
+	runner := &fakeRunner{}
+	imp := skill.NPXSkillsImporter{Runner: runner}
+	_, err := imp.ImportSkill(context.Background(), skill.ImportRequest{
+		SourceKind: "git",
+		Package:    "acme/recon-skills",
+		SourceURL:  "https://github.com/acme/recon-skills",
+	})
+	if !errors.Is(err, skill.ErrInvalidSkill) {
+		t.Fatalf("expected ErrInvalidSkill for ambiguous source, got %v", err)
+	}
+	if len(runner.recorded) != 0 {
+		t.Fatalf("ambiguous source must not execute npx, ran %#v", runner.recorded)
+	}
+}
+
 func TestImportRunsSkillsAddAndPublishesBundle(t *testing.T) {
 	runner := &fakeRunner{
 		install: func(dir string) error {

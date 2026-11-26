@@ -67,6 +67,7 @@ type skillsLockEntry struct {
 	Source          string `json:"source"`
 	SourceURL       string `json:"sourceUrl"`
 	SourceType      string `json:"sourceType"`
+	Ref             string `json:"ref,omitempty"`
 	SkillPath       string `json:"skillPath,omitempty"`
 	ComputedHash    string `json:"computedHash,omitempty"`
 	WellKnownDigest string `json:"wellKnownDigest,omitempty"`
@@ -118,9 +119,28 @@ func validateImportSource(source string) error {
 	return nil
 }
 
-func (i NPXSkillsImporter) ImportSkill(ctx context.Context, request ImportRequest) (ImportedBundle, error) {
+func resolveImportSource(request ImportRequest) (string, error) {
 	sourceURL := strings.TrimSpace(request.SourceURL)
-	if err := validateImportSource(sourceURL); err != nil {
+	packageSource := strings.TrimSpace(request.Package)
+	if sourceURL != "" && packageSource != "" {
+		return "", fmt.Errorf("package and source_url are ambiguous; supply only one")
+	}
+	source := sourceURL
+	if source == "" {
+		source = packageSource
+	}
+	if err := validateImportSource(source); err != nil {
+		return "", err
+	}
+	if ref := strings.TrimSpace(request.Ref); ref != "" {
+		source += "#" + encodeRefFragment(ref)
+	}
+	return source, nil
+}
+
+func (i NPXSkillsImporter) ImportSkill(ctx context.Context, request ImportRequest) (ImportedBundle, error) {
+	sourceURL, err := resolveImportSource(request)
+	if err != nil {
 		return ImportedBundle{}, fmt.Errorf("%w: %v", ErrInvalidSkill, err)
 	}
 	workdir, err := os.MkdirTemp("", "skill-import-*")
@@ -176,11 +196,37 @@ func (i NPXSkillsImporter) ImportSkill(ctx context.Context, request ImportReques
 				Kind:      sourceKind,
 				SourceURL: entry.SourceURL,
 				Package:   entry.Source,
-				Ref:       entry.WellKnownDigest,
+				Ref:       firstNonEmpty(entry.Ref, entry.WellKnownDigest),
 			},
 		},
 		Files: files,
 	}, nil
+}
+
+func encodeRefFragment(ref string) string {
+	const hex = "0123456789ABCDEF"
+	var encoded strings.Builder
+	for i := 0; i < len(ref); i++ {
+		b := ref[i]
+		unreserved := b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '.' || b == '_' || b == '~'
+		if unreserved {
+			encoded.WriteByte(b)
+			continue
+		}
+		encoded.WriteByte('%')
+		encoded.WriteByte(hex[b>>4])
+		encoded.WriteByte(hex[b&0x0f])
+	}
+	return encoded.String()
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func readSkillsLock(workdir string) (skillsLock, error) {
