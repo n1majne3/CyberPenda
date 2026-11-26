@@ -481,3 +481,22 @@ func TestRunFailsWhenProtocolPinHasNoCompatibleEndpoint(t *testing.T) {
 		t.Fatalf("expected model_provider check to fail, got %#v", result.Checks)
 	}
 }
+
+func TestRunRejectsEmptyCapturedModelProviderSnapshot(t *testing.T) {
+	svc := newTestServices(t)
+	profile, err := svc.createProfile(t, "codex", runtimeprofile.ProviderCodex, runtimeprofile.Fields{})
+	if err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	empty := modelprovider.Snapshot{}
+
+	result := svc.preflight.Run(context.Background(), preflight.Request{
+		RuntimeProfileID:      profile.ID,
+		ProjectID:             "p1",
+		ModelProviderSnapshot: &empty,
+	})
+
+	if result.Pass || !checkFailed(result, "model_provider") {
+		t.Fatalf("empty captured Model Provider Snapshot passed preflight: %#v", result.Checks)
+	}
+}

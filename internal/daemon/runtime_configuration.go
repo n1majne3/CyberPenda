@@ -313,6 +313,15 @@ func (server *Server) cloneSnapshotForTurn(prior runtimeconfig.RuntimeConfigurat
 	profile.Fields.ModelProviderID = turn.ModelProviderID
 	profile.Fields.ModelOverride = turn.Model
 	profile.Fields.ReasoningEffort = turn.ReasoningEffort
+	if turn.ModelProviderID == "" {
+		if _, err := modelprovider.Resolve(modelprovider.ResolveRequest{
+			Profile: profile, Plugins: server.runtimePlugins,
+			Credentials: server.creds, ProjectID: projectID, CheckEnv: false,
+			CapabilityCache: server.capabilityCache,
+		}); err != nil {
+			return runtimeconfig.RuntimeConfigurationSnapshot{}, err
+		}
+	}
 	if turn.ModelProviderID == prior.TurnSelection.ModelProviderID {
 		provider := prior.ModelProvider
 		provider.Model = turn.Model
