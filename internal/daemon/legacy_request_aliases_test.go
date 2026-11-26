@@ -3,6 +3,7 @@ package daemon_test
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -60,5 +61,41 @@ func TestSessionPreflightRefusesLegacyModelOverrideAlias(t *testing.T) {
 	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/sessions/preflight", strings.NewReader(`{"model_override":"gpt-test"}`)))
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "model_override is no longer accepted") {
 		t.Fatalf("session preflight legacy model_override status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestCreateTaskRefusesMixedCaseLegacyModelOverrideAlias(t *testing.T) {
+	server := newDaemon(t)
+	projectID := createProject(t, server, `{"name":"Mixed-case legacy refusal","scope":{"domains":["example.test"]}}`)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/projects/"+projectID+"/tasks", strings.NewReader(`{"type":"pentest","goal":"inspect","MODEL_OVERRIDE":"gpt-test"}`)))
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "model_override is no longer accepted") {
+		t.Fatalf("mixed-case legacy model_override status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestMultipartSessionRefusesRetiredModelOverrideField(t *testing.T) {
+	server := newDaemon(t)
+	for _, withPayload := range []bool{false, true} {
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		if withPayload {
+			if err := writer.WriteField("payload", `{"input":"hello"}`); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.WriteField("model_override", ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/sessions", &body)
+		req.Header.Set("Content-Type", writer.FormDataContentType())
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, req)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "model_override is no longer accepted") {
+			t.Fatalf("multipart legacy model_override payload=%v status=%d body=%s", withPayload, response.Code, response.Body.String())
+		}
 	}
 }

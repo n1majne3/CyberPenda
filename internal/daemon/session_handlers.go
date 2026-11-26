@@ -83,8 +83,13 @@ func parseMultipartCreateSessionRequest(request *http.Request) (createSessionInp
 	if err := request.ParseMultipartForm(32 << 20); err != nil {
 		return createSessionInput{}, nil, errInvalidSessionBody
 	}
-	payload := strings.TrimSpace(request.FormValue("payload"))
 	var input createSessionInput
+	if request.MultipartForm != nil {
+		if _, present := request.MultipartForm.Value["model_override"]; present {
+			return createSessionInput{}, nil, errLegacyModelOverrideField
+		}
+	}
+	payload := strings.TrimSpace(request.FormValue("payload"))
 	if payload != "" {
 		if err := rejectLegacyBlackboardModeField([]byte(payload)); err != nil {
 			if errors.Is(err, errLegacyBlackboardModeField) {
@@ -110,9 +115,6 @@ func parseMultipartCreateSessionRequest(request *http.Request) (createSessionInp
 		input.Provider = request.FormValue("provider")
 		input.RuntimeProvider = request.FormValue("runtime_provider")
 		input.ModelProviderID = request.FormValue("model_provider_id")
-		if request.FormValue("model_override") != "" {
-			return createSessionInput{}, nil, errLegacyModelOverrideField
-		}
 		input.Model = request.FormValue("model")
 		input.ReasoningEffort = request.FormValue("reasoning_effort")
 		input.Runner = request.FormValue("runner")

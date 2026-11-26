@@ -45,7 +45,7 @@ func containsLegacyModelOverride(value any) bool {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, nested := range typed {
-			if key == "model_override" || containsLegacyModelOverride(nested) {
+			if strings.EqualFold(key, "model_override") || containsLegacyModelOverride(nested) {
 				return true
 			}
 		}
