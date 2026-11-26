@@ -125,7 +125,7 @@ describe("Runtime Owner conversation races", () => {
     await act(async () => { pending.resolve(); await Promise.all([send, stop]); });
     expect(adapter.stop).toHaveBeenCalledTimes(2);
     expect(adapter.resume).not.toHaveBeenCalled();
-    expect(result.current.steering).toBe("first instruction");
+    expect(result.current.steering).toBe("");
   });
 
   it("does not send a Session provider-switch message after Stop cancels its restart", async () => {
@@ -180,5 +180,17 @@ describe("Runtime Owner conversation races", () => {
     expect(running).toBe(false);
     expect(result.current.sending).toBe(false);
     expect(adapter.stop).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not retain an already queued Task message when Resume fails", async () => {
+    const task = { ...owner(), kind: "task" as const, status: "stopped",
+      runtimeControls: { ...owner().runtimeControls!, resume_available: true } };
+    const { result, adapter } = harness(task);
+    vi.mocked(adapter.queueSteer).mockResolvedValueOnce(undefined);
+    vi.mocked(adapter.resume).mockRejectedValueOnce(new Error("Runtime launch failed"));
+    await act(async () => { await result.current.sendConversationMessage(); });
+    expect(adapter.queueSteer).toHaveBeenCalledTimes(1);
+    expect(result.current.steering).toBe("");
+    expect(result.current.actionError).toBe("Runtime launch failed");
   });
 });

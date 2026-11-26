@@ -66,8 +66,8 @@ export function useRuntimeOwnerActions({
       const request = run(isCurrent, requestID);
       if (kind !== "stop") operation.track(request);
       await request;
+      if (operation.isActive()) accepted?.();
       if (!isCurrent()) return;
-      accepted?.();
       operation.accepted(requestID);
       await loadAll("poll");
       if (isCurrent()) operation.refreshed(requestID);
@@ -101,7 +101,6 @@ export function useRuntimeOwnerActions({
     const pending = operation.pending();
     await runOperation("stop", async () => {
       if (pending.length) {
-        // Stop now, then settle requests that may still admit a replacement Runtime.
         await Promise.allSettled([ownerAdapter.stop(), ...pending]);
       }
       await ownerAdapter.stop();
@@ -161,10 +160,11 @@ export function useRuntimeOwnerActions({
         nativeSteerMode: owner.runtimeControls?.native_steer_mode,
         forceReplace: forceReplaceNext,
       }, requestID);
-      await action.run(message, modelPayload, ownerAdapter, owner.capabilities.attachments ? attachments : [], isCurrent);
-    }, () => {
-      clearSubmittedDraft();
-      setForceReplaceNext(false);
+      await action.run(message, modelPayload, ownerAdapter, owner.capabilities.attachments ? attachments : [], isCurrent, () => {
+        if (!operation.isActive()) return;
+        clearSubmittedDraft();
+        setForceReplaceNext(false);
+      });
     });
   }
 

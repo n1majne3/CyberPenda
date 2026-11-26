@@ -24,6 +24,7 @@ function createConversationOperation(ownerKey: string) {
     },
     activate: () => { active = true; },
     deactivate: () => { active = false; },
+    isActive: () => active,
     pending: () => [...pending],
     track: (request: Promise<unknown>) => {
       pending.add(request);
