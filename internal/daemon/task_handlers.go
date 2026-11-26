@@ -320,7 +320,13 @@ func (server *Server) launchTaskInBackground(created task.Task, plan taskLaunchP
 		if plan.ValidatedLayout != nil {
 			providerHome = plan.ValidatedLayout.ProviderHome
 		}
-		plan.Adapter = wrapPersistentProviderAdapter(binding.Adapter, plan.ResolvedProfile.Provider, providerHome)
+		plan.Adapter, factoryErr = server.wrapOwnerProviderAdapter(binding.Adapter, created.OwnerContract(""), plan.ResolvedProfile.Provider, providerHome)
+		if factoryErr != nil {
+			_ = server.closeProviderSession(created.ID)
+			redactedErr := newProviderSessionFactoryError(factoryErr, plan.MaterializedCredentials)
+			server.failProviderSessionLaunch(created.ID, continuation.ID, redactedErr)
+			return redactedErr
+		}
 	}
 	launchCtx, err := server.beginRuntimeLaunch()
 	if err != nil {

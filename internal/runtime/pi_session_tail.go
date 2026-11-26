@@ -3,6 +3,7 @@ package runtime
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -28,12 +29,18 @@ type piSessionTailAdapter struct {
 	sessionDir string
 	mu         sync.Mutex
 	record     func(NativeSessionMetadata) error
+	retained   map[[sha256.Size]byte]struct{}
 }
 
 // NewPiSessionTailAdapter wraps inner with a Pi session jsonl tailer rooted
-// at sessionDir (the per-cwd sessions directory under PI_CODING_AGENT_DIR).
-func NewPiSessionTailAdapter(inner Adapter, sessionDir string) Adapter {
-	return &piSessionTailAdapter{inner: inner, sessionDir: sessionDir}
+// at sessionDir. Retained raw records fence durable output without discarding
+// records that reached the native file but not the daemon before a crash.
+func NewPiSessionTailAdapter(inner Adapter, sessionDir string, retained ...string) Adapter {
+	seen := make(map[[sha256.Size]byte]struct{}, len(retained))
+	for _, line := range retained {
+		seen[sha256.Sum256([]byte(line))] = struct{}{}
+	}
+	return &piSessionTailAdapter{inner: inner, sessionDir: sessionDir, retained: seen}
 }
 
 func (a *piSessionTailAdapter) Name() string { return a.inner.Name() }
@@ -61,6 +68,19 @@ func (a *piSessionTailAdapter) recordRuntimeLineMetadata(line string) {
 }
 
 func (a *piSessionTailAdapter) Run(ctx context.Context, goal string, emit func(task.EventKind, task.EventPayload)) error {
+	seen := make(map[[sha256.Size]byte]struct{}, len(a.retained))
+	for key := range a.retained {
+		seen[key] = struct{}{}
+	}
+	emitUnretained := func(kind task.EventKind, payload task.EventPayload) {
+		text, _ := payload["text"].(string)
+		key := sha256.Sum256([]byte(text))
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		emit(kind, payload)
+	}
 	// Derive a child context so the tailer is always stopped when the inner
 	// runtime exits, even on normal completion where the harness leaves the
 	// parent context live. Without this the polling goroutine would leak for
@@ -69,7 +89,7 @@ func (a *piSessionTailAdapter) Run(ctx context.Context, goal string, emit func(t
 	tailDone := make(chan struct{})
 	go func() {
 		defer close(tailDone)
-		tailPiSession(tailCtx, a.sessionDir, a.recordRuntimeLineMetadata, emit)
+		tailPiSession(tailCtx, a.sessionDir, a.recordRuntimeLineMetadata, emitUnretained)
 	}()
 	// The inner Run blocks until the runtime exits. Once it returns, stop the
 	// tailer and wait for its final drain so the last session lines are emitted
