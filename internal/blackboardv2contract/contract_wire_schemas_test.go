@@ -1,9 +1,9 @@
 package blackboardv2contract_test
 
 import (
+	"encoding/json"
 	"testing"
 
-	"encoding/json"
 	"pentest/internal/blackboardconclusion"
 	"pentest/internal/blackboardv2"
 )

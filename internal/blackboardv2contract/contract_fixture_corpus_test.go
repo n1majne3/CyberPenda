@@ -2,10 +2,9 @@ package blackboardv2contract_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"slices"
 	"testing"
-
-	"encoding/json"
 )
 
 func TestEmptyRuntimeSnapshotFixtureIsExactAndConformant(t *testing.T) {

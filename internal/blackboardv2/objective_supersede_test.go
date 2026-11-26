@@ -2,10 +2,10 @@ package blackboardv2_test
 
 import (
 	"context"
-	"testing"
-
 	"encoding/json"
 	"path/filepath"
+	"testing"
+
 	"pentest/internal/blackboardv2"
 	"pentest/internal/project"
 	"pentest/internal/store"

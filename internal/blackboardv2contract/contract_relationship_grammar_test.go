@@ -1,11 +1,11 @@
 package blackboardv2contract_test
 
 import (
+	"encoding/json"
+	"io/fs"
 	"slices"
 	"testing"
 
-	"encoding/json"
-	"io/fs"
 	"pentest/internal/blackboardv2grammar"
 )
 

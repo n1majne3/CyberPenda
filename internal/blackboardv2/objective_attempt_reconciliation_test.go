@@ -3,11 +3,11 @@ package blackboardv2_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
-	"path/filepath"
 	"pentest/internal/blackboardv2"
 	"pentest/internal/project"
 	"pentest/internal/store"

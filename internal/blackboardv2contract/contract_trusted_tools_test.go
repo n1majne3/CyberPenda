@@ -2,10 +2,9 @@ package blackboardv2contract_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
-
-	"encoding/json"
 )
 
 func TestSyncAttachmentIsSharedByEveryAuthenticatedTrustedResponse(t *testing.T) {
