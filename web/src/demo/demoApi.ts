@@ -365,7 +365,7 @@ const demoAssets = [
     scope_status: "in_scope",
     covered: true,
     fact_count: 1,
-    anchors: [{ project_id: PROJECT_ID, asset_id: "demo-asset-endpoint", node_key: "fact:login-auth-bypass", node_type: "fact", actor_id: "runtime:demo", created_at: updatedAt }],
+    anchors: [{ project_id: PROJECT_ID, asset_id: "demo-asset-endpoint", node_key: "fact:web01-rce", node_type: "fact", actor_id: "runtime:demo", created_at: updatedAt }],
   },
 ];
 
