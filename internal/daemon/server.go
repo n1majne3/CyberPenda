@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"pentest/internal/asset"
 	"pentest/internal/blackboardv2"
 	"pentest/internal/challengeworkflow"
 	"pentest/internal/credential"
@@ -87,6 +88,7 @@ type Server struct {
 	db                      *store.DB
 	projects                *project.Service
 	scopeExpansions         *scopeexpansion.Service
+	assets                  *asset.Service
 	runtimePlugins          *runtimeplugin.Registry
 	runtimeExtensions       *runtimeextension.Registry
 	profiles                *runtimeprofile.Service
@@ -350,6 +352,7 @@ func newServer(config Config, openStore func(string) (*store.DB, error)) (*Serve
 	server.tasks.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.sessions.SetContinuationTerminalMarker(server.projectInterfaceGrants)
 	server.blackboardV2 = blackboardv2.NewServiceWithEvidence(db, blackboardv2.EvidenceConfig{ArtifactRoot: artifactRoot, RuntimeRoot: runtimeRoot})
+	server.assets = asset.NewService(db, server.projects)
 	server.fgs = fgs.NewService(db)
 	server.challengeWorkflow = challengeworkflow.NewService(db, server.tasks)
 	server.finishReadiness = finishreadiness.NewService(db, server.tasks)

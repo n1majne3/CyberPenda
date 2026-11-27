@@ -32,6 +32,9 @@ const SkillsPage = lazy(() =>
 const ProjectDashboardPage = lazy(() =>
   import("@/pages/ProjectDashboardPage").then(({ ProjectDashboardPage }) => ({ default: ProjectDashboardPage })),
 );
+const AssetsPage = lazy(() =>
+  import("@/pages/AssetsPage").then(({ AssetsPage }) => ({ default: AssetsPage })),
+);
 const ScopeEditorPage = lazy(() =>
   import("@/pages/ScopeEditorPage").then(({ ScopeEditorPage }) => ({ default: ScopeEditorPage })),
 );
@@ -218,6 +221,7 @@ function createAppRouter() {
         { path: "/credentials", element: <CredentialBindingsPage /> },
         { path: "/skills", element: <SkillsPage /> },
         { path: "/projects/:projectId", element: <ProjectDashboardPage /> },
+        { path: "/projects/:projectId/assets", element: <AssetsPage /> },
         { path: "/projects/:projectId/scope", element: <ScopeEditorPage /> },
         { path: "/projects/:projectId/tasks", element: <TasksPage /> },
         { path: "/projects/:projectId/tasks/new", element: <TaskLaunchPage /> },

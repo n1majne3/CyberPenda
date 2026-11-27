@@ -36,6 +36,7 @@ func baselineStatements() []string {
 		baselineWorkflowStatements,
 		baselineBlackboardStatements,
 		baselineFGSStatements,
+		baselineAssetStatements,
 		baselineConstraintStatements,
 	}
 	total := 0

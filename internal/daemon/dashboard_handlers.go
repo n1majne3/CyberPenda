@@ -49,6 +49,7 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 			Facts    int `json:"facts"`
 			Findings int `json:"findings"`
 			Evidence int `json:"evidence"`
+			Assets   int `json:"assets"`
 		} `json:"counts"`
 	}{
 		ProjectID: found.ID,
@@ -85,6 +86,14 @@ func (server *Server) handleDashboard(response http.ResponseWriter, request *htt
 		factCount = len(projection.Snapshot.Knowledge.Facts)
 		findingCount = len(projection.Snapshot.Knowledge.Findings)
 		evidenceCount = len(projection.Snapshot.Knowledge.Evidence)
+	}
+	if server.assets != nil {
+		coverage, coverageErr := server.assets.Coverage(request.Context(), found.ID)
+		if coverageErr != nil {
+			writeError(response, http.StatusInternalServerError, "count assets")
+			return
+		}
+		summary.Counts.Assets = coverage.TotalAssets
 	}
 	summary.Counts.Tasks = len(tasks)
 	summary.Counts.Facts = factCount

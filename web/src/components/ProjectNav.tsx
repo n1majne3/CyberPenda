@@ -7,7 +7,7 @@ type NavItem = { to: string; label: string; end?: boolean; count?: number };
 
 /**
  * Project navigation order from the operator IA (read contract §19.1):
- * Overview → Tasks → Blackboard → Findings|Solution → Evidence → Report? → Scope.
+ * Overview → Tasks → Blackboard → Assets → Findings|Solution → Evidence → Report? → Scope.
  */
 export function ProjectNav() {
   const { projectId } = useParams<{ projectId: string }>();
@@ -23,9 +23,9 @@ export function ProjectNav() {
         const [project, dashboard] = await Promise.all([
           apiGet<Project>(`/api/projects/${projectId}`),
           // Counts are advisory chrome; a dashboard failure must not break nav.
-          apiGet<{ counts?: { tasks?: number; findings?: number; evidence?: number } }>(
+          apiGet<{ counts?: { tasks?: number; findings?: number; evidence?: number; assets?: number } }>(
             `/api/projects/${projectId}/dashboard`,
-          ).catch(() => ({ counts: {} as { tasks?: number; findings?: number; evidence?: number } })),
+          ).catch(() => ({ counts: {} as { tasks?: number; findings?: number; evidence?: number; assets?: number } })),
         ]);
         if (cancelled) return;
         setKind(project.kind || "pentest");
@@ -34,6 +34,7 @@ setFGS(project.blackboard_protocol === "fgs");
           tasks: dashboard.counts?.tasks ?? 0,
           findings: dashboard.counts?.findings ?? 0,
           evidence: dashboard.counts?.evidence ?? 0,
+          assets: dashboard.counts?.assets ?? 0,
         });
       } catch {
         if (!cancelled) setKind("pentest");
@@ -46,10 +47,11 @@ setFGS(project.blackboard_protocol === "fgs");
 
   const base = `/projects/${projectId}`;
   const isCTF = kind === "ctf_challenge";
-  const links: NavItem[] = fgs ? [{to:"",label:"Overview",end:true},{to:"/tasks",label:"Tasks",count:counts.tasks},{to:"/blackboard",label:"Blackboard"},{to:"/report",label:"Report"},{to:"/scope",label:"Scope"}] : [
+  const links: NavItem[] = fgs ? [{to:"",label:"Overview",end:true},{to:"/tasks",label:"Tasks",count:counts.tasks},{to:"/blackboard",label:"Blackboard"},{to:"/assets",label:"Assets",count:counts.assets},{to:"/report",label:"Report"},{to:"/scope",label:"Scope"}] : [
     { to: "", label: "Overview", end: true },
     { to: "/tasks", label: "Tasks", count: counts.tasks },
     { to: "/blackboard", label: "Blackboard" },
+    { to: "/assets", label: "Assets", count: counts.assets },
     isCTF
       ? { to: "/solution", label: "Solution" }
       : { to: "/findings", label: "Findings", count: counts.findings },
