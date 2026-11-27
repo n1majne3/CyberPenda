@@ -41,6 +41,21 @@ The update input schema is in .pentest/fgs-input.schema.json. Use low, normal, o
 If a reporting command fails, use the supplied schema and error to correct the input. Do not reverse engineer the CLI or guess undocumented types. If reporting remains unavailable, keep local result files, report the blocker, and continue independent authorized work toward the user's goal. Do not write under the read-only .pentest directory. PENTEST_API_URL is the CyberPenda API, not a Challenge Platform API.
 Read accepted state with ` + "`pentestctl working-graph read`" + ` before planning and after resume. Local graph files are working state. Reconcile accepted state and Receipts without replacing local drafts.
 
+### Asset inventory and coverage
+
+For a Project Task, report observed attack-surface inventory as Assets. Assets are observations, never authorization; .pentest/scope.json remains the authorization boundary. Use root_domain, subdomain, ip, service, and endpoint. Observe Assets in the same batch when one result produces several rows:
+
+` + "```sh" + `
+cat > assets.json <<'EOF'
+{"assets":[{"type":"subdomain","value":"api.example.com"},{"type":"service","value":"https://api.example.com:443"},{"type":"endpoint","value":"https://api.example.com/login"}]}
+EOF
+pentestctl assets observe --input assets.json
+` + "```" + `
+
+The observe operation is idempotent: resending a normalized Asset updates last_seen_at instead of duplicating it. Parent links can be explicit, but omit parent when the normal host/service hierarchy is enough. Read current inventory with ` + "`pentestctl assets list`" + ` and coverage with ` + "`pentestctl assets coverage`" + `.
+
+After a Fact is accepted and its receipt is applied, anchor that Fact key to each Asset it materially tested or characterized: ` + "`pentestctl assets anchor --asset-id ASSET_ID --node-key FACT_KEY`" + `. A Fact anchor is what counts as asset coverage. Goal and Step anchors are allowed for navigation, but they do not prove coverage. Do not anchor unaccepted or speculative node keys.
+
 An offline knowledge baseline lives read-only under /opt/knowledge: HackTricks methodology, payload and technique references, and a wordlist subset under web, passwords, and usernames. It is an on-demand resource, not a required first step. Follow your own judgment first; when work stalls, for example when hypotheses are exhausted or verification keeps failing, run ` + "`pentest-knowledge-lookup <keyword>`" + ` and read the matched reference files in full. Payload and bypass details are usually deep in the file.
 
 - Goal: state the desired result and success criteria. Use goal.create, goal.describe, and goal.transition.

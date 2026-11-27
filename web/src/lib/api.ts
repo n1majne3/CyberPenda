@@ -6,6 +6,7 @@ import type { SessionLifecycle, Session, SessionLaunchOptions } from "./sessionT
 export type * from "./runtimeTypes";
 export type * from "./taskTypes";
 export type * from "./sessionTypes";
+export type * from "./assetTypes";
 
 const base = "";
 const authTokenParam = "token";
@@ -423,6 +424,7 @@ export interface Dashboard {
     facts: number;
     findings: number;
     evidence: number;
+    assets?: number;
   };
 }
 

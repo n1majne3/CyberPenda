@@ -656,6 +656,22 @@ _Avoid_: file-backed Blackboard, fixed state file, Working Blackboard Snapshot, 
 A stable, readable semantic identity unique within one **Blackboard**, independent of storage and execution identifiers.
 _Avoid_: database ID, globally unique ID, type-scoped key
 
+**Asset**:
+An observed Project-scoped inventory item, such as a root domain, subdomain, IP address, service, or endpoint. An Asset is inventory and never grants authorization; **Scope** remains the authorization boundary.
+_Avoid_: authorization rule, target permission, legacy Entity record
+
+**Asset Inventory**:
+The durable Project-scoped collection of **Assets**. Assets move across Projects only through explicit operator import, which copies inventory rows and import provenance but never copies FGS anchors, Facts, or Scope authorization.
+_Avoid_: global asset pool, automatic cross-Project sharing, target allowlist
+
+**Asset Anchor**:
+A durable sidecar link from one **Asset** to one accepted FGS **Goal**, **Step**, or **Fact** in the same Project. It supports audit and navigation without adding Asset or Finding node types to FGS.
+_Avoid_: FGS node type, copied Fact, authorization grant
+
+**Asset Coverage**:
+The derived measure of how many in-scope **Assets** have at least one **Asset Anchor** to an accepted **Fact**. Goal and Step anchors help navigation but do not count as coverage. Asset Scope status is derived from current **Scope** on each read, not stored as permanent inventory state.
+_Avoid_: execution progress, Finding severity, stored authorization state
+
 ### Retained legacy knowledge
 
 **Record Merge**:
@@ -879,8 +895,8 @@ A narrative path that connects **Project Facts** and **Findings** into an explai
 _Avoid_: attack graph, exploit graph
 
 **Finding**:
-A reportable security issue with severity, proof, impact, recommendation, and status.
-_Avoid_: vulnerability, vulnerability record, bug
+A reportable security issue with severity, proof, impact, recommendation, and status. Finding is the independent reporting layer beside FGS **Goal**, **Step**, and **Fact**, not an FGS node type.
+_Avoid_: vulnerability, vulnerability record, bug, FGS Fact
 
 **Finding Key**:
 A **Blackboard Key** used to update the same **Finding** over time.
