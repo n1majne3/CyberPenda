@@ -315,18 +315,86 @@ const skills = [
   },
 ];
 
+const demoAssetBase = {
+  project_id: PROJECT_ID,
+  first_seen_at: createdAt,
+  last_seen_at: updatedAt,
+  created_at: createdAt,
+  updated_at: updatedAt,
+  goal_count: 0,
+  step_count: 0,
+  fact_count: 0,
+  anchors: [],
+};
+
+const demoAssets = [
+  {
+    ...demoAssetBase,
+    id: "demo-asset-ip",
+    type: "ip",
+    value: "172.17.0.1",
+    normalized_value: "172.17.0.1",
+    host: "172.17.0.1",
+    scope_status: "in_scope",
+    covered: false,
+  },
+  {
+    ...demoAssetBase,
+    id: "demo-asset-service",
+    type: "service",
+    value: "http://172.17.0.1:8080",
+    normalized_value: "http://172.17.0.1:8080",
+    scheme: "http",
+    host: "172.17.0.1",
+    port: 8080,
+    parent_id: "demo-asset-ip",
+    scope_status: "in_scope",
+    covered: false,
+  },
+  {
+    ...demoAssetBase,
+    id: "demo-asset-endpoint",
+    type: "endpoint",
+    value: "http://172.17.0.1:8080/login",
+    normalized_value: "http://172.17.0.1:8080/login",
+    scheme: "http",
+    host: "172.17.0.1",
+    port: 8080,
+    path: "/login",
+    parent_id: "demo-asset-service",
+    scope_status: "in_scope",
+    covered: true,
+    fact_count: 1,
+    anchors: [{ project_id: PROJECT_ID, asset_id: "demo-asset-endpoint", node_key: "fact:login-auth-bypass", node_type: "fact", actor_id: "runtime:demo", created_at: updatedAt }],
+  },
+];
+
+const demoAssetCoverage = {
+  schema: "project-asset-coverage/v1",
+  project_id: PROJECT_ID,
+  total_assets: 3,
+  in_scope_assets: 3,
+  covered_in_scope_assets: 1,
+  coverage_percent: 33,
+  out_of_scope_assets: 0,
+  excluded_assets: 0,
+  uncovered_in_scope_asset_ids: ["demo-asset-ip", "demo-asset-service"],
+};
+
 const readRoutes: Array<[RegExp, unknown | ((path: string) => unknown)]> = [
   [/^\/api\/projects$/, { projects: [project] }],
   [/^\/api\/workspace\/navigation(?:\?.*)?$/, { revision: "demo-12", changed: true, projects: [{ ...project, tasks: [task] }] }],
   [/^\/api\/sessions(?:\?.*)?$/, { sessions: [] }],
   [new RegExp(`^/api/projects/${PROJECT_ID}$`), project],
   [new RegExp(`^/api/projects/${PROJECT_ID}/scope-expansions$`), { expansions: [] }],
+  [new RegExp(`^/api/projects/${PROJECT_ID}/assets$`), { assets: demoAssets }],
+  [new RegExp(`^/api/projects/${PROJECT_ID}/assets/coverage$`), demoAssetCoverage],
   [new RegExp(`^/api/projects/${PROJECT_ID}/dashboard$`), {
     project_id: PROJECT_ID,
     name: project.name,
     project_kind: "pentest",
     scope: { domains: 0, ips: 1, cidrs: 2, urls: 2, ports: 3, excluded: 0, has_testing_limits: false, has_notes: true, ready: true },
-    counts: { tasks: 1, goals: 5, steps: 11, facts: 15 },
+    counts: { tasks: 1, goals: 5, steps: 11, facts: 15, assets: 3 },
   }],
   [new RegExp(`^/api/projects/${PROJECT_ID}/tasks(?:\\?.*)?$`), { tasks: [task] }],
   [new RegExp(`^/api/projects/${PROJECT_ID}/tasks/${TASK_ID}$`), task],

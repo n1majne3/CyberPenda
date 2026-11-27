@@ -135,10 +135,10 @@ func (server *Server) authenticateAssetV2(response http.ResponseWriter, request 
 }
 
 func requireAssetV2WriteAccess(response http.ResponseWriter, principal blackboardV2Principal) bool {
-	if principal.operator || principal.grant.AllowsWrite() {
+	if principal.operator || principal.grant.Status().IsWriteable() {
 		return true
 	}
-	writeBlackboardV2Error(response, blackboardV2HTTPError("authority_denied", "Continuation Interface capability does not admit new asset writes", "authority"), nil)
+	writeBlackboardV2Error(response, blackboardV2HTTPError("authority_denied", "Continuation Interface capability is closed for new asset writes", "authority"), nil)
 	return false
 }
 

@@ -251,7 +251,16 @@ export function AssetsPage() {
                       <div className="flex items-start gap-2">
                         <Globe2 className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
                         <div className="min-w-0">
-                          <p className="break-all font-medium text-foreground">{asset.normalized_value}</p>
+                          <button
+                            type="button"
+                            className="break-all text-left font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedID(asset.id);
+                            }}
+                          >
+                            {asset.normalized_value}
+                          </button>
                           {asset.imported_from_project_id && <p className="mt-1 text-xs text-muted-foreground">Imported from another Project</p>}
                         </div>
                       </div>

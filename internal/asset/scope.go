@@ -49,6 +49,9 @@ func matchesExcluded(item Asset, excluded []string) bool {
 			if item.Type == TypeEndpoint && endpointURLPrefixMatch(item, endpoint) {
 				return true
 			}
+			if endpoint.Path != "/" {
+				continue
+			}
 			if item.Type == TypeService && sameSchemeHostPort(item, endpoint) {
 				return true
 			}

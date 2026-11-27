@@ -148,7 +148,7 @@ func (s *Service) Upsert(ctx context.Context, projectID string, inputs []Input, 
 }
 
 func upsertNormalizedTx(ctx context.Context, tx *sql.Tx, projectID string, item normalizedAsset, observed, now time.Time, importProjectID, importAssetID string) (string, bool, error) {
-	stamp := func(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+	stamp := func(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000000000Z") }
 	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO project_assets
 		(id,project_id,type,value,normalized_value,scheme,host,port,path,parent_id,imported_from_project_id,imported_from_asset_id,first_seen_at,last_seen_at,created_at,updated_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,

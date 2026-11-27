@@ -281,3 +281,70 @@ func TestObservedAtControlsFirstAndLastSeen(t *testing.T) {
 		t.Fatalf("first seen = %q want %q", got, old)
 	}
 }
+
+func TestEncodedSlashEndpointKeepsASeparateIdentity(t *testing.T) {
+	service, projects, _ := newAssetTestServices(t)
+	created := createAssetProject(t, projects, project.Scope{})
+	result, err := service.Upsert(context.Background(), created.ID, []Input{
+		{Type: TypeEndpoint, Value: "https://example.com/a%2fb"},
+		{Type: TypeEndpoint, Value: "https://example.com/a/b"},
+	}, operatorOrigin())
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if result.Created != 2 {
+		t.Fatalf("encoded and literal slash endpoints collapsed: %#v", result)
+	}
+	if result.Assets[0].NormalizedValue != "https://example.com/a%2Fb" {
+		t.Fatalf("escaped path normalization: %#v", result.Assets[0])
+	}
+}
+
+func TestPathExclusionDoesNotExcludeHostAssets(t *testing.T) {
+	service, projects, _ := newAssetTestServices(t)
+	created := createAssetProject(t, projects, project.Scope{
+		Domains:  []string{"example.com"},
+		Excluded: []string{"https://example.com/admin"},
+	})
+	result, err := service.Upsert(context.Background(), created.ID, []Input{
+		{Type: TypeRootDomain, Value: "example.com"},
+		{Type: TypeSubdomain, Value: "api.example.com"},
+		{Type: TypeService, Value: "https://example.com:443"},
+		{Type: TypeEndpoint, Value: "https://example.com/admin/panel"},
+		{Type: TypeEndpoint, Value: "https://example.com/login"},
+	}, operatorOrigin())
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	statuses := map[string]string{}
+	for _, item := range result.Assets {
+		statuses[item.NormalizedValue] = item.ScopeStatus
+	}
+	for _, value := range []string{"example.com", "api.example.com", "https://example.com:443", "https://example.com/login"} {
+		if statuses[value] != ScopeStatusInScope {
+			t.Fatalf("%s status = %q; all statuses %#v", value, statuses[value], statuses)
+		}
+	}
+	if statuses["https://example.com/admin/panel"] != ScopeStatusExcluded {
+		t.Fatalf("excluded endpoint status: %#v", statuses)
+	}
+}
+
+func TestLastSeenAcceptsFractionalTimestampWithinSameSecond(t *testing.T) {
+	service, projects, _ := newAssetTestServices(t)
+	created := createAssetProject(t, projects, project.Scope{})
+	whole := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	later := whole.Add(200 * time.Millisecond)
+	input := []Input{{Type: TypeIP, Value: "192.0.2.1", ObservedAt: whole.Format(time.RFC3339Nano)}}
+	if _, err := service.Upsert(context.Background(), created.ID, input, operatorOrigin()); err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	input[0].ObservedAt = later.Format(time.RFC3339Nano)
+	result, err := service.Upsert(context.Background(), created.ID, input, operatorOrigin())
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if !result.Assets[0].LastSeenAt.Equal(later) {
+		t.Fatalf("last seen = %s want %s", result.Assets[0].LastSeenAt.Format(time.RFC3339Nano), later.Format(time.RFC3339Nano))
+	}
+}

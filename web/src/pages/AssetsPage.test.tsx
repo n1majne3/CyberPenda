@@ -61,6 +61,16 @@ describe("AssetsPage", () => {
     expect(screen.getByText("Covered by Fact evidence")).toBeInTheDocument();
   });
 
+  it("opens asset details from the keyboard", async () => {
+    mockAssetsPage();
+    renderPage();
+    const trigger = await screen.findByRole("button", { name: "https://example.com/login" });
+    trigger.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(await screen.findByText("Durable FGS anchors")).toBeInTheDocument();
+    expect(screen.getByText("fact:login")).toBeInTheDocument();
+  });
+
   it("filters inventory by search text", async () => {
     mockAssetsPage();
     renderPage();

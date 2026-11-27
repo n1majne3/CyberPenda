@@ -173,10 +173,11 @@ func normalizeEndpoint(value string) (normalizedAsset, error) {
 	if port == 0 {
 		port = defaultPort
 	}
-	path := parsed.Path
-	if path == "" {
-		path = "/"
+	decodedPath := parsed.Path
+	if decodedPath == "" {
+		decodedPath = "/"
 	}
+	path := canonicalEscapedPath(parsed.EscapedPath())
 	query := parsed.Query()
 	canonicalHost := host
 	if strings.Contains(host, ":") {
@@ -188,9 +189,64 @@ func normalizeEndpoint(value string) (normalizedAsset, error) {
 			canonicalHost = "[" + host + "]:" + strconv.Itoa(port)
 		}
 	}
-	canonical := url.URL{Scheme: scheme, Host: canonicalHost, Path: path, RawQuery: query.Encode()}
+	canonical := url.URL{Scheme: scheme, Host: canonicalHost, Path: decodedPath, RawPath: path, RawQuery: query.Encode()}
 	normalized := canonical.String()
 	return normalizedAsset{Type: TypeEndpoint, Value: normalized, NormalizedValue: normalized, Scheme: scheme, Host: host, Port: port, Path: path}, nil
+}
+
+func canonicalEscapedPath(path string) string {
+	if path == "" {
+		return "/"
+	}
+	var out strings.Builder
+	out.Grow(len(path))
+	for index := 0; index < len(path); index++ {
+		if path[index] != '%' || index+2 >= len(path) {
+			out.WriteByte(path[index])
+			continue
+		}
+		high, low := path[index+1], path[index+2]
+		if !isHexDigit(high) || !isHexDigit(low) {
+			out.WriteByte(path[index])
+			continue
+		}
+		value := hexValue(high)<<4 | hexValue(low)
+		if isUnreservedByte(value) {
+			out.WriteByte(value)
+		} else {
+			out.WriteByte('%')
+			out.WriteByte(toUpperHex(high))
+			out.WriteByte(toUpperHex(low))
+		}
+		index += 2
+	}
+	return out.String()
+}
+
+func isHexDigit(value byte) bool {
+	return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F')
+}
+
+func hexValue(value byte) byte {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0'
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10
+	default:
+		return value - 'A' + 10
+	}
+}
+
+func toUpperHex(value byte) byte {
+	if value >= 'a' && value <= 'f' {
+		return value - 'a' + 'A'
+	}
+	return value
+}
+
+func isUnreservedByte(value byte) bool {
+	return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || value == '-' || value == '.' || value == '_' || value == '~'
 }
 
 func parentRank(kind Type) int {
